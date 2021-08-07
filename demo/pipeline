@@ -1,0 +1,3 @@
+#!/bin/bash
+cp ../../target/pipeline-generator-1.0-SNAPSHOT-shaded.jar ../
+java -jar ../pipeline-generator-1.0-SNAPSHOT-shaded.jar "$@"

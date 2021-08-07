@@ -1,0 +1,22 @@
+{
+  "@type" : "IMAGE_TO_NDARRAY",
+  "config" : {
+    "height" : 256,
+    "width" : 256,
+    "dataType" : "FLOAT",
+    "includeMinibatchDim" : true,
+    "aspectRatioHandling" : "CENTER_CROP",
+    "format" : "CHANNELS_FIRST",
+    "channelLayout" : "RGB",
+    "normalization" : {
+      "type" : "SCALE",
+      "maxValue" : 255.0,
+      "meanRgb" : [ 0.4435, 0.4435, 0.4435 ],
+      "stdRgb" : [ 0.2712, 0.2712, 0.2717 ]
+    },
+    "listHandling" : "NONE"
+  },
+  "keepOtherValues" : true,
+  "metadata" : false,
+  "metadataKey" : "@ImageToNDArrayStepMetadata"
+}

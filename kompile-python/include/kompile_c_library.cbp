@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6"/>
+	<Project>
+		<Option title="kompile_c_library"/>
+		<Option makefile_is_custom="1"/>
+		<Option compiler="gcc"/>
+		<Option virtualFolders="CMake Files\;"/>
+		<Build>
+			<Target title="all">
+				<Option working_dir="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 all"/>
+					<CompileFile command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="rebuild_cache">
+				<Option working_dir="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 rebuild_cache"/>
+					<CompileFile command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="kompile_c_library">
+				<Option output="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/libkompile_c_library.so" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library"/>
+				<Option object_output="./"/>
+				<Option type="3"/>
+				<Option compiler="gcc"/>
+				<Compiler/>
+				<MakeCommands>
+					<Build command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 kompile_c_library"/>
+					<CompileFile command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="kompile_c_library/fast">
+				<Option output="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/libkompile_c_library.so" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library"/>
+				<Option object_output="./"/>
+				<Option type="3"/>
+				<Option compiler="gcc"/>
+				<Compiler/>
+				<MakeCommands>
+					<Build command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 kompile_c_library/fast"/>
+					<CompileFile command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="edit_cache">
+				<Option working_dir="/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 edit_cache"/>
+					<CompileFile command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+					<DistClean command="/usr/bin/make -f &quot;/mnt/c/Users/agibs/Documents/Github/pipeline-generator/kompile-c-library/Makefile&quot;  VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+		</Build>
+		<Unit filename="/mnt/c/Users/agibs/Documents/GitHub/pipeline-generator/kompile-c-library/library.c">
+			<Option target="kompile_c_library"/>
+		</Unit>
+		<Unit filename="/mnt/c/Users/agibs/Documents/GitHub/pipeline-generator/kompile-c-library/library.h">
+			<Option target="kompile_c_library"/>
+		</Unit>
+		<Unit filename="/mnt/c/Users/agibs/Documents/GitHub/pipeline-generator/kompile-c-library/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\"/>
+		</Unit>
+	</Project>
+</CodeBlocks_project_file>

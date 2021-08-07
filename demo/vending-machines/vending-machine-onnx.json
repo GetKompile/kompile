@@ -1,0 +1,6 @@
+{
+  "@type" : "ONNX",
+  "modelUri" : "/mnt/c/Users/Documents/Github/pipeline-generator/demo/vending-machines/vending-machines-code/agerace_v2.onnx",
+  "inputNames" : [ "input" ],
+  "outputNames" : [ "output,519,520" ]
+}

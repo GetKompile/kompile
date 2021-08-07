@@ -1,0 +1,2 @@
+#!/bin/bash
+mvn exec:java -Dexec.mainClass=ai.konduit.pipelinegenerator.main.NativeImageBuilder -Dexec.args="native-image-generate --outputFile=konduit-serving/pom.xml --tvm=true --image=true --server=true"

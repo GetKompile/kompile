@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.19)
+project(kompile_c_library C)
+
+set(CMAKE_C_STANDARD 99)
+include_directories(include)
+link_directories(lib)
+find_package(PythonInterp)
+find_package(PythonLibs REQUIRED)
+include_directories(${PYTHON_INCLUDE_DIRS})
+add_library(kompile_c_library SHARED library.c include/library.h)

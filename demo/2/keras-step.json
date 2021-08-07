@@ -1,0 +1,18 @@
+{
+  "@type" : "KERAS",
+  "modelUri" : "my_model.h5",
+  "inputNames" : [ "input_1" ],
+  "outputNames" : [ "conv2d_31" ]
+}
+{
+  "@type" : "KERAS",
+  "modelUri" : "my_model.h5",
+  "inputNames" : [ "input_1" ],
+  "outputNames" : [ "conv2d_31" ]
+}
+{
+  "@type" : "KERAS",
+  "modelUri" : "my_model.h5",
+  "inputNames" : [ "input_1" ],
+  "outputNames" : [ "conv2d_31" ]
+}
