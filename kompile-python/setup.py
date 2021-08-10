@@ -6,7 +6,7 @@ import numpy
 compiler_directives = {"language_level": 3, "embedsignature": True}
 ext_modules = cythonize(
     Extension('kompile.interface.native.interface',
-              extra_compile_args=['-mtune=generic'],
+              extra_compile_args=['-mtune=generic','-03'],
               sources=['kompile/interface/native/interface.pyx'],
               include_dirs=['./include',numpy.get_include()],
               library_dirs=['./lib'],
