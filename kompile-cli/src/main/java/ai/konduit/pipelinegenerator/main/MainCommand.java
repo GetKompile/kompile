@@ -25,7 +25,7 @@ public class MainCommand implements Callable<Integer> {
         }
 
         //creation step is dynamically generated and needs special support
-        if(args[0].equals("step-create")  || args.length > 1 && args[1].equals("step-create") || args.length > 1 && args[2].equals("step-create")) {
+        if(args[0].equals("step-create")  || args.length > 1 && args[1].equals("step-create") || args.length > 2 && args[2].equals("step-create")) {
             commandLine.setExecutionStrategy(parseResult -> {
                 try {
                     return StepCreator.run(parseResult);
