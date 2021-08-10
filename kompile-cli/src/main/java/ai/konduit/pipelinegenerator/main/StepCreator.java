@@ -122,7 +122,6 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
                   GRAY_SCALE
           };
 
-          System.out.println("Using non intel based pipeline steps");
         }
         for(PipelineStepType pipelineStepType : values) {
             Class<? extends PipelineStep> aClass = PipelineStepType.clazzForType(pipelineStepType);
