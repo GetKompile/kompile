@@ -1,7 +1,4 @@
-from distutils.core import setup
-from distutils.extension import Extension
-from Cython.Build import cythonize
-import numpy
+
 from distutils.sysconfig import get_config_vars as default_get_config_vars
 
 
@@ -32,7 +29,10 @@ def my_get_config_vars(*args):
 import distutils.sysconfig as dsc
 dsc.get_config_vars = my_get_config_vars
 
-
+from distutils.core import setup
+from distutils.extension import Extension
+from Cython.Build import cythonize
+import numpy
 
 compiler_directives = {"language_level": 3, "embedsignature": True}
 ext_modules = cythonize(
