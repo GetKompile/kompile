@@ -69,10 +69,18 @@ public class NativeImageBuilder implements Callable<Void> {
 
 
         if (numpySharedLibrary) {
-            File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
-            cEntryPointDir.mkdirs();
-            ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPoint.java");
-            FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPoint.java"));
+            if(System.getProperty("os.arch").contains("amd")) {
+                File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
+                cEntryPointDir.mkdirs();
+                ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPoint.java");
+                FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPoint.java"));
+            } else {
+                File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
+                cEntryPointDir.mkdirs();
+                ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPointArm.java");
+                FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPointArm.java"));
+            }
+
 
         }
 

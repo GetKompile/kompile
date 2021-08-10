@@ -205,32 +205,32 @@ public class NumpyEntryPoint {
 
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
-        System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
+        System.setProperty("org.bytedeco.javacpp.platform", "linux-arm64");
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-            ClassPathResource classPathResource = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/");
+            ClassPathResource classPathResource = new ClassPathResource("org/bytedeco/numpy/linux-arm64/python/");
             System.out.println("Resource exists " + classPathResource.exists());
 
-            ClassPathResource classPathResource2 = new ClassPathResource("/org/bytedeco/numpy/linux-x86_64/python/");
+            ClassPathResource classPathResource2 = new ClassPathResource("/org/bytedeco/numpy/linux-arm64/python/");
             System.out.println("Resource 2 exists " + classPathResource2.exists());
 
 
-            ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/numpy/core/tests/test_einsum.py");
+            ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-arm64/python/numpy/core/tests/test_einsum.py");
             System.out.println("Resource 3 exists " + classPathResource3.exists());
 
             System.setProperty("org.eclipse.python4j.numpyimport", "false");
 
 
-            File f = Loader.cacheResource("/org/bytedeco/numpy/linux-x86_64/python/");
+            File f = Loader.cacheResource("/org/bytedeco/numpy/linux-arm64/python/");
             if (f == null) {
-                f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
+                f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-arm64.jar/org/bytedeco/numpy/linux-arm64/python/");
             }
             File[] file = numpy.cachePackages();
             for (int i = 0; i < file.length; i++) {
                 System.out.println("File " + i + " was " + file[i]);
             }
-            file[file.length - 1] = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
+            file[file.length - 1] = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-arm64.jar/org/bytedeco/numpy/linux-arm64/python/");
             if (f != null)
                 System.out.println("File was " + f.getAbsolutePath());
             else

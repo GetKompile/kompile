@@ -408,7 +408,7 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
         stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
         stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
-        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main");
+        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main ");
         for(PomFileAppender pomFileAppender : appenders()) {
             pomFileAppender.append(stringBuilder);
             pomFileAppender.appendReInitialize(stringBuilder);
