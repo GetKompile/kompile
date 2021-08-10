@@ -41,8 +41,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 
-@CContext(NumpyEntryPoint.NumpyEntryPointDirectives.class)
-public class NumpyEntryPoint {
+@CContext(NumpyEntryPointArm.NumpyEntryPointDirectives.class)
+public class NumpyEntryPointArm {
 
 
     static class NumpyEntryPointDirectives implements CContext.Directives {
