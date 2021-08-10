@@ -1,4 +1,4 @@
-import sysconfig
+from distutils import sysconfig
 # me make damn sure, that disutils does not mess with our
 # build process
 
