@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
+import static ai.konduit.pipelinegenerator.main.PipelineStepType.*;
+
 @CommandLine.Command
 public class StepCreator implements CommandLine.IModelTransformer, Callable<Void> {
 
@@ -85,7 +87,44 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
     public CommandLine.Model.CommandSpec spec() throws Exception {
         registerConverters();
         CommandLine.Model.CommandSpec ret = CommandLine.Model.CommandSpec.create();
-        for(PipelineStepType pipelineStepType : PipelineStepType.values()) {
+        PipelineStepType[] values = null;
+        if(System.getProperty("os.arch").contains("amd")) {
+            System.out.println("Using intel based pipeline steps");
+            values = PipelineStepType.values();
+         }//non amd, probably arm, pick steps we can load on non intel/amd devices
+        else {
+          values = new PipelineStepType[] {
+                  CROP_GRID,
+                  CROP_FIXED_GRID,
+                  DL4J,
+                  KERAS,
+                  DRAW_BOUNDING_BOX,
+                  DRAW_FIXED_GRID,
+                  DRAW_GRID,
+                  DRAW_SEGMENTATION,
+                  EXTRACT_BOUNDING_BOX,
+                  CAMERA_FRAME_CAPTURE,
+                  VIDEO_FRAME_CAPTURE,
+                  IMAGE_TO_NDARRAY,
+                  LOGGING,
+                  SSD_TO_BOUNDING_BOX,
+                  SAMEDIFF,
+                  SHOW_IMAGE,
+                  PYTHON,
+                  ONNX,
+                  CLASSIFIER_OUTPUT,
+                  IMAGE_RESIZE,
+                  RELATIVE_TO_ABSOLUTE,
+                  DRAW_POINTS,
+                  DRAW_HEATMAP,
+                  PERSPECTIVE_TRANSFORM,
+                  IMAGE_CROP,
+                  GRAY_SCALE
+          };
+
+          System.out.println("Using non intel based pipeline steps");
+        }
+        for(PipelineStepType pipelineStepType : values) {
             Class<? extends PipelineStep> aClass = PipelineStepType.clazzForType(pipelineStepType);
             if(aClass != null) {
                 CommandLine.Model.CommandSpec spec = CommandLine.Model.CommandSpec.create();
