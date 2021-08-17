@@ -2,11 +2,14 @@ package ai.konduit.pipelinegenerator.main;
 
 import org.apache.maven.model.Model;
 import org.apache.maven.shared.invoker.*;
+import org.apache.tika.io.IOUtils;
 import org.codehaus.plexus.util.FileUtils;
 import org.nd4j.common.io.ClassPathResource;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -73,12 +76,28 @@ public class NativeImageBuilder implements Callable<Void> {
                 File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
                 cEntryPointDir.mkdirs();
                 ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPoint.java");
-                FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPoint.java"));
+                File tmpFile = new File("NumpyEntryPoint.java");
+                try(InputStream is = classPathResource.getInputStream();
+                    FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
+                    IOUtils.copy(is,fileOutputStream);
+                    fileOutputStream.flush();
+                }
+
+                tmpFile.deleteOnExit();
+
+                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,"NumpyEntryPoint.java"));
             } else {
                 File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
                 cEntryPointDir.mkdirs();
+                File tmpFile = new File("NumpyEntryPointArm.java");
                 ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPointArm.java");
-                FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPointArm.java"));
+                try(InputStream is = classPathResource.getInputStream();
+                    FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
+                    IOUtils.copy(is,fileOutputStream);
+                    fileOutputStream.flush();
+                }
+                tmpFile.deleteOnExit();
+                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,"NumpyEntryPointArm.java"));
             }
 
 
