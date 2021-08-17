@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main.pomfileappender;
+package ai.konduit.pipelinegenerator.main;
 
 import java.util.Collections;
 import java.util.List;

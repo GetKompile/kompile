@@ -171,15 +171,15 @@ if test -f "$PIPELINE_FILE"; then
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
     POM_GENERATE_COMMAND="pom-generate   --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelinePath=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH}"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
-#    eval "./pipeline ${POM_GENERATE_COMMAND}"
-#    ./pipeline native-image-generate  \
-#                --imageName="${IMAGE_NAME}" \
-#                --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
-#                --pipelinePath="${PIPELINE_FILE}" \
-#                --mavenHome="${MAVEN_HOME}" \
-#                --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
-#                --javacppPlatform="${BUILD_PLATFORM}" \
-#                --mainClass="${MAIN_CLASS}"
+    eval "./pipeline ${POM_GENERATE_COMMAND}"
+    ./pipeline native-image-generate  \
+                --imageName="${IMAGE_NAME}" \
+                --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
+                --pipelinePath="${PIPELINE_FILE}" \
+                --mavenHome="${MAVEN_HOME}" \
+                --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
+                --javacppPlatform="${BUILD_PLATFORM}" \
+                --mainClass="${MAIN_CLASS}"
     echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
     mkdir -p "${LIB_OUTPUT_PATH}"
