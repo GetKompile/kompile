@@ -169,44 +169,46 @@ export INCLUDE_PATH
 if test -f "$PIPELINE_FILE"; then
      echo "Processing pipeline file $PIPELINE_FILE"
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-    POM_GENERATE_COMMAND="pom-generate   --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelinePath=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH}"
+    POM_GENERATE_COMMAND="pom-generate   --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelinePath=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH}"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
-    eval "./pipeline ${POM_GENERATE_COMMAND}"
-    ./pipeline native-image-generate  \
-                --imageName="${IMAGE_NAME}" \
-                --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
-                --pipelinePath="${PIPELINE_FILE}" \
-                --mavenHome="${MAVEN_HOME}" \
-                --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
-                --javacppPlatform="${BUILD_PLATFORM}" \
-                --mainClass="${MAIN_CLASS}"
+#    eval "./pipeline ${POM_GENERATE_COMMAND}"
+#    ./pipeline native-image-generate  \
+#                --imageName="${IMAGE_NAME}" \
+#                --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
+#                --pipelinePath="${PIPELINE_FILE}" \
+#                --mavenHome="${MAVEN_HOME}" \
+#                --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
+#                --javacppPlatform="${BUILD_PLATFORM}" \
+#                --mainClass="${MAIN_CLASS}"
     echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
+
     mkdir -p "${LIB_OUTPUT_PATH}"
     mkdir -p "${INCLUDE_PATH}"
-    cp "${IMAGE_NAME}/target/*.h" "${INCLUDE_PATH}"
+    cp "./${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
     cp "./src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
-    CP "${IMAGE_NAME}/target/*.${BINARY_EXTENSION}" "${LIB_OUTPUT_PATH}"
+    cp "${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
     cp -rf "${KOMPILE_C_PATH}" ./kompile-c
 
     cd ./kompile-c
     cmake .
     make
-    cp "*.${BINARY_EXTENSION}" "${LIB_OUTPUT_PATH}"
+    cp *".${BINARY_EXTENSION}" "${LIB_OUTPUT_PATH}"
     cd ..
     # Ensure link path is set for compiling the right python libraries
-    export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}:${LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}"
     cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
     cd ./kompile-python
-    python setup.py
+    python setup.py  build_ext --inplace install
     cd ..
     echo "Creating bundle directory ${IMAGE_NAME}-bundle"
-    mkdir "${IMAGE_NAME}-bundle"
+    mkdir -p "${IMAGE_NAME}-bundle"
     # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
     cp -rf "${INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
-    cp rf "${LIB_OUTPUT_PATH}" "${IMAGE_NAME-bundle}"
+    cp -rf "${LIB_OUTPUT_PATH}" "${IMAGE_NAME-bundle}"
     cp -rf ./kompile-python "${IMAGE_NAME}-bundle"
     cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
     tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
+    echo "Bundle built for image name "
 
     else
         echo "${FILE} not found. Please specify a pre existing file."
