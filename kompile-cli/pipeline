@@ -1,0 +1,2 @@
+#!/bin/bash
+java  -Dorg.eclipse.python4j.numpyimport=false -jar target/kompile-cli-1.0-SNAPSHOT-shaded.jar  "$@"
