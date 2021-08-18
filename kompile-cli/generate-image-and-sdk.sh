@@ -187,11 +187,13 @@ if test -f "$PIPELINE_FILE"; then
     cd "${LIB_OUTPUT_PATH}"
     # Resolve absolute path in case relative path is specified
     REAL_LIB_PATH="$(pwd)"
+    echo "Set library path to ${REAL_LIB_PATH}"
     cd "${BUILD_DIR}"
     mkdir -p "${INCLUDE_PATH}"
     cd "${INCLUDE_PATH}"
     # Capture absolute path of include directory as well in case relative path is specified
     REAL_INCLUDE_PATH="$(pwd)"
+    echo "Set real include path to ${REAL_INCLUDE_PATH}"
     cd "${BUILD_DIR}"
     cp "./${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
     cp "./src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
@@ -209,7 +211,7 @@ if test -f "$PIPELINE_FILE"; then
     cmake .
     make
     # Note we don't quote here so it resolves the binary extension properly
-    cp "*.${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
+    cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
     cd ..
     # Ensure link path is set for compiling the right python libraries
     export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}"
