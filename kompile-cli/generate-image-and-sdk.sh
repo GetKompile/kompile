@@ -34,7 +34,6 @@ while [[ $# -gt 0 ]]
 do
 key="$1"
 value="${2:-}"
-#Build type (release/debug), packaging type, chip: cpu,cuda, lib type (static/dynamic)
 case $key in
     -p|--pipeline-file)
     PIPELINE_FILE="$value"
@@ -169,7 +168,7 @@ export INCLUDE_PATH
 if test -f "$PIPELINE_FILE"; then
      echo "Processing pipeline file $PIPELINE_FILE"
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-    POM_GENERATE_COMMAND="pom-generate   --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelinePath=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH}"
+    POM_GENERATE_COMMAND="$(./pipeline   pipeline-command-generate  --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelineFile=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
     eval "./pipeline ${POM_GENERATE_COMMAND}"
     ./pipeline native-image-generate  \
@@ -228,6 +227,10 @@ if test -f "$PIPELINE_FILE"; then
     python setup.py bdist_wheel
     cd ..
     echo "Creating bundle directory ${IMAGE_NAME}-bundle"
+    # Ensure old copies are removed
+    if test -f "${IMAGE_NAME}-bundle" ; then
+        rm -rf "${IMAGE_NAME}-bundle"
+    fi
     mkdir -p "${IMAGE_NAME}-bundle"
     # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
     cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
@@ -235,10 +238,12 @@ if test -f "$PIPELINE_FILE"; then
     echo "Real library path is ${REAL_LIB_PATH}"
     cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
     cp -rf ./kompile-python "${IMAGE_NAME}-bundle"
-    mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
+    if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
+           mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
+    fi
     cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
     tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
-    echo "Bundle built for image name "
+    echo "Bundle built for image name"
 
     else
         echo "${PIPELINE_FILE} not found. Please specify a pre existing file."
