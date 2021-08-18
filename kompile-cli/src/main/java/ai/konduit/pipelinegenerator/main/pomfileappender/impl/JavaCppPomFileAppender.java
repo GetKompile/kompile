@@ -1,6 +1,6 @@
 package ai.konduit.pipelinegenerator.main.pomfileappender.impl;
 
-import ai.konduit.pipelinegenerator.main.pomfileappender.PomFileAppender;
+import ai.konduit.pipelinegenerator.main.PomFileAppender;
 
 import java.util.Arrays;
 import java.util.List;

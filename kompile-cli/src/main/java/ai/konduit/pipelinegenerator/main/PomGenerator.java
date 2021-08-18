@@ -1,6 +1,5 @@
 package ai.konduit.pipelinegenerator.main;
 
-import ai.konduit.pipelinegenerator.main.pomfileappender.PomFileAppender;
 import ai.konduit.pipelinegenerator.main.pomfileappender.impl.*;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
@@ -20,7 +19,7 @@ import java.util.concurrent.Callable;
 public class PomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")
-    private boolean python = false;
+    private boolean python = true;
     @CommandLine.Option(names = {"--onnx"},description = "Whether to use onnx or not")
     private boolean onnx = false;
     @CommandLine.Option(names = {"--tvm"},description = "Whether to use tvm or not")
@@ -87,6 +86,7 @@ public class PomGenerator implements Callable<Void> {
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
+    private String commonsVersion = "2.6";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -357,12 +357,12 @@ public class PomGenerator implements Callable<Void> {
         addDependency(defaultDependencies,"org.bytedeco","javacpp",javacppVersion);
         addDependency(defaultDependencies,"log4j","log4j",log4jVersion);
         addDependency(defaultDependencies,"org.slf4j","slf4j-api",slf4jVersion);
-    }
-
-
-    public void copyNumpySharedLibraryEntryPoint() {
+        addDependency(defaultDependencies,"commons-io","commons-io",commonsVersion);
+        addDependency(defaultDependencies,"commons-lang","commons-lang",commonsVersion);
 
     }
+
+
 
     public PomFileAppender[] appenders() {
         return new PomFileAppender[] {
