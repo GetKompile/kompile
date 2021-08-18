@@ -89,7 +89,6 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         CommandLine.Model.CommandSpec ret = CommandLine.Model.CommandSpec.create();
         PipelineStepType[] values = null;
         if(System.getProperty("os.arch").contains("amd")) {
-            System.out.println("Using intel based pipeline steps");
             values = PipelineStepType.values();
          }//non amd, probably arm, pick steps we can load on non intel/amd devices
         else {
