@@ -22,7 +22,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--pipelineFile"},description = "The pipeline file to analyze",required = true)
     private File pipelineFile;
     @CommandLine.Option(names = {"--protocol"},description = "The protocol to use for serving")
-    private String protocol = "http";
+    private String protocol = null;
 
     @CommandLine.Option(names = {"--imageName"},description = "The image name")
     private String imageName = "konduit-serving";
@@ -40,6 +40,24 @@ public class PipelineCommandGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--outputFile"},description = "The output file")
     private File outputFile = new File("pom2.xml");
+
+
+    @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to include")
+    private String nd4jBackend = "nd4j-native";
+
+    @CommandLine.Option(names = {"--nd4jBackendClassifier"},description = "The nd4j backend to include")
+    private String nd4jBackendClassifier = "";
+    @CommandLine.Option(names = {"--enableJetsonNano"},description = "Whether to add dependencies for jetson nano or not")
+    private boolean enableJetsonNano = false;
+
+
+    @CommandLine.Option(names = {"--cli"},description = "Whether to add konduit-serving-cli or not as a dependency")
+    private boolean cli = true;
+    @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Create a library with a numpy based entry point.")
+    private boolean numpySharedLibrary;
+
+
+
 
     private ObjectMapper jsonMapper = ObjectMappers.json();
     private ObjectMapper yamlMapper = ObjectMappers.yaml();
@@ -68,6 +86,23 @@ public class PipelineCommandGenerator implements Callable<Void> {
         if(outputFile != null) {
             command.append(" --outputFile=" + outputFile.getAbsolutePath() + " ");
         }
+        if(nd4jBackendClassifier != null && !nd4jBackendClassifier.isEmpty()) {
+            command.append(" --nd4jBackendClassifier=" + nd4jBackendClassifier + " ");
+        }
+
+        if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
+            command.append(" --nd4jBackend=" + nd4jBackend + " ");
+        }
+
+        if(mainClass != null && !mainClass.isEmpty()) {
+            command.append(" --mainClass=" + mainClass + " ");
+
+        }
+
+        command.append(" --numpySharedLibrary=" + numpySharedLibrary + " ");
+        command.append(" --enableJetsonNano=" + enableJetsonNano + " ");
+
+
 
         Pipeline pipeline = null;
         if(isServer) {
