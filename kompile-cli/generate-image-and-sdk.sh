@@ -199,6 +199,10 @@ if test -f "$PIPELINE_FILE"; then
      if  test -f './kompile-c' ; then
          rm -rf './kompile-c'
     fi
+    # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
+    if  test -f "${KOMPILE_C_PATH}/CMakeCache.txt" ; then
+         rm -rf "${KOMPILE_C_PATH}/CMakeCache.txt"
+    fi
     cp -rf "${KOMPILE_C_PATH}" ./kompile-c
 
     cd ./kompile-c
