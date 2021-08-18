@@ -209,7 +209,7 @@ if test -f "$PIPELINE_FILE"; then
     cmake .
     make
     # Note we don't quote here so it resolves the binary extension properly
-    cp lib/* "${REAL_LIB_PATH}"
+    cp "*.${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
     cd ..
     # Ensure link path is set for compiling the right python libraries
     export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}"
