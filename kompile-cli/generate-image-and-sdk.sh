@@ -183,34 +183,58 @@ if test -f "$PIPELINE_FILE"; then
     echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
     mkdir -p "${LIB_OUTPUT_PATH}"
+    BUILD_DIR="$(pwd)"
+    cd "${LIB_OUTPUT_PATH}"
+    # Resolve absolute path in case relative path is specified
+    REAL_LIB_PATH="$(pwd)"
+    cd "${BUILD_DIR}"
     mkdir -p "${INCLUDE_PATH}"
+    cd "${INCLUDE_PATH}"
+    # Capture absolute path of include directory as well in case relative path is specified
+    REAL_INCLUDE_PATH="$(pwd)"
+    cd "${BUILD_DIR}"
     cp "./${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
     cp "./src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
     cp "${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
+     if  test -f './kompile-c' ; then
+         rm -rf './kompile-c'
+    fi
     cp -rf "${KOMPILE_C_PATH}" ./kompile-c
 
     cd ./kompile-c
     cmake .
     make
-    cp *".${BINARY_EXTENSION}" "${LIB_OUTPUT_PATH}"
+    # Note we don't quote here so it resolves the binary extension properly
+    cp lib/* "${REAL_LIB_PATH}"
     cd ..
     # Ensure link path is set for compiling the right python libraries
     export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}"
+    if test  -f './kompile-python' ; then
+         rm -rf './kompile-python'
+    fi
+
     cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
     cd ./kompile-python
-    python setup.py  build_ext --inplace install
+    python setup.py build_ext --inplace
+    # Work around for bundling not working properly with wheel.
+    # Allow  artifacts to automatically be specified so they can be bundled.
+    cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
+    python setup.py bdist_wheel
     cd ..
     echo "Creating bundle directory ${IMAGE_NAME}-bundle"
     mkdir -p "${IMAGE_NAME}-bundle"
     # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
-    cp -rf "${INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
-    cp -rf "${LIB_OUTPUT_PATH}" "${IMAGE_NAME-bundle}"
+    cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
+    cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
+    echo "Real library path is ${REAL_LIB_PATH}"
+    cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
     cp -rf ./kompile-python "${IMAGE_NAME}-bundle"
+    mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
     cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
     tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
     echo "Bundle built for image name "
 
     else
-        echo "${FILE} not found. Please specify a pre existing file."
+        echo "${PIPELINE_FILE} not found. Please specify a pre existing file."
         exit 1
 fi
