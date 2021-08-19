@@ -36,7 +36,7 @@ extension = Extension('kompile.interface.native.interface',
               extra_compile_args=[],
               sources=['kompile/interface/native/interface.pyx'],
               include_dirs=[numpy.get_include()],
-              library_dirs=[lib_list],
+              library_dirs=lib_list,
               libraries=['kompile_c_library','konduit-serving'],
               language='c'
 )
