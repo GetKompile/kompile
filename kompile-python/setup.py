@@ -27,15 +27,24 @@ import os
 compiler_directives = {"language_level": 3, "embedsignature": True}
 
 _LIB_OUTPUT_PATH = 'LIB_OUTPUT_PATH'
+_INCLUDE_PATH = 'INCLUDE_PATH'
+include_list = [numpy.get_include()]
 lib_list = []
 if _LIB_OUTPUT_PATH in os.environ:
     lib_list.append(os.environ[_LIB_OUTPUT_PATH])
 else:
     raise Exception('Unable to build. Please specify a library output path with environment variable LIB_OUTPUT_PATH')
+
+if _INCLUDE_PATH in os.environ:
+    include_list.append(os.environ[_INCLUDE_PATH])
+else:
+    raise Exception('Unable to build. Please specify an include path with environment variable INCLUDE_PATH')
+
+
 extension = Extension('kompile.interface.native.interface',
               extra_compile_args=[],
               sources=['kompile/interface/native/interface.pyx'],
-              include_dirs=[numpy.get_include()],
+              include_dirs=include_list,
               library_dirs=lib_list,
               libraries=['kompile_c_library','konduit-serving'],
               language='c'
