@@ -1,4 +1,5 @@
 from distutils import sysconfig
+import sys
 # # me make damn sure, that disutils does not mess with our
 # # build process
 #
@@ -33,13 +34,13 @@ lib_list = []
 if _LIB_OUTPUT_PATH in os.environ:
     lib_list.append(os.environ[_LIB_OUTPUT_PATH])
 else:
-    raise Exception('Unable to build. Please specify a library output path with environment variable LIB_OUTPUT_PATH')
-
+    print('Unable to build. Please specify a library output path with environment variable LIB_OUTPUT_PATH')
+    sys.exit(1)
 if _INCLUDE_PATH in os.environ:
     include_list.append(os.environ[_INCLUDE_PATH])
 else:
-    raise Exception('Unable to build. Please specify an include path with environment variable INCLUDE_PATH')
-
+    print('Unable to build. Please specify an include path with environment variable INCLUDE_PATH')
+    sys.exit(1)
 
 extension = Extension('kompile.interface.native.interface',
               extra_compile_args=[],
