@@ -84,7 +84,7 @@ public class PomGenerator implements Callable<Void> {
     private String nettyVersion = "4.1.49.Final";
     private String concsryptVersion = "2.5.2";
     private String konduitServingVersion = "0.1.0-SNAPSHOT";
-    private String javacppVersion = "1.5.5";
+    private String javacppVersion = "1.5.6";
     private String log4jVersion = "1.2.17";
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
