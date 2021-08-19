@@ -3,15 +3,15 @@ package ai.konduit.pipelinegenerator.main;
 import ai.konduit.pipelinegenerator.main.pomfileappender.impl.*;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
+import org.apache.tika.io.IOUtils;
+import org.codehaus.plexus.util.FileUtils;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.codehaus.plexus.util.xml.Xpp3DomBuilder;
 import org.codehaus.plexus.util.xml.pull.XmlPullParserException;
+import org.nd4j.common.io.ClassPathResource;
 import picocli.CommandLine;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.StringReader;
+import java.io.*;
 import java.util.*;
 import java.util.concurrent.Callable;
 
@@ -73,6 +73,9 @@ public class PomGenerator implements Callable<Void> {
     @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
     private String pipelinePath;
 
+    @CommandLine.Option(names = "--reflections",description = "Add reflections for printing resources for a given pom")
+    private boolean addReflections = false;
+
     private String graalVmVersion = "21.0.0.2";
     private String microMeterVersion = "1.7.0";
     private String alpnVersion = "8.1.13.v20181017";
@@ -87,6 +90,7 @@ public class PomGenerator implements Callable<Void> {
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
     private String commonsVersion = "2.6";
+    private String reflectionsVersion = "0.9.12";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -138,6 +142,15 @@ public class PomGenerator implements Callable<Void> {
         }
 
     }
+
+    public void addReflections(List<Dependency> addTo) {
+        Dependency dependency = new Dependency();
+        dependency.setGroupId("org.reflections");
+        dependency.setArtifactId("reflections");
+        dependency.setVersion(reflectionsVersion);
+        addTo.add(dependency);
+    }
+
 
     public void addNd4jTensorflow(List<Dependency> addTo) {
         Dependency dependency = new Dependency();
@@ -437,12 +450,6 @@ public class PomGenerator implements Callable<Void> {
         return stringBuilder.toString();
     }
 
-    /**
-     * Nd4j backend, cuda version, optimizations
-     */
-
-
-
 
     /**
      * Determine dependencies based on configuration
@@ -498,13 +505,45 @@ public class PomGenerator implements Callable<Void> {
 
         //TODO: Set include resources dynamically
 
-        PluginExecution pluginExecution = new PluginExecution();
-        pluginExecution.setGoals(Arrays.asList("native-image"));
-        pluginExecution.setPhase("package");
-        graalVm.setExecutions(Arrays.asList(pluginExecution));
+        PluginExecution graalVmExecution = new PluginExecution();
+        graalVmExecution.setGoals(Arrays.asList("native-image"));
+        graalVmExecution.setPhase("package");
+        graalVm.setExecutions(Arrays.asList(graalVmExecution));
         graalVm.addDependency(lombok);
         build.addPlugin(graalVm);
+
+        if(addReflections) {
+            Plugin execMaven = new Plugin();
+            execMaven.setGroupId("org.codehaus.mojo");
+            execMaven.setArtifactId("exec-maven-plugin");
+            execMaven.setVersion("3.0.0");
+            PluginExecution javaExecution = new PluginExecution();
+            javaExecution.setGoals(Arrays.asList("java"));
+            Map<String,String> configuration2 = new HashMap<>();
+            //setup the exec:java reflections print configuration. Reflections should only be used from the classpath of the generated project, not actually for graalvm.
+            //This configuration is to assist in the configuration of graalvm configuration files.
+            configuration2.put("mainClass","ai.konduit.pipelinegenerator.main.PrintJavaCppResources");
+            execMaven.setConfiguration(getPluginConfigObject(configuration2));
+            execMaven.setExecutions(Arrays.asList(javaExecution));
+
+            build.addPlugin(execMaven);
+        }
+
+
         model.setBuild(build);
+    }
+
+
+    public static Xpp3Dom getPluginConfigObject(Map<String,String> configuration) throws IOException, XmlPullParserException {
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("<configuration>\n");
+        for(Map.Entry<String,String> configEntry : configuration.entrySet()) {
+            stringBuilder.append(String.format("<%s>%s</%s>\n",configEntry.getKey(),configEntry.getValue(),configEntry.getKey()));
+        }
+        stringBuilder.append("</configuration>");
+        StringReader stringReader = new StringReader(stringBuilder.toString());
+        Xpp3Dom ret = Xpp3DomBuilder.build(stringReader);
+        return ret;
     }
 
     public void addJavacppProfiles() {
@@ -675,6 +714,10 @@ public class PomGenerator implements Callable<Void> {
             addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
         }
 
+        if(addReflections) {
+            addReflections(defaultDependencies);
+
+        }
 
         //needed to access lombok features with graalvm
         addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
@@ -692,6 +735,26 @@ public class PomGenerator implements Callable<Void> {
         try(FileWriter fileWriter = new FileWriter(outputFile)) {
             mavenXpp3Writer.write(fileWriter,model);
         }
+
+        if(addReflections) {
+            File sampleProject = new File(outputFile.getParent(),  "reflections-project");
+            sampleProject.mkdirs();
+            File resourcesDir = new File(sampleProject,"src/main/resources");
+            resourcesDir.mkdirs();
+            File srcDir = new File(sampleProject,"src/main/java/ai/konduit/pipelinegenerator/main/");
+            srcDir.mkdirs();
+            FileUtils.copyFile(outputFile,new File(sampleProject,"pom.xml"));
+            ClassPathResource mainClass = new ClassPathResource("PrintJavaCppResources.java");
+            File mainClassFile = new File(srcDir,"PrintJavaCppResources.java");
+            try(InputStream inputStream = mainClass.getInputStream();
+                FileOutputStream fileOutputStream = new FileOutputStream(mainClassFile)) {
+                IOUtils.copy(inputStream,fileOutputStream);
+                fileOutputStream.flush();
+            }
+
+
+        }
+
     }
 
     @Override
