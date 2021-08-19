@@ -220,6 +220,8 @@ if test -f "$PIPELINE_FILE"; then
 
     cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
     cd ./kompile-python
+    mkdir -p lib
+    cp -rf "${REAL_LIB_PATH}"/* ./lib
     python setup.py build_ext --inplace
     # Work around for bundling not working properly with wheel.
     # Allow  artifacts to automatically be specified so they can be bundled.
