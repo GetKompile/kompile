@@ -704,7 +704,7 @@ public class PomGenerator implements Callable<Void> {
 
         //jetson nano should be false
         if(nd4jBackend != null && !nd4jBackend.isEmpty() && !enableJetsonNano) {
-            (defaultDependencies);
+            addNd4j(defaultDependencies);
         }
 
         if(numpySharedLibrary) {
