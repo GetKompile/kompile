@@ -126,7 +126,7 @@ public class PomGenerator implements Callable<Void> {
     }
 
 
-    public void (List<Dependency> addTo) {
+    public void addNd4jBackend(List<Dependency> addTo) {
         Dependency dependency = new Dependency();
         dependency.setGroupId("org.nd4j");
         dependency.setArtifactId(nd4jBackend);
