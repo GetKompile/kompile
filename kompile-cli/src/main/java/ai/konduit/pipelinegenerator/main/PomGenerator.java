@@ -126,7 +126,7 @@ public class PomGenerator implements Callable<Void> {
     }
 
 
-    public void addNd4jBackend(List<Dependency> addTo) {
+    public void (List<Dependency> addTo) {
         Dependency dependency = new Dependency();
         dependency.setGroupId("org.nd4j");
         dependency.setArtifactId(nd4jBackend);
@@ -702,8 +702,9 @@ public class PomGenerator implements Callable<Void> {
         if(cli)
             addCli(defaultDependencies);
 
-        if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
-            addNd4jBackend(defaultDependencies);
+        //jetson nano should be false
+        if(nd4jBackend != null && !nd4jBackend.isEmpty() && !enableJetsonNano) {
+            (defaultDependencies);
         }
 
         if(numpySharedLibrary) {
