@@ -714,7 +714,7 @@ public class PomGenerator implements Callable<Void> {
         if(enableJetsonNano) {
             addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
             addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1");
-            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1","linux-arm64");
+            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1","compile","linux-arm64");
         }
 
         if(addReflections) {
