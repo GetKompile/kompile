@@ -92,6 +92,7 @@ public class PomGenerator implements Callable<Void> {
     private String commonsVersion = "2.6";
     private String reflectionsVersion = "0.9.12";
     private String cudaJetsonVersion = "10.2-8.2-1.5.6";
+    private String picoCliVersion = "4.6.1";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -523,7 +524,7 @@ public class PomGenerator implements Callable<Void> {
             Map<String,String> configuration2 = new HashMap<>();
             //setup the exec:java reflections print configuration. Reflections should only be used from the classpath of the generated project, not actually for graalvm.
             //This configuration is to assist in the configuration of graalvm configuration files.
-            configuration2.put("mainClass","ai.konduit.pipelinegenerator.main.PrintJavaCppResources");
+            configuration2.put("mainClass","ai.konduit.pipelinegenerator.main.GraalVmPrint");
             execMaven.setConfiguration(getPluginConfigObject(configuration2));
             execMaven.setExecutions(Arrays.asList(javaExecution));
 
@@ -724,7 +725,7 @@ public class PomGenerator implements Callable<Void> {
 
         if(addReflections) {
             addReflections(defaultDependencies);
-
+            addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
         }
 
         //needed to access lombok features with graalvm
@@ -752,8 +753,8 @@ public class PomGenerator implements Callable<Void> {
             File srcDir = new File(sampleProject,"src/main/java/ai/konduit/pipelinegenerator/main/");
             srcDir.mkdirs();
             FileUtils.copyFile(outputFile,new File(sampleProject,"pom.xml"));
-            ClassPathResource mainClass = new ClassPathResource("PrintJavaCppResources.java");
-            File mainClassFile = new File(srcDir,"PrintJavaCppResources.java");
+            ClassPathResource mainClass = new ClassPathResource("GraalVmPrint.java");
+            File mainClassFile = new File(srcDir,"GraalVmPrint.java");
             try(InputStream inputStream = mainClass.getInputStream();
                 FileOutputStream fileOutputStream = new FileOutputStream(mainClassFile)) {
                 IOUtils.copy(inputStream,fileOutputStream);

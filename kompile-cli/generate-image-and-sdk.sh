@@ -221,7 +221,6 @@ if test -f "$PIPELINE_FILE"; then
     cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
     cd ./kompile-python
     mkdir -p lib
-    cp -rf "${REAL_LIB_PATH}"/* ./lib
     python setup.py build_ext --inplace
     # Work around for bundling not working properly with wheel.
     # Allow  artifacts to automatically be specified so they can be bundled.
@@ -239,7 +238,6 @@ if test -f "$PIPELINE_FILE"; then
     cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
     echo "Real library path is ${REAL_LIB_PATH}"
     cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
-    cp -rf ./kompile-python "${IMAGE_NAME}-bundle"
     if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
            mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
     fi

@@ -1,13 +1,9 @@
 package ai.konduit.pipelinegenerator.main;
 
-import checkers.units.quals.C;
-import org.apache.commons.io.FileUtils;
 import org.nd4j.common.io.ClassPathResource;
 import org.reflections.Reflections;
 import org.reflections.scanners.ResourcesScanner;
 
-import java.io.File;
-import java.util.Collection;
 import java.util.Set;
 
 public class ResourceIncludeGlob {
