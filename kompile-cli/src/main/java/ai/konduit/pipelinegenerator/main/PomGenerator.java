@@ -91,6 +91,7 @@ public class PomGenerator implements Callable<Void> {
     private String lombokVersion = "1.18.16";
     private String commonsVersion = "2.6";
     private String reflectionsVersion = "0.9.12";
+    private String cudaJetsonVersion = "10.2-8.2.1.5.6";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -715,6 +716,10 @@ public class PomGenerator implements Callable<Void> {
             addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
             addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1");
             addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1","compile","linux-arm64");
+            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
+            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
+
+
         }
 
         if(addReflections) {
