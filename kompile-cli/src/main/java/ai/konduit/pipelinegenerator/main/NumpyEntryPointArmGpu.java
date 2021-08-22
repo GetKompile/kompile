@@ -4,13 +4,13 @@ import ai.konduit.serving.pipeline.api.data.Data;
 import ai.konduit.serving.pipeline.api.data.NDArray;
 import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
 import ai.konduit.serving.pipeline.api.pipeline.PipelineExecutor;
-import com.oracle.svm.core.annotate.AutomaticFeature;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
 import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.numpy.global.numpy;
-import org.graalvm.nativeimage.*;
+import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.ObjectHandle;
+import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.CContext;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.struct.CField;
@@ -29,19 +29,18 @@ import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
-import org.nd4j.nativeblas.Nd4jCpu;
+import org.nd4j.nativeblas.Nd4jCuda;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 
-@CContext(NumpyEntryPointArm.NumpyEntryPointDirectives.class)
-public class NumpyEntryPointArm {
+@CContext(NumpyEntryPointArmGpu.NumpyEntryPointDirectives.class)
+public class NumpyEntryPointArmGpu {
 
 
     static class NumpyEntryPointDirectives implements CContext.Directives {
@@ -256,7 +255,7 @@ public class NumpyEntryPointArm {
     public static void main(String...args) {}
 
     public static class Holder {
-        private static NativeOps nativeOps = new Nd4jCpu();
+        private static NativeOps nativeOps = new Nd4jCuda();
         private static Pipeline pipeline;
         private static PipelineExecutor pipelineExecutor;
 
