@@ -91,7 +91,7 @@ public class PomGenerator implements Callable<Void> {
     private String lombokVersion = "1.18.16";
     private String commonsVersion = "2.6";
     private String reflectionsVersion = "0.9.12";
-    private String cudaJetsonVersion = "10.2-8.2.1.5.6";
+    private String cudaJetsonVersion = "10.2-8.2-1.5.6";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline

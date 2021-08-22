@@ -65,6 +65,10 @@ public class NativeImageBuilder implements Callable<Void> {
     public void runMain(String...args) throws Exception {
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
         File project = new File(imageName);
+        if(project.exists()) {
+            System.out.println("Deleting previous directory at " + project.getAbsolutePath());
+            FileUtils.deleteDirectory(project);
+        }
         project.mkdirs();
         File srcDir = new File(project,"src/main/java");
         srcDir.mkdirs();
