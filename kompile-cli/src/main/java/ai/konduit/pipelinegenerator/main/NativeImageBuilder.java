@@ -140,7 +140,7 @@ public class NativeImageBuilder implements Callable<Void> {
     private String getMainClassJavaFileIfSpecified(String mainClassJavaFile) {
         //when a class is specified ensure we specified the correct class
         if(mainClass != null && !mainClass.isEmpty()) {
-            String[] split = mainClass.split(".");
+            String[] split = mainClass.split("\\.");
             mainClassJavaFile = split[split.length - 1] + ".java";
         }
         return mainClassJavaFile;
@@ -149,7 +149,7 @@ public class NativeImageBuilder implements Callable<Void> {
     private File getPackageIfMainClassSpecified(File srcDir, File cEntryPointDir) {
         if(mainClass != null && !mainClass.isEmpty()) {
             StringBuilder newPackage = new StringBuilder();
-            String[] split = mainClass.split(".");
+            String[] split = mainClass.split("\\.");
             for(int i = 0; i < split.length - 1; i++) {
                 newPackage.append(split[i]);
                 newPackage.append("/");
