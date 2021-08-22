@@ -11,7 +11,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = true)
@@ -73,10 +72,13 @@ public class NativeImageBuilder implements Callable<Void> {
 
         if (numpySharedLibrary) {
             if(System.getProperty("os.arch").contains("amd")) {
+                String mainClassJavaFile = "NumpyEntryPoint.java";
+                mainClassJavaFile = getMainClassJavaFileIfSpecified(mainClassJavaFile);
                 File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
+                cEntryPointDir = getPackageIfMainClassSpecified(srcDir, cEntryPointDir);
                 cEntryPointDir.mkdirs();
-                ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPoint.java");
-                File tmpFile = new File("NumpyEntryPoint.java");
+                ClassPathResource classPathResource = new ClassPathResource(mainClassJavaFile);
+                File tmpFile = new File(mainClassJavaFile);
                 try(InputStream is = classPathResource.getInputStream();
                     FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
                     IOUtils.copy(is,fileOutputStream);
@@ -85,19 +87,23 @@ public class NativeImageBuilder implements Callable<Void> {
 
                 tmpFile.deleteOnExit();
 
-                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,"NumpyEntryPoint.java"));
+                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,mainClassJavaFile));
             } else {
+                String mainClassJavaFile = "NumpyEntryPointArm.java";
+                mainClassJavaFile = getMainClassJavaFileIfSpecified(mainClassJavaFile);
                 File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
+                cEntryPointDir = getPackageIfMainClassSpecified(srcDir, cEntryPointDir);
                 cEntryPointDir.mkdirs();
-                File tmpFile = new File("NumpyEntryPointArm.java");
-                ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPointArm.java");
+                cEntryPointDir.mkdirs();
+                File tmpFile = new File(mainClassJavaFile);
+                ClassPathResource classPathResource = new ClassPathResource(mainClassJavaFile);
                 try(InputStream is = classPathResource.getInputStream();
                     FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
                     IOUtils.copy(is,fileOutputStream);
                     fileOutputStream.flush();
                 }
                 tmpFile.deleteOnExit();
-                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,"NumpyEntryPointArm.java"));
+                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,mainClassJavaFile));
             }
 
 
@@ -129,6 +135,29 @@ public class NativeImageBuilder implements Callable<Void> {
         invocationRequest.setBaseDirectory(project);
         invoker.setMavenHome(mavenHome);
         invoker.execute(invocationRequest);
+    }
+
+    private String getMainClassJavaFileIfSpecified(String mainClassJavaFile) {
+        //when a class is specified ensure we specified the correct class
+        if(mainClass != null && !mainClass.isEmpty()) {
+            String[] split = mainClass.split(".");
+            mainClassJavaFile = split[split.length - 1] + ".java";
+        }
+        return mainClassJavaFile;
+    }
+
+    private File getPackageIfMainClassSpecified(File srcDir, File cEntryPointDir) {
+        if(mainClass != null && !mainClass.isEmpty()) {
+            StringBuilder newPackage = new StringBuilder();
+            String[] split = mainClass.split(".");
+            for(int i = 0; i < split.length - 1; i++) {
+                newPackage.append(split[i]);
+                newPackage.append("/");
+            }
+
+            cEntryPointDir = new File(srcDir,newPackage.toString());
+        }
+        return cEntryPointDir;
     }
 
     public static void main(String...args) {
