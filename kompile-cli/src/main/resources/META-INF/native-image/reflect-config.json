@@ -4289,7 +4289,19 @@
   "allPublicMethods" : true,
   "allDeclaredClasses" : true,
   "allPublicClasses" : true
-},  {
+},
+
+  {
+    "name":"org.nd4j.linalg.jcublas.JCublasNDArrayFactory",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+
+  {
   "name":"org.nd4j.linalg.jcublas.buffer.CudaUInt64DataBuffer",
   "allDeclaredConstructors" : true,
   "allPublicConstructors" : true,
@@ -4297,7 +4309,44 @@
   "allPublicMethods" : true,
   "allDeclaredClasses" : true,
   "allPublicClasses" : true
-},  {
+},
+  {
+    "name":"org.nd4j.linalg.jcublas.JCublasNDArray",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.jcublas.JCublasWrapper",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.jcublas.rng.CudaNativeRandom",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.jcublas.ops.executioner.CudaExecutioner",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
   "name":"org.nd4j.linalg.jcublas.ops.executioner.CudaExecutioner$1",
   "allDeclaredConstructors" : true,
   "allPublicConstructors" : true,
@@ -4313,7 +4362,26 @@
   "allPublicMethods" : true,
   "allDeclaredClasses" : true,
   "allPublicClasses" : true
-},  {
+},
+  {
+    "name":"org.nd4j.jita.workspace.CudaWorkspaceManager",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.jcublas.buffer.factory.CudaDataBufferFactory",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
   "name":"org.nd4j.linalg.jcublas.buffer.factory.CudaDataBufferFactory$1",
   "allDeclaredConstructors" : true,
   "allPublicConstructors" : true,
@@ -4594,7 +4662,54 @@
   "allPublicMethods" : true,
   "allDeclaredClasses" : true,
   "allPublicClasses" : true
-},  {
+},
+  {
+    "name":"org.nd4j.linalg.jcublas.buffer.factory.CudaDataBufferFactory",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.jcublas.CachedShapeInfoProvider",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.jita.constant.CudaConstantHandler",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.jita.memory.CudaMemoryManager",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.jita.concurrency.CudaAffinityManager",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+
+  {
   "name":"org.nd4j.jita.concurrency.CudaAffinityManager$1",
   "allDeclaredConstructors" : true,
   "allPublicConstructors" : true,
