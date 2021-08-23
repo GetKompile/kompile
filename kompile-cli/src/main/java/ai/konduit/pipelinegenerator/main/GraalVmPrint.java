@@ -13,6 +13,7 @@ import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.reflections.util.FilterBuilder;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -69,10 +70,11 @@ public class GraalVmPrint implements Callable<Integer> {
             List<ClassLoader> classLoadersList = new LinkedList<>();
             classLoadersList.add(ClasspathHelper.contextClassLoader());
             classLoadersList.add(ClasspathHelper.staticClassLoader());
-
-            Reflections reflections = new Reflections(pattern,new ConfigurationBuilder()
-                    .setUrls(ClasspathHelper.forClassLoader(classLoadersList.toArray(new ClassLoader[0])))
-                    .setScanners(new SubTypesScanner(false)),new SubTypesScanner(false));
+            ConfigurationBuilder configurationBuilder = new ConfigurationBuilder()
+                    .setUrls(ClasspathHelper.forPackage(pattern))
+                    .setScanners(new SubTypesScanner(false))
+                    .filterInputsBy(new FilterBuilder().includePackage(pattern));
+            Reflections reflections = new Reflections(configurationBuilder);
             Set<String> typeList = reflections.getAllTypes();
             StringBuilder stringBuilder = new StringBuilder();
             for(String fullyQualfiedClassName : typeList) {
