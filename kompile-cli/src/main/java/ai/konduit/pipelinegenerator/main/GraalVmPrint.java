@@ -40,7 +40,7 @@ public class GraalVmPrint implements Callable<Integer> {
     }
 
     private String transformPatternToFolders() {
-        return pattern.replace("\\.","/");
+        return pattern.replaceAll("\\.","/");
     }
 
 
