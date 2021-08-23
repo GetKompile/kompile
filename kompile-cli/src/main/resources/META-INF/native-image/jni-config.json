@@ -507,26 +507,6 @@
   {
     "name":"org.bytedeco.cuda.cudart.cudaExternalMemoryMipmappedArrayDesc"
   },
-
-  (base) ubuntu@ip-172-31-12-17:~/kompile/kompile-cli/reflections-project$  mvn  -Dexec.args="--pattern=org.bytedeco.cuda
-  --print-classes=true --print-graalvm=true " exec:java
-  [INFO] Scanning for projects...
-  [INFO] ------------------------------------------------------------------------
-  [INFO] Detecting the operating system and CPU architecture
-  [INFO] ------------------------------------------------------------------------
-  [INFO] os.detected.name: linux
-  [INFO] os.detected.arch: aarch_64
-  [INFO] os.detected.release: ubuntu
-  [INFO] os.detected.release.version: 18.04
-  [INFO] os.detected.release.like.ubuntu: true
-  [INFO] os.detected.release.like.debian: true
-  [INFO] os.detected.classifier: linux-aarch_64
-  [INFO]
-  [INFO] ----------------< ai.konduit.serving:konduit-pipeline >-----------------
-  [INFO] Building konduit-pipeline 0.1.0
-  [INFO] --------------------------------[ jar ]---------------------------------
-  [INFO]
-  [INFO] --- exec-maven-plugin:3.0.0:java (default-cli) @ konduit-pipeline ---
   {
     "name":"org.bytedeco.cuda.cudart.CUstream_st"
   },
