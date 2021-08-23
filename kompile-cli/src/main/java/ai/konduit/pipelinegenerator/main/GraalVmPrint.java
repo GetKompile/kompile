@@ -75,7 +75,8 @@ public class GraalVmPrint implements Callable<Integer> {
                     .setScanners(new SubTypesScanner(false))
                     .filterInputsBy(new FilterBuilder().includePackage(pattern));
             Reflections reflections = new Reflections(configurationBuilder,new SubTypesScanner(false));
-            Set<String> typeList = reflections.getAllTypes();
+            Set<String> typeList = reflections.getAllTypes()
+                    .stream().filter(input -> input.contains(pattern)).collect(Collectors.toSet());
             StringBuilder stringBuilder = new StringBuilder();
             for(String fullyQualfiedClassName : typeList) {
                 if(printGraalVmDeclarations) {
