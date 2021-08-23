@@ -118,6 +118,33 @@
     "allDeclaredConstructors":true
   },
   {
+    "name":"org.nd4j.nativeblas.Nd4jCuda",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.nativeblas.Nd4jCudaPresets",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.nativeblas.Nd4jCudaHelper",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
     "name":"org.nd4j.nativeblas.Nd4jCpu",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,

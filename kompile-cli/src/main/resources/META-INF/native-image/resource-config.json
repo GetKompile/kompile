@@ -1074,6 +1074,51 @@
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/include/numpy/npy_common.h\\E"},
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/typing/_add_docstring.py\\E"},
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"},
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicusolver.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninpps.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppig.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppif.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicufftw.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppist.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppisu.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicudnn.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvgraph.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicurand.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppial.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppitc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppicc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicublas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvrtc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicusparse.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppim.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicudart.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppidei.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppicom.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvblas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicufft.so\\E"},
     {"pattern":"\\Qorg/bytedeco/opencv/linux-arm64/include/opencv4/opencv2/shape/shape_distance.hpp\\E"},
 
     {"pattern":"\\Qorg/bytedeco/cpython/linux-arm64/lib/python3.9/test/test_tracemalloc.py\\E"},
