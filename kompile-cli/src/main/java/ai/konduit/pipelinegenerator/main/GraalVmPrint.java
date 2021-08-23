@@ -29,6 +29,8 @@ public class GraalVmPrint implements Callable<Integer> {
     private boolean printClasses;
     @Option(names = {"-g","--print-graalvm"},description = "Print graalvm declarations for inclusion in configuration files")
     private boolean printGraalVmDeclarations;
+    @Option(names = {"-ic","--include-all-classes"},description = "When printing graalvm configuration for classes include all classes,subclasses,fields,methods in reflection or not")
+    private boolean includeAllClasses = false;
 
 
 
@@ -71,15 +73,30 @@ public class GraalVmPrint implements Callable<Integer> {
             Reflections reflections = new Reflections(pattern,new ConfigurationBuilder()
                     .setUrls(ClasspathHelper.forClassLoader(classLoadersList.toArray(new ClassLoader[0])))
                     .setScanners(new SubTypesScanner(false)),new SubTypesScanner(false));
-            Set<String> resourceList = reflections.getAllTypes();
+            Set<String> typeList = reflections.getAllTypes();
             StringBuilder stringBuilder = new StringBuilder();
-            for(String f1 : resourceList) {
+            for(String fullyQualfiedClassName : typeList) {
                 if(printGraalVmDeclarations) {
-                    stringBuilder.append(String.format(" {\n" +
-                            "    \"name\":\"%s\"\n" +
-                            "  },\n",f1));
+                    if(includeAllClasses) {
+                        stringBuilder.append(String.format("  {\n" +
+                                "    \"name\":\"%s\",\n" +
+                                "    \"allDeclaredConstructors\" : true,\n" +
+                                "    \"allPublicConstructors\" : true,\n" +
+                                "    \"allDeclaredMethods\" : true,\n" +
+                                "    \"allPublicMethods\" : true,\n" +
+                                "    \"allDeclaredClasses\" : true,\n" +
+                                "    \"allPublicClasses\" : true\n" +
+                                "  },",fullyQualfiedClassName));
+                    }
+                    else {
+                        stringBuilder.append(String.format(" {\n" +
+                                "    \"name\":\"%s\"\n" +
+                                "  },\n",fullyQualfiedClassName));
+                    }
+
+
                 } else {
-                    stringBuilder.append(f1 + "\n");
+                    stringBuilder.append(fullyQualfiedClassName + "\n");
                 }
 
             }
