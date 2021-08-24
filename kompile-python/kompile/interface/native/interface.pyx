@@ -181,12 +181,7 @@ cdef public _run(handles *handles2,name_to_ndarray):
     result_struct = create_empty_struct()
     print('Created result')
     # python 3 only accepts byte strings, default was byte strings in 2
-    #pipeline_path += '\0'
-    #temp_char_array = pipeline_path.encode()
-    #copied_string = <char *> malloc((len(temp_char_array)) * sizeof(char))
-    #strcpy(copied_string,temp_char_array)
-    #print('About to call run pipeline wrapper')
-
+    print('About to run pipeline wrapper')
     runPipelineWrapper(handles2, input_struct, result_struct)
     #free(copied_string)
     ret = {}
