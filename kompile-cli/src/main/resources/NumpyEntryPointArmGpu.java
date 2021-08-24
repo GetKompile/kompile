@@ -352,7 +352,6 @@ public class NumpyEntryPointArmGpu {
             DataBuffer dataBuffer = Nd4j.createBuffer(pointer, len, DataType.valueOf(dataTypes[i]));
             INDArray arr = Nd4j.create(dataBuffer, shapes[i]);
             newArrs[i] = arr;
-            System.out.println(dataBuffer);
         }
 
         Data input = Data.empty();
