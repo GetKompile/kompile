@@ -204,7 +204,6 @@ public class NumpyEntryPointArmGpu {
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
         System.setProperty("org.bytedeco.javacpp.platform", "linux-arm64");
-        System.setProperty("org.bytedeco.javacpp.logger.debug","true");
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
