@@ -381,7 +381,7 @@ public class NumpyEntryPointArmGpu {
         numpyOutput.setNumpyArrayDataTypes(dataTypesOutput);
         for (String key : exec.keys()) {
             INDArray arr = exec.getNDArray(key).getAs(INDArray.class);
-            long address = arr.data().address();
+            long address = arr.data().platformAddress();
             PointerBase cLong = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class));
             CLongPointer cLongPointer = WordFactory.pointer(cLong.rawValue());
             cLongPointer.write(address);
