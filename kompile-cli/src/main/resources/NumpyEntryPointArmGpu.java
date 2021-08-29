@@ -379,6 +379,7 @@ public class NumpyEntryPointArmGpu {
         numpyOutput.setNumpyArrayDataTypes(dataTypesOutput);
         for (String key : exec.keys()) {
             INDArray arr = exec.getNDArray(key).getAs(INDArray.class);
+            //note that the jetson nano does not have host mmeory. Device and host memory are the same.
             long address = arr.data().platformAddress();
             PointerBase cLong = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class));
             CLongPointer cLongPointer = WordFactory.pointer(cLong.rawValue());

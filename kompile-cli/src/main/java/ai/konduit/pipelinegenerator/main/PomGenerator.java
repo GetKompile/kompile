@@ -659,6 +659,16 @@ public class PomGenerator implements Callable<Void> {
         repositoryPolicy.setEnabled(true);
         repository.setSnapshots(repositoryPolicy);
         model.addRepository(repository);
+
+        Repository jetsonNano = new Repository();
+        repository.setId("jetson-nano-m2");
+        repository.setUrl("https://oss.sonatype.org/content/repositories/orgdeeplearning4j-1209");
+        RepositoryPolicy repositoryPolicy1 = new RepositoryPolicy();
+        repositoryPolicy1.setEnabled(true);
+        jetsonNano.setReleases(repositoryPolicy1);
+        model.addRepository(jetsonNano);
+
+
     }
 
     public void create() throws Exception {
@@ -715,8 +725,8 @@ public class PomGenerator implements Callable<Void> {
 
         if(enableJetsonNano) {
             addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
-            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1");
-            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M1.1","compile","linux-arm64");
+            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2");
+            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2","compile","linux-arm64");
             addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
             addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
 
