@@ -662,7 +662,7 @@ public class PomGenerator implements Callable<Void> {
 
         Repository jetsonNano = new Repository();
         jetsonNano.setId("jetson-nano-m2");
-        repository.setUrl("https://oss.sonatype.org/content/repositories/orgdeeplearning4j-1209");
+        jetsonNano.setUrl("https://oss.sonatype.org/content/repositories/orgdeeplearning4j-1209");
         RepositoryPolicy repositoryPolicy1 = new RepositoryPolicy();
         repositoryPolicy1.setEnabled(true);
         jetsonNano.setReleases(repositoryPolicy1);
