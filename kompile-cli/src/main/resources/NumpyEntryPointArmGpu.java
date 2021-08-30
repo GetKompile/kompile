@@ -300,14 +300,19 @@ public class NumpyEntryPointArmGpu {
 
     public static void runPipeline(Handles handles, NumpyStruct numpyInput, NumpyStruct numpyOutput) throws Exception {
         int length = numpyInput.numArrays();
+        System.out.println("Got num arrays");
         CCharPointerPointer numpyArrayNames = numpyInput.getNumpyArrayNames();
         //PinnedObject deviceNativeOpsPinned = ObjectHandles.getGlobal().get(handles.getNativeOpsHandle());
         //NativeOps deviceNativeOps = ImageSingletons.lookup(NativeOps.class);
         NativeOps deviceNativeOps = Holder.getNativeOps();
         //PinnedObject pipelinePinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
         Pipeline pipeline = Holder.getPipeline();
+        System.out.println("Got pipeline");
+
         //PinnedObject pipelineExecutorPinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
         PipelineExecutor pipelineExecutor = Holder.getPipelineExecutor();
+        System.out.println("Got executioner");
+
         if(pipelineExecutor == null) {
             throw new IllegalStateException("Pipeline executioner was null!");
         }
@@ -343,6 +348,9 @@ public class NumpyEntryPointArmGpu {
         }
 
 
+        System.out.println("Creating ndarrays executioner");
+
+
         INDArray[] newArrs = new INDArray[length];
         for (int i = 0; i < length; i++) {
             long read = addresses[i];
@@ -354,6 +362,9 @@ public class NumpyEntryPointArmGpu {
             newArrs[i] = arr;
         }
 
+        System.out.println("After ndarrays create");
+
+
         Data input = Data.empty();
         for (int i = 0; i < length; i++) {
             Preconditions.checkNotNull(newArrs[i],"New array for item " + i  + " was null!");
@@ -362,9 +373,18 @@ public class NumpyEntryPointArmGpu {
             input.put(namesJava[i], NDArray.create(newArrs[i]));
         }
 
+        System.out.println("About to exec");
+
 
         Data exec = pipelineExecutor.exec(input);
+
+        System.out.println("After to exec");
+
+
         numpyOutput.setNumArrays(exec.keys().size());
+
+
+        System.out.println("Setting up results");
         int size = SizeOf.get(CLongPointer.class) * exec.size();
         String[] outputNames = new String[exec.size()];
         PointerBase numpyArraysPointer = UnmanagedMemory.calloc(size);
