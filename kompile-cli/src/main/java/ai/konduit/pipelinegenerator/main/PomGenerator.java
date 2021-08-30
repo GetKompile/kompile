@@ -422,8 +422,8 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("-H:Log=registerResource\n");
 
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
-        stringBuilder.append(String.format("-R:MinHeapSize=%d\n",minHeapSize));
-        stringBuilder.append(String.format("-R:MaxHeapSize=%d\n",maxHeapSize));
+        stringBuilder.append(String.format("-R:MinHeapSize=%dM\n",minHeapSize));
+        stringBuilder.append(String.format("-R:MaxHeapSize=%dM\n",maxHeapSize));
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
         if(noPointerGc)
             stringBuilder.append("-Dorg.bytedeco.javacpp.noPointerGC=true\n");
