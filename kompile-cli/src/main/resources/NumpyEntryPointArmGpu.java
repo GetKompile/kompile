@@ -217,30 +217,9 @@ public class NumpyEntryPointArmGpu {
             ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-arm64/python/numpy/core/tests/test_einsum.py");
             System.out.println("Resource 3 exists " + classPathResource3.exists());
 
-            System.setProperty("org.eclipse.python4j.numpyimport", "false");
-
-
-            File f = Loader.cacheResource("/org/bytedeco/numpy/linux-arm64/python/");
-            if (f == null) {
-                f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-arm64.jar/org/bytedeco/numpy/linux-arm64/python/");
-            }
-            File[] file = numpy.cachePackages();
-            for (int i = 0; i < file.length; i++) {
-                System.out.println("File " + i + " was " + file[i]);
-            }
-            file[file.length - 1] = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-arm64.jar/org/bytedeco/numpy/linux-arm64/python/");
-            if (f != null)
-                System.out.println("File was " + f.getAbsolutePath());
-            else
-                System.out.println("F was null!");
-
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
-            System.out.println("Disabling automatic gil release");
             System.setProperty("org.eclipse.python4j.path.append", "none");
-            String pythonPathSet = StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator);
-            System.out.println("Setting python path " + pythonPathSet);
-            System.setProperty("org.eclipse.python4j.path", StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator));
             Holder.init();
 
 
