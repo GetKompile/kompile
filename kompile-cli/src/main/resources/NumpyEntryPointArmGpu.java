@@ -207,16 +207,21 @@ public class NumpyEntryPointArmGpu {
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-            ClassPathResource classPathResource = new ClassPathResource("org/bytedeco/numpy/linux-arm64/python/");
-            System.out.println("Resource exists " + classPathResource.exists());
+            //-Dorg.bytedeco.javacpp.maxbytes=8G -Dorg.bytedeco.javacpp.maxphysicalbytes=10G
+            String maxBytes = System.getenv().containsKey("KOMPILE_MAX_BYTES") ? System.getenv("MAX_BYTES") : "1g";
+            System.setProperty("org.bytedeco.javacpp.maxbytes",maxBytes);
+            System.setProperty("org.bytedeco.javacpp.maxphysicalbytes",maxBytes);
 
-            ClassPathResource classPathResource2 = new ClassPathResource("/org/bytedeco/numpy/linux-arm64/python/");
-            System.out.println("Resource 2 exists " + classPathResource2.exists());
+            System.out.println("Set max bytes to " + maxBytes);
 
+            String periodicGc = System.getenv().containsKey("KOMPILE_PERIODIC_GC") ? System.getenv("KOMPILE_PERIODIC_GC") : "true";
+            String periodicGcWindow = System.getenv().containsKey("KOMPILE_GC_WINDOW") ? System.getenv("KOMPILE_GC_WINDOWS") : "5000";
+            System.out.println("Periodic gc is " + periodicGc);
 
-            ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-arm64/python/numpy/core/tests/test_einsum.py");
-            System.out.println("Resource 3 exists " + classPathResource3.exists());
-
+            // this will limit frequency of gc calls to 5000 milliseconds
+            Nd4j.getMemoryManager().setAutoGcWindow(Long.parseLong(periodicGcWindow));
+            Nd4j.getMemoryManager().togglePeriodicGc(Boolean.parseBoolean(periodicGc));
+            
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             System.setProperty("org.eclipse.python4j.path.append", "none");
