@@ -409,6 +409,7 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--verbose\n");
         stringBuilder.append("-H:DeadlockWatchdogInterval=30\n");
         stringBuilder.append("-H:+DeadlockWatchdogExitOnTimeout\n");
+        stringBuilder.append("-H:+DashboardAll\n");
         stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
         stringBuilder.append(" --initialize-at-run-time=io.netty\n");
         stringBuilder.append("--initialize-at-build-time=org.slf4j\n");
