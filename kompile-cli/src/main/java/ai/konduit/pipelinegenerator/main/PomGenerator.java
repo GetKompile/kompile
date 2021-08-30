@@ -56,6 +56,14 @@ public class PomGenerator implements Callable<Void> {
     private String nd4jBackendClassifier = "";
     @CommandLine.Option(names = {"--enableJetsonNano"},description = "Whether to add dependencies for jetson nano or not")
     private boolean enableJetsonNano = false;
+    @CommandLine.Option(names = {"--minHeapSize"},description = "The minimum heap size for the image in megabytes: defaults to 2000M")
+    private long minHeapSize = 2000;
+    @CommandLine.Option(names = {"--maxHeapSize"},description = "The maximum heap size for the image in megabytes: defaults to 2000M")
+    private long maxHeapSize = 2000;
+
+
+    @CommandLine.Option(names = {"--noPointerGc"},description = "Whether to turn gc off or not: defaults to false")
+    private boolean noPointerGc = false;
 
 
     @CommandLine.Option(names = {"--cli"},description = "Whether to add konduit-serving-cli or not as a dependency")
@@ -412,8 +420,12 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("-H:Log=registerResource\n");
 
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
-        stringBuilder.append("-Dorg.bytedeco.javacpp.noPointerGC=true\n");
-        stringBuilder.append("-Dorg.bytedeco.javacpp.nopointergc=true\n");
+        stringBuilder.append(String.format("-R:MinHeapSize=%d\n",minHeapSize));
+        stringBuilder.append(String.format("-R:MaxHeapSize=%d\n",maxHeapSize));
+        stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
+        if(noPointerGc)
+            stringBuilder.append("-Dorg.bytedeco.javacpp.noPointerGC=true\n");
+
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.global.openblas_nolapack\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.global.openblas\n");
         stringBuilder.append(" --trace-class-initialization=org.nd4j.python4j.PythonExecutioner\n");
@@ -423,7 +435,7 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
         stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
         stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
-        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main ");
+        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main\n");
         for(PomFileAppender pomFileAppender : appenders()) {
             pomFileAppender.append(stringBuilder);
             pomFileAppender.appendReInitialize(stringBuilder);

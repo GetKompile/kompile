@@ -29,6 +29,9 @@ ND4J_CLASSIFIER=""
 ENABLE_JETSON_NANO="false"
 BUILD_SHARED_LIBRARY="true"
 MAIN_CLASS=
+MIN_RAM_MEGS=2000
+MAX_RAM_MEGS=2000
+NO_GC="false"
 
 while [[ $# -gt 0 ]]
 do
@@ -85,6 +88,18 @@ case $key in
     ;;
      -mc|--main-class)
     MAIN_CLASS="$value"
+    shift # past argument
+    ;;
+    -mr|--min-ram)
+    MIN_RAM_MEGS="$value"
+    shift # past argument
+    ;;
+    -mar|--max-ram)
+    MAX_RAM_MEGS="$value"
+    shift # past argument
+    ;;
+   -ngc|--no-garbage-collection)
+    NO_GC="$value"
     shift # past argument
     ;;
     *)
@@ -168,7 +183,7 @@ export INCLUDE_PATH
 if test -f "$PIPELINE_FILE"; then
      echo "Processing pipeline file $PIPELINE_FILE"
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-    POM_GENERATE_COMMAND="$(./pipeline   pipeline-command-generate  --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelineFile=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+    POM_GENERATE_COMMAND="$(./pipeline   pipeline-command-generate  --minHeapSize=${MIN_RAM_MEGS} --maxHeapSize=${MAX_RAM_MEGS} --noPointerGc=${NO_GC} --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelineFile=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
     eval "./pipeline ${POM_GENERATE_COMMAND}"
     ./pipeline native-image-generate  \

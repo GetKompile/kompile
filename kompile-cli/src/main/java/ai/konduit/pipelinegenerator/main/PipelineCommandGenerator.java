@@ -55,6 +55,14 @@ public class PipelineCommandGenerator implements Callable<Void> {
     private boolean cli = true;
     @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Create a library with a numpy based entry point.")
     private boolean numpySharedLibrary;
+    @CommandLine.Option(names = {"--minHeapSize"},description = "The minimum heap size for the image in megabytes: defaults to 2000M")
+    private long minHeapSize = 2000;
+    @CommandLine.Option(names = {"--maxHeapSize"},description = "The maximum heap size for the image in megabytes: defaults to 2000M")
+    private long maxHeapSize = 2000;
+
+
+    @CommandLine.Option(names = {"--noPointerGc"},description = "Whether to turn gc off or not: defaults to false")
+    private boolean noPointerGc = false;
 
 
 
@@ -96,12 +104,17 @@ public class PipelineCommandGenerator implements Callable<Void> {
 
         if(mainClass != null && !mainClass.isEmpty()) {
             command.append(" --mainClass=" + mainClass + " ");
-
         }
+
+        command.append(" --minHeapSize=" + minHeapSize + " ");
+        command.append(" --maxHeapSize=" + maxHeapSize + " ");
+
 
         command.append(" --numpySharedLibrary=" + numpySharedLibrary + " ");
         command.append(" --enableJetsonNano=" + enableJetsonNano + " ");
-
+        if(noPointerGc) {
+            command.append(" --noPointerGc=" + noPointerGc + " ");
+        }
 
 
         Pipeline pipeline = null;
