@@ -208,7 +208,7 @@ public class NumpyEntryPointArmGpu {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
             //-Dorg.bytedeco.javacpp.maxbytes=8G -Dorg.bytedeco.javacpp.maxphysicalbytes=10G
-            String maxBytes = System.getenv().containsKey("KOMPILE_MAX_BYTES") ? System.getenv("MAX_BYTES") : "1g";
+            String maxBytes = System.getenv().containsKey("KOMPILE_MAX_BYTES") ? System.getenv("KOMPILE_MAX_BYTES") : "1g";
             System.setProperty("org.bytedeco.javacpp.maxbytes",maxBytes);
             System.setProperty("org.bytedeco.javacpp.maxphysicalbytes",maxBytes);
 
@@ -221,7 +221,7 @@ public class NumpyEntryPointArmGpu {
             // this will limit frequency of gc calls to 5000 milliseconds
             Nd4j.getMemoryManager().setAutoGcWindow(Integer.parseInt(periodicGcWindow));
             Nd4j.getMemoryManager().togglePeriodicGc(Boolean.parseBoolean(periodicGc));
-            
+
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             System.setProperty("org.eclipse.python4j.path.append", "none");
