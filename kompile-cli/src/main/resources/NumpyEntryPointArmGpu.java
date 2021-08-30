@@ -215,7 +215,7 @@ public class NumpyEntryPointArmGpu {
             System.out.println("Set max bytes to " + maxBytes);
 
             String periodicGc = System.getenv().containsKey("KOMPILE_PERIODIC_GC") ? System.getenv("KOMPILE_PERIODIC_GC") : "true";
-            String periodicGcWindow = System.getenv().containsKey("KOMPILE_GC_WINDOW") ? System.getenv("KOMPILE_GC_WINDOWS") : "5000";
+            String periodicGcWindow = System.getenv().containsKey("KOMPILE_GC_WINDOW") ? System.getenv("KOMPILE_GC_WINDOW") : "5000";
             System.out.println("Periodic gc is " + periodicGc);
 
             // this will limit frequency of gc calls to 5000 milliseconds
