@@ -219,7 +219,7 @@ public class NumpyEntryPointArmGpu {
             System.out.println("Periodic gc is " + periodicGc);
 
             // this will limit frequency of gc calls to 5000 milliseconds
-            Nd4j.getMemoryManager().setAutoGcWindow(Long.parseLong(periodicGcWindow));
+            Nd4j.getMemoryManager().setAutoGcWindow(Integer.parseInt(periodicGcWindow));
             Nd4j.getMemoryManager().togglePeriodicGc(Boolean.parseBoolean(periodicGc));
             
 
