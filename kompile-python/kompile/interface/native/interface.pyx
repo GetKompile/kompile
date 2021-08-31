@@ -56,6 +56,8 @@ cdef extern from "<library.h>":
 
     cdef void runPipelineWrapper(handles *handles2,numpy_struct *input_arrays, numpy_struct  *output_arrays) nogil
 
+    cdef void checkMetricsWrapper(handles *handles2) nogil
+
 @cython.cfunc
 cdef handles * create_empty_handles():
     print('About to create handle')
@@ -174,6 +176,9 @@ cdef public handles *  _init_pipeline(pipeline_json) except *:
     return handles_to_use
     #free(copied_string)
 
+cdef public _runMetricsCheck(handles *handles2):
+    checkMetricsWrapper(handles2)
+
 @cython.cfunc
 cdef public _run(handles *handles2,name_to_ndarray):
     print('About to create struct')
@@ -183,7 +188,7 @@ cdef public _run(handles *handles2,name_to_ndarray):
     # python 3 only accepts byte strings, default was byte strings in 2
     print('About to run pipeline wrapper')
     runPipelineWrapper(handles2, input_struct, result_struct)
-    #free(copied_string)
+    print('Ran pipeline')
     ret = {}
     count = 0
     for i in range(0, result_struct.num_arrays):
@@ -195,7 +200,6 @@ cdef public _run(handles *handles2,name_to_ndarray):
                                                                            result_struct.numpy_array_addresses[i],
                                                                            input_shape_list,
                                                                            result_struct.numpy_array_ranks[i])
-    #free(copied_string)
     #free_struct(result_struct[0])
     #free_struct(input_struct[0])
     return ret
@@ -223,6 +227,9 @@ cdef class PipelineRunner(object):
         handles = _init_pipeline(self.pipeline_json)
         self.handles_ref = handles
         print('Pipeline initialized')
+
+    def check_metrics(self):
+        _runMetricsCheck(self.handles_ref)
 
     def __dealloc__(self):
         free(self.handles_ref)

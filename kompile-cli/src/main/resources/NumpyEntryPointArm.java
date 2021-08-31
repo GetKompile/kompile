@@ -26,6 +26,7 @@ import org.nd4j.common.io.ClassPathResource;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
@@ -40,26 +41,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 
-@CContext(NumpyEntryPointArm.NumpyEntryPointDirectives.class)
-public class NumpyEntryPointArm {
+@CContext(NumpyEntryPointDirectives.class)
+public class NumpyEntryPointArm  {
 
-
-    static class NumpyEntryPointDirectives implements CContext.Directives {
-
-        @Override
-        public List<String> getHeaderFiles() {
-            /*
-             * The header file with the C declarations that are imported. We use a helper class that
-             * locates the file in our project structure.
-             */
-            try {
-                return Collections.singletonList("\"" + new ClassPathResource("numpy_struct.h").getFile().getAbsolutePath() + "\"");
-            } catch (IOException e) {
-                e.printStackTrace();
-                return null;
-            }
-        }
-    }
 
 
     @CStruct("numpy_struct")
@@ -108,76 +92,6 @@ public class NumpyEntryPointArm {
 
     }
 
-    /**
-     * A pointer to a pointer to a 64-bit C primitive value.
-     *
-     * @since 19.0
-     */
-    @CPointerTo(CLongPointer.class)
-    public interface CLongPointerPointer extends PointerBase {
-
-        /**
-         * Reads the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        CLongPointer read();
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer read(int index);
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CIntPointer read(SignedWord index);
-
-        /**
-         * Writes the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        void write(CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(int index, CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(SignedWord index, CLongPointer value);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(int index);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(SignedWord index);
-    }
 
     @CStruct("handles")
     interface Handles extends PointerBase {
@@ -201,6 +115,23 @@ public class NumpyEntryPointArm {
         @CField("executor_handle")
         ObjectHandle getExecutorHandle();
     }
+
+
+    @CEntryPoint(name = "printMetrics")
+    public static void printMetrics(IsolateThread isolate) {
+        int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+        for(int i = 0; i < numDevices; i++) {
+            long allocated = AllocationsTracker.getInstance().bytesOnDevice(i);
+            System.out.println("Allocated memory in bytes via allocation tracker is " + allocated);
+
+        }
+
+        System.out.println("Available physical bytes is " + Pointer.availablePhysicalBytes());
+        System.out.println("Memory used is " + Pointer.totalBytes());
+
+    }
+
+
 
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {

@@ -3,12 +3,19 @@ import numpy as np
 import timeit
 
 with open(
-        '/mnt/c/Users/agibs/Documents/GitHub/pipeline-generator/kompile-python/test_data/python-test-pipeline.json') as f:
+        'graph-step-sequence.json') as f:
     pipeline_runner = PipelineRunner(pipeline_json=f.read())
-    input_arr_dict = {'input': np.ones((1, 1))}
+    input_arr_dict = {'input': np.ones((1, 3,22,224))}
     for i, (name, array) in enumerate(input_arr_dict.items()):
         print('Type of name is ' + str(type(name)))
         print('Type of array is ' + str(type(array)))
-    output = pipeline_runner.run(input_arr_dict)
-    for i, (name, array) in enumerate(output.items()):
-        print('Array with name is ' + str(name) + ' with array is ' + str(array))
+    num_runs = 10
+    num_repetition = 3
+    def run():
+        output = pipeline_runner.run(input_arr_dict)
+    duration = timeit.Timer(run).timeit(number=num_runs)
+    avg_time = duration
+    print('Average execution time was ' + str(avg_time))
+
+    # for i, (name, array) in enumerate(output.items()):
+    #     print('Array with name is ' + str(name) + ' with array is ' + str(array))

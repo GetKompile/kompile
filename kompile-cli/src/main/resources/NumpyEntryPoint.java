@@ -26,6 +26,7 @@ import org.nd4j.common.io.ClassPathResource;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
@@ -40,26 +41,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 
-@CContext(NumpyEntryPoint.NumpyEntryPointDirectives.class)
-public class NumpyEntryPoint {
-
-
-    static class NumpyEntryPointDirectives implements CContext.Directives {
-
-        @Override
-        public List<String> getHeaderFiles() {
-            /*
-             * The header file with the C declarations that are imported. We use a helper class that
-             * locates the file in our project structure.
-             */
-            try {
-                return Collections.singletonList("\"" + new ClassPathResource("numpy_struct.h").getFile().getAbsolutePath() + "\"");
-            } catch (IOException e) {
-                e.printStackTrace();
-                return null;
-            }
-        }
-    }
+@CContext(NumpyEntryPointDirectives.class)
+public class NumpyEntryPoint  {
 
 
     @CStruct("numpy_struct")
@@ -108,76 +91,6 @@ public class NumpyEntryPoint {
 
     }
 
-    /**
-     * A pointer to a pointer to a 64-bit C primitive value.
-     *
-     * @since 19.0
-     */
-    @CPointerTo(CLongPointer.class)
-    public interface CLongPointerPointer extends PointerBase {
-
-        /**
-         * Reads the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        CLongPointer read();
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer read(int index);
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CIntPointer read(SignedWord index);
-
-        /**
-         * Writes the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        void write(CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(int index, CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(SignedWord index, CLongPointer value);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(int index);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(SignedWord index);
-    }
 
     @CStruct("handles")
     interface Handles extends PointerBase {
@@ -202,46 +115,31 @@ public class NumpyEntryPoint {
         ObjectHandle getExecutorHandle();
     }
 
+
+    @CEntryPoint(name = "printMetrics")
+    public static void printMetrics(IsolateThread isolate) {
+        int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+        for(int i = 0; i < numDevices; i++) {
+            long allocated = AllocationsTracker.getInstance().bytesOnDevice(i);
+            System.out.println("Allocated memory in bytes via allocation tracker is " + allocated);
+
+        }
+
+        System.out.println("Available physical bytes is " + Pointer.availablePhysicalBytes());
+        System.out.println("Memory used is " + Pointer.totalBytes());
+
+    }
+
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
         System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-            ClassPathResource classPathResource = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/");
-            System.out.println("Resource exists " + classPathResource.exists());
-
-            ClassPathResource classPathResource2 = new ClassPathResource("/org/bytedeco/numpy/linux-x86_64/python/");
-            System.out.println("Resource 2 exists " + classPathResource2.exists());
-
-
-            ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/numpy/core/tests/test_einsum.py");
-            System.out.println("Resource 3 exists " + classPathResource3.exists());
-
-            System.setProperty("org.eclipse.python4j.numpyimport", "false");
-
-
-            File f = Loader.cacheResource("/org/bytedeco/numpy/linux-x86_64/python/");
-            if (f == null) {
-                f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
-            }
-            File[] file = numpy.cachePackages();
-            for (int i = 0; i < file.length; i++) {
-                System.out.println("File " + i + " was " + file[i]);
-            }
-            file[file.length - 1] = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
-            if (f != null)
-                System.out.println("File was " + f.getAbsolutePath());
-            else
-                System.out.println("F was null!");
-
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             System.out.println("Disabling automatic gil release");
             System.setProperty("org.eclipse.python4j.path.append", "none");
-            String pythonPathSet = StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator);
-            System.out.println("Setting python path " + pythonPathSet);
-            System.setProperty("org.eclipse.python4j.path", StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator));
             Holder.init();
 
 

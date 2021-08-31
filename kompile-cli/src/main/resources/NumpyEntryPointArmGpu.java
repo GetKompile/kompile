@@ -26,6 +26,7 @@ import org.nd4j.common.io.ClassPathResource;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
@@ -39,26 +40,10 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 
-@CContext(NumpyEntryPointArmGpu.NumpyEntryPointDirectives.class)
-public class NumpyEntryPointArmGpu {
+@CContext(NumpyEntryPointDirectives.class)
+public class NumpyEntryPointArmGpu extends BaseEntryPoint {
 
 
-    static class NumpyEntryPointDirectives implements CContext.Directives {
-
-        @Override
-        public List<String> getHeaderFiles() {
-            /*
-             * The header file with the C declarations that are imported. We use a helper class that
-             * locates the file in our project structure.
-             */
-            try {
-                return Collections.singletonList("\"" + new ClassPathResource("numpy_struct.h").getFile().getAbsolutePath() + "\"");
-            } catch (IOException e) {
-                e.printStackTrace();
-                return null;
-            }
-        }
-    }
 
 
     @CStruct("numpy_struct")
@@ -107,76 +92,6 @@ public class NumpyEntryPointArmGpu {
 
     }
 
-    /**
-     * A pointer to a pointer to a 64-bit C primitive value.
-     *
-     * @since 19.0
-     */
-    @CPointerTo(CLongPointer.class)
-    public interface CLongPointerPointer extends PointerBase {
-
-        /**
-         * Reads the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        CLongPointer read();
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer read(int index);
-
-        /**
-         * Reads the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        CIntPointer read(SignedWord index);
-
-        /**
-         * Writes the value at the pointer address.
-         *
-         * @since 19.0
-         */
-        void write(CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(int index, CLongPointer value);
-
-        /**
-         * Writes the value of the array element with the specified index, treating the pointer as an
-         * array of the C type.
-         *
-         * @since 19.0
-         */
-        void write(SignedWord index, CLongPointer value);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(int index);
-
-        /**
-         * Computes the address of the array element with the specified index, treating the pointer as
-         * an array of the C type.
-         *
-         * @since 19.0
-         */
-        CLongPointer addressOf(SignedWord index);
-    }
 
     @CStruct("handles")
     interface Handles extends PointerBase {
@@ -201,30 +116,29 @@ public class NumpyEntryPointArmGpu {
         ObjectHandle getExecutorHandle();
     }
 
+
+    @CEntryPoint(name = "printMetrics")
+    public static void printMetrics(IsolateThread isolate) {
+        int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+        for(int i = 0; i < numDevices; i++) {
+            long allocated = AllocationsTracker.getInstance().bytesOnDevice(i);
+            System.out.println("Allocated memory in bytes via allocation tracker is " + allocated);
+
+        }
+
+        System.out.println("Available physical bytes is " + Pointer.availablePhysicalBytes());
+        System.out.println("Memory used is " + Pointer.totalBytes());
+
+    }
+
+
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
         System.setProperty("org.bytedeco.javacpp.platform", "linux-arm64");
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-            //-Dorg.bytedeco.javacpp.maxbytes=8G -Dorg.bytedeco.javacpp.maxphysicalbytes=10G
-            String maxBytes = System.getenv().containsKey("KOMPILE_MAX_BYTES") ? System.getenv("KOMPILE_MAX_BYTES") : "1g";
-            System.setProperty("org.bytedeco.javacpp.maxbytes",maxBytes);
-            System.setProperty("org.bytedeco.javacpp.maxphysicalbytes",maxBytes);
-
-            System.out.println("Set max bytes to " + maxBytes);
-
-            String periodicGc = System.getenv().containsKey("KOMPILE_PERIODIC_GC") ? System.getenv("KOMPILE_PERIODIC_GC") : "true";
-            String periodicGcWindow = System.getenv().containsKey("KOMPILE_GC_WINDOW") ? System.getenv("KOMPILE_GC_WINDOW") : "5000";
-            System.out.println("Periodic gc is " + periodicGc);
-
-            // this will limit frequency of gc calls to 5000 milliseconds
-            Nd4j.getMemoryManager().setAutoGcWindow(Integer.parseInt(periodicGcWindow));
-            Nd4j.getMemoryManager().togglePeriodicGc(Boolean.parseBoolean(periodicGc));
-
-
-            System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
-            System.setProperty("org.eclipse.python4j.path.append", "none");
+            EntryPointSetup.setup();
             Holder.init();
 
 

@@ -42,23 +42,36 @@ int shutdown(graal_isolatethread_t *isolate_thread) {
 
 
 void runPipelineWrapper(handles *handles,numpy_struct *input,numpy_struct *result) {
-    printf("About to try to obtain handle data");
     graal_isolatethread_t *isolate_thread = (graal_isolatethread_t *) handles->isolate_thread;
     graal_isolate_t* isolate = (graal_isolate_t*) handles->isolate;
     if(isolate_thread != NULL && isolate != NULL) {
-        printf("In wrapper: about to run pipeline.");
+        printf("In wrapper: about to run pipeline.\n");
         runPipeline(isolate_thread,handles,input,result);
         printf("Ran pipeline\n");
     } else {
         if(isolate == NULL) {
-            printf("Isolate was null!");
+            printf("Isolate was null!\n");
         }
         if(isolate_thread == NULL) {
             printf("Isolated thread was null!");
         }
     }
+}
 
-
-
+void checkMetricsWrapper(handles *handles) {
+    graal_isolatethread_t *isolate_thread = (graal_isolatethread_t *) handles->isolate_thread;
+    graal_isolate_t* isolate = (graal_isolate_t*) handles->isolate;
+    if(isolate_thread != NULL && isolate != NULL) {
+        printf("In wrapper: about to run pipeline.\n");
+        checkMetrics(isolate_thread);
+        printf("Ran pipeline\n");
+    } else {
+        if(isolate == NULL) {
+            printf("Isolate was null!\n");
+        }
+        if(isolate_thread == NULL) {
+            printf("Isolated thread was null!");
+        }
+    }
 }
 

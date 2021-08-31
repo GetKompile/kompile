@@ -9,6 +9,7 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
@@ -69,6 +70,7 @@ public class NativeImageBuilder implements Callable<Void> {
             System.out.println("Deleting previous directory at " + project.getAbsolutePath());
             FileUtils.deleteDirectory(project);
         }
+
         project.mkdirs();
         File srcDir = new File(project,"src/main/java");
         srcDir.mkdirs();
@@ -78,36 +80,14 @@ public class NativeImageBuilder implements Callable<Void> {
             if(System.getProperty("os.arch").contains("amd")) {
                 String mainClassJavaFile = "NumpyEntryPoint.java";
                 mainClassJavaFile = getMainClassJavaFileIfSpecified(mainClassJavaFile);
-                File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
-                cEntryPointDir = getPackageIfMainClassSpecified(srcDir, cEntryPointDir);
-                cEntryPointDir.mkdirs();
-                ClassPathResource classPathResource = new ClassPathResource(mainClassJavaFile);
-                File tmpFile = new File(mainClassJavaFile);
-                try(InputStream is = classPathResource.getInputStream();
-                    FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
-                    IOUtils.copy(is,fileOutputStream);
-                    fileOutputStream.flush();
-                }
+                for(String name : new String[]{mainClassJavaFile,"EntryPointSetup.java","NumpyEntryPointDirectives.java","CLongPointerPointer.java"})
+                    setupSources(srcDir,name,"ai/konduit/pipelinegenerator/main");;
 
-                tmpFile.deleteOnExit();
-
-                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,mainClassJavaFile));
             } else {
                 String mainClassJavaFile = "NumpyEntryPointArm.java";
                 mainClassJavaFile = getMainClassJavaFileIfSpecified(mainClassJavaFile);
-                File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
-                cEntryPointDir = getPackageIfMainClassSpecified(srcDir, cEntryPointDir);
-                cEntryPointDir.mkdirs();
-                cEntryPointDir.mkdirs();
-                File tmpFile = new File(mainClassJavaFile);
-                ClassPathResource classPathResource = new ClassPathResource(mainClassJavaFile);
-                try(InputStream is = classPathResource.getInputStream();
-                    FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
-                    IOUtils.copy(is,fileOutputStream);
-                    fileOutputStream.flush();
-                }
-                tmpFile.deleteOnExit();
-                FileUtils.copyFile(tmpFile,new File(cEntryPointDir,mainClassJavaFile));
+                for(String name : new String[]{mainClassJavaFile,"EntryPointSetup.java","NumpyEntryPointDirectives.java","CLongPointerPointer.java"})
+                    setupSources(srcDir,name,"ai/konduit/pipelinegenerator/main");;
             }
 
 
@@ -139,6 +119,25 @@ public class NativeImageBuilder implements Callable<Void> {
         invocationRequest.setBaseDirectory(project);
         invoker.setMavenHome(mavenHome);
         invoker.execute(invocationRequest);
+    }
+
+
+    private void setupSources(File srcDir,String javaFile,String packageName) throws IOException {
+        File cEntryPointDir = new File(srcDir,packageName);
+        cEntryPointDir = getPackageIfMainClassSpecified(srcDir, cEntryPointDir);
+        cEntryPointDir.mkdirs();
+        ClassPathResource classPathResource = new ClassPathResource(javaFile);
+        File tmpFile = new File(javaFile);
+        try(InputStream is = classPathResource.getInputStream();
+            FileOutputStream fileOutputStream = new FileOutputStream(tmpFile)) {
+            IOUtils.copy(is,fileOutputStream);
+            fileOutputStream.flush();
+        }
+
+
+        tmpFile.deleteOnExit();
+
+        FileUtils.copyFile(tmpFile,new File(cEntryPointDir,javaFile));
     }
 
     private String getMainClassJavaFileIfSpecified(String mainClassJavaFile) {

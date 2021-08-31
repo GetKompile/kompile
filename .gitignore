@@ -1,5 +1,16 @@
 target/
+kompile-cli/kompile-c
+kompile-cli/kompile-python
+kompile-python/build
+kompile-python/dist
+kompile-python/kompile.egg-info
 pom.xml.tag
+*.pyc
+konduit-serving/
+kompile-cli/konduit-serving-bundle
+kompile-cli/konduit-serving-bundle.tar
+kompile-c-library/CMakeFiles
+kompile-c-library/cmake-build-debug
 pom.xml.releaseBackup
 pom.xml.versionsBackup
 pom.xml.next
