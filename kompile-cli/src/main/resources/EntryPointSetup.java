@@ -18,6 +18,7 @@ public class EntryPointSetup {
         System.setProperty("org.bytedeco.javacpp.logger.debug",getBoolFromEnv("KOMPILE_JAVACPP_DEBUG","false"));
 
         System.out.println("Set max bytes to " + maxBytes);
+        System.out.println("Off heap memory before init usage is " + Pointer.physicalBytes());
 
         long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);
         Nd4j.getEnvironment().setMaxSpecialMemory(nd4jMaxBytes);
