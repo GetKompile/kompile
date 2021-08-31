@@ -174,7 +174,6 @@ cdef public handles *  _init_pipeline(pipeline_json) except *:
     initPipelineWrapper(pipeline_json,handles_to_use)
     print('After calling init pipeline')
     return handles_to_use
-    #free(copied_string)
 
 cdef public _runMetricsCheck(handles *handles2):
     checkMetricsWrapper(handles2)
