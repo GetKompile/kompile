@@ -41,7 +41,7 @@ import java.util.stream.Collectors;
 
 
 @CContext(NumpyEntryPointDirectives.class)
-public class NumpyEntryPointArmGpu extends BaseEntryPoint {
+public class NumpyEntryPointArmGpu {
 
 
 
