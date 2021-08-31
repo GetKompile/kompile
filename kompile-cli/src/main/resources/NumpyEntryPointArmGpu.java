@@ -31,6 +31,7 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.Nd4jCuda;
+import org.nd4j.jita.allocator.impl.AtomicAllocator;
 
 import java.io.File;
 import java.io.IOException;
@@ -139,6 +140,10 @@ public class NumpyEntryPointArmGpu {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
             EntryPointSetup.setup();
+            //call atomic handler first
+            AtomicAllocator.getInstance();
+
+
             Holder.init();
 
 
