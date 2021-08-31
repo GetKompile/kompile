@@ -14,6 +14,9 @@ public class EntryPointSetup {
         System.setProperty("org.bytedeco.javacpp.maxbytes",maxBytes);
         System.setProperty("org.bytedeco.javacpp.maxphysicalbytes",maxBytes);
 
+
+        System.setProperty("org.bytedeco.javacpp.logger.debug",getBoolFromEnv("KOMPILE_JAVACPP_DEBUG","false"));
+
         System.out.println("Set max bytes to " + maxBytes);
 
         long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);

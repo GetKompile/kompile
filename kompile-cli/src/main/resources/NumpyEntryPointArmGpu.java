@@ -155,7 +155,10 @@ public class NumpyEntryPointArmGpu {
     }
 
 
-    public static void main(String...args) {}
+    public static void main(String...args) {
+        Thread.currentThread().getContextClassLoader();
+
+    }
 
     public static class Holder {
         private static NativeOps nativeOps = new Nd4jCuda();
