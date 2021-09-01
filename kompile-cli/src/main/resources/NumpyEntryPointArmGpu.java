@@ -30,6 +30,7 @@ import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
+import org.nd4j.nativeblas.NativeOpsHolder;
 import org.nd4j.nativeblas.Nd4jCuda;
 import org.nd4j.jita.allocator.impl.AtomicAllocator;
 
@@ -159,13 +160,11 @@ public class NumpyEntryPointArmGpu {
     }
 
     public static class Holder {
-        private static NativeOps nativeOps = new Nd4jCuda();
         private static Pipeline pipeline;
         private static PipelineExecutor pipelineExecutor;
 
         public static void init() {
             String pipelinePath = System.getProperty("pipeline.path");
-            nativeOps.initializeDevicesAndFunctions();
             System.gc();
             if (pipeline == null)
                 pipeline = Pipeline.fromJson(pipelinePath);
@@ -184,9 +183,6 @@ public class NumpyEntryPointArmGpu {
             return pipeline;
         }
 
-        public static NativeOps getNativeOps() {
-            return nativeOps;
-        }
 
 
     }
@@ -211,7 +207,6 @@ public class NumpyEntryPointArmGpu {
         CCharPointerPointer numpyArrayNames = numpyInput.getNumpyArrayNames();
         //PinnedObject deviceNativeOpsPinned = ObjectHandles.getGlobal().get(handles.getNativeOpsHandle());
         //NativeOps deviceNativeOps = ImageSingletons.lookup(NativeOps.class);
-        NativeOps deviceNativeOps = Holder.getNativeOps();
         //PinnedObject pipelinePinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
         Pipeline pipeline = Holder.getPipeline();
         System.out.println("Got pipeline");
@@ -261,7 +256,8 @@ public class NumpyEntryPointArmGpu {
         INDArray[] newArrs = new INDArray[length];
         for (int i = 0; i < length; i++) {
             long read = addresses[i];
-            Pointer pointer = deviceNativeOps.pointerForAddress(read);
+
+            Pointer pointer = NativeOpsHolder.getInstance().getDeviceNativeOps().pointerForAddress(read);
             long len = ArrayUtil.prod(shapes[i]);
             pointer.limit(len * DataType.valueOf(dataTypes[i]).width());
             DataBuffer dataBuffer = Nd4j.createBuffer(pointer, len, DataType.valueOf(dataTypes[i]));
