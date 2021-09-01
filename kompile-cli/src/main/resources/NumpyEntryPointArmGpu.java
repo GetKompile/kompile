@@ -140,8 +140,6 @@ public class NumpyEntryPointArmGpu {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
             EntryPointSetup.setup();
-            //call atomic handler first
-            AtomicAllocator.getInstance();
 
 
             Holder.init();
@@ -167,6 +165,8 @@ public class NumpyEntryPointArmGpu {
 
         public static void init() {
             String pipelinePath = System.getProperty("pipeline.path");
+            nativeOps.initializeDevicesAndFunctions();
+            System.gc();
             if (pipeline == null)
                 pipeline = Pipeline.fromJson(pipelinePath);
             System.out.println("Loaded pipeline from json");
