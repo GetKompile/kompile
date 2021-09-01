@@ -50,7 +50,7 @@ public class PomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--includeResources"},description = "Extra resources to include in the image, comma separated")
     private String includeResources;
     @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to include")
-    private String nd4jBackend = "nd4j-native";
+    private String nd4jBackend;
 
     @CommandLine.Option(names = {"--nd4jBackendClassifier"},description = "The nd4j backend to include")
     private String nd4jBackendClassifier = "";
@@ -730,14 +730,17 @@ public class PomGenerator implements Callable<Void> {
 
         //jetson nano should be false
         if(nd4jBackend != null && !nd4jBackend.isEmpty() && !enableJetsonNano) {
+            System.out.println("Enabling nd4j backend " + nd4jBackend);
             addNd4jBackend(defaultDependencies);
         }
 
         if(numpySharedLibrary) {
+            System.out.println("Adding konduit serving core");
             addKonduitServingCore(defaultDependencies);
         }
 
         if(enableJetsonNano) {
+            System.out.println("Adding jetson nano");
             addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
             addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2");
             addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2","compile","linux-arm64");
