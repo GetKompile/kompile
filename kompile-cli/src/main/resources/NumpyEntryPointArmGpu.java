@@ -165,7 +165,6 @@ public class NumpyEntryPointArmGpu {
 
         public static void init() {
             String pipelinePath = System.getProperty("pipeline.path");
-            System.gc();
             if (pipeline == null)
                 pipeline = Pipeline.fromJson(pipelinePath);
             System.out.println("Loaded pipeline from json");

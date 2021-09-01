@@ -20,7 +20,7 @@ public class EntryPointSetup {
         System.out.println("Set max bytes to " + maxBytes);
         System.out.println("Off heap memory before init usage is " + Pointer.physicalBytes());
 
-        long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);
+     /*   long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);
         Nd4j.getEnvironment().setMaxSpecialMemory(nd4jMaxBytes);
         Nd4j.getEnvironment().setMaxDeviceMemory(nd4jMaxBytes);
 
@@ -42,7 +42,7 @@ public class EntryPointSetup {
                 .build());
 
         System.out.println("Off heap memory usage is " + Pointer.physicalBytes());
-
+*/
         System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
         System.setProperty("org.eclipse.python4j.path.append", "none");
 
