@@ -17,6 +17,8 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = true)
 public class NativeImageBuilder implements Callable<Void> {
 
+    @CommandLine.Option(names = "--tensorrt",description = "Whether to use tensorrt or not")
+    private boolean tensorrt = false;
 
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")
     private boolean python = false;

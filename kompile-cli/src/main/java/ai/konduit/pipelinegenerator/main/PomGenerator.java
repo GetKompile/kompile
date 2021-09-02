@@ -32,6 +32,8 @@ public class PomGenerator implements Callable<Void> {
     private boolean nd4j = false;
     @CommandLine.Option(names = "--tensorflow",description = "Whether to use tensorflow or not")
     private boolean tensorflow = false;
+    @CommandLine.Option(names = "--tensorrt",description = "Whether to use tensorrt or not")
+    private boolean tensorrt = false;
     @CommandLine.Option(names = "--nd4j-tensorflow",description = "Whether to use nd4j-tensorflow or not")
     private boolean nd4jTensorflow = false;
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
@@ -91,7 +93,7 @@ public class PomGenerator implements Callable<Void> {
     private String nettyTcNativeVersion = "2.0.39.Final";
     private String nettyVersion = "4.1.49.Final";
     private String concsryptVersion = "2.5.2";
-    private String konduitServingVersion = "0.1.0-SNAPSHOT";
+    private String konduitServingVersion = "0.2.0-SNAPSHOT";
     private String javacppVersion = "1.5.6";
     private String log4jVersion = "1.2.17";
     private String slf4jVersion = "1.7.24";
@@ -185,6 +187,21 @@ public class PomGenerator implements Callable<Void> {
         dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
+
+
+
+    public void addTensorRt(List<Dependency> addTo) {
+        Dependency dependency = new Dependency();
+        dependency.setGroupId("ai.konduit.serving");
+        dependency.setArtifactId("konduit-serving-tensorrt");
+        dependency.setVersion(konduitServingVersion);
+        Exclusion exclusion = new Exclusion();
+        exclusion.setArtifactId("logback-classic");
+        exclusion.setGroupId("ch.qos.logback");
+        dependency.addExclusion(exclusion);
+        addTo.add(dependency);
+    }
+
 
     public void addNd4j(List<Dependency> addTo) {
         Dependency dependency = new Dependency();
@@ -705,6 +722,9 @@ public class PomGenerator implements Callable<Void> {
 
         if(dl4j)
             addDeeplearning4j(defaultDependencies);
+
+        if(tensorrt)
+            addTensorRt(defaultDependencies);
 
         if(onnx)
             addOnnx(defaultDependencies);

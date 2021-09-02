@@ -35,7 +35,8 @@ public enum PipelineStepType {
     PERSPECTIVE_TRANSFORM,
     IMAGE_CROP,
     GRAY_SCALE,
-    TVM;
+    TVM,
+    TENSORRT;
 
     /**
      * Returns the {@link PipelineStepType}
@@ -141,6 +142,9 @@ public enum PipelineStepType {
                 return ClassifierOutputStep.class;
             case TVM:
                 return (Class<? extends PipelineStep>)  Class.forName("ai.konduit.serving.models.tvm.step.TVMStep");
+            case TENSORRT:
+                return (Class<? extends PipelineStep>)  Class.forName("ai.konduit.serving.tensorrt.TensorRTStep");
+
         }
 
         return null;

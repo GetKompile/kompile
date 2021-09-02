@@ -4,7 +4,9 @@ import ai.konduit.serving.data.image.convert.ImageToNDArrayConfig;
 import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.pipeline.api.data.Point;
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
+import ai.konduit.serving.tensorrt.NamedDimensionList;
 import io.swagger.v3.oas.annotations.media.Schema;
+import org.nd4j.shade.guava.reflect.TypeToken;
 import picocli.CommandLine;
 
 import java.lang.reflect.Field;
@@ -81,6 +83,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         converters.put(ImageToNDArrayConfig.class.getName(),new ImageToNDArrayConfigTypeConverter());
         converters.put(Point.class.getName(),new PointConverter());
         converters.put(PythonConfig.class.getName(),new PythonConfigTypeConverter());
+        converters.put(NamedDimensionList.class.getName(),new NameDimensionConverter());
     }
 
 
@@ -118,7 +121,8 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
                   DRAW_HEATMAP,
                   PERSPECTIVE_TRANSFORM,
                   IMAGE_CROP,
-                  GRAY_SCALE
+                  GRAY_SCALE,
+                  TENSORRT
           };
 
         }
