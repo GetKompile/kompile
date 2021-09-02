@@ -9,6 +9,7 @@ import java.util.concurrent.Callable;
         NativeImageBuilder.class,
         PipelineCommandGenerator.class,
         PipelineGenerator.class,
+        GraalVmPrint.class,
         PomGenerator.class,
         SequencePipelineCombiner.class,
         InferenceServerCreate.class,

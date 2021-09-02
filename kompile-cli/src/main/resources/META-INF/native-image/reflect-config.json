@@ -14,6 +14,1500 @@
       {"name":"thread", "allowUnsafeAccess":true}
     ]
   },
+
+
+  {
+    "name":"ai.konduit.serving.tensorrt.TensorRTRunner$1",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTModuleInfo",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTStep$1",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.KonduitServingTensorrtJsonMapping",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTStep",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTStep$TensorRTStepBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.NamedDimension$NamedDimensionBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTRunnerFactory",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTStep$TensorRTStepBuilderImpl",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.NamedDimension",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTRunner$TensorRTLogger",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"ai.konduit.serving.tensorrt.TensorRTRunner",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},
+
+  {
+    "name":"org.bytedeco.tensorrt.nvonnxparser.SubGraphCollection_t",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILRNLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VOptimizationProfile",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.FieldMap",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginV2Ext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvonnxparser.SubGraphCollection_t$Iterator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VPluginV2Layer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IResizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRaggedSoftMaxLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.INoCopy",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.IBlobNameToTensor",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IRefitter",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IInt8EntropyCalibrator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IRaggedSoftMaxLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRecurrenceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VNetworkDefinition",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.EnumMaxImpl",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.IUffParser",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.INetworkDefinition",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.PluginFieldCollection",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IRecurrenceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPlugin",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IMatrixMultiplyLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.IBinaryProtoBlob",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VConvolutionLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VAlgorithmVariant",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VSelectLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VFullyConnectedLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ISoftMaxLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VAlgorithm",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IAlgorithmContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPaddingLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VMatrixMultiplyLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IDequantizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VResizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VLoopOutputLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRNNv2Layer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.PluginTensorDesc",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.RegionParameters",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VFillLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IElementWiseLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.DimsHW",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.cudnnContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VConstantLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VTopKLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IExecutionContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IGpuAllocator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ITensor",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.RPROIParams",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Permutation",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.global.nvinfer_plugin",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IInt8MinMaxCalibrator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.softmaxTree",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VExecutionContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ITimingCache",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IGatherLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VQuantizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VAlgorithmIOInfo",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.DynamicPluginTensorDesc",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILogger",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IErrorRecorder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VPaddingLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.global.nvparsers",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VGatherLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VTimingCache",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginCreator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VSoftMaxLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IShapeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.global.nvonnxparser",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.presets.nvonnxparser",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VLRNLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.global.nvinfer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Dims2",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VShuffleLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IScaleLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ITripLimitLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IProfiler",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Dims4",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILoopOutputLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VCudaEngine",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Dims3",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ISliceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IConvolutionLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginV2",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRuntime",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IAlgorithmVariant",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VDeconvolutionLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRefitter",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IUnaryLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILoop",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.GridAnchorParameters",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IConcatenationLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.NMSParameters",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VLoopBoundaryLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IQuantizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VReduceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IHostMemory",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VBuilderConfig",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VTensor",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VPluginLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.PluginField",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.presets.nvinfer_plugin",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IAlgorithmIOInfo",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Dims32",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VIdentityLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ICudaEngine",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VScaleLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VActivationLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IOptimizationProfile",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginRegistry",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VShapeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IDimensionExpr",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IExprBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IReduceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.DimsExprs",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IParametricReLULayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.presets.nvinfer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IInt8EntropyCalibrator2",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VRoot",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginV2IOExt",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IFullyConnectedLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IInt8Calibrator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IIteratorLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VDequantizeLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IShuffleLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IRuntime",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VElementWiseLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginExt",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.FieldCollection",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VParametricReLULayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IInt8LegacyCalibrator",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IAlgorithm",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VPoolingLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ISelectLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.ICaffeParser",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VDimensionExpr",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginV2Layer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VUnaryLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.Quadruple",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VConcatenationLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ITopKLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvonnxparser.SubGraph_t",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VSliceLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IFillLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IDeconvolutionLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.DetectionOutputParameters",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VAlgorithmContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IIdentityLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.cublasContext",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VIteratorLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VHostMemory",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IRNNv2Layer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IAlgorithmSelector",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvparsers.IPluginFactoryV2",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvonnxparser.IParserError",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VExprBuilder",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.ILoopBoundaryLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.presets.nvparsers",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VLoop",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginV2DynamicExt",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IConstantLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvonnxparser.IParser",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPluginFactory",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.VTripLimitLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IActivationLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IPoolingLayer",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer_plugin.PriorBoxParameters",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.Weights",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},  {
+  "name":"org.bytedeco.tensorrt.nvinfer.IBuilderConfig",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true
+},
+
   {
     "name":"com.google.inject.AbstractModule",
     "allDeclaredMethods":true
