@@ -2555,7 +2555,13 @@
     "name":"org.bytedeco.cuda.cudart.CUextSemaphore_st"
   },
   {
-    "name":"org.bytedeco.cuda.global.cudart"
+    "name":"org.bytedeco.cuda.global.cudart",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
   },
   {
     "name":"org.bytedeco.cuda.nppc.Npp16f_2"
