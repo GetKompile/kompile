@@ -41,10 +41,7 @@ public class EntryPointSetup {
                 .checkLocality(getBoolFromEnv("KOMPILE_CHECK_LOCALITY",false))
                 .build());
 
-        System.out.println("Off heap memory usage is " + Pointer.physicalBytes());
-
-        System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
-        System.setProperty("org.eclipse.python4j.path.append", "none");
+        
 
     }
 
