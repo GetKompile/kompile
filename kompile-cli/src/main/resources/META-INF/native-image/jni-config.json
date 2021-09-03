@@ -2768,6 +2768,12 @@
     "name":"org.bytedeco.cuda.presets.nppisu"
   },
   {
+    "name":"org.bytedeco.javacpp.Pointer",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"org.bytedeco.javacpp.tools.Generator$BooleanEnum",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
