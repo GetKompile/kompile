@@ -41,7 +41,7 @@ public class EntryPointSetup {
                 .checkLocality(getBoolFromEnv("KOMPILE_CHECK_LOCALITY",false))
                 .build());
 
-        
+
 
     }
 

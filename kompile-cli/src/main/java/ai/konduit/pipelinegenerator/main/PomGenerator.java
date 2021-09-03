@@ -103,6 +103,7 @@ public class PomGenerator implements Callable<Void> {
     private String reflectionsVersion = "0.9.12";
     private String cudaJetsonVersion = "10.2-8.2-1.5.6";
     private String picoCliVersion = "4.6.1";
+    private String openblasVersion = "0.3.17-1.5.6";
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -151,6 +152,24 @@ public class PomGenerator implements Callable<Void> {
             classifierDep.setVersion(dl4jVersion);
             classifierDep.setClassifier(nd4jBackendClassifier);
             addTo.add(classifierDep);
+
+            //add openblas as default
+            if(nd4jBackend.equals("nd4j-native")) {
+                Dependency openBlasDep = new Dependency();
+                openBlasDep.setGroupId("org.bytedeco");
+                openBlasDep.setArtifactId("openblas");
+                openBlasDep.setVersion(openblasVersion);
+                addTo.add(openBlasDep);
+
+                Dependency openBlasClassifierDep = new Dependency();
+                openBlasDep.setGroupId("org.bytedeco");
+                openBlasDep.setArtifactId("openblas");
+                openBlasDep.setVersion(openblasVersion);
+                openBlasDep.setClassifier(nd4jBackendClassifier);
+                addTo.add(openBlasClassifierDep);
+
+            }
+
         }
 
     }
