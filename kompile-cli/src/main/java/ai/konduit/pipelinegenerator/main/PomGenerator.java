@@ -218,6 +218,19 @@ public class PomGenerator implements Callable<Void> {
         exclusion.setArtifactId("logback-classic");
         exclusion.setGroupId("ch.qos.logback");
         dependency.addExclusion(exclusion);
+
+        if(nd4jBackendClassifier != null && nd4jBackendClassifier.equals("linux-arm64")) {
+            //override cuda version, tensorrt by default uses the intel assumed version of cuda
+            System.out.println("Adding cuda for jetson nano,overriding intel");
+            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
+            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
+            Exclusion cudaExclusion = new Exclusion();
+            cudaExclusion.setGroupId("org.bytedeco");
+            cudaExclusion.setArtifactId("cuda");
+            dependency.addExclusion(cudaExclusion);
+        }
+
+
         addTo.add(dependency);
     }
 
