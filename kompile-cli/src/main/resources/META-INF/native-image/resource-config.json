@@ -1122,6 +1122,259 @@
     {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvblas.so\\E"},
 
     {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicufft.so\\E"},
+
+
+
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicusolver.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninpps.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppig.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppif.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicufftw.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppist.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppisu.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicudnn.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvgraph.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicurand.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppial.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppitc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppicc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64libjnicublas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvrtc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicusparse.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppim.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicudart.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppidei.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppicom.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvblas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicufft.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-x86_64/libjninvparsers.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/windows-x86_64/jninvinfer.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/windows-x86_64/jninvinfer_plugin.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-x86_64/libjninvinfer_plugin.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-x86_64/libjninvinfer.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-arm64/libjninvinfer.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-arm64/libjninvinfer_plugin.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-arm64/libjninvparsers.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/windows-x86_64/jninvparsers.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/windows-x86_64/jninvonnxparser.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-arm64/libjninvonnxparser.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/tensorrt/linux-x86_64/libjninvonnxparser.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninpps.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppicc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppicc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppial.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicudnn.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninvrtc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppim.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicurand.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppist.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppisu.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppig.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppitc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicurand.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicufftw.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppif.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicusparse.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppist.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvml.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicufftw.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicudart.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicufft.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppial.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppidei.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicurand.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppial.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicufft.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppitc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicusolver.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninpps.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicufftw.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicublas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppidei.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicusolver.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicurand.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninpps.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppif.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninvrtc.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppist.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicublas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppisu.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppig.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvrtc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicusparse.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicusparse.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppim.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninvml.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppidei.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninpps.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicudnn.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicusolver.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninvblas.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvblas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppig.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninppim.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicudnn.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppc.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppist.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicufft.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicusparse.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjnicudart.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppig.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppial.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninvblas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppicc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicudart.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicufft.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicublas.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninvml.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppidei.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppitc.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppif.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjnicufftw.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjnicublas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninppisu.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppitc.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicudnn.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicudart.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppif.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-ppc64le/libjninccl.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jninppicc.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppisu.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninccl.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/windows-x86_64/jnicusolver.dll\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninppim.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-arm64/libjninvblas.so\\E"},
+
+    {"pattern":"\\Qorg/bytedeco/cuda/linux-x86_64/libjninvrtc.so\\E"},
+
+
     {"pattern":"\\Qorg/bytedeco/opencv/linux-arm64/include/opencv4/opencv2/shape/shape_distance.hpp\\E"},
 
     {"pattern":"\\Qorg/bytedeco/cpython/linux-arm64/lib/python3.9/test/test_tracemalloc.py\\E"},

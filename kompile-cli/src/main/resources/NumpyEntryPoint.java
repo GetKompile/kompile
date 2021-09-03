@@ -134,35 +134,17 @@ public class NumpyEntryPoint  {
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
         System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
         try {
+            EntryPointSetup.setup();
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
-            System.out.println("Disabling automatic gil release");
-            System.setProperty("org.eclipse.python4j.path.append", "none");
             Holder.init();
 
 
         } catch (Exception e) {
             e.printStackTrace();
         }
-
-/*
-
-        String pipelinePathConversion = CTypeConversion.toJavaString(pipelinePath);
-        NativeOps deviceNativeOps = new Nd4jCpu();
-        ImageSingletons.add(NativeOps.class,deviceNativeOps);
-        PinnedObject nativeOpsPinned = PinnedObject.create(deviceNativeOps);
-        handles.setNativeOpsHandle(ObjectHandles.getGlobal().create(nativeOpsPinned));
-        Pipeline pipeline =  Pipeline.fromJson(pipelinePathConversion);
-        ImageSingletons.add(Pipeline.class,pipeline);
-        PinnedObject pipelinePinned = PinnedObject.create(pipeline);
-        handles.setPipelineHandle(ObjectHandles.getGlobal().create(pipelinePinned));
-        PipelineExecutor pipelineExecutor = pipeline.executor();
-        ImageSingletons.add(PipelineExecutor.class,pipelineExecutor);
-        PinnedObject executorPinned = PinnedObject.create(pipelineExecutor);
-        handles.setExecutorHandle(ObjectHandles.getGlobal().create(executorPinned));
-*/
 
         return 0;
     }

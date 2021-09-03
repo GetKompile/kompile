@@ -206,6 +206,9 @@ public class PipelineCommandGenerator implements Callable<Void> {
             case TENSORFLOW:
                 commandsToAdd.add("tensorflow");
                 break;
+            case TENSORRT:
+                commandsToAdd.add("tensorrt");
+                break;
 
         }
     }
