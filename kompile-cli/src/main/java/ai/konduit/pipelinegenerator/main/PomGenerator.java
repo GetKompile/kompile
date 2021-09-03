@@ -162,10 +162,10 @@ public class PomGenerator implements Callable<Void> {
                 addTo.add(openBlasDep);
 
                 Dependency openBlasClassifierDep = new Dependency();
-                openBlasDep.setGroupId("org.bytedeco");
-                openBlasDep.setArtifactId("openblas");
-                openBlasDep.setVersion(openblasVersion);
-                openBlasDep.setClassifier(nd4jBackendClassifier);
+                openBlasClassifierDep.setGroupId("org.bytedeco");
+                openBlasClassifierDep.setArtifactId("openblas");
+                openBlasClassifierDep.setVersion(openblasVersion);
+                openBlasClassifierDep.setClassifier(nd4jBackendClassifier);
                 addTo.add(openBlasClassifierDep);
 
             }
