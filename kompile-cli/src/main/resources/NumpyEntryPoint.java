@@ -30,6 +30,7 @@ import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
+import org.nd4j.nativeblas.NativeOpsHolder;
 import org.nd4j.nativeblas.Nd4jCpu;
 
 import java.io.File;
@@ -170,7 +171,7 @@ public class NumpyEntryPoint  {
         public static Pipeline getPipeline() {
             return pipeline;
         }
-        
+
 
     }
 
@@ -194,8 +195,6 @@ public class NumpyEntryPoint  {
         int length = numpyInput.numArrays();
         CCharPointerPointer numpyArrayNames = numpyInput.getNumpyArrayNames();
         //PinnedObject deviceNativeOpsPinned = ObjectHandles.getGlobal().get(handles.getNativeOpsHandle());
-        //NativeOps deviceNativeOps = ImageSingletons.lookup(NativeOps.class);
-        NativeOps deviceNativeOps = Holder.getNativeOps();
         //PinnedObject pipelinePinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
         Pipeline pipeline = Holder.getPipeline();
         //PinnedObject pipelineExecutorPinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
@@ -238,7 +237,7 @@ public class NumpyEntryPoint  {
         INDArray[] newArrs = new INDArray[length];
         for (int i = 0; i < length; i++) {
             long read = addresses[i];
-            Pointer pointer = deviceNativeOps.pointerForAddress(read);
+            Pointer pointer = NativeOpsHolder.getInstance().getDeviceNativeOps().pointerForAddress(read);
             long len = ArrayUtil.prod(shapes[i]);
             pointer.limit(len * DataType.valueOf(dataTypes[i]).width());
             DataBuffer dataBuffer = Nd4j.createBuffer(pointer, len, DataType.valueOf(dataTypes[i]));
