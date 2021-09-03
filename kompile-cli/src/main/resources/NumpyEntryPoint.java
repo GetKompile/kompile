@@ -150,7 +150,6 @@ public class NumpyEntryPoint  {
 
 
     public static class Holder {
-        private static NativeOps nativeOps = new Nd4jCpu();
         private static Pipeline pipeline;
         private static PipelineExecutor pipelineExecutor;
 
@@ -171,11 +170,7 @@ public class NumpyEntryPoint  {
         public static Pipeline getPipeline() {
             return pipeline;
         }
-
-        public static NativeOps getNativeOps() {
-            return nativeOps;
-        }
-
+        
 
     }
 
