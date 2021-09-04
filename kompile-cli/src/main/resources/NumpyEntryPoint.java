@@ -135,9 +135,10 @@ public class NumpyEntryPoint  {
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
         System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
         try {
+
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-
+            EntryPointSetup.setup();
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             Holder.init();
 

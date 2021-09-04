@@ -43,7 +43,7 @@ public class EntryPointSetup {
                 .build());
 
 
-        if(System.getenv().containsKey("KOMPILE_JAVAPP_INIT_EARLY")) {
+        if(System.getenv().containsKey("KOMPILE_JAVACPP_INIT_EARLY")) {
             Boolean loadEarly = Boolean.parseBoolean(System.getenv("KOMPILE_JAVACPP_INIT_EARLY"));
             if(loadEarly) {
                 Loader.load();
