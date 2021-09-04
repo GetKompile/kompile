@@ -15602,6 +15602,12 @@
     "name":"org.bytedeco.openblas.presets.openblas_nolapack$SetNumThreads"
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.EntryPointSetup",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.NumpyEntryPoint",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
