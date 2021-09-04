@@ -1,5 +1,6 @@
 package ai.konduit.pipelinegenerator.main;
 
+import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.Pointer;
 import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ops.performance.PerformanceTracker;
@@ -40,6 +41,15 @@ public class EntryPointSetup {
                 .checkForNAN(getBoolFromEnv("KOMPILE_CHECK_NAN",false))
                 .checkLocality(getBoolFromEnv("KOMPILE_CHECK_LOCALITY",false))
                 .build());
+
+
+        if(System.getenv().containsKey("KOMPILE_JAVAPP_INIT_EARLY")) {
+            Boolean loadEarly = Boolean.parseBoolean(System.getenv("KOMPILE_JAVACPP_INIT_EARLY"));
+            if(loadEarly) {
+                Loader.load();
+            }
+        }
+
 
 
 
