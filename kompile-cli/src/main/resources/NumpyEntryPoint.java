@@ -133,7 +133,6 @@ public class NumpyEntryPoint  {
 
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
-        System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
         try {
 
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
