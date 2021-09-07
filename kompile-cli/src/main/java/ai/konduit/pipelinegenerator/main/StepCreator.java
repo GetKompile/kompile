@@ -6,6 +6,8 @@ import ai.konduit.serving.pipeline.api.data.Point;
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
 import ai.konduit.serving.tensorrt.NamedDimensionList;
 import io.swagger.v3.oas.annotations.media.Schema;
+import org.nd4j.linalg.learning.config.IUpdater;
+import org.nd4j.linalg.schedule.ISchedule;
 import org.nd4j.shade.guava.reflect.TypeToken;
 import picocli.CommandLine;
 
@@ -84,6 +86,8 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         converters.put(Point.class.getName(),new PointConverter());
         converters.put(PythonConfig.class.getName(),new PythonConfigTypeConverter());
         converters.put(NamedDimensionList.class.getName(),new NameDimensionConverter());
+        converters.put(IUpdater.class.getName(),new UpdaterConverter());
+        converters.put(ISchedule.class.getName(),new LearningRateScheduleConverter());
     }
 
 
@@ -122,7 +126,8 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
                   PERSPECTIVE_TRANSFORM,
                   IMAGE_CROP,
                   GRAY_SCALE,
-                  TENSORRT
+                  TENSORRT,
+
           };
 
         }
@@ -132,7 +137,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
                 CommandLine.Model.CommandSpec spec = CommandLine.Model.CommandSpec.create();
                 spec.mixinStandardHelpOptions(true); // usageHelp and versionHelp option
                 addStep(PipelineStepType.clazzForType(pipelineStepType),spec);
-                spec.name(pipelineStepType.name());
+                spec.name(pipelineStepType.name().toLowerCase());
                 spec.addOption(CommandLine.Model.OptionSpec.builder("--fileFormat")
                         .type(String.class)
                         .required(true)

@@ -4,9 +4,6 @@ import ai.konduit.serving.tensorrt.NamedDimension;
 import ai.konduit.serving.tensorrt.NamedDimensionList;
 import picocli.CommandLine;
 
-import java.util.HashMap;
-import java.util.Map;
-
 public class NameDimensionConverter implements CommandLine.ITypeConverter<NamedDimensionList> {
     public final static String ENTRY_DELIMITER = ";";
 

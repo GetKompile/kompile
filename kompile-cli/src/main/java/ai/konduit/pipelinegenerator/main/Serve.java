@@ -1,6 +1,5 @@
 package ai.konduit.pipelinegenerator.main;
 
-import ai.konduit.serving.util.ObjectMappers;
 import ai.konduit.serving.vertx.api.DeployKonduitServing;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import ai.konduit.serving.vertx.config.InferenceDeploymentResult;

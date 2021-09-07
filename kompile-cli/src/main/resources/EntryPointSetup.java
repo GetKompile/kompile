@@ -41,7 +41,7 @@ public class EntryPointSetup {
                 .checkForNAN(getBoolFromEnv("KOMPILE_CHECK_NAN",false))
                 .checkLocality(getBoolFromEnv("KOMPILE_CHECK_LOCALITY",false))
                 .build());
-        
+
 
 
 

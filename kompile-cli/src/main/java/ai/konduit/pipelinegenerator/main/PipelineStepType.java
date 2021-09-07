@@ -36,7 +36,8 @@ public enum PipelineStepType {
     IMAGE_CROP,
     GRAY_SCALE,
     TVM,
-    TENSORRT;
+    TENSORRT,
+    SAMEDIFF_TRAINING;
 
     /**
      * Returns the {@link PipelineStepType}
@@ -123,6 +124,9 @@ public enum PipelineStepType {
                 return SSDToBoundingBoxStep.class;
             case SAMEDIFF:
                 clazz = Class.forName("ai.konduit.serving.models.samediff.step.SameDiffStep");
+                return (Class<? extends PipelineStep>) clazz;
+            case SAMEDIFF_TRAINING:
+                clazz = Class.forName("ai.konduit.serving.models.samediff.step.trainer.SameDiffTrainerStep");
                 return (Class<? extends PipelineStep>) clazz;
             case SHOW_IMAGE:
                 clazz = Class.forName("ai.konduit.serving.data.image.step.show.ShowImageStep");
