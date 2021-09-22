@@ -1,5 +1,6 @@
 package ai.konduit.pipelinegenerator.main;
 
+import ai.konduit.serving.configcreator.PipelineStepType;
 import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
 import ai.konduit.serving.pipeline.impl.pipeline.GraphPipeline;

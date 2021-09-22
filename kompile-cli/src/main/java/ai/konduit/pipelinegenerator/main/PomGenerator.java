@@ -1,9 +1,9 @@
 package ai.konduit.pipelinegenerator.main;
 
 import ai.konduit.pipelinegenerator.main.pomfileappender.impl.*;
+import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
-import org.apache.tika.io.IOUtils;
 import org.codehaus.plexus.util.FileUtils;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.codehaus.plexus.util.xml.Xpp3DomBuilder;

@@ -1,8 +1,8 @@
 package ai.konduit.pipelinegenerator.main;
 
+import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.Model;
 import org.apache.maven.shared.invoker.*;
-import org.apache.tika.io.IOUtils;
 import org.codehaus.plexus.util.FileUtils;
 import org.nd4j.common.io.ClassPathResource;
 import picocli.CommandLine;
