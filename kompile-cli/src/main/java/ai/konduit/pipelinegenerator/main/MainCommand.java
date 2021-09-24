@@ -1,8 +1,8 @@
 package ai.konduit.pipelinegenerator.main;
 
+import ai.konduit.pipelinegenerator.main.nd4j.Nd4jOptimizer;
 import picocli.CommandLine;
 
-import java.util.Arrays;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "pipeline",subcommands = {

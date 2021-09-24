@@ -109,35 +109,6 @@ public class PomGenerator implements Callable<Void> {
     //Set the resource to be the model generated based on pipeline
     //Set the pipeline resource json name to be loaded
 
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version) {
-        addDependency(addTo,groupId,artifactId,version,"compile");
-    }
-
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version,String scope) {
-        addDependency(addTo,groupId,artifactId,version,scope,"");
-    }
-
-
-    public Dependency getDependency(String groupId,String artifactId,String version,String scope,String classifier) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId(groupId);
-        dependency.setArtifactId(artifactId);
-        dependency.setVersion(version);
-        dependency.setScope(scope);
-        dependency.setClassifier(classifier);
-        return dependency;
-    }
-
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version,String scope,String classifier) {
-        Dependency dependency = getDependency(groupId,artifactId,version,scope,classifier);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
-        addTo.add(dependency);
-
-    }
-
 
     public void addNd4jBackend(List<Dependency> addTo) {
         Dependency dependency = new Dependency();
@@ -222,8 +193,8 @@ public class PomGenerator implements Callable<Void> {
         if(nd4jBackendClassifier != null && nd4jBackendClassifier.equals("linux-arm64")) {
             //override cuda version, tensorrt by default uses the intel assumed version of cuda
             System.out.println("Adding cuda for jetson nano,overriding intel");
-            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
-            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
             Exclusion cudaExclusion = new Exclusion();
             cudaExclusion.setGroupId("org.bytedeco");
             cudaExclusion.setArtifactId("cuda");
@@ -415,22 +386,22 @@ public class PomGenerator implements Callable<Void> {
 
 
     public void addVertxDependencies(List<Dependency> vertxDeps) {
-        addDependency(vertxDeps,"io.micrometer","micrometer-registry-influx",microMeterVersion);
-        addDependency(vertxDeps,"io.micrometer","micrometer-registry-jmx",microMeterVersion);
-        addDependency(vertxDeps,"org.mortbay.jetty.alpn","alpn-boot",alpnVersion);
-        addDependency(vertxDeps,"org.eclipse.jetty.npn","npn-api",npnVersion);
-        addDependency(vertxDeps,"io.netty","netty-transport-native-unix-common",nettyVersion);
-        addDependency( vertxDeps,"org.conscrypt","conscrypt-openjdk",concsryptVersion,"compile","${os.detected.classifier}");
+        PomGeneratorUtils.addDependency(vertxDeps,"io.micrometer","micrometer-registry-influx",microMeterVersion);
+        PomGeneratorUtils.addDependency(vertxDeps,"io.micrometer","micrometer-registry-jmx",microMeterVersion);
+        PomGeneratorUtils.addDependency(vertxDeps,"org.mortbay.jetty.alpn","alpn-boot",alpnVersion);
+        PomGeneratorUtils.addDependency(vertxDeps,"org.eclipse.jetty.npn","npn-api",npnVersion);
+        PomGeneratorUtils.addDependency(vertxDeps,"io.netty","netty-transport-native-unix-common",nettyVersion);
+        PomGeneratorUtils.addDependency( vertxDeps,"org.conscrypt","conscrypt-openjdk",concsryptVersion,"compile","${os.detected.classifier}");
     }
 
     public void addDefaultDependencies() {
-        addDependency(defaultDependencies,"org.graalvm.sdk","graal-sdk",graalVmVersion,"provided");
-        addDependency(defaultDependencies,"org.graalvm.nativeimage","svm",graalVmVersion,"provided");
-        addDependency(defaultDependencies,"org.bytedeco","javacpp",javacppVersion);
-        addDependency(defaultDependencies,"log4j","log4j",log4jVersion);
-        addDependency(defaultDependencies,"org.slf4j","slf4j-api",slf4jVersion);
-        addDependency(defaultDependencies,"commons-io","commons-io",commonsVersion);
-        addDependency(defaultDependencies,"commons-lang","commons-lang",commonsVersion);
+        PomGeneratorUtils.addDependency(defaultDependencies,"org.graalvm.sdk","graal-sdk",graalVmVersion,"provided");
+        PomGeneratorUtils.addDependency(defaultDependencies,"org.graalvm.nativeimage","svm",graalVmVersion,"provided");
+        PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","javacpp",javacppVersion);
+        PomGeneratorUtils.addDependency(defaultDependencies,"log4j","log4j",log4jVersion);
+        PomGeneratorUtils.addDependency(defaultDependencies,"org.slf4j","slf4j-api",slf4jVersion);
+        PomGeneratorUtils.addDependency(defaultDependencies,"commons-io","commons-io",commonsVersion);
+        PomGeneratorUtils.addDependency(defaultDependencies,"commons-lang","commons-lang",commonsVersion);
 
     }
 
@@ -588,7 +559,7 @@ public class PomGenerator implements Callable<Void> {
             //setup the exec:java reflections print configuration. Reflections should only be used from the classpath of the generated project, not actually for graalvm.
             //This configuration is to assist in the configuration of graalvm configuration files.
             configuration2.put("mainClass","ai.konduit.pipelinegenerator.main.GraalVmPrint");
-            execMaven.setConfiguration(getPluginConfigObject(configuration2));
+            execMaven.setConfiguration(PomGeneratorUtils.getPluginConfigObject(configuration2));
             execMaven.setExecutions(Arrays.asList(javaExecution));
 
             build.addPlugin(execMaven);
@@ -599,20 +570,8 @@ public class PomGenerator implements Callable<Void> {
     }
 
 
-    public static Xpp3Dom getPluginConfigObject(Map<String,String> configuration) throws IOException, XmlPullParserException {
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("<configuration>\n");
-        for(Map.Entry<String,String> configEntry : configuration.entrySet()) {
-            stringBuilder.append(String.format("<%s>%s</%s>\n",configEntry.getKey(),configEntry.getValue(),configEntry.getKey()));
-        }
-        stringBuilder.append("</configuration>");
-        StringReader stringReader = new StringReader(stringBuilder.toString());
-        Xpp3Dom ret = Xpp3DomBuilder.build(stringReader);
-        return ret;
-    }
-
     public void addJavacppProfiles() {
-        Profile defaultProfile =new Profile();
+        Profile defaultProfile = new Profile();
         defaultProfile.setId("javacpp-platform-default");
         Activation activation = new Activation();
         ActivationProperty activationProperty = new ActivationProperty();
@@ -793,26 +752,26 @@ public class PomGenerator implements Callable<Void> {
 
         if(enableJetsonNano) {
             System.out.println("Adding jetson nano");
-            addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
-            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2");
-            addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2","compile","linux-arm64");
-            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
-            addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
+            PomGeneratorUtils.addDependency(defaultDependencies,"ai.konduit.serving","konduit-serving-gpu-nano",konduitServingVersion);
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2");
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2","compile","linux-arm64");
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
+            PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
 
 
         }
 
         if(addReflections) {
             addReflections(defaultDependencies);
-            addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
+            PomGeneratorUtils.addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
         }
 
         //needed to access lombok features with graalvm
-        addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
+        PomGeneratorUtils.addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
         DependencyManagement dependencyManagement = new DependencyManagement();
         //needed to force lombok to be compile time dependency
         //see: https://github.com/quarkusio/quarkus/issues/1904
-        Dependency lombok = getDependency("org.project.lombok","lombok",lombokVersion,"compile","");
+        Dependency lombok = PomGeneratorUtils.getDependency("org.project.lombok","lombok",lombokVersion,"compile","");
         lombok.setOptional(true);
         dependencyManagement.addDependency(lombok);
 
