@@ -202,6 +202,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
                 //already present by default in konduit-serving-pipeline as a transitive dependency
                 break;
             case SAMEDIFF:
+            case SAMEDIFF_TRAINING:
                 commandsToAdd.add("samediff");
                 break;
             case TENSORFLOW:
@@ -210,6 +211,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
             case TENSORRT:
                 commandsToAdd.add("tensorrt");
                 break;
+
 
         }
     }

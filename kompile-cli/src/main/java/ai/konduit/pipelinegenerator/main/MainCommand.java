@@ -8,12 +8,13 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "pipeline",subcommands = {
         NativeImageBuilder.class,
         PipelineCommandGenerator.class,
-        PipelineGenerator.class,
         GraalVmPrint.class,
         PomGenerator.class,
         PrintJavacppPythonPath.class,
         Nd4jOptimizer.class,
-        Serve.class
+        AnalyzeOps.class,
+        Serve.class,
+        SameDiffPrint.class
 }, mixinStandardHelpOptions = true)
 public class MainCommand implements Callable<Integer> {
 

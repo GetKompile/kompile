@@ -2849,9 +2849,12 @@
   },
   {
     "name":"org.nd4j.nativeblas.NativeOps",
-    "allDeclaredFields":true,
-    "allDeclaredMethods":true,
-    "allDeclaredConstructors":true
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
   },
   {
     "name":"org.bytedeco.javacpp.tools.Generator$ShortEnum",

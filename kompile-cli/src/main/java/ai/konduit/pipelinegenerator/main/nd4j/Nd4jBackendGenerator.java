@@ -144,17 +144,19 @@ public class Nd4jBackendGenerator {
         Plugin compilerPlugin = new Plugin();
         compilerPlugin.setGroupId(PomGeneratorConstants.MAVEN_PLUGIN_GROUP_ID);
         compilerPlugin.setArtifactId("maven-compiler-plugin");
-        PluginExecution javacppParser = new PluginExecution();
-        javacppParser.setId("javacpp-parser");
-        javacppParser.setPhase("generate-sources");
-        javacppParser.setGoals(Arrays.asList("compile"));
+        PluginExecution mavenCompilerJavacppParser = new PluginExecution();
+        //note: comiler plugin parser
+        mavenCompilerJavacppParser.setId("javacpp-parser");
+        mavenCompilerJavacppParser.setPhase("generate-sources");
+        mavenCompilerJavacppParser.setGoals(Arrays.asList("compile"));
         Map<String,String> javacppParserConfig = new HashMap<>();
         javacppParserConfig.put("skipMain","${javacpp.parser.skip}");
 
         List<String> javacppInclude =new ArrayList<>();
         javacppInclude.add("org/nd4j/nativeblas/**.java");
         Xpp3Dom javacppConfig = PomGeneratorUtils.getHybridConfig(javacppParserConfig, javacppInclude, "include", "includes");
-        javacppParser.setConfiguration(javacppConfig);
+        mavenCompilerJavacppParser.setConfiguration(javacppConfig);
+
 
         Map<String,String> compilerConfig = new HashMap<>();
         compilerConfig.put("source","8");
@@ -242,12 +244,27 @@ public class Nd4jBackendGenerator {
 
         }
 
-        javacppParserExecConfig.put("copyLibs","true");
-        javacppParserExecConfig.put("configDirectory","${project.build.directory}/classes/META-INF/native-image/${javacpp.platform}${javacpp.platform.extension}/");
-        javacppParserExecConfig.put("outputDirectory","${javacpp.build.output.path}");
         javacppParserExec.setConfiguration(PomGeneratorUtils.getPluginConfigObject(javacppParserExecConfig));
         javacppPlugin.addExecution(javacppParserExec);
 
+
+        PluginExecution javacppCompiler = new PluginExecution();
+        javacppCompiler.setId("javacpp-compiler");
+        javacppCompiler.setGoals(Arrays.asList("build"));
+        javacppCompiler.setPhase("process-classes");
+        Map<String,String> compilerConfig2 = new HashMap<>();
+        compilerConfig2.put("skip","${javacpp.compiler.skip}");
+        compilerConfig2.put("copyLibs","true");
+        compilerConfig2.put("configDirectory","${project.build.directory}/classes/META-INF/native-image/${javacpp.platform}${javacpp.platform.extension}/");
+        compilerConfig2.put("outputDirectory","${javacpp.build.output.path}");
+        if(backendBase.contains("cuda")) {
+            compilerConfig2.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCuda");
+        } else {
+            compilerConfig2.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCpu");
+        }
+        Xpp3Dom javacppCompilerConfig = PomGeneratorUtils.getPluginConfigObject(compilerConfig2);
+        javacppCompiler.setConfiguration(javacppCompilerConfig);
+        javacppPlugin.addExecution(javacppCompiler);
         build.addPlugin(javacppPlugin);
 
         model.setBuild(build);

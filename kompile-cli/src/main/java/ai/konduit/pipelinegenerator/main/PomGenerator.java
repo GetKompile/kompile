@@ -38,6 +38,8 @@ public class PomGenerator implements Callable<Void> {
     private boolean nd4jTensorflow = false;
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
     private boolean image = false;
+    @CommandLine.Option(names = "--openblas",description = "Whether to use openblas")
+    private boolean openblas = false;
     @CommandLine.Option(names = "--server",description = "Whether to use an http server or not")
     private boolean server = false;
 
@@ -124,22 +126,6 @@ public class PomGenerator implements Callable<Void> {
             classifierDep.setClassifier(nd4jBackendClassifier);
             addTo.add(classifierDep);
 
-            //add openblas as default
-            if(nd4jBackend.equals("nd4j-native")) {
-                Dependency openBlasDep = new Dependency();
-                openBlasDep.setGroupId("org.bytedeco");
-                openBlasDep.setArtifactId("openblas");
-                openBlasDep.setVersion(openblasVersion);
-                addTo.add(openBlasDep);
-
-                Dependency openBlasClassifierDep = new Dependency();
-                openBlasClassifierDep.setGroupId("org.bytedeco");
-                openBlasClassifierDep.setArtifactId("openblas");
-                openBlasClassifierDep.setVersion(openblasVersion);
-                openBlasClassifierDep.setClassifier(nd4jBackendClassifier);
-                addTo.add(openBlasClassifierDep);
-
-            }
 
         }
 
@@ -440,7 +426,7 @@ public class PomGenerator implements Callable<Void> {
             stringBuilder.append("-Dpipeline.path=" + pipelinePath + "\n");
         //See: https://github.com/oracle/graal/issues/1722
         stringBuilder.append("-H:Log=registerResource\n");
-
+        stringBuilder.append("--initialize-at-run-time=org.nd4j.nativeblas\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
         stringBuilder.append(String.format("-R:MinHeapSize=%dM\n",minHeapSize));
         stringBuilder.append(String.format("-R:MaxHeapSize=%dM\n",maxHeapSize));
@@ -693,6 +679,21 @@ public class PomGenerator implements Callable<Void> {
 
     }
 
+    private void addOpenblas(List<Dependency> dependencies) {
+        Dependency openBlasDep = new Dependency();
+        openBlasDep.setGroupId("org.bytedeco");
+        openBlasDep.setArtifactId("openblas");
+        openBlasDep.setVersion(openblasVersion);
+        dependencies.add(openBlasDep);
+
+        Dependency openBlasClassifierDep = new Dependency();
+        openBlasClassifierDep.setGroupId("org.bytedeco");
+        openBlasClassifierDep.setArtifactId("openblas");
+        openBlasClassifierDep.setVersion(openblasVersion);
+        openBlasClassifierDep.setClassifier(nd4jBackendClassifier);
+        dependencies.add(openBlasClassifierDep);
+    }
+
     public void create() throws Exception {
         model = new Model();
         model.setArtifactId("konduit-pipeline");
@@ -733,6 +734,10 @@ public class PomGenerator implements Callable<Void> {
         if(nd4jTensorflow)
             addNd4jTensorflow(defaultDependencies);
 
+        if(openblas) {
+            addOpenblas(defaultDependencies);
+        }
+
         if(samediff)
             addSameDiff(defaultDependencies);
 
@@ -757,8 +762,6 @@ public class PomGenerator implements Callable<Void> {
             PomGeneratorUtils.addDependency(defaultDependencies,"org.nd4j","nd4j-cuda-10.2","1.0.0-M2","compile","linux-arm64");
             PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion);
             PomGeneratorUtils.addDependency(defaultDependencies,"org.bytedeco","cuda",cudaJetsonVersion,"compile","linux-arm64");
-
-
         }
 
         if(addReflections) {
