@@ -241,6 +241,9 @@ public class Nd4jBackendGenerator {
         javacppParserExecConfig.put("outputDirectory","${project.build.sourceDirectory}");
         if(backendBase.contains("cuda")) {
             javacppParserExecConfig.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCudaPresets");
+        } else if(backendBase.contains("aurora")) {
+            javacppParserExecConfig.put("classOrPackageName","org.nd4j.aurora.AuroraPresets");
+
         } else {
             javacppParserExecConfig.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCpuPresets");
 
@@ -261,8 +264,11 @@ public class Nd4jBackendGenerator {
         compilerConfig2.put("outputDirectory","${javacpp.build.output.path}");
         if(backendBase.contains("cuda")) {
             compilerConfig2.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCuda");
-        } else {
+        } else if(backendBase.contains("aurora")) {
             compilerConfig2.put("classOrPackageName","org.nd4j.nativeblas.Nd4jCpu");
+
+        }  else {
+            compilerConfig2.put("classOrPackageName","org.nd4j.nativeblas.ND4jAuroraOps");
         }
         Xpp3Dom javacppCompilerConfig = PomGeneratorUtils.getPluginConfigObject(compilerConfig2);
         javacppCompiler.setConfiguration(javacppCompilerConfig);
