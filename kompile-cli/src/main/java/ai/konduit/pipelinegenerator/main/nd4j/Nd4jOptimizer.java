@@ -119,7 +119,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
             presetSource.mkdirs();
             FileUtils.copyDirectory(new File(nd4jNative,"src"),presetSource);
         } else if(targetNd4jBackendName.contains("aurora")) {
-            File nd4jAurora = new File(backendParent,"nd4j-aurora-preset");
+            File nd4jAurora = new File(backendParent,"nd4j-aurora-presets");
             File presetSource = new File(backendPreset,"src");
             presetSource.mkdirs();
             FileUtils.copyDirectory(new File(nd4jAurora,"src"),presetSource);
