@@ -186,6 +186,8 @@ if test -f "$PIPELINE_FILE"; then
     POM_GENERATE_COMMAND="$(./pipeline   pipeline-command-generate  --minHeapSize=${MIN_RAM_MEGS} --maxHeapSize=${MAX_RAM_MEGS} --noPointerGc=${NO_GC} --mainClass=${MAIN_CLASS} --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --nd4jBackend=${ND4J_BACKEND}  --nd4jBackendClassifier=${ND4J_CLASSIFIER}  --enableJetsonNano=${ENABLE_JETSON_NANO} --pipelineFile=${PIPELINE_FILE}   --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
     eval "./pipeline ${POM_GENERATE_COMMAND}"
+    BUILD_DIR="$(pwd)"
+    export NATIVE_LIB_DIR="${BUILD_DIR}/${IMAGE_NAME}/target"
     ./pipeline native-image-generate  \
                 --imageName="${IMAGE_NAME}" \
                 --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
@@ -194,10 +196,10 @@ if test -f "$PIPELINE_FILE"; then
                 --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
                 --javacppPlatform="${BUILD_PLATFORM}" \
                 --mainClass="${MAIN_CLASS}"
+    cp "${NATIVE_LIB_DIR}/${IMAGE_NAME}.so" "${NATIVE_LIB_DIR}/lib${IMAGE_NAME}.so"
     echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
     mkdir -p "${LIB_OUTPUT_PATH}"
-    BUILD_DIR="$(pwd)"
     cd "${LIB_OUTPUT_PATH}"
     # Resolve absolute path in case relative path is specified
     REAL_LIB_PATH="$(pwd)"
@@ -226,9 +228,10 @@ if test -f "$PIPELINE_FILE"; then
     make
     # Note we don't quote here so it resolves the binary extension properly
     cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
+    export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
     cd ..
     # Ensure link path is set for compiling the right python libraries
-    export LD_LIBRARY_PATH="${LIB_OUTPUT_PATH}"
+    export LD_LIBRARY_PATH="${KOMPILE_C_PATH}:${NATIVE_LIB_DIR}:${LD_LIBRARY_PATH}"
     if test  -f './kompile-python' ; then
          rm -rf './kompile-python'
     fi
