@@ -37,6 +37,8 @@ public class Nd4jBackendGenerator {
         dependencies = new ArrayList<>();
         if(backendBase.contains("cuda")) {
             backendDependencyInfoProvider = new GpuBackendDependencyInfoProvider(cudaVersion);
+        } else if(backendBase.contains("aurora")) {
+            backendDependencyInfoProvider = new AuroraBackendDependencyInfoProvider();
         } else {
             backendDependencyInfoProvider = new CpuBackendDependencyInfoProvider();
         }

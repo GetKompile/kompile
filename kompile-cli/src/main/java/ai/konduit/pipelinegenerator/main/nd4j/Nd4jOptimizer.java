@@ -65,6 +65,21 @@ public class Nd4jOptimizer implements Callable<Integer> {
 
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
         String command = (extension != null ? " -Djavacpp.platform.extension=" + extension : "") + " -Dlibnd4j.buildThreads=" + buildThreads +  (extension != null ? " -Dlibnd4j.extension=" + extension: "") + " -Djavacpp.platform=" + javacppPlatform + " -DskipTests -Dlibnd4j.operations=\"" + operations + "\" -Dlibnd4j.datatypes=\"" + dataTypes + "\" -Dlibnd4j.helper=" + helper  + (clean ? " clean " : " ") + " package";
+        StringBuilder libnd4jCommand2 = new StringBuilder();
+        libnd4jCommand2.append(command);
+        if(targetNd4jBackendName.contains("aurora")) {
+            libnd4jCommand2.append(" ");
+            libnd4jCommand2.append(" -Paurora -Dlibnd4j.chip=aurora -Dlibnd4j.platform=aurora ");
+        } else if(targetNd4jBackendName.contains("native")) {
+            libnd4jCommand2.append(" ");
+            libnd4jCommand2.append(" -Pcpu -Dlibnd4j.chip=cpu ");
+        } else if(targetNd4jBackendName.contains("cuda")) {
+            libnd4jCommand2.append(" ");
+            libnd4jCommand2.append(" -Pcuda -Dlibnd4j.chip=cuda ");
+        }
+
+        command = libnd4jCommand2.toString();
+
         System.out.println("Building libnd4j with command " + command);
         invocationRequest.setMavenOpts("-Djavacpp.platform=" + javacppPlatform);
         invocationRequest.setGoals(Arrays.asList(command.split(" ")));
@@ -85,7 +100,12 @@ public class Nd4jOptimizer implements Callable<Integer> {
             File nd4jBackendSrc = new File(nd4jBackend,"src");
             nd4jBackendSrc.mkdirs();
             FileUtils.copyDirectory(new File(nd4jNative,"src"),nd4jBackendSrc);
-        } else {
+        } else if(targetNd4jBackendName.contains("aurora")) {
+            File nd4jAurora = new File(backendParent,"nd4j-aurora");
+            File nd4jBackendSrc = new File(nd4jBackend,"src");
+            FileUtils.copyDirectory(new File(nd4jAurora,"src"),nd4jBackendSrc);
+        }
+        else {
             File nd4jCuda = new File(backendParent,"nd4j-cuda");
             File nd4jBackendSrc = new File(nd4jBackend,"src");
             FileUtils.copyDirectory(new File(nd4jCuda,"src"),nd4jBackendSrc);
@@ -98,7 +118,12 @@ public class Nd4jOptimizer implements Callable<Integer> {
             File presetSource = new File(backendPreset,"src");
             presetSource.mkdirs();
             FileUtils.copyDirectory(new File(nd4jNative,"src"),presetSource);
-        } else {
+        } else if(targetNd4jBackendName.contains("aurora")) {
+            File nd4jAurora = new File(backendParent,"nd4j-aurora-preset");
+            File presetSource = new File(backendPreset,"src");
+            presetSource.mkdirs();
+            FileUtils.copyDirectory(new File(nd4jAurora,"src"),presetSource);
+        }  else {
             File nd4jCuda = new File(backendParent,"nd4j-cuda-preset");
             File presetSource = new File(backendPreset,"src");
             presetSource.mkdirs();

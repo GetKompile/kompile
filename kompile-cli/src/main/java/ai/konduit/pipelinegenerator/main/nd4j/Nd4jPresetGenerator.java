@@ -47,8 +47,6 @@ public class Nd4jPresetGenerator {
         //note: version inherited from parent pom
         PomGeneratorUtils.addDependency(dependencies,PomGeneratorConstants.JAVACPP_GROUP_ID,"javacpp",null);
         PomGeneratorUtils.addDependency(dependencies,PomGeneratorConstants.JAVACPP_GROUP_ID,"javacpp",null,"compile","${dependency.platform}");
-        PomGeneratorUtils.addDependency(dependencies,PomGeneratorConstants.JAVACPP_GROUP_ID,"openblas","${openblas.version}-${javacpp-presets.version}");
-        PomGeneratorUtils.addDependency(dependencies,PomGeneratorConstants.JAVACPP_GROUP_ID,"openblas","${openblas.version}-${javacpp-presets.version}",null,"${dependency.platform}");
 
         Dependency dependency = new Dependency();
         dependency.setGroupId(PomGeneratorConstants.DEPENDENCY_GROUP_ID);
