@@ -1,5 +1,6 @@
 package ai.konduit.pipelinegenerator.main;
 
+import ai.konduit.pipelinegenerator.main.konvert.Konvert;
 import ai.konduit.pipelinegenerator.main.nd4j.Nd4jOptimizer;
 import picocli.CommandLine;
 
@@ -14,7 +15,8 @@ import java.util.concurrent.Callable;
         Nd4jOptimizer.class,
         AnalyzeOps.class,
         Serve.class,
-        SameDiffPrint.class
+        SameDiffPrint.class,
+        Konvert.class
 }, mixinStandardHelpOptions = true)
 public class MainCommand implements Callable<Integer> {
 
