@@ -9,6 +9,12 @@ import org.apache.maven.shared.invoker.DefaultInvoker;
 import org.apache.maven.shared.invoker.InvocationRequest;
 import org.apache.maven.shared.invoker.Invoker;
 import org.eclipse.jgit.api.Git;
+import org.jetbrains.annotations.NotNull;
+import org.nd4j.autodiff.functions.DifferentialFunction;
+import org.nd4j.autodiff.samediff.SDVariable;
+import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.autodiff.samediff.internal.SameDiffOp;
+import org.nd4j.common.primitives.Pair;
 import picocli.CommandLine;
 
 import java.io.*;
@@ -24,8 +30,10 @@ public class Nd4jOptimizer implements Callable<Integer> {
     private String dataTypes;
     @CommandLine.Option(names = "--operations")
     private String operations;
-    @CommandLine.Option(names = "--modelPath")
+    @CommandLine.Option(names = "--modelPath",description = "A path to a flatbuffers model from samediff")
     private String modelPath;
+    @CommandLine.Option(names = "--modelDirectory",description = "A path to a directory of  samediff models")
+    private String modelDirectory;
     @CommandLine.Option(names = "--targetBackendName",required = true)
     private String targetNd4jBackendName;
     @CommandLine.Option(names = "--deeplearning4jPath")
@@ -174,7 +182,12 @@ public class Nd4jOptimizer implements Callable<Integer> {
         }
 
 
-
+        if(modelPath != null) {
+            //sets the data types and operations according to what occurs in the specific model
+            Pair<String,String> opsAndDtypes = opsAndDataTypes();
+            this.operations = opsAndDtypes.getFirst();
+            this.dataTypes = opsAndDtypes.getSecond();
+        }
 
 
         //modify the pom to include the new modules
@@ -216,4 +229,78 @@ public class Nd4jOptimizer implements Callable<Integer> {
         invoker.execute(nd4jBackendBuild);
         return 0;
     }
+
+    private Pair<String,String> opsAndDataTypes() {
+        if(modelPath != null) {
+            SameDiff sameDiff = SameDiff.load(new File(modelPath),true);
+            Pair<Set<String>, Set<String>> opsDataTypes  = opsAndDataTypesFromModel(sameDiff);
+            String operations = colonSeparatedString(opsDataTypes.getFirst());
+            String dataTypes = colonSeparatedString(opsDataTypes.getSecond());
+            return Pair.of(operations,dataTypes);
+        } else if(modelDirectory != null) {
+            Set<String> allOps = new HashSet<>();
+            Set<String> allDTypes = new HashSet<>();
+            for(File f : new File(modelDirectory).listFiles()) {
+                SameDiff sameDiff = SameDiff.load(new File(f.getAbsolutePath()),true);
+                Pair<Set<String>, Set<String>> opsDataTypes  = opsAndDataTypesFromModel(sameDiff);
+                allOps.addAll(opsDataTypes.getFirst());
+                allDTypes.addAll(opsDataTypes.getSecond());
+            }
+
+            return Pair.of(colonSeparatedString(allOps),colonSeparatedString(allDTypes));
+        }
+
+        return null;
+    }
+
+    private String colonSeparatedString(Set<String> input) {
+        StringBuilder ops = new StringBuilder();
+        for(String opName : input) {
+            ops.append(opName);
+            ops.append(";");
+        }
+
+        if(ops.toString().endsWith(";")) {
+            ops.deleteCharAt(ops.length() - 1);
+        }
+
+        return ops.toString();
+    }
+
+    @NotNull
+    private Pair<Set<String>, Set<String>> opsAndDataTypesFromModel(SameDiff sameDiff) {
+        StringBuilder ops = new StringBuilder();
+        StringBuilder dataTypes = new StringBuilder();
+        Set<String> opNames = new HashSet<>();
+        Set<String> dataTypesSet = new HashSet<>();
+        for(DifferentialFunction sameDiffOp : sameDiff.ops()) {
+            opNames.add(sameDiffOp.opName());
+        }
+
+        for(SDVariable variable : sameDiff.variables()) {
+            dataTypesSet.add(variable.dataType().name());
+        }
+
+
+        for(String opName : opNames) {
+            ops.append(opName);
+            ops.append(";");
+        }
+
+        for(String dataType : dataTypesSet) {
+            dataTypes.append(dataType.toLowerCase());
+            dataTypes.append(";");
+        }
+
+        if(ops.toString().endsWith(";")) {
+            ops.deleteCharAt(ops.length() - 1);
+        }
+
+        if(dataTypes.toString().endsWith(";")) {
+            dataTypes.deleteCharAt(dataTypes.length() - 1);
+        }
+
+        return Pair.of(opNames,dataTypesSet);
+    }
+
 }
