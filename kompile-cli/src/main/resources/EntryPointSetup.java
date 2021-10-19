@@ -11,6 +11,7 @@ public class EntryPointSetup {
 
     public static void setup() {
         //-Dorg.bytedeco.javacpp.maxbytes=8G -Dorg.bytedeco.javacpp.maxphysicalbytes=10G
+        Nd4j.create(1.0);
         String maxBytes = System.getenv().containsKey("KOMPILE_MAX_BYTES") ? System.getenv("KOMPILE_MAX_BYTES") : "1g";
         System.setProperty("org.bytedeco.javacpp.maxbytes",maxBytes);
         System.setProperty("org.bytedeco.javacpp.maxphysicalbytes",maxBytes);
