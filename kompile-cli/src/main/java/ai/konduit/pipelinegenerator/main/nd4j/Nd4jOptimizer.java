@@ -34,6 +34,11 @@ public class Nd4jOptimizer implements Callable<Integer> {
     private String modelPath;
     @CommandLine.Option(names = "--modelDirectory",description = "A path to a directory of  samediff models")
     private String modelDirectory;
+    @CommandLine.Option(names = "--extraOps",description = "Extra operations to be appended to the resolved operations: a colon separated list")
+    private String extraOps;
+    @CommandLine.Option(names = "--extraDataTypes",description = "Extra data types to be appended to the data types resolved: a colon separated list")
+    private String extraDataTypes;
+
     @CommandLine.Option(names = "--targetBackendName",required = true)
     private String targetNd4jBackendName;
     @CommandLine.Option(names = "--deeplearning4jPath")
@@ -182,11 +187,18 @@ public class Nd4jOptimizer implements Callable<Integer> {
         }
 
 
-        if(modelPath != null) {
+        if(modelPath != null || modelDirectory != null) {
             //sets the data types and operations according to what occurs in the specific model
             Pair<String,String> opsAndDtypes = opsAndDataTypes();
             this.operations = opsAndDtypes.getFirst();
+            if(extraOps != null) {
+                this.operations = operations + ";" + extraOps;
+            }
             this.dataTypes = opsAndDtypes.getSecond();
+
+           if(extraDataTypes != null) {
+                this.dataTypes = dataTypes + ";" + extraDataTypes;
+            }
         }
 
 
