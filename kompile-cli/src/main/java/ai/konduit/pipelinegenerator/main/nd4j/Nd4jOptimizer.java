@@ -262,10 +262,14 @@ public class Nd4jOptimizer implements Callable<Integer> {
             Set<String> allOps = new HashSet<>();
             Set<String> allDTypes = new HashSet<>();
             for(File f : new File(modelDirectory).listFiles()) {
-                SameDiff sameDiff = SameDiff.load(new File(f.getAbsolutePath()),true);
-                Pair<Set<String>, Set<String>> opsDataTypes  = opsAndDataTypesFromModel(sameDiff);
-                allOps.addAll(opsDataTypes.getFirst());
-                allDTypes.addAll(opsDataTypes.getSecond());
+                try {
+                    SameDiff sameDiff = SameDiff.load(new File(f.getAbsolutePath()), true);
+                    Pair<Set<String>, Set<String>> opsDataTypes = opsAndDataTypesFromModel(sameDiff);
+                    allOps.addAll(opsDataTypes.getFirst());
+                    allDTypes.addAll(opsDataTypes.getSecond());
+                }catch(Exception e) {
+                   System.err.println("Failed to load model " + f.getAbsolutePath()  + " with problem " + e.getMessage());
+                }
             }
 
             return Pair.of(colonSeparatedString(allOps),colonSeparatedString(allDTypes));
