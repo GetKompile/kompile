@@ -299,7 +299,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
         }
 
         for(SDVariable variable : sameDiff.variables()) {
-            if(variable.getVariableType() != VariableType.ARRAY && variable.getArr() != null)
+            if(variable.getVariableType() != VariableType.ARRAY && variable.getVariableType() != VariableType.VARIABLE)
                 dataTypesSet.add(variable.dataType().name());
         }
 
