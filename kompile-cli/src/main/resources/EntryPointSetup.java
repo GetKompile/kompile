@@ -22,7 +22,7 @@ public class EntryPointSetup {
         System.out.println("Set max bytes to " + maxBytes);
         System.out.println("Off heap memory before init usage is " + Pointer.physicalBytes());
 
-     /*   long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);
+        long nd4jMaxBytes = Pointer.parseBytes(maxBytes,1);
         Nd4j.getEnvironment().setMaxSpecialMemory(nd4jMaxBytes);
         Nd4j.getEnvironment().setMaxDeviceMemory(nd4jMaxBytes);
 
@@ -45,7 +45,6 @@ public class EntryPointSetup {
 
 
 
-*/
 
     }
 

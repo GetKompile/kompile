@@ -13,6 +13,7 @@ import org.jetbrains.annotations.NotNull;
 import org.nd4j.autodiff.functions.DifferentialFunction;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.autodiff.samediff.VariableType;
 import org.nd4j.autodiff.samediff.internal.SameDiffOp;
 import org.nd4j.common.primitives.Pair;
 import picocli.CommandLine;
@@ -196,7 +197,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
             }
             this.dataTypes = opsAndDtypes.getSecond();
 
-           if(extraDataTypes != null) {
+            if(extraDataTypes != null) {
                 this.dataTypes = dataTypes + ";" + extraDataTypes;
             }
         }
@@ -229,6 +230,14 @@ public class Nd4jOptimizer implements Callable<Integer> {
             nd4jPresetBuild.setBaseDirectory(backendPreset);
             invoker.execute(nd4jPresetBuild);
 
+        }
+
+        if(operations == null) {
+            operations = "";
+        }
+
+        if(dataTypes == null) {
+            dataTypes = "";
         }
 
 
@@ -290,7 +299,8 @@ public class Nd4jOptimizer implements Callable<Integer> {
         }
 
         for(SDVariable variable : sameDiff.variables()) {
-            dataTypesSet.add(variable.dataType().name());
+            if(variable.getVariableType() != VariableType.ARRAY)
+                dataTypesSet.add(variable.dataType().name());
         }
 
 
