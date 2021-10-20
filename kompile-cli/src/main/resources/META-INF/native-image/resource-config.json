@@ -71,7 +71,11 @@
     {"pattern":"\\Qorg/apache/maven/toolchain/building/DefaultToolchainsBuilder.class\\E"}, 
     {"pattern":"\\Qorg/apache/maven/toolchain/io/DefaultToolchainsReader.class\\E"}, 
     {"pattern":"\\Qorg/apache/maven/toolchain/io/DefaultToolchainsWriter.class\\E"}, 
-    {"pattern":"\\Qorg/bytedeco/javacpp/linux-x86_64/libjnijavacpp.so\\E"}, 
+    {"pattern":"\\Qorg/nd4j/aurora/linux-x86_64/libjnijavacpp.so\\E"},
+    {"pattern":"\\Qorg/nd4j/aurora/linux-x86_64/libjnind4jaurora.so\\E"},
+    {"pattern":"\\Qorg/nd4j/aurora/linux-x86_64/libnd4jaurora.so\\E"},
+    {"pattern":"\\Qorg/nd4j/aurora/linux-x86_64/libveo.so\\E"},
+
     {"pattern":"\\Qorg/bytedeco/javacpp/properties/linux-x86_64.properties\\E"}, 
     {"pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgcc_s.so.1\\E"}, 
     {"pattern":"\\Qorg/bytedeco/openblas/linux-x86_64/libgfortran.so.4\\E"}, 
