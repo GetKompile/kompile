@@ -32,7 +32,8 @@ public class GraalVmPrint implements Callable<Integer> {
     private boolean printGraalVmDeclarations;
     @Option(names = {"-ic","--include-all-classes"},description = "When printing graalvm configuration for classes include all classes,subclasses,fields,methods in reflection or not")
     private boolean includeAllClasses = false;
-
+    @Option(names = {"-ino","--include-no-args-only"},description = "When printing graalvm configuration for classes include all classes,subclasses,fields,methods in reflection or not")
+    private boolean includesNoArgsConstructorOnly = false;
 
 
     public static void main(String...args) {
@@ -80,7 +81,15 @@ public class GraalVmPrint implements Callable<Integer> {
             StringBuilder stringBuilder = new StringBuilder();
             for(String fullyQualfiedClassName : typeList) {
                 if(printGraalVmDeclarations) {
-                    if(includeAllClasses) {
+                    if(includesNoArgsConstructorOnly) {
+                        stringBuilder.append(String.format("  {\n" +
+                                "    \"name\":\"%s\",\n" +
+                                "    \"methods\": [\n" +
+                                "     { \"name\": \"<init>\", \"parameterTypes\": [] }\n" +
+                                "    ]\n" +
+                                "  },",fullyQualfiedClassName));
+                    }
+                    else if(includeAllClasses) {
                         stringBuilder.append(String.format("  {\n" +
                                 "    \"name\":\"%s\",\n" +
                                 "    \"allDeclaredConstructors\" : true,\n" +
