@@ -155,7 +155,8 @@ public class Nd4jOptimizer implements Callable<Integer> {
         }
 
 
-        File backendPreset = new File(deeplearning4jPath,"nd4j/nd4j-backends/nd4j-backend-impls/" + targetNd4jBackendName + "-preset");
+
+        File backendPreset = new File(deeplearning4jPath,"nd4j/nd4j-backends/nd4j-backend-impls/" + (targetNd4jBackendName.toLowerCase().contains("aurora") ?  targetNd4jBackendName + "-presets" : targetNd4jBackendName + "-preset"));
         //only copy files and create directories if the backend is not one of the canonical ones
         if(!presets.contains(targetNd4jBackendName + "-preset") && !presets.contains(targetNd4jBackendName + "-presets")) {
             backendPreset.mkdirs();
@@ -231,6 +232,17 @@ public class Nd4jOptimizer implements Callable<Integer> {
             invoker.execute(nd4jPresetBuild);
 
         }
+
+
+        //build the preset (a pre requisite for the backend)
+        InvocationRequest nd4jPresetBuild = new DefaultInvocationRequest();
+        nd4jPresetBuild.setMavenOpts("-Djavacpp.platform=" + javacppPlatform);
+        String presetBuildCommand = "-Djavacpp.platform=" + javacppPlatform + " -Dmaven.test.skip=true -Dlibnd4j.operations=\"" + operations + "\" -Dlibnd4j.datatypes=\"" + dataTypes + "\" -Dlibnd4j.helper=" + helper + (mavenDebug ? " -X " : " ")  + (clean ? " clean " : " ") + " install";
+        System.out.println("Building backend with command " + presetBuildCommand);
+        nd4jPresetBuild.setGoals(Arrays.asList(presetBuildCommand.split(" ")));
+        nd4jPresetBuild.setBaseDirectory(backendPreset);
+        invoker.execute(nd4jPresetBuild);
+
 
         if(operations == null) {
             operations = "";
