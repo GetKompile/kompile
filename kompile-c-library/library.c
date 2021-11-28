@@ -63,7 +63,7 @@ void checkMetricsWrapper(handles *handles) {
     graal_isolate_t* isolate = (graal_isolate_t*) handles->isolate;
     if(isolate_thread != NULL && isolate != NULL) {
         printf("In wrapper: about to run pipeline.\n");
-        checkMetrics(isolate_thread);
+        printMetrics(isolate_thread);
         printf("Ran pipeline\n");
     } else {
         if(isolate == NULL) {
