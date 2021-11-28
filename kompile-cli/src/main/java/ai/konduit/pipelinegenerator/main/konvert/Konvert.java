@@ -53,7 +53,7 @@ public class Konvert implements Callable<Void> {
 
     private void importAndExportTensorflow() throws IOException {
         TensorflowFrameworkImporter tensorflowFrameworkImporter = new TensorflowFrameworkImporter();
-        tensorflowFrameworkImporter.runImport(inputPath.getAbsolutePath(), Collections.emptyMap()).asFlatFile(outputPath);
+        tensorflowFrameworkImporter.runImport(inputPath.getAbsolutePath(), Collections.emptyMap(),true).asFlatFile(outputPath);
     }
 
 
@@ -70,6 +70,6 @@ public class Konvert implements Callable<Void> {
 
     private void importAndExportOnnx() throws IOException {
         OnnxFrameworkImporter onnxFrameworkImporter = new OnnxFrameworkImporter();
-        onnxFrameworkImporter.runImport(inputPath.getAbsolutePath(), Collections.emptyMap()).asFlatFile(outputPath);
+        onnxFrameworkImporter.runImport(inputPath.getAbsolutePath(), Collections.emptyMap(),true).asFlatFile(outputPath);
     }
 }
