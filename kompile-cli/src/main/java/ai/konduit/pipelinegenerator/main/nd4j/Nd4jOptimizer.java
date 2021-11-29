@@ -86,11 +86,15 @@ public class Nd4jOptimizer implements Callable<Integer> {
         if(modelPath != null || modelDirectory != null) {
             //sets the data types and operations according to what occurs in the specific model
             Pair<String,String> opsAndDtypes = opsAndDataTypes();
-            this.operations = opsAndDtypes.getFirst();
+            //don't override if specified
+            if(this.operations == null)
+                this.operations = opsAndDtypes.getFirst();
             if(extraOps != null) {
                 this.operations = operations + ";" + extraOps;
             }
-            this.dataTypes = opsAndDtypes.getSecond();
+
+            if(this.dataTypes == null)
+                this.dataTypes = opsAndDtypes.getSecond();
 
             if(extraDataTypes != null) {
                 this.dataTypes = dataTypes + ";" + extraDataTypes;
@@ -283,7 +287,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
                     allOps.addAll(opsDataTypes.getFirst());
                     allDTypes.addAll(opsDataTypes.getSecond());
                 }catch(Exception e) {
-                   System.err.println("Failed to load model " + f.getAbsolutePath()  + " with problem " + e.getMessage());
+                    System.err.println("Failed to load model " + f.getAbsolutePath()  + " with problem " + e.getMessage());
                 }
             }
 
