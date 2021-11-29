@@ -82,6 +82,23 @@ public class Nd4jOptimizer implements Callable<Integer> {
                     .call();
         }
 
+
+        if(modelPath != null || modelDirectory != null) {
+            //sets the data types and operations according to what occurs in the specific model
+            Pair<String,String> opsAndDtypes = opsAndDataTypes();
+            this.operations = opsAndDtypes.getFirst();
+            if(extraOps != null) {
+                this.operations = operations + ";" + extraOps;
+            }
+            this.dataTypes = opsAndDtypes.getSecond();
+
+            if(extraDataTypes != null) {
+                this.dataTypes = dataTypes + ";" + extraDataTypes;
+            }
+        }
+
+
+
         Set<String> presets = new HashSet<>();
         presets.add("nd4j-aurora-presets");
         presets.add("nd4j-cuda-preset");
@@ -94,7 +111,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
 
 
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
-        String command = (extension != null ? " -Djavacpp.platform.extension=" + extension : "") + " -Dlibnd4j.buildThreads=" + buildThreads +  (extension != null ? " -Dlibnd4j.extension=" + extension: "") + " -Djavacpp.platform=" + javacppPlatform + " -DskipTests -Dlibnd4j.operations=\"" + operations.replaceAll("\"","") + "\" -Dlibnd4j.datatypes=\"" + dataTypes.replaceAll("\"","") +"\"" +  (helper != null ? " -Dlibnd4j.helper=" + helper: "")  + (clean ? " clean " : " ") + " package";
+        String command = (extension != null ? " -Djavacpp.platform.extension=" + extension : "") + " -Dlibnd4j.buildThreads=" + buildThreads +  (extension != null ? " -Dlibnd4j.extension=" + extension: "") + " -Djavacpp.platform=" + javacppPlatform + " -DskipTests -Dlibnd4j.operations=\"" + operations.replaceAll("\"","") + "\" -Dlibnd4j.datatypes=" + dataTypes.replaceAll("\"","")  +  (helper != null ? " -Dlibnd4j.helper=" + helper: " ")  + (clean ? " clean " : " ") + " package";
         StringBuilder libnd4jCommand2 = new StringBuilder();
         libnd4jCommand2.append(command);
         if(targetNd4jBackendName.contains("aurora")) {
@@ -188,20 +205,6 @@ public class Nd4jOptimizer implements Callable<Integer> {
 
         }
 
-
-        if(modelPath != null || modelDirectory != null) {
-            //sets the data types and operations according to what occurs in the specific model
-            Pair<String,String> opsAndDtypes = opsAndDataTypes();
-            this.operations = opsAndDtypes.getFirst();
-            if(extraOps != null) {
-                this.operations = operations + ";" + extraOps;
-            }
-            this.dataTypes = opsAndDtypes.getSecond();
-
-            if(extraDataTypes != null) {
-                this.dataTypes = dataTypes + ";" + extraDataTypes;
-            }
-        }
 
 
         //modify the pom to include the new modules
