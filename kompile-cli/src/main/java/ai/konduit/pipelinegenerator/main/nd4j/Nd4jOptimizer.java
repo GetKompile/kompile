@@ -94,7 +94,7 @@ public class Nd4jOptimizer implements Callable<Integer> {
 
 
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
-        String command = (extension != null ? " -Djavacpp.platform.extension=" + extension : "") + " -Dlibnd4j.buildThreads=" + buildThreads +  (extension != null ? " -Dlibnd4j.extension=" + extension: "") + " -Djavacpp.platform=" + javacppPlatform + " -DskipTests -Dlibnd4j.operations=\"" + operations + "\" -Dlibnd4j.datatypes=\"" + dataTypes +"\"" +  (helper != null ? " -Dlibnd4j.helper=" + helper: "")  + (clean ? " clean " : " ") + " package";
+        String command = (extension != null ? " -Djavacpp.platform.extension=" + extension : "") + " -Dlibnd4j.buildThreads=" + buildThreads +  (extension != null ? " -Dlibnd4j.extension=" + extension: "") + " -Djavacpp.platform=" + javacppPlatform + " -DskipTests -Dlibnd4j.operations=\"" + operations.replaceAll("\"","") + "\" -Dlibnd4j.datatypes=\"" + dataTypes.replaceAll("\"","") +"\"" +  (helper != null ? " -Dlibnd4j.helper=" + helper: "")  + (clean ? " clean " : " ") + " package";
         StringBuilder libnd4jCommand2 = new StringBuilder();
         libnd4jCommand2.append(command);
         if(targetNd4jBackendName.contains("aurora")) {
