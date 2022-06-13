@@ -17,6 +17,7 @@ import java.util.concurrent.Callable;
 public class StepCreator implements CommandLine.IModelTransformer, Callable<Void> {
 
 
+    public StepCreator(){}
 
     private Map<String, CommandLine.ITypeConverter> converters = new HashMap<>();
     @CommandLine.Parameters
@@ -89,7 +90,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
             Class<? extends PipelineStep> aClass = PipelineStepType.clazzForType(pipelineStepType);
             if(aClass != null) {
                 CommandLine.Model.CommandSpec spec = CommandLine.Model.CommandSpec.create();
-                spec.mixinStandardHelpOptions(true); // usageHelp and versionHelp option
+                spec.mixinStandardHelpOptions(false); // usageHelp and versionHelp option
                 addStep(PipelineStepType.clazzForType(pipelineStepType),spec);
                 spec.name(pipelineStepType.name());
                 spec.addOption(CommandLine.Model.OptionSpec.builder("--fileFormat")
@@ -105,7 +106,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         }
 
         ret.name("step-create");
-        ret.mixinStandardHelpOptions(true);
+        ret.mixinStandardHelpOptions(false);
         return ret;
     }
 

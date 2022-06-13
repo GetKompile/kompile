@@ -18,7 +18,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-@Command(name = "print-class-path", mixinStandardHelpOptions = true,
+@Command(name = "print-class-path", mixinStandardHelpOptions = false,
         description = "Print class path resources or classes with a specific pattern.")
 public class GraalVmPrint implements Callable<Integer> {
 

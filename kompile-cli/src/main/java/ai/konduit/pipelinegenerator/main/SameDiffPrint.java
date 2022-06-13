@@ -6,7 +6,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "print-samediff",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "print-samediff",mixinStandardHelpOptions = false)
 public class SameDiffPrint implements Callable<Integer> {
     @CommandLine.Option(names = "--modelPath")
     private String modelPath;

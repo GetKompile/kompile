@@ -2,7 +2,6 @@ package ai.konduit.pipelinegenerator.main;
 
 import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
-import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.pipeline.util.ObjectMappers;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import ai.konduit.serving.vertx.config.ServerProtocol;
@@ -12,10 +11,9 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.nio.charset.Charset;
-import java.util.List;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "inference-server-create",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "inference-server-create",mixinStandardHelpOptions = false)
 public class InferenceServerCreate implements Callable<Void> {
 
     @CommandLine.Option(names = {"--pipeline"},description = "Pipeline file path, must end in json, yml, or yaml",required = true)

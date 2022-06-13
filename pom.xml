@@ -9,20 +9,45 @@
   <version>1.0-SNAPSHOT</version>
 
   <name>pipeline-generator</name>
-  <!-- FIXME change it to the project's website -->
-  <url>http://www.example.com</url>
+
+  <repositories>
+    <repository>
+      <id>sonatype-nexus-snapshots</id>
+      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+    </repository>
+  </repositories>
+
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.source>1.8</maven.compiler.source>
-    <maven.compiler.target>1.8</maven.compiler.target>
-    <pico.version>4.6.1</pico.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <pico.version>4.6.3</pico.version>
     <maven-shade-plugin.version>2.4.3</maven-shade-plugin.version>
-    <graalvm.version>21.0.0.2</graalvm.version>
+  <!-- Graalvm version 22, does not work till javacpp 1.5.8-->
+   <!-- <graalvm.version>22.1.0.1</graalvm.version>
+    <native-image-plugin.version>0.9.11</native-image-plugin.version>-->
+  <!--  <graalvm.version>21.3.2.1</graalvm.version>-->
+    <!-- Graalvm 20.x -->
+    <graalvm.version>20.3.6.1</graalvm.version>
+    <native-image-plugin.version>0.9.9</native-image-plugin.version>
+    <konduit.serving.version>0.2.0-SNAPSHOT</konduit.serving.version>
+    <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
+
   </properties>
 
   <dependencies>
 
+    <dependency>
+      <groupId>org.bytedeco</groupId>
+      <artifactId>javacpp</artifactId>
+      <version>1.5.7</version>
+    </dependency>
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native</artifactId>
+      <version>1.0.0-SNAPSHOT</version>
+    </dependency>
     <dependency>
       <groupId>org.graalvm.nativeimage</groupId>
       <artifactId>svm</artifactId>
@@ -53,19 +78,20 @@
     <dependency>
       <groupId>ai.konduit.serving</groupId>
       <artifactId>konduit-serving-vertx</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-image-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-image</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
-    </dependency>
-
-    <dependency>
-      <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-onnx</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-onnx-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
@@ -76,74 +102,140 @@
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-cli</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-deeplearning4j-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
-    <dependency>
-      <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-deeplearning4j</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
-    </dependency>
-    <dependency>
-      <groupId>org.reflections</groupId>
-      <artifactId>reflections</artifactId>
-      <version>0.9.12</version>
-    </dependency>
 
-    <dependency>
-      <groupId>ch.qos.logback</groupId>
-      <artifactId>logback-classic</artifactId>
-      <version>1.3.0-alpha5</version>
-    </dependency>
     <dependency>
       <groupId>ai.konduit.serving</groupId>
       <artifactId>konduit-serving-http</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-samediff</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-samediff-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-tensorflow</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-tensorflow-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-python-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-nd4j-tensorflow</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-tvm-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-python</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <artifactId>konduit-serving-nd4j-tensorflow-config</artifactId>
+      <version>${konduit.serving.version}</version>
     </dependency>
 
     <dependency>
-      <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-tvm</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-1.2-api</artifactId>
+      <version>2.3.2</version>
     </dependency>
-<!--
-    <dependency>
-      <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-camera</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
-    </dependency>-->
 
+    <!-- Needed for graalvm, not sure why. -->
+    <dependency>
+      <groupId>com.guicedee.services</groupId>
+      <artifactId>javax.jms-api</artifactId>
+      <version>1.0.20.0</version>
+    </dependency>
   </dependencies>
 
 
+  <profiles>
+    <profile>
+      <id>native</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <version>${native-image-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>build-native</id>
+                <goals>
+                  <goal>build</goal>
+                </goals>
+                <phase>package</phase>
+              </execution>
+              <execution>
+                <id>test-native</id>
+                <goals>
+                  <goal>test</goal>
+                </goals>
+                <phase>test</phase>
+              </execution>
+            </executions>
+            <configuration>
+              <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
+              <buildArgs>
+                --no-fallback
+                --verbose
+                -H:Class=ai.konduit.pipelinegenerator.main.MainCommand
+                -H:DeadlockWatchdogInterval=30
+                -H:+DeadlockWatchdogExitOnTimeout
+                --initialize-at-run-time=io.netty
+                --initialize-at-build-time=org.slf4j
+                --initialize-at-build-time=ch.qos
+                -H:+PrintClassInitialization
+                -H:+ReportExceptionStackTraces
+                -Dorg.eclipse.python4j.numpyimport=false
+                -H:Log=registerResource
+                -Dorg.eclipse.python4j.numpyimport=false
+                -Dorg.bytedeco.javacpp.noPointerGC=true
+                -Dorg.bytedeco.javacpp.nopointergc=true
+                --enable-url-protocols=jar
+                -H:+AllowIncompleteClasspath
+                -H:-CheckToolchain
+                -Djavacpp.platform=${javacpp.platform}
+                -H:+ReportUnsupportedElementsAtRuntime
+                -H:+ReportExceptionStackTraces
+                --initialize-at-build-time=org.nd4j
+                --initialize-at-build-time=org.bytedeco
+                --initialize-at-build-time=org.tensorflow
+                --initialize-at-build-time=org.apache
+                --initialize-at-build-time=org.joda
+                --initialize-at-run-time=org.bytedeco.cpython.vectorcallfunc
+                --initialize-at-run-time=org.nd4j.common.io.VfsUtils
+                </buildArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>${maven-compiler-plugin.version}</version>
+        <configuration>
+          <source>${maven.compiler.source}</source>
+          <target>${maven.compiler.target}</target>
+          <forceJavacCompilerUse>true</forceJavacCompilerUse>
+        </configuration>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>

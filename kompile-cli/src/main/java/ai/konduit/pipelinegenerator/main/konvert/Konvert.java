@@ -12,7 +12,7 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "konvert",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "konvert",mixinStandardHelpOptions = false)
 public class Konvert implements Callable<Void> {
 
     @CommandLine.Option(names = {"--framework"},description = "The framework to convert. Defaults to guess which means infer from file extension. .onnx for onnx, .pb for tensorflow, and .h5 for keras")

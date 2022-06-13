@@ -16,7 +16,7 @@ import java.io.StringReader;
 import java.util.*;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "pom-generate",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "pom-generate",mixinStandardHelpOptions = false)
 public class PomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")

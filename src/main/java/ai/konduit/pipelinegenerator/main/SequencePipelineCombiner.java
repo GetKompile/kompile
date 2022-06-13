@@ -11,7 +11,7 @@ import java.io.File;
 import java.nio.charset.Charset;
 import java.util.List;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "sequence-pipeline-creator",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "sequence-pipeline-creator",mixinStandardHelpOptions = false)
 public class SequencePipelineCombiner implements Callable<Void> {
     @CommandLine.Option(names = {"--pipeline"},description = "Pipeline String",required = true)
     private List<File> pipelineStep;

@@ -12,7 +12,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "samediff-print-ops",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "samediff-print-ops",mixinStandardHelpOptions = false)
 public class AnalyzeOps implements Callable<Integer> {
     @CommandLine.Option(names = "--modelPath")
     private File modelPath;

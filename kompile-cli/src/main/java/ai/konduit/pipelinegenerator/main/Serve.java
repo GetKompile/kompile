@@ -13,7 +13,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "serve",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "serve",mixinStandardHelpOptions = false)
 public class Serve implements Callable<Integer> {
     @CommandLine.Option(names = {"--pipeline"},description = "Pipeline String",required = true)
     private File pipeline;

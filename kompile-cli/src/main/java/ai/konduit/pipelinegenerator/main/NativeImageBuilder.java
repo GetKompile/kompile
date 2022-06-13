@@ -14,7 +14,7 @@ import java.io.InputStream;
 import java.util.Arrays;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = false)
 public class NativeImageBuilder implements Callable<Void> {
 
     @CommandLine.Option(names = "--tensorrt",description = "Whether to use tensorrt or not")

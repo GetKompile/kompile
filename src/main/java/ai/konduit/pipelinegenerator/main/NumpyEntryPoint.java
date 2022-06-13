@@ -4,13 +4,11 @@ import ai.konduit.serving.pipeline.api.data.Data;
 import ai.konduit.serving.pipeline.api.data.NDArray;
 import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
 import ai.konduit.serving.pipeline.api.pipeline.PipelineExecutor;
-import com.oracle.svm.core.annotate.AutomaticFeature;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.lang.StringUtils;
 import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.Pointer;
-import org.bytedeco.numpy.global.numpy;
-import org.graalvm.nativeimage.*;
+import org.graalvm.nativeimage.IsolateThread;
+import org.graalvm.nativeimage.ObjectHandle;
+import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.CContext;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.struct.CField;
@@ -18,7 +16,6 @@ import org.graalvm.nativeimage.c.struct.CPointerTo;
 import org.graalvm.nativeimage.c.struct.CStruct;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.*;
-import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.SignedWord;
 import org.graalvm.word.WordFactory;
@@ -30,11 +27,10 @@ import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.nativeblas.NativeOps;
-import org.nd4j.nativeblas.Nd4jCpu;
+import org.nd4j.nativeblas.NativeOpsHolder;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -226,23 +222,12 @@ public class NumpyEntryPoint {
             if (f == null) {
                 f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
             }
-            File[] file = numpy.cachePackages();
-            for (int i = 0; i < file.length; i++) {
-                System.out.println("File " + i + " was " + file[i]);
-            }
-            file[file.length - 1] = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
-            if (f != null)
-                System.out.println("File was " + f.getAbsolutePath());
-            else
-                System.out.println("F was null!");
+
 
 
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             System.out.println("Disabling automatic gil release");
             System.setProperty("org.eclipse.python4j.path.append", "none");
-            String pythonPathSet = StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator);
-            System.out.println("Setting python path " + pythonPathSet);
-            System.setProperty("org.eclipse.python4j.path", StringUtils.join(Arrays.stream(file).map(input -> input.getAbsolutePath()).collect(Collectors.toList()), File.pathSeparator));
             Holder.init();
 
 
@@ -272,7 +257,7 @@ public class NumpyEntryPoint {
 
 
     public static class Holder {
-        private static NativeOps nativeOps = new Nd4jCpu();
+        private static NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
         private static Pipeline pipeline;
         private static PipelineExecutor pipelineExecutor;
 
@@ -301,145 +286,127 @@ public class NumpyEntryPoint {
 
     }
 
-    @AutomaticFeature
-    static class NativeOpsSingletonFeature implements Feature {
-        @Override
-        public void afterRegistration(AfterRegistrationAccess access) {
-          /*  String pipelinePath = System.getProperty("pipeline.path");
-            try {
-                Pipeline pipeline = Pipeline.fromJson(FileUtils.readFileToString(new File(pipelinePath), Charset.defaultCharset()));
-                ImageSingletons.add(Pipeline.class,pipeline);
-                PipelineExecutor pipelineExecutor = pipeline.executor();
-                ImageSingletons.add(PipelineExecutor.class,pipelineExecutor);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
 
-            //ImageSingletons.add(NativeOps.class,new Nd4jCpu());
-        }*/
+
+    @CEntryPoint(name = "runPipeline")
+    public static int runPipeline(IsolateThread isolate, Handles handles, NumpyStruct numpyInput, NumpyStruct numpyOutput) {
+
+        try {
+            runPipeline(handles, numpyInput, numpyOutput);
+            return 0;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return 1;
         }
-
-
-        @CEntryPoint(name = "runPipeline")
-        public static int runPipeline(IsolateThread isolate, Handles handles, NumpyStruct numpyInput, NumpyStruct numpyOutput) {
-
-            try {
-                runPipeline(handles, numpyInput, numpyOutput);
-                return 0;
-            } catch (Exception e) {
-                e.printStackTrace();
-                return 1;
-            }
-        }
-
-        public static void runPipeline(Handles handles, NumpyStruct numpyInput, NumpyStruct numpyOutput) throws Exception {
-            int length = numpyInput.numArrays();
-            CCharPointerPointer numpyArrayNames = numpyInput.getNumpyArrayNames();
-            //PinnedObject deviceNativeOpsPinned = ObjectHandles.getGlobal().get(handles.getNativeOpsHandle());
-            //NativeOps deviceNativeOps = ImageSingletons.lookup(NativeOps.class);
-            NativeOps deviceNativeOps = Holder.getNativeOps();
-            //PinnedObject pipelinePinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
-            Pipeline pipeline = Holder.getPipeline();
-            //PinnedObject pipelineExecutorPinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
-            PipelineExecutor pipelineExecutor = Holder.getPipelineExecutor();
-            if(pipelineExecutor == null) {
-                throw new IllegalStateException("Pipeline executioner was null!");
-            }
-            String[] namesJava = new String[length];
-            for (int i = 0; i < length; i++) {
-                namesJava[i] = CTypeConversion.toJavaString(numpyArrayNames.read(i));
-            }
-
-
-            CLongPointer numpyArrayAddressesInput = numpyInput.getNumpyArrayAddresses();
-            long[] addresses = new long[length];
-            for (int i = 0; i < length; i++) {
-                addresses[i] = numpyArrayAddressesInput.read(i);
-            }
-
-            long[] ranks = new long[length];
-            for (int i = 0; i < ranks.length; i++) {
-                ranks[i] = numpyInput.getNumpyArrayRanks().read(i);
-            }
-
-            long[][] shapes = new long[length][];
-            for (int i = 0; i < length; i++) {
-                shapes[i] = new long[(int) ranks[i]];
-                for (int j = 0; j < ranks[i]; j++) {
-                    shapes[i][j] = numpyInput.getNumpyArrayShapes().read(i).read(j);
-                }
-            }
-
-
-            String[] dataTypes = new String[length];
-            for (int i = 0; i < length; i++) {
-                dataTypes[i] = CTypeConversion.toJavaString(numpyInput.getNumpyArrayDataTypes().read(i));
-            }
-
-
-            INDArray[] newArrs = new INDArray[length];
-            for (int i = 0; i < length; i++) {
-                long read = addresses[i];
-                Pointer pointer = deviceNativeOps.pointerForAddress(read);
-                long len = ArrayUtil.prod(shapes[i]);
-                pointer.limit(len * DataType.valueOf(dataTypes[i]).width());
-                DataBuffer dataBuffer = Nd4j.createBuffer(pointer, len, DataType.valueOf(dataTypes[i]));
-                INDArray arr = Nd4j.create(dataBuffer, shapes[i]);
-                newArrs[i] = arr;
-                System.out.println(dataBuffer);
-            }
-
-            Data input = Data.empty();
-            for (int i = 0; i < length; i++) {
-                Preconditions.checkNotNull(newArrs[i],"New array for item " + i  + " was null!");
-                Preconditions.checkNotNull(namesJava[i],"New name for item " + i  + " was null!");
-
-                input.put(namesJava[i], NDArray.create(newArrs[i]));
-            }
-
-
-            Data exec = pipelineExecutor.exec(input);
-            numpyOutput.setNumArrays(exec.keys().size());
-            int size = SizeOf.get(CLongPointer.class) * exec.size();
-            String[] outputNames = new String[exec.size()];
-            PointerBase numpyArraysPointer = UnmanagedMemory.calloc(size);
-            CLongPointerPointer numpyArrayAddresses = WordFactory.pointer(numpyArraysPointer.rawValue());
-            int currKeyIdx = 0;
-            CLongPointerPointer shapes2 = UnmanagedMemory.calloc(SizeOf.get(CLongPointerPointer.class) * exec.size());
-            numpyOutput.setNumpyArrayShapes(shapes2);
-            CLongPointer rankPointer = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class) * exec.size());
-            numpyOutput.setNumpyArrayRanks(rankPointer);
-
-            CCharPointerPointer dataTypesOutput = UnmanagedMemory.calloc(SizeOf.get(CCharPointerPointer.class) * exec.size());
-            numpyOutput.setNumpyArrayDataTypes(dataTypesOutput);
-            for (String key : exec.keys()) {
-                INDArray arr = exec.getNDArray(key).getAs(INDArray.class);
-                long address = arr.data().address();
-                PointerBase cLong = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class));
-                CLongPointer cLongPointer = WordFactory.pointer(cLong.rawValue());
-                cLongPointer.write(address);
-                numpyArrayAddresses.write(currKeyIdx, cLongPointer);
-                outputNames[currKeyIdx] = key;
-                CLongPointer shape = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class) * arr.rank());
-                for (int i = 0; i < arr.rank(); i++) {
-                    shape.write(i, arr.size(i));
-                }
-
-                rankPointer.write(currKeyIdx, arr.rank());
-                shapes2.write(currKeyIdx, shape);
-
-                CCharPointer dataTypePointer = CTypeConversion.toCString(arr.dataType().name().toUpperCase()).get();
-                dataTypesOutput.write(currKeyIdx, dataTypePointer);
-
-                currKeyIdx++;
-            }
-
-
-            CTypeConversion.CCharPointerPointerHolder cCharPointerPointerHolder = CTypeConversion.toCStrings(outputNames);
-            numpyOutput.setNumpyArrayAddresses(numpyArrayAddresses);
-            numpyOutput.setArrayNames(cCharPointerPointerHolder.get());
-            numpyOutput.setNumArrays(exec.keys().size());
-        }
-
     }
+
+    public static void runPipeline(Handles handles, NumpyStruct numpyInput, NumpyStruct numpyOutput) throws Exception {
+        int length = numpyInput.numArrays();
+        CCharPointerPointer numpyArrayNames = numpyInput.getNumpyArrayNames();
+        //PinnedObject deviceNativeOpsPinned = ObjectHandles.getGlobal().get(handles.getNativeOpsHandle());
+        //NativeOps deviceNativeOps = ImageSingletons.lookup(NativeOps.class);
+        NativeOps deviceNativeOps = Holder.getNativeOps();
+        //PinnedObject pipelinePinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
+        Pipeline pipeline = Holder.getPipeline();
+        //PinnedObject pipelineExecutorPinned = ObjectHandles.getGlobal().get(handles.getPipelineHandle());
+        PipelineExecutor pipelineExecutor = Holder.getPipelineExecutor();
+        if(pipelineExecutor == null) {
+            throw new IllegalStateException("Pipeline executioner was null!");
+        }
+        String[] namesJava = new String[length];
+        for (int i = 0; i < length; i++) {
+            namesJava[i] = CTypeConversion.toJavaString(numpyArrayNames.read(i));
+        }
+
+
+        CLongPointer numpyArrayAddressesInput = numpyInput.getNumpyArrayAddresses();
+        long[] addresses = new long[length];
+        for (int i = 0; i < length; i++) {
+            addresses[i] = numpyArrayAddressesInput.read(i);
+        }
+
+        long[] ranks = new long[length];
+        for (int i = 0; i < ranks.length; i++) {
+            ranks[i] = numpyInput.getNumpyArrayRanks().read(i);
+        }
+
+        long[][] shapes = new long[length][];
+        for (int i = 0; i < length; i++) {
+            shapes[i] = new long[(int) ranks[i]];
+            for (int j = 0; j < ranks[i]; j++) {
+                shapes[i][j] = numpyInput.getNumpyArrayShapes().read(i).read(j);
+            }
+        }
+
+
+        String[] dataTypes = new String[length];
+        for (int i = 0; i < length; i++) {
+            dataTypes[i] = CTypeConversion.toJavaString(numpyInput.getNumpyArrayDataTypes().read(i));
+        }
+
+
+        INDArray[] newArrs = new INDArray[length];
+        for (int i = 0; i < length; i++) {
+            long read = addresses[i];
+            Pointer pointer = deviceNativeOps.pointerForAddress(read);
+            long len = ArrayUtil.prod(shapes[i]);
+            pointer.limit(len * DataType.valueOf(dataTypes[i]).width());
+            DataBuffer dataBuffer = Nd4j.createBuffer(pointer, len, DataType.valueOf(dataTypes[i]));
+            INDArray arr = Nd4j.create(dataBuffer, shapes[i]);
+            newArrs[i] = arr;
+            System.out.println(dataBuffer);
+        }
+
+        Data input = Data.empty();
+        for (int i = 0; i < length; i++) {
+            Preconditions.checkNotNull(newArrs[i],"New array for item " + i  + " was null!");
+            Preconditions.checkNotNull(namesJava[i],"New name for item " + i  + " was null!");
+
+            input.put(namesJava[i], NDArray.create(newArrs[i]));
+        }
+
+
+        Data exec = pipelineExecutor.exec(input);
+        numpyOutput.setNumArrays(exec.keys().size());
+        int size = SizeOf.get(CLongPointer.class) * exec.size();
+        String[] outputNames = new String[exec.size()];
+        PointerBase numpyArraysPointer = UnmanagedMemory.calloc(size);
+        CLongPointerPointer numpyArrayAddresses = WordFactory.pointer(numpyArraysPointer.rawValue());
+        int currKeyIdx = 0;
+        CLongPointerPointer shapes2 = UnmanagedMemory.calloc(SizeOf.get(CLongPointerPointer.class) * exec.size());
+        numpyOutput.setNumpyArrayShapes(shapes2);
+        CLongPointer rankPointer = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class) * exec.size());
+        numpyOutput.setNumpyArrayRanks(rankPointer);
+
+        CCharPointerPointer dataTypesOutput = UnmanagedMemory.calloc(SizeOf.get(CCharPointerPointer.class) * exec.size());
+        numpyOutput.setNumpyArrayDataTypes(dataTypesOutput);
+        for (String key : exec.keys()) {
+            INDArray arr = exec.getNDArray(key).getAs(INDArray.class);
+            long address = arr.data().address();
+            PointerBase cLong = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class));
+            CLongPointer cLongPointer = WordFactory.pointer(cLong.rawValue());
+            cLongPointer.write(address);
+            numpyArrayAddresses.write(currKeyIdx, cLongPointer);
+            outputNames[currKeyIdx] = key;
+            CLongPointer shape = UnmanagedMemory.calloc(SizeOf.get(CLongPointer.class) * arr.rank());
+            for (int i = 0; i < arr.rank(); i++) {
+                shape.write(i, arr.size(i));
+            }
+
+            rankPointer.write(currKeyIdx, arr.rank());
+            shapes2.write(currKeyIdx, shape);
+
+            CCharPointer dataTypePointer = CTypeConversion.toCString(arr.dataType().name().toUpperCase()).get();
+            dataTypesOutput.write(currKeyIdx, dataTypePointer);
+
+            currKeyIdx++;
+        }
+
+
+        CTypeConversion.CCharPointerPointerHolder cCharPointerPointerHolder = CTypeConversion.toCStrings(outputNames);
+        numpyOutput.setNumpyArrayAddresses(numpyArrayAddresses);
+        numpyOutput.setArrayNames(cCharPointerPointerHolder.get());
+        numpyOutput.setNumArrays(exec.keys().size());
+    }
+
 }

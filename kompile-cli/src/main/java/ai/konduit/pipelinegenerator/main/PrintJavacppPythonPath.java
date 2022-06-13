@@ -11,7 +11,7 @@ import java.util.stream.Collectors;
 import static org.bytedeco.cpython.global.python.Py_Initialize;
 import static org.bytedeco.cpython.helper.python.Py_AddPath;
 
-@CommandLine.Command(name = "print-python-path",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "print-python-path",mixinStandardHelpOptions = false)
 public class PrintJavacppPythonPath implements Callable<Void> {
     @Override
     public Void call() throws Exception {

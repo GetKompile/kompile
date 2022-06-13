@@ -101,6 +101,7 @@
       {"name":"type"}
     ]
   },
+
   {
     "name":"sun.java2d.Disposer",
     "methods":[{"name":"addRecord","parameterTypes":["java.lang.Object","long","long"] }]

@@ -17,7 +17,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = false)
 public class PipelineCommandGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--pipelineFile"},description = "The pipeline file to analyze",required = true)

@@ -7,7 +7,6 @@ import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.pipeline.impl.pipeline.graph.GraphStep;
 import ai.konduit.serving.pipeline.util.ObjectMappers;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
-import org.jetbrains.annotations.NotNull;
 import org.nd4j.shade.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
@@ -16,7 +15,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = false)
 public class PipelineCommandGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--pipelineFile"},description = "The pipeline file to analyze",required = true)
@@ -98,8 +97,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
         return null;
     }
 
-    @NotNull
-    private Set<String> getCommandsFromPipeline( Pipeline pipeline) throws java.io.IOException {
+    private Set<String> getCommandsFromPipeline(Pipeline pipeline) throws java.io.IOException {
 
 
         Set<String> commandsToAdd = new HashSet<>();

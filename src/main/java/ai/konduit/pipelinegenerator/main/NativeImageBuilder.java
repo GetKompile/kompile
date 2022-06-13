@@ -11,7 +11,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = false)
 public class NativeImageBuilder implements Callable<Void> {
 
 

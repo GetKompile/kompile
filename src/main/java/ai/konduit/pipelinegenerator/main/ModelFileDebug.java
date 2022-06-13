@@ -3,7 +3,7 @@ package ai.konduit.pipelinegenerator.main;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "analyze_model",mixinStandardHelpOptions = true)
+@CommandLine.Command(name = "analyze_model",mixinStandardHelpOptions = false)
 public class ModelFileDebug implements Callable<Integer> {
     @CommandLine.Option(names = {"--modelType"},
             description = "The type of model to analyze. Possible values are: keras,dl4j,pytorch,onnx,tensorflow",required = true)

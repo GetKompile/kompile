@@ -17,7 +17,7 @@ import java.util.concurrent.Callable;
         Serve.class,
         SameDiffPrint.class,
         Konvert.class
-}, mixinStandardHelpOptions = true)
+}, mixinStandardHelpOptions = false)
 public class MainCommand implements Callable<Integer> {
 
     public static void main(String...args) throws Exception {
