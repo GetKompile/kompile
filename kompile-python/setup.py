@@ -47,7 +47,7 @@ extension = Extension('kompile.interface.native.interface',
               sources=['kompile/interface/native/interface.pyx'],
               include_dirs=include_list,
               library_dirs=lib_list,
-              libraries=['kompile_c_library','konduit-serving'],
+              libraries=['kompile_c_library','kompile-image'],
               language='c'
 )
 

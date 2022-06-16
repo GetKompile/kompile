@@ -71,15 +71,15 @@ public class PomGenerator implements Callable<Void> {
     @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
     private String pipelinePath;
 
-    private String graalVmVersion = "21.0.0.2";
+    private String graalVmVersion = "20.3.6.1";
     private String microMeterVersion = "1.7.0";
     private String alpnVersion = "8.1.13.v20181017";
     private String npnVersion = "1.1.1.v20141010";
     private String nettyTcNativeVersion = "2.0.39.Final";
     private String nettyVersion = "4.1.49.Final";
     private String concsryptVersion = "2.5.2";
-    private String konduitServingVersion = "0.1.0-SNAPSHOT";
-    private String javacppVersion = "1.5.5";
+    private String konduitServingVersion = "0.2.0-SNAPSHOT";
+    private String javacppVersion = "1.5.7";
     private String log4jVersion = "1.2.17";
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
@@ -357,9 +357,7 @@ public class PomGenerator implements Callable<Void> {
     }
 
 
-    public void copyNumpySharedLibraryEntryPoint() {
 
-    }
 
     public PomFileAppender[] appenders() {
         return new PomFileAppender[] {
@@ -405,16 +403,11 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
         stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
         stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
-        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main");
+        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main ");
         for(PomFileAppender pomFileAppender : appenders()) {
             pomFileAppender.append(stringBuilder);
             pomFileAppender.appendReInitialize(stringBuilder);
         }
-
-
-
-
-
 
         if(debug) {
             stringBuilder.append("--debug-attach=" + debugPort);
@@ -475,7 +468,7 @@ public class PomGenerator implements Callable<Void> {
         Dependency lombok = new Dependency();
         lombok.setGroupId("org.projectlombok");
         lombok.setArtifactId("lombok");
-        lombok.setVersion("1.18.16");
+        lombok.setVersion(lombokVersion);
         lombok.setScope("compile");
         lombok.setOptional(true);
         graalVm.addDependency(lombok);
@@ -483,8 +476,10 @@ public class PomGenerator implements Callable<Void> {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("<configuration>\n");
         stringBuilder.append(String.format("<skip>%s</skip>\n", "false"));
-        stringBuilder.append(String.format("<imageName>%s</imageName>",imageName));
-        stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
+        if(imageName != null && !imageName.isEmpty())
+            stringBuilder.append(String.format("<imageName>%s</imageName>",imageName));
+        if(mainClass != null && !mainClass.isEmpty())
+            stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
         stringBuilder.append(String.format("<buildArgs>%s</buildArgs>",graalBuildArgs()));
         stringBuilder.append("</configuration>");
         StringReader stringReader = new StringReader(stringBuilder.toString());
@@ -619,9 +614,9 @@ public class PomGenerator implements Callable<Void> {
 
     public void create() throws Exception {
         model = new Model();
-        model.setArtifactId("konduit-pipeline");
+        model.setArtifactId("kompile");
         model.setGroupId("ai.konduit.serving");
-        model.setVersion("0.1.0");
+        model.setVersion(konduitServingVersion);
         model.setModelVersion("4.0.0");
         addRepositories();
         addBuild();

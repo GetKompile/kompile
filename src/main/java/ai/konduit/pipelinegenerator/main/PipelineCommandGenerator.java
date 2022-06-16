@@ -37,6 +37,9 @@ public class PipelineCommandGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--server"},description = "Whether the file is an inference  server configuration or a pipeline.")
     private boolean isServer = false;
 
+
+    @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Whether to build a numpy based shared library for the native image.")
+    private boolean numpySharedLibrary = false;
     @CommandLine.Option(names = {"--outputFile"},description = "The output file")
     private File outputFile = new File("pom2.xml");
 
@@ -52,6 +55,10 @@ public class PipelineCommandGenerator implements Callable<Void> {
             command.append(" --server=true ");
         }
 
+        if(mainClass != null && !mainClass.isEmpty()) {
+            command.append(" --mainClass=" + mainClass + " ");
+        }
+
         if(imageName != null && !imageName.isEmpty()) {
             command.append(" --imageName=" + imageName + " ");
         }
@@ -63,6 +70,8 @@ public class PipelineCommandGenerator implements Callable<Void> {
         if(includeResources != null && !includeResources.isEmpty()) {
             command.append(" --includeResources=" + includeResources + " ");
         }
+
+        command.append(" --numpySharedLibrary=" + numpySharedLibrary);
 
         if(outputFile != null) {
             command.append(" --outputFile=" + outputFile.getAbsolutePath() + " ");

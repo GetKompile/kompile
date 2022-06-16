@@ -10,7 +10,8 @@ import java.util.concurrent.Callable;
         PipelineGenerator.class,
         PomGenerator.class,
         SequencePipelineCombiner.class,
-        InferenceServerCreate.class
+        InferenceServerCreate.class,
+        GenerateImageAndSDK.class
 },modelTransformer = StepCreator.class,
         mixinStandardHelpOptions = false)
 public class MainCommand implements Callable<Integer> {
@@ -23,7 +24,7 @@ public class MainCommand implements Callable<Integer> {
         }
 
         //creation step is dynamically generated and needs special support
-        if(args.length > 0 && args[0].equals("step-create")  || args.length > 1 && args[1].equals("step-create") || args.length > 1 && args[2].equals("step-create")) {
+        if(args.length > 0 && args[0].equals("step-create")  || args.length > 1 && args[1].equals("step-create") || args.length > 2 && args[2].equals("step-create")) {
             commandLine.setExecutionStrategy(parseResult -> {
                 try {
                     return StepCreator.run(parseResult);

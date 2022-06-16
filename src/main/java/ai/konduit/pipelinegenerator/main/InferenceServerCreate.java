@@ -56,10 +56,10 @@ public class InferenceServerCreate implements Callable<Void> {
         // CommandLine.ParseResult crop_grid = commandLine.parseArgs("image_to_ndarray", "--config=height=250,width=250,outputNames=image,dataType=double,normalization=scale");
         CommandLine.ParseResult onnx = commandLine.parseArgs("onnx","--inputNames=1","--inputNames=2","--outputNames=1","--outputNames=2","--modelUri=add.onnx");
         PipelineStep stepFromResult = stepCreator.createStepFromResult(onnx);
-        FileUtils.write(new File("onnx-1.json"),stepFromResult.toJson(), Charset.defaultCharset());
+        FileUtils.write(new File("onnx-1.json"),stepFromResult.toJson(),Charset.defaultCharset().name());
         CommandLine.ParseResult onnx2 = commandLine.parseArgs("onnx","--inputNames=1","--inputNames=2","--outputNames=1","--outputNames=2","--modelUri=add.onnx");
         PipelineStep stepFromResult2 = stepCreator.createStepFromResult(onnx2);
-        FileUtils.write(new File("onnx-2.json"),stepFromResult2.toJson(), Charset.defaultCharset());
+        FileUtils.write(new File("onnx-2.json"),stepFromResult2.toJson(), Charset.defaultCharset().name());
         CommandLine combineCommand = new CommandLine(new InferenceServerCreate());
         combineCommand.execute("--pipeline","onnx-1.json","--pipeline","onnx-2.json");
 

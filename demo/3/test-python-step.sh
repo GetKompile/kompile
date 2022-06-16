@@ -7,3 +7,9 @@
 ../pipeline inference-server-create --pipeline=sequence-pipeline-python.json --port=9990 --protocol=http  >> sequence-pipeline-python-server.json
 ../pipeline serve  --pipeline=sequence-pipeline-python-server.json
 
+
+echo "print('hello world')" >> hello_world.py
+./kompile step-create python "--pythonConfig=pythonCodePath=hello_world.py" --fileFormat=json >> python-step.json
+./kompile sequence-pipeline-creator --pipeline=python-step.json >> sequence-pipeline-python.json
+./kompile inference-server-create --pipeline=sequence-pipeline-python.json --port=9990 --protocol=http  >> sequence-pipeline-python-server.json
+./kompile generate-image-and-sdk --pipelineFile=sequence-pipeline-python.json --mavenHome=/kompile/mvn --kompilePythonPath=./kompile-python --kompileCPath=./kompile-c-library
