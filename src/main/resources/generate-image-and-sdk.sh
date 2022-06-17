@@ -32,6 +32,7 @@ MAIN_CLASS=
 MIN_RAM_MEGS=2000
 MAX_RAM_MEGS=2000
 NO_GC="false"
+NATIVE_IMAGE_FILE_PATH=
 
 while [[ $# -gt 0 ]]
 do
@@ -96,6 +97,10 @@ case $key in
     ;;
     -mar|--max-ram)
     MAX_RAM_MEGS="$value"
+    shift # past argument
+    ;;
+    -nifp|--native-image-file-path)
+    NATIVE_IMAGE_FILE_PATH="$value"
     shift # past argument
     ;;
    -ngc|--no-garbage-collection)
@@ -201,6 +206,7 @@ echo "MAIN_CLASS ${MAIN_CLASS}"
 echo "MIN_RAM_MEGS ${MIN_RAM_MEGS}"
 echo "MAX_RAM_MEGS ${MAX_RAM_MEGS}"
 echo "NO_GC ${NO_GC}"
+echo "NATIVE_IMAGE_FILE_PATH ${NATIVE_IMAGE_FILE_PATH}"
 
 
 if test -f "$PIPELINE_FILE"; then
@@ -212,6 +218,7 @@ if test -f "$PIPELINE_FILE"; then
     BUILD_DIR="$(pwd)"
     export NATIVE_LIB_DIR="${BUILD_DIR}/${IMAGE_NAME}/target"
     ./kompile native-image-generate  \
+                --nativeImageFilesPath="${NATIVE_IMAGE_FILE_PATH}" \
                 --imageName="${IMAGE_NAME}" \
                 --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
                 --pipelinePath="${PIPELINE_FILE}" \

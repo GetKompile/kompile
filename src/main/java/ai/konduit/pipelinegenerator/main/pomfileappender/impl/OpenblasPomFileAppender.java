@@ -24,9 +24,9 @@ public class OpenblasPomFileAppender implements PomFileAppender {
     @Override
     public List<String> classesToReInitialize() {
         return Arrays.asList(
-           /*     "org.bytedeco.openblas.presets.openblas_nolapack",
+             /*   "org.bytedeco.openblas.presets.openblas_nolapack",
                 "org.bytedeco.openblas.presets.openblas",
-                "org.bytedeco.openblas.global.openblas"*/
+                "org.bytedeco.openblas.global.openblas" */
         );
     }
 

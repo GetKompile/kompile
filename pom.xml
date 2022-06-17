@@ -215,13 +215,16 @@
                 -H:IncludeResources="META-INF/native-image/resource-config.json"
                 -H:IncludeResources="META-INF/native-image/serialization-config.json"
                 -H:IncludeResources="org/bytedeco/.*"
+                -H:IncludeResources="META-INF/services/.*"
                 -H:IncludeResources="generate-image-and-sdk.sh"
+                -Dorg.nd4j.log.initialization=true
                 -H:Class=ai.konduit.pipelinegenerator.main.MainCommand
                 -H:DeadlockWatchdogInterval=30
                 -H:+DeadlockWatchdogExitOnTimeout
                 --initialize-at-run-time=io.netty
                 --initialize-at-build-time=org.slf4j
                 --initialize-at-build-time=ch.qos
+                --initialize-at-build-time=org.nd4j.nativeblas
                 -H:+PrintClassInitialization
                 -H:+ReportExceptionStackTraces
                 -Dorg.eclipse.python4j.numpyimport=false

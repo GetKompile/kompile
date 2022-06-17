@@ -84,6 +84,8 @@ public class PomGenerator implements Callable<Void> {
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
+
+    private String dnnlVersion = "2.5.2-" + javacppVersion;
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
@@ -380,11 +382,15 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--no-fallback\n");
         stringBuilder.append("--verbose\n");
         stringBuilder.append("-H:DeadlockWatchdogInterval=30\n");
+        stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.tools.Logger\n");
         stringBuilder.append("-H:+DeadlockWatchdogExitOnTimeout\n");
         stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
         stringBuilder.append(" --initialize-at-run-time=io.netty\n");
         stringBuilder.append("--initialize-at-build-time=org.slf4j\n");
         stringBuilder.append("--initialize-at-build-time=ch.qos\n");
+        stringBuilder.append("--initialize-at-run-time=org.nd4j.nativeblas\n");
+        stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
+        stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
         if(pipelinePath != null)
             stringBuilder.append("-Dpipeline.path=" + pipelinePath + "\n");
@@ -394,16 +400,12 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
         stringBuilder.append("-Dorg.bytedeco.javacpp.noPointerGC=true\n");
         stringBuilder.append("-Dorg.bytedeco.javacpp.nopointergc=true\n");
-        stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.global.openblas_nolapack\n");
-        stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.global.openblas\n");
-        stringBuilder.append(" --trace-class-initialization=org.nd4j.python4j.PythonExecutioner\n");
         stringBuilder.append("--enable-url-protocols=jar\n");
         stringBuilder.append(" -H:+AllowIncompleteClasspath\n");
         stringBuilder.append("-H:-CheckToolchain");
         stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
         stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
         stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
-        stringBuilder.append("--initialize-at-run-time=ai.konduit.pipelinegenerator.main ");
         for(PomFileAppender pomFileAppender : appenders()) {
             pomFileAppender.append(stringBuilder);
             pomFileAppender.appendReInitialize(stringBuilder);
@@ -481,6 +483,7 @@ public class PomGenerator implements Callable<Void> {
         if(mainClass != null && !mainClass.isEmpty())
             stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
         stringBuilder.append(String.format("<buildArgs>%s</buildArgs>",graalBuildArgs()));
+
         stringBuilder.append("</configuration>");
         StringReader stringReader = new StringReader(stringBuilder.toString());
         Xpp3Dom graalVmConfiguration = Xpp3DomBuilder.build(stringReader);
@@ -665,6 +668,8 @@ public class PomGenerator implements Callable<Void> {
 
         //needed to access lombok features with graalvm
         addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
+        //need dnnl for onnxruntime cpu
+        addDependency(defaultDependencies,"org.bytedeco","dnnl-platform",dnnlVersion);
         DependencyManagement dependencyManagement = new DependencyManagement();
         //needed to force lombok to be compile time dependency
         //see: https://github.com/quarkusio/quarkus/issues/1904

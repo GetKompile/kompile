@@ -9,6 +9,7 @@ import org.nd4j.common.io.ClassPathResource;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
@@ -64,6 +65,10 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
     private String pipelinePath;
 
+
+    @CommandLine.Option(names = "--nativeImageFilesPath",description = "The path to the files for building an image")
+    private String nativeImageFilesPath;
+
     public void runMain(String...args) throws Exception {
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
         File project = new File(imageName);
@@ -91,17 +96,26 @@ public class NativeImageBuilder implements Callable<Void> {
         ClassPathResource nativeImage = new ClassPathResource("META-INF/native-image");
         Preconditions.checkState(nativeImage.exists(),"META-INF/native-image does not exist!");
         File nativeImageResourceDir = new File(resourcesDir,"META-INF/native-image");
-        nativeImageResourceDir.mkdirs();
+        Preconditions.checkState(nativeImageResourceDir.mkdirs(),"Unable to create native image resources directory!");
         String[] resources = {"jni-config.json","proxy-config.json","reflect-config.json","resource-config.json","serialization-config.json"};
-        for(String resource : resources) {
-            ClassPathResource classPathResource = new ClassPathResource("META-INF/native-image/" + resource);
-            File dst = new File(nativeImageResourceDir,resource);
-            dst.createNewFile();
-            try(InputStream inputStream = classPathResource.getInputStream();
-                FileOutputStream fileOutputStream = new FileOutputStream(dst)) {
-                IOUtils.copy(inputStream,fileOutputStream);
+        if(nativeImageFilesPath != null) {
+            File f = new File(nativeImageFilesPath);
+            for(String resource : resources) {
+               File src = new File(nativeImageFilesPath,resource);
+                File dst = new File(nativeImageResourceDir,resource);
+                if(!dst.exists())
+                    dst.createNewFile();
+                try(InputStream inputStream = new FileInputStream(src);
+                    FileOutputStream fileOutputStream = new FileOutputStream(dst)) {
+                    IOUtils.copy(inputStream,fileOutputStream);
+                    fileOutputStream.flush();
+                }
+
+                System.out.println("Wrote resource " + resource + " to " + dst.getAbsolutePath());
+
             }
         }
+
         if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
             invocationRequest.setMavenOpts("-Djavacpp.platform=" + javacppPlatform);
             invocationRequest.setGoals(Arrays.asList("-Djavacpp.platform=" + javacppPlatform,"-Dorg.eclipse.python4j.numpyimport=false","clean","package"));

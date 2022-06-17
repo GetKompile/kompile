@@ -23,6 +23,6 @@ public class PythonPomFileAppender implements PomFileAppender {
 
     @Override
     public InitializeType initializeType() {
-        return InitializeType.RUNTIME;
+        return InitializeType.BUILD_TIME;
     }
 }

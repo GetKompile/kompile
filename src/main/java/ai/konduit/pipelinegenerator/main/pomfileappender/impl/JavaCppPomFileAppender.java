@@ -14,10 +14,7 @@ public class JavaCppPomFileAppender implements PomFileAppender {
     @Override
     public List<String> classesToAppend() {
         return Arrays.asList(
-                "org.bytedeco.javacpp.tools.Logger",
-                "org.bytedeco.javacpp.BytePointer",
-                "org.bytedeco.javacpp.ClassProperties",
-                "org.bytedeco.javacpp.Loader"
+                "org.bytedeco"
 
         );
     }

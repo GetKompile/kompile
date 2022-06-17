@@ -6,6 +6,7 @@ import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
 import ai.konduit.serving.pipeline.api.pipeline.PipelineExecutor;
 import org.bytedeco.javacpp.Loader;
 import org.bytedeco.javacpp.Pointer;
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.ObjectHandle;
 import org.graalvm.nativeimage.UnmanagedMemory;
@@ -16,6 +17,7 @@ import org.graalvm.nativeimage.c.struct.CPointerTo;
 import org.graalvm.nativeimage.c.struct.CStruct;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.*;
+import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.word.PointerBase;
 import org.graalvm.word.SignedWord;
 import org.graalvm.word.WordFactory;
@@ -24,8 +26,10 @@ import org.nd4j.common.io.ClassPathResource;
 import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.memory.AllocationsTracker;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.factory.Nd4jBackend;
 import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
 
@@ -37,6 +41,7 @@ import java.util.List;
 
 @CContext(NumpyEntryPoint.NumpyEntryPointDirectives.class)
 public class NumpyEntryPoint {
+
 
 
     static class NumpyEntryPointDirectives implements CContext.Directives {
@@ -255,11 +260,31 @@ public class NumpyEntryPoint {
 
 
     public static class Holder {
-        private static NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
+        private static NativeOps nativeOps = null;
         private static Pipeline pipeline;
         private static PipelineExecutor pipelineExecutor;
 
         public static void init() {
+            try {
+                Nd4jBackend load = Nd4jBackend.load();
+                if(load.getClass().getName().toLowerCase().contains("cpu")) {
+                    Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu");
+                    nativeOps = nativeOpsClazz.newInstance();
+                } else if(load.getClass().getName().toLowerCase().contains("cuda")) {
+                    Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.linalg.jcublas.bindings.Nd4jCuda");
+                    nativeOps = nativeOpsClazz.newInstance();
+
+                } else if(load.getClass().getName().toLowerCase().contains("aurora")) {
+                    Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.aurora.Nd4jAuroraOps");
+                    nativeOps = nativeOpsClazz.newInstance();
+
+
+                }
+            }catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+
+
             String pipelinePath = System.getProperty("pipeline.path");
             if (pipeline == null)
                 pipeline = Pipeline.fromJson(pipelinePath);
@@ -405,6 +430,20 @@ public class NumpyEntryPoint {
         numpyOutput.setNumpyArrayAddresses(numpyArrayAddresses);
         numpyOutput.setArrayNames(cCharPointerPointerHolder.get());
         numpyOutput.setNumArrays(exec.keys().size());
+    }
+
+    @CEntryPoint(name = "printMetrics")
+    public static void printMetrics(IsolateThread isolate) {
+        int numDevices = Nd4j.getAffinityManager().getNumberOfDevices();
+        for(int i = 0; i < numDevices; i++) {
+            long allocated = AllocationsTracker.getInstance().bytesOnDevice(i);
+            System.out.println("Allocated memory in bytes via allocation tracker is " + allocated);
+
+        }
+
+        System.out.println("Available physical bytes is " + Pointer.availablePhysicalBytes());
+        System.out.println("Memory used is " + Pointer.totalBytes());
+
     }
 
 }

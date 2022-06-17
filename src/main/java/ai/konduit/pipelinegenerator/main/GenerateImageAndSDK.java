@@ -4,7 +4,6 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
 import org.zeroturnaround.exec.ProcessExecutor;
-import org.zeroturnaround.exec.stream.slf4j.Slf4jStream;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -59,6 +58,9 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     private long maxRamMegs = 2000;
     @CommandLine.Option(names = {"--noGc"},description = "Whether to use gc in the image or not",required = false)
     private boolean noGc = false;
+
+    @CommandLine.Option(names = "--nativeImageFilesPath",description = "The path to the files for building an image")
+    private String nativeImageFilesPath;
 
     public GenerateImageAndSDK() {
     }
@@ -116,6 +118,11 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             if(imageName != null && !imageName.isEmpty()) {
                 command.add("--image-name");
                 command.add(imageName);
+            }
+
+            if(nativeImageFilesPath != null && !nativeImageFilesPath.isEmpty()) {
+                command.add("--native-image-file-path");
+                command.add(nativeImageFilesPath);
             }
 
             if(protocol != null && !protocol.isEmpty()) {
