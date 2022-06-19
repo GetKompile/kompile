@@ -8,6 +8,20 @@
 ../pipeline serve  --pipeline=sequence-pipeline-python-server.json
 
 
+
+./kompile generate-python-config --inputVariables="`./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY`" --inputVariables="`./kompile generate-python-variable-config --variableName=input2 --pythonType=numpy.ndarray --valueType=NDARRAY`"
+./kompile step-create python "--pythonConfig=`/kompile generate-python-config --inputVariables="`./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY`" --inputVariables="`./kompile generate-python-variable-config --variableName=input2 --pythonType=numpy.ndarray --valueType=NDARRAY`"`" --fileFormat=json >> python-step.json
+
+./kompile step-create python --pythonConfig="`./kompile generate-python-config --inputVariables=\\"`./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY`\\" --inputVariables=\\"`./kompile generate-python-variable-config --variableName=input2 --pythonType=numpy.ndarray --valueType=NDARRAY`"
+
+
+./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY >> input1.txt
+ ./kompile generate-python-variable-config --variableName=inpu2 --pythonType=numpy.ndarray --valueType=NDARRAY >> input2.txt
+
+
+./kompile step-create python --pythonConfig="`./kompile generate-python-config --inputVariable=input1.txt --inputVariable=input2.txt`" --fileFormat=json >> python-step.json
+
+
 echo "print('hello world')" >> hello_world.py
 ./kompile step-create python "--pythonConfig=pythonCodePath=hello_world.py" --fileFormat=json >> python-step.json
 ./kompile sequence-pipeline-creator --pipeline=python-step.json >> sequence-pipeline-python.json

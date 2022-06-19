@@ -11904,6 +11904,18 @@
     "allDeclaredConstructors":true
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.GeneratePythonConfig",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.GeneratePythonVariableConfig",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.NumpyEntryPoint$NumpyStruct",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
@@ -43300,6 +43312,17 @@
   },
   {
     "name":"ai.konduit.pipelinegenerator.main.GenerateImageAndSDK",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.pipeline.api.data.ValueType",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,

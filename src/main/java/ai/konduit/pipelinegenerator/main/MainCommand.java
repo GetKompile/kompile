@@ -11,7 +11,9 @@ import java.util.concurrent.Callable;
         PomGenerator.class,
         SequencePipelineCombiner.class,
         InferenceServerCreate.class,
-        GenerateImageAndSDK.class
+        GenerateImageAndSDK.class,
+        GeneratePythonConfig.class,
+        GeneratePythonVariableConfig.class
 },modelTransformer = StepCreator.class,
         mixinStandardHelpOptions = false)
 public class MainCommand implements Callable<Integer> {

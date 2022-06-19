@@ -4,13 +4,23 @@ import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.model.PythonIO;
 import ai.konduit.serving.pipeline.api.data.ValueType;
 import ai.konduit.serving.pipeline.api.python.models.PythonConfigType;
+import org.apache.commons.io.FileUtils;
+import org.nd4j.common.base.Preconditions;
 import picocli.CommandLine;
+
+import java.io.File;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
 
 public class PythonConfigTypeConverter implements CommandLine.ITypeConverter<PythonConfig> {
     @Override
     public PythonConfig convert(String value) throws Exception {
         String[] split = value.split(",");
         PythonConfig.PythonConfigBuilder builder = PythonConfig.builder();
+        List<ValueType> types = Arrays.asList(ValueType.values());
+        List<String> names = types.stream().map(input -> input.name()).collect(Collectors.toList());
+
         for(String keyVals : split) {
             String[] keyVal = keyVals.split("=");
             switch(keyVal[0]) {
@@ -37,27 +47,39 @@ public class PythonConfigTypeConverter implements CommandLine.ITypeConverter<Pyt
                     break;
                 case "ioInput":
                     PythonIO.PythonIOBuilder pythonIOBuilder = PythonIO.builder();
-                    String[] ioDescriptor = keyVal[1].split(" ");
+                    File inputFile = new File(keyVal[1]);
+                    String content = FileUtils.readFileToString(inputFile);
+                    String[] ioDescriptor = content.split(" ");
                     pythonIOBuilder.name(ioDescriptor[0]);
                     if(ioDescriptor.length > 1)
                         pythonIOBuilder.pythonType(ioDescriptor[1]);
-                    if(ioDescriptor.length > 2)
-                        pythonIOBuilder.type(ValueType.valueOf(ioDescriptor[2]));
-                    if(ioDescriptor.length > 3)
-                        pythonIOBuilder.secondaryType(ValueType.valueOf(ioDescriptor[3]));
+                    if(ioDescriptor.length > 2) {
+                        Preconditions.checkState(names.indexOf(ioDescriptor[2].trim()) >= 0,"ioDescriptor  did not find item " + ioDescriptor[2]);
+                        pythonIOBuilder.type(types.get(names.indexOf(ioDescriptor[2].trim())));
+                    }
+                    if(ioDescriptor.length > 3) {
+                        Preconditions.checkState(names.indexOf(ioDescriptor[3].trim()) >= 0,"ioDescriptor  did not find item " + ioDescriptor[3]);
+                        pythonIOBuilder.secondaryType(types.get(names.indexOf(ioDescriptor[3].trim())));
+                    }
                     builder.ioInput(ioDescriptor[0],pythonIOBuilder
                             .build());
                     break;
                 case "ioOutput":
                     PythonIO.PythonIOBuilder pythonIOBuilderOut = PythonIO.builder();
-                    String[] ioDescriptorOut = keyVal[1].split(" ");
+                    File outputFile = new File(keyVal[1]);
+                    String content2 = FileUtils.readFileToString(outputFile);
+                    String[] ioDescriptorOut = content2.split(" ");
                     pythonIOBuilderOut.name(ioDescriptorOut[0]);
                     if(ioDescriptorOut.length > 1)
                         pythonIOBuilderOut.pythonType(ioDescriptorOut[1]);
-                    if(ioDescriptorOut.length > 2)
-                        pythonIOBuilderOut.type(ValueType.valueOf(ioDescriptorOut[2]));
-                    if(ioDescriptorOut.length > 3)
-                        pythonIOBuilderOut.secondaryType(ValueType.valueOf(ioDescriptorOut[3]));
+                    if(ioDescriptorOut.length > 2) {
+                        Preconditions.checkState(names.indexOf(ioDescriptorOut[2].trim()) >= 0,"ioDescriptor out did not find item " + ioDescriptorOut[2]);
+                        pythonIOBuilderOut.type(types.get(names.indexOf(ioDescriptorOut[2].trim())));
+                    }
+                    if(ioDescriptorOut.length > 3) {
+                        Preconditions.checkState(names.indexOf(ioDescriptorOut[3].trim()) >= 0,"ioDescriptor out did not find item " + ioDescriptorOut[3]);
+                        pythonIOBuilderOut.secondaryType(types.get(names.indexOf(ioDescriptorOut[3].trim())));
+                    }
                     builder.ioOutput(ioDescriptorOut[0],pythonIOBuilderOut.build());
                     break;
             }
