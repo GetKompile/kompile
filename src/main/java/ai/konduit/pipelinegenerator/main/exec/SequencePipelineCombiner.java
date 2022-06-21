@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.exec;
 
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
 import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;

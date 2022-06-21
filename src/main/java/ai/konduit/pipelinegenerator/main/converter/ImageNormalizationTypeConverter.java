@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.converter;
 
 import ai.konduit.serving.data.image.convert.config.ImageNormalization;
 import picocli.CommandLine;

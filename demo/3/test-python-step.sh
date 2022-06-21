@@ -15,11 +15,15 @@
 ./kompile step-create python --pythonConfig="`./kompile generate-python-config --inputVariables=\\"`./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY`\\" --inputVariables=\\"`./kompile generate-python-variable-config --variableName=input2 --pythonType=numpy.ndarray --valueType=NDARRAY`"
 
 
-./kompile generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY >> input1.txt
- ./kompile generate-python-variable-config --variableName=inpu2 --pythonType=numpy.ndarray --valueType=NDARRAY >> input2.txt
+./kompile config generate-python-variable-config --variableName=input --pythonType=numpy.ndarray --valueType=NDARRAY >> input1.txt
+ ./kompile config generate-python-variable-config --variableName=input2 --pythonType=numpy.ndarray --valueType=NDARRAY >> input2.txt
+./kompile config generate-python-config --inputVariable=input1.txt --inputVariable=input2.txt >> python-config.json
 
+./kompile exec step-create python --pythonConfig="`./kompile generate-python-config --inputVariable=input1.txt --inputVariable=input2.txt`" --fileFormat=json >> python-step.json
 
-./kompile step-create python --pythonConfig="`./kompile generate-python-config --inputVariable=input1.txt --inputVariable=input2.txt`" --fileFormat=json >> python-step.json
+./kompile helper ndarray-helper --inputName=input1 --inputName=input1 --outputName=output1 >> python-config.json
+./kompile step-create python --pythonConfig=python-config.json  --fileFormat=json >> python-step.json
+echo 'import numpy as np; output1=input1 + input2;' >> output.py
 
 
 echo "print('hello world')" >> hello_world.py

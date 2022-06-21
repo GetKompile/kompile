@@ -1,5 +1,6 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.build;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
@@ -14,7 +15,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "generate-image-and-sdk",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "generate-image-and-sdk",
+        mixinStandardHelpOptions = false,
+        description = "Generate and build a python SDK using an embedded shell script. " +
+                "Pass parameters down to the shell script using the parameters below. This command may require additional tools such as graalvm, maven and a local compiler such as gcc to run correctly.")
 public class GenerateImageAndSDK implements Callable<Integer>  {
 
     @CommandLine.Option(names = {"--pipelineFile"},description = "Whether to use a pipeline file or not",required = false)
@@ -36,7 +40,7 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     @CommandLine.Option(names = {"--bundleOutputPath"},description = "Path to output file of complete bundle",required = false)
     private String bundleOutputPath;
     @CommandLine.Option(names = {"--mavenHome"},description = "The maven home location for compiling native image",required = false)
-    private String mavenHome;
+    private String mavenHome = Info.mavenDirectory().getAbsolutePath();
     @CommandLine.Option(names = {"--buildPlatform"},description = "The platform to build for, usually a javacpp.platform value such as linux-x86_64",required = false)
     private String buildPlatform;
     @CommandLine.Option(names = {"--binaryExtension"},description = "The platform to build for, usually a javacpp.platform value such as linux-x86_64",required = false)
@@ -65,8 +69,19 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     public GenerateImageAndSDK() {
     }
 
+    private void checkExists(File dir,String module) {
+        if(!dir.exists()) {
+            System.err.println(String.format("Unable to generate image. Please run kompile install %s before continuing. You can also run kompile install all to install all relevant dependencies. Note that other dependencies may need to be installed such as your nd4j backend specific compiler such as gcc, nvcc, or ncc. ",module));
+            System.exit(1);
+        }
+    }
+
     @Override
     public Integer call() throws Exception {
+        checkExists(Info.graalvmDirectory(),"graalvm");
+        checkExists(Info.mavenDirectory(),"maven");
+        checkExists(Info.pythonDirectory(),"python");
+
         ClassPathResource classPathResource = new ClassPathResource("generate-image-and-sdk.sh");
         try(InputStream is = classPathResource.getInputStream()) {
             String scriptContent = IOUtils.toString(is);
@@ -98,6 +113,10 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             env.put("MIN_RAM_MEGS",String.valueOf(minRamMegs));
             env.put("MAX_RAM_MEGS",String.valueOf(maxRamMegs));
             env.put("NO_GC",String.valueOf(noGc));
+            //setup graalvm and java home for maven
+            env.put("GRAALVM_HOME",Info.graalvmDirectory().getAbsolutePath());
+            env.put("JAVA_HOME",Info.graalvmDirectory().getAbsolutePath());
+
             List<String> command = new ArrayList<>();
             command.add(tempFile.getAbsolutePath());
             if(pipelineFile != null && !pipelineFile.isEmpty()) {

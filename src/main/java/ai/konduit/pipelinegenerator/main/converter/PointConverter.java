@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.converter;
 
 import ai.konduit.serving.pipeline.api.data.Point;
 import ai.konduit.serving.pipeline.impl.data.point.NDPoint;

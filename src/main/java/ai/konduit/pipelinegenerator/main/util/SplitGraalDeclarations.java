@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.util;
 
 public class SplitGraalDeclarations {
 

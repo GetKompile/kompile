@@ -1,34 +1,27 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.exec;
 
-import ai.konduit.pipelinegenerator.main.build.*;
-import ai.konduit.pipelinegenerator.main.config.ConfigMain;
-import ai.konduit.pipelinegenerator.main.exec.*;
-import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
-import ai.konduit.pipelinegenerator.main.install.InstallMain;
-import ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain;
 import picocli.CommandLine;
 
 import java.util.Arrays;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "kompile",subcommands = {
-        ExecMain.class,
-        BuildMain.class,
-        ConfigMain.class,
-        HelperEntry.class,
-        Info.class,
-        InstallMain.class,
-        UnInstallMain.class,
-        Bootstrap.class
-},
-        mixinStandardHelpOptions = false)
-public class MainCommand implements Callable<Integer> {
+@CommandLine.Command(name = "exec",subcommands = {
+       InferenceServerCreate.class,
+        PipelineGenerator.class,
+        SequencePipelineCombiner.class
+}, modelTransformer = StepCreator.class,
+        mixinStandardHelpOptions = false,
+        description = "Execution configuration related classes for running ML pipelines")
+public class ExecMain implements Callable<Integer> {
+    public ExecMain() {
+    }
+
 
     public static void main(String...args) throws Exception {
-        CommandLine commandLine = new CommandLine(new MainCommand());
-        if(args.length < 1) {
+        CommandLine commandLine = new CommandLine(new ExecMain());
+
+        if(args == null || args.length < 1) {
             commandLine.usage(System.err);
-            System.exit(0);
         }
 
         //creation step is dynamically generated and needs special support
@@ -49,9 +42,10 @@ public class MainCommand implements Callable<Integer> {
             System.exit(exit);
     }
 
+
     @Override
     public Integer call() throws Exception {
-        CommandLine commandLine = new CommandLine(new MainCommand());
+        CommandLine commandLine = new CommandLine(new ExecMain());
         commandLine.usage(System.err);
         return 0;
     }

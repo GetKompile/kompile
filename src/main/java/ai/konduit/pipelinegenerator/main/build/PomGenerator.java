@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.build;
 
 import ai.konduit.pipelinegenerator.main.pomfileappender.PomFileAppender;
 import ai.konduit.pipelinegenerator.main.pomfileappender.impl.*;

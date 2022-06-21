@@ -1,5 +1,10 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.exec;
 
+import ai.konduit.pipelinegenerator.main.PipelineStepType;
+import ai.konduit.pipelinegenerator.main.converter.ImageToNDArrayConfigTypeConverter;
+import ai.konduit.pipelinegenerator.main.converter.PointConverter;
+import ai.konduit.pipelinegenerator.main.converter.PythonConfigTypeConverter;
+import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
 import ai.konduit.serving.data.image.convert.ImageToNDArrayConfig;
 import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.pipeline.api.data.Point;
@@ -13,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command
+@CommandLine.Command(name = "step-create",description = "Creates various  konduit serving steps")
 public class StepCreator implements CommandLine.IModelTransformer, Callable<Void> {
 
 
@@ -38,7 +43,8 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
 
     @Override
     public Void call() throws Exception {
-
+        CommandLine commandLine = new CommandLine(new StepCreator());
+        commandLine.usage(System.err);
         return null;
     }
 
@@ -52,12 +58,20 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
                 return 1;
             }
         }
+
         PipelineStep stepFromResult = createStepFromResult(parseResult);
         //same as above: if a user passes the help signal, this method returns null
         if(stepFromResult == null) {
-            parseResult.subcommand().commandSpec().commandLine().usage(System.err);
+            CommandLine.ParseResult parseResult2 = parseResult;
+            while(!parseResult2.commandSpec().name().equals("step-create")) {
+                parseResult2 = parseResult2.subcommand();
+            }
+
+            parseResult2.commandSpec().commandLine().usage(System.err);
+
             return 1;
         }
+
         CommandLine.Model.OptionSpec optionSpec = parseResult.matchedOption("--fileFormat");
         String fileFormat = optionSpec == null ? "json" : optionSpec.getValue();
         if(fileFormat.equals("json")) {
@@ -132,11 +146,25 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
 
     public static PipelineStep createStepFromResult(CommandLine.ParseResult parseResult) throws Exception {
         CommandLine.ParseResult subcommand = parseResult.subcommand();
+        CommandLine.ParseResult result = parseResult;
         if(subcommand.subcommand() == null) {
             return null;
         }
-        String name = subcommand.subcommand().commandSpec().name();
-        return getPipelineStep(subcommand.subcommand(), name);
+
+        String name = subcommand.commandSpec().name();
+
+        CommandLine.ParseResult lastSubCommand = subcommand;
+        while(subcommand.subcommand() != null) {
+            name = subcommand.subcommand().commandSpec().name();
+            subcommand = subcommand.subcommand();
+        }
+
+        //return null when no params are available
+        if(name.equals("step-create") || name.equals("-h")) {
+            return null;
+        }
+
+        return getPipelineStep(subcommand, name);
     }
 
     private static PipelineStep getPipelineStep(CommandLine.ParseResult subcommand, String name) throws ClassNotFoundException, InstantiationException, IllegalAccessException {
@@ -145,7 +173,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         PipelineStep ret =  aClass.newInstance();
         for(Field field : aClass.getDeclaredFields()) {
             field.setAccessible(true);
-            if(subcommand.hasMatchedOption("--" + field.getName())) {
+            if(subcommand != null && subcommand.hasMatchedOption("--" + field.getName())) {
                 CommandLine.Model.OptionSpec optionSpec = subcommand.matchedOption("--" + field.getName());
                 Object value = optionSpec.getValue();
                 field.set(ret,value);

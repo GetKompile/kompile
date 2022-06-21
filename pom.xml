@@ -37,9 +37,28 @@
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
     <ztexec.version>1.12</ztexec.version>
     <ztprocesskiller.version>1.10</ztprocesskiller.version>
+    <progressbar.version>0.5.5</progressbar.version>
   </properties>
 
   <dependencies>
+
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.22</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.35</version>
+    </dependency>
+
+    <dependency>
+      <groupId>me.tongfei</groupId>
+      <artifactId>progressbar</artifactId>
+      <version>${progressbar.version}</version>
+    </dependency>
 
 
     <dependency>
@@ -235,6 +254,8 @@
                 --enable-url-protocols=jar
                 -H:+AllowIncompleteClasspath
                 -H:-CheckToolchain
+                --enable-https
+                --enable-http
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces

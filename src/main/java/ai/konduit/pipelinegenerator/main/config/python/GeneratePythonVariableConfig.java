@@ -1,5 +1,6 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.config.python;
 
+import ai.konduit.serving.model.PythonIO;
 import ai.konduit.serving.pipeline.api.data.ValueType;
 import picocli.CommandLine;
 
@@ -18,27 +19,24 @@ public class GeneratePythonVariableConfig implements Callable<Integer> {
     private ValueType valueType;
     @Override
     public Integer call() throws Exception {
-        StringBuilder stringBuilder = new StringBuilder();
+        PythonIO.PythonIOBuilder pythonIOBuilder = PythonIO.builder();
         if(variableName != null) {
-            stringBuilder.append(variableName);
+            pythonIOBuilder.name(variableName);
         }
 
         if(pythonType != null) {
-            stringBuilder.append(" ");
-            stringBuilder.append(pythonType);
+            pythonIOBuilder.pythonType(pythonType);
         }
 
         if(valueType != null) {
-            stringBuilder.append(" ");
-            stringBuilder.append(valueType);
+            pythonIOBuilder.type(valueType);
         }
 
         if(secondaryType != null) {
-            stringBuilder.append(" ");
-            stringBuilder.append(secondaryType);
+            pythonIOBuilder.secondaryType(secondaryType);
         }
 
-        System.out.println(stringBuilder);
+        System.out.println(pythonIOBuilder.build().toJson());
 
 
         return 0;

@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.converter;
 
 import ai.konduit.serving.data.image.convert.ImageToNDArrayConfig;
 import ai.konduit.serving.data.image.convert.config.AspectRatioHandling;
@@ -8,7 +8,6 @@ import ai.konduit.serving.data.image.convert.config.NDFormat;
 import ai.konduit.serving.pipeline.api.data.NDArrayType;
 import picocli.CommandLine;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 

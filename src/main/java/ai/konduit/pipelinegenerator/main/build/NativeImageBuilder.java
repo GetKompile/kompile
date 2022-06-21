@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.build;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.Model;
@@ -13,10 +13,9 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = false,description = "Generate a native image using the given konduit serving pipeline steps available below. This will also generate a project to build the native image with. Note that the generate-image-and-sdk command also uses this command.")
 public class NativeImageBuilder implements Callable<Void> {
 
 
