@@ -33,3 +33,6 @@ RUN mv /kompile/Miniconda3-py39_4.9.2-Linux-x86_64.sh /kompile/miniconda3.sh
 RUN chmod +x /kompile/miniconda3.sh &&  /kompile/miniconda3.sh -b -p /kompile/miniconda3
 RUN /kompile/miniconda3/bin/pip install Cython numpy
 ENV PATH="/kompile/miniconda3/bin:${PATH}"
+RUN adduser kompile
+RUN chown -R kompile /kompile && chmod -R 755 /kompile
+USER root

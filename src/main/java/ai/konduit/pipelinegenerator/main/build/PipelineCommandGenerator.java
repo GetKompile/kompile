@@ -51,7 +51,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
     @Override
     public Void call() throws Exception {
         StringBuilder command = new StringBuilder();
-        command.append("pom-generate ");
+        command.append(" build pom-generate ");
         if(protocol != null && !protocol.isEmpty()) {
             command.append(" --server=true ");
         }

@@ -2,9 +2,11 @@ package ai.konduit.pipelinegenerator.main.install;
 
 import ai.konduit.pipelinegenerator.main.Info;
 import org.apache.commons.io.FileUtils;
+import org.zeroturnaround.exec.ProcessExecutor;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.Callable;
 @CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
 public class InstallGraalvm implements Callable<Integer> {
@@ -28,7 +30,25 @@ public class InstallGraalvm implements Callable<Integer> {
         File graalVmDir = new File(Info.graalvmDirectory(),"graalvm-ce-java11-20.3.6");
         FileUtils.copyDirectory(graalVmDir,Info.graalvmDirectory());
         FileUtils.deleteDirectory(graalVmDir);
-        System.out.println("Installed graalvm at " + Info.graalvmDirectory());
-        return 0;
+        File executables = new File(Info.graalvmDirectory(),"bin");
+        for(File f : executables.listFiles()) {
+            f.setExecutable(true);
+        }
+
+        File executableLibGu = new File(Info.graalvmDirectory(),"lib/installer/bin");
+        for(File f : executableLibGu.listFiles()) {
+            f.setExecutable(true);
+        }
+
+        int  exitValue =  new ProcessExecutor().environment(System.getenv())
+                .command(Arrays.asList(executableLibGu + "/gu", "install" ,
+                        "native-image"))
+                .readOutput(true)
+                .redirectOutput(System.out)
+                .start().getFuture().get().getExitValue();
+        if(exitValue == 0)
+            System.out.println("Installed graalvm at " + Info.graalvmDirectory());
+
+        return exitValue;
     }
 }

@@ -114,6 +114,7 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             env.put("MAX_RAM_MEGS",String.valueOf(maxRamMegs));
             env.put("NO_GC",String.valueOf(noGc));
             //setup graalvm and java home for maven
+            System.out.println("Setting graalvm and java home to " + Info.graalvmDirectory().getAbsolutePath());
             env.put("GRAALVM_HOME",Info.graalvmDirectory().getAbsolutePath());
             env.put("JAVA_HOME",Info.graalvmDirectory().getAbsolutePath());
 

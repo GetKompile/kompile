@@ -14,7 +14,8 @@ import java.util.concurrent.Callable;
         InstallGraalvm.class,
         InstallPython.class,
         InstallMaven.class,
-        InstallAll.class
+        InstallAll.class,
+        InstallSDK.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

@@ -44,11 +44,7 @@ public class GeneratePythonConfig implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        StringBuilder stringBuilder = new StringBuilder();
-        System.out.println("ValueType values length is " + ValueType.values().length);
         List<ValueType> types = Arrays.asList(ValueType.values());
-        List<String> names = types.stream().map(input -> input.name()).collect(Collectors.toList());
-        System.out.println("Names to convert " + names);
 
         PythonConfig.PythonConfigBuilder pythonConfig = PythonConfig.builder();
 
