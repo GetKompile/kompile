@@ -343,6 +343,15 @@
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces
+                --trace-class-initialization=org.eclipse.jgit.diff.DiffFormatter
+                --trace-class-initialization=org.eclipse.jgit.api.CommitCommand
+                --initialize-at-build-time=org.eclipse.jgit
+                --initialize-at-run-time=org.eclipse.jgit.lib.internal.WorkQueue
+                --initialize-at-run-time=org.eclipse.jgit.lib.RepositoryCache
+                --initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache
+                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.build.CloneBuildComponents
+                --initialize-at-build-time=org.eclipse.jgit
+                --initialize-at-run-time=org.eclipse.jgit.transport.HttpAuthMethod$Digest
                 --initialize-at-run-time=org.nd4j.linalg.cpu.nativecpu
                 --initialize-at-run-time=org.bytedeco
                 --initialize-at-build-time=org.tensorflow
