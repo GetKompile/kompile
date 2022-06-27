@@ -10,8 +10,9 @@ ENV PATH="/kompile/mvn/bin/:${PATH}"
 ARG BACKEND_PROFILE=cpu
 ARG JAVCPP_PLATFORM=linux-x86_64
 ARG DL4J_BACKEND=1.0.0-SNAPSHOT
-RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j
-RUN cd /kompile/deeplearning4j/libnd4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} clean install -Dmaven.test.skip=true
+RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j --branch ag_importcache_graalvm
+RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
@@ -23,7 +24,7 @@ COPY ./kompile-python /kompile/kompile-python
 COPY ./src /kompile/src
 COPY ./pipeline /kompile/pipeline
 COPY pom.xml /kompile/pom.xml
-RUN cd /kompile && mvn -Pnative clean package
+RUN cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package
 RUN mv /kompile/target/kompile /kompile
 RUN chmod +x /kompile/kompile
 RUN rm -rf /kompile/deeplearning4j /kompile/konduit-serving

@@ -3,6 +3,8 @@ package ai.konduit.pipelinegenerator.main.helpers;
 import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.model.PythonIO;
 import ai.konduit.serving.pipeline.api.data.ValueType;
+import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
+import ai.konduit.serving.python.PythonStep;
 import picocli.CommandLine;
 
 import java.util.List;
@@ -21,6 +23,8 @@ public class NDArrayPipelineHelper implements Callable<Integer> {
     private boolean returnAllInputs;
     @CommandLine.Option(names = {"--setupAndRun"},description = "Whether to use setup and run definition (2 separate functions for init and execution) or single script",required = false)
     private boolean setupAndRun;
+    @CommandLine.Option(names = {"--generatePipeline"},description = "Whether to generate a pipeline or just a python configuration",required = false)
+    private boolean generatePipeline;
 
     @Override
     public Integer call() throws Exception {
@@ -37,6 +41,15 @@ public class NDArrayPipelineHelper implements Callable<Integer> {
                     .pythonType("numpy.ndarray").type(ValueType.NDARRAY)
                     .name(outputNames.get(i)).build());
         }
+
+
+        PythonStep pythonStep = PythonStep.builder()
+                .pythonConfig(pythonConfig.build())
+                .build();
+
+        SequencePipeline pipeline = SequencePipeline.builder()
+                .add(pythonStep)
+                .build();
 
         if(format == null || format.equals("json"))
             stringBuilder.append(pythonConfig.build().toJson());

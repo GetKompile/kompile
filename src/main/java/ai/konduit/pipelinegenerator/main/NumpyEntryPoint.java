@@ -204,30 +204,9 @@ public class NumpyEntryPoint {
 
     @CEntryPoint(name = "initPipeline")
     public static int initPipeline(IsolateThread isolate, Handles handles, CCharPointer pipelinePath) {
-        System.setProperty("org.bytedeco.javacpp.platform", "linux-x86_64");
         try {
             String pipelinePath2 = CTypeConversion.toJavaString(pipelinePath);
             System.setProperty("pipeline.path",pipelinePath2);
-            ClassPathResource classPathResource = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/");
-            System.out.println("Resource exists " + classPathResource.exists());
-
-            ClassPathResource classPathResource2 = new ClassPathResource("/org/bytedeco/numpy/linux-x86_64/python/");
-            System.out.println("Resource 2 exists " + classPathResource2.exists());
-
-
-            ClassPathResource classPathResource3 = new ClassPathResource("org/bytedeco/numpy/linux-x86_64/python/numpy/core/tests/test_einsum.py");
-            System.out.println("Resource 3 exists " + classPathResource3.exists());
-
-            System.setProperty("org.eclipse.python4j.numpyimport", "false");
-
-
-            File f = Loader.cacheResource("/org/bytedeco/numpy/linux-x86_64/python/");
-            if (f == null) {
-                f = new File("/home/agibsonccc/.javacpp/cache/numpy-1.20.1-1.5.5-linux-x86_64.jar/org/bytedeco/numpy/linux-x86_64/python/");
-            }
-
-
-
             System.setProperty("org.eclipse.python4j.release_gil_automatically", "false");
             System.out.println("Disabling automatic gil release");
             System.setProperty("org.eclipse.python4j.path.append", "none");
@@ -237,23 +216,6 @@ public class NumpyEntryPoint {
         } catch (Exception e) {
             e.printStackTrace();
         }
-
-/*
-
-        String pipelinePathConversion = CTypeConversion.toJavaString(pipelinePath);
-        NativeOps deviceNativeOps = new Nd4jCpu();
-        ImageSingletons.add(NativeOps.class,deviceNativeOps);
-        PinnedObject nativeOpsPinned = PinnedObject.create(deviceNativeOps);
-        handles.setNativeOpsHandle(ObjectHandles.getGlobal().create(nativeOpsPinned));
-        Pipeline pipeline =  Pipeline.fromJson(pipelinePathConversion);
-        ImageSingletons.add(Pipeline.class,pipeline);
-        PinnedObject pipelinePinned = PinnedObject.create(pipeline);
-        handles.setPipelineHandle(ObjectHandles.getGlobal().create(pipelinePinned));
-        PipelineExecutor pipelineExecutor = pipeline.executor();
-        ImageSingletons.add(PipelineExecutor.class,pipelineExecutor);
-        PinnedObject executorPinned = PinnedObject.create(pipelineExecutor);
-        handles.setExecutorHandle(ObjectHandles.getGlobal().create(executorPinned));
-*/
 
         return 0;
     }

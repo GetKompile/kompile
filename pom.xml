@@ -38,7 +38,24 @@
     <ztexec.version>1.12</ztexec.version>
     <ztprocesskiller.version>1.10</ztprocesskiller.version>
     <progressbar.version>0.5.5</progressbar.version>
+
+    <kotlin.version>1.4.30</kotlin.version>
+    <kotlin.compiler.jvmTarget>1.8</kotlin.compiler.jvmTarget>
+    <kotlin.compiler.incremental>true</kotlin.compiler.incremental>
+    <flatbuffers.version>1.12.0</flatbuffers.version>
+
+
   </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.github.classgraph</groupId>
+        <artifactId>classgraph</artifactId>
+        <version>4.8.90</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <dependencies>
 
@@ -83,6 +100,8 @@
       <artifactId>nd4j-native</artifactId>
       <version>${nd4j.version}</version>
     </dependency>
+
+
     <dependency>
       <groupId>org.graalvm.nativeimage</groupId>
       <artifactId>svm</artifactId>
@@ -192,6 +211,57 @@
       <artifactId>javax.jms-api</artifactId>
       <version>1.0.20.0</version>
     </dependency>
+
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-tensorflow</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-onnx</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-api</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.microutils</groupId>
+      <artifactId>kotlin-logging-jvm</artifactId>
+      <version>2.1.23</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.deeplearning4j</groupId>
+      <artifactId>deeplearning4j-modelimport</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.11.0</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.github.classgraph</groupId>
+      <artifactId>classgraph</artifactId>
+      <version>4.8.90</version>
+    </dependency>
+
+    <!-- Tensorflow import -->
+    <dependency>
+      <groupId>com.google.flatbuffers</groupId>
+      <artifactId>flatbuffers-java</artifactId>
+      <version>${flatbuffers.version}</version>
+    </dependency>
+
   </dependencies>
 
 
@@ -225,6 +295,8 @@
               <buildArgs>
                 --no-fallback
                 --verbose
+                -H:+JNI
+                --allow-incomplete-classpath
                 -H:IncludeResources="konduit-serving.h"
                 -H:IncludeResources="numpy_struct.h"
                 -H:IncludeResources="NumpyEntryPoint.java"
@@ -233,22 +305,30 @@
                 -H:IncludeResources="META-INF/native-image/reflect-config.json"
                 -H:IncludeResources="META-INF/native-image/resource-config.json"
                 -H:IncludeResources="META-INF/native-image/serialization-config.json"
+                -H:IncludeResources="functions.properties"
+                -H:IncludeResources="nd4j-op-def.pbtxt"
+                -H:IncludeResources="onnx.pbtxt"
+                -H:IncludeResources="onnxops.json"
+                -H:IncludeResources="ops.proto"
+                -H:IncludeResources="onnx-mapping-ruleset.pbtxt"
+                -H:IncludeResources="onnx-op-def.pbtxt"
+                -H:IncludeResources="onnx-op-defs.pb"
+                -H:IncludeResources="tensorflow-mapping-ruleset.pbtxt"
+                -H:IncludeResources="tensorflow-op-def.pbtxt"
                 -H:IncludeResources="org/bytedeco/.*"
                 -H:IncludeResources="META-INF/services/.*"
                 -H:IncludeResources="generate-image-and-sdk.sh"
+                -H:IncludeResources="scanned-import-json.json"
                 -Dorg.nd4j.log.initialization=true
                 -H:Class=ai.konduit.pipelinegenerator.main.MainCommand
                 -H:DeadlockWatchdogInterval=30
                 -H:+DeadlockWatchdogExitOnTimeout
-                --initialize-at-run-time=io.netty
-                --initialize-at-build-time=org.slf4j
-                --initialize-at-build-time=ch.qos
-                --initialize-at-build-time=org.nd4j.nativeblas
+                -Dorg.nd4j.samediff.frameworkimport.initcache=true
+                --initialize-at-build-time=onnx.
                 -H:+PrintClassInitialization
                 -H:+ReportExceptionStackTraces
                 -Dorg.eclipse.python4j.numpyimport=false
                 -H:Log=registerResource
-                -Dorg.eclipse.python4j.numpyimport=false
                 -Dorg.bytedeco.javacpp.noPointerGC=true
                 -Dorg.bytedeco.javacpp.nopointergc=true
                 --enable-url-protocols=jar
@@ -259,14 +339,23 @@
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces
-                --initialize-at-build-time=org.nd4j
-                --initialize-at-build-time=org.bytedeco
+                --initialize-at-run-time=org.nd4j.linalg.cpu.nativecpu
+                --initialize-at-run-time=org.bytedeco
                 --initialize-at-build-time=org.tensorflow
                 --initialize-at-build-time=org.apache
                 --initialize-at-build-time=org.joda
-                --initialize-at-run-time=org.bytedeco.cpython.vectorcallfunc
                 --initialize-at-run-time=org.nd4j.common.io.VfsUtils
-                </buildArgs>
+                --initialize-at-build-time=org.nd4j.ir.
+                --initialize-at-run-time=org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder
+                --initialize-at-build-time=org.nd4j.common.
+                --initialize-at-build-time=org.nd4j.shade.
+                --initialize-at-run-time=org.nd4j.nativeblas
+                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.Convert
+                --initialize-at-run-time=io.netty
+                --initialize-at-build-time=org.slf4j
+                --initialize-at-build-time=ch.qos
+                --report-unsupported-elements-at-runtime
+              </buildArgs>
             </configuration>
           </plugin>
         </plugins>
@@ -283,9 +372,64 @@
         <configuration>
           <source>${maven.compiler.source}</source>
           <target>${maven.compiler.target}</target>
-          <forceJavacCompilerUse>true</forceJavacCompilerUse>
         </configuration>
       </plugin>
+
+      <plugin>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <artifactId>kotlin-maven-plugin</artifactId>
+        <version>${kotlin.version}</version>
+        <configuration>
+          <args>
+            <arg>-Xjsr305=strict</arg>
+          </args>
+          <compilerPlugins>
+            <plugin>spring</plugin>
+            <plugin>jpa</plugin>
+          </compilerPlugins>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-allopen</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-noarg</artifactId>
+            <version>${kotlin.version}</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>compile</id>
+            <goals> <goal>compile</goal> </goals>
+            <configuration>
+              <sourceDirs>
+                <sourceDir>${project.basedir}/src/main/stubs</sourceDir>
+                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                <sourceDir>${project.basedir}/src/main/java</sourceDir>
+                <sourceDir>${project.basedir}/src/main/ops</sourceDir>
+              </sourceDirs>
+            </configuration>
+          </execution>
+          <execution>
+            <id>test-compile</id>
+            <goals> <goal>test-compile</goal> </goals>
+            <configuration>
+              <sourceDirs>
+                <sourceDir>${project.basedir}/src/test/stubs</sourceDir>
+                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                <sourceDir>${project.basedir}/src/test/java</sourceDir>
+                <sourceDir>${project.basedir}/src/test/ops</sourceDir>
+              </sourceDirs>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
