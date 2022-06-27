@@ -7,7 +7,8 @@ import java.util.concurrent.Callable;
         GenerateImageAndSDK.class,
         NativeImageBuilder.class,
         PomGenerator.class,
-        PipelineCommandGenerator.class
+        PipelineCommandGenerator.class,
+        CloneBuildComponents.class
 }, mixinStandardHelpOptions = false,
         description = "Configuration namespace for commands related to building native image binaries and SDKs")
 public class BuildMain implements Callable<Integer> {

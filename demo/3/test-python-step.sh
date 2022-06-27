@@ -28,6 +28,8 @@ https://github.com/KonduitAI/dl4j-test-resources/blob/master/src/main/resources/
 
 wget https://github.com/KonduitAI/dl4j-test-resources/blob/master/src/main/resources/modelimport/keras/tfkeras/act_0.h5?raw=true
 mv act_0.h5\?raw\=true act_0.h5
+./kompile convert --inputFile=act_0.h5 --format=keras --kerasNetworkType=functional
+
 
 
  sudo docker  build  --ulimit nofile=98304:98304  .

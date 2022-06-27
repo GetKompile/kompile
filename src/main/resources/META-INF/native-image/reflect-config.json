@@ -43434,6 +43434,17 @@
 
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.build.CloneBuildComponents",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.Bootstrap",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
