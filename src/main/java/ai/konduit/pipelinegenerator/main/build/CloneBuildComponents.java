@@ -49,6 +49,11 @@ public class CloneBuildComponents implements Callable<Integer> {
     private String platform = "linux-x86_64";
     @CommandLine.Option(names = {"--libnd4jExtension"},description = "The chip extension. Usually reserved for cuda. This usually covers something like cudnn.")
     private String libnd4jExtension = "";
+
+
+    @CommandLine.Option(names = {"--javacppExtension"},description = "The javacpp  extension. This should mainly be for platform extensions specific to javacpp. Also specify libnd4j to be safe.")
+    private String javacppExtension = "";
+
     @CommandLine.Option(names = {"--chipVersion"},description = "The version of the chip to use. Usually reserved for cuda. Values normally would be the target cuda version.")
     private String chipVersion = "";
     @CommandLine.Option(names = {"--chipCompute"},description = "The compute capability to use. Usually used for cuda.")
@@ -122,7 +127,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             properties.put("libnd4j.arch",libnd4jArch);
             properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
             properties.put("javacpp.platform",platform);
-
+            properties.put("javacpp.platform.extension",javacppExtension);
             invocationRequest.setProperties(properties);
             invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
 

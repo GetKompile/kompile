@@ -11,7 +11,7 @@ ARG BACKEND_PROFILE=cpu
 ARG JAVCPP_PLATFORM=linux-x86_64
 ARG DL4J_BACKEND=1.0.0-SNAPSHOT
 ARG LTO=OFF
-RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j --branch ag_importcache_graalvm
+RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j
 RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
