@@ -41,10 +41,14 @@ public class CloneBuildComponents implements Callable<Integer> {
     private String libnd4jBuildType = "release";
     @CommandLine.Option(names = {"--libnd4jChip"},description = "The libnd4j chip to build for. Usually either cpu or cuda. Defaults to cpu.")
     private String libnd4jChip = "cpu";
+
+    @CommandLine.Option(names = {"--libnd4jClassifier"},description = "The libnd4j classifier for the platform.")
+    private String libnd4jClassifier = "linux-x86_64";
+
     @CommandLine.Option(names = {"--platform"},description = "The libnd4j platform to build for. This usually should be the OS + system architecture to build for. Valid values are anything in javacpp.platform such as: linux-x86_64, windows-x86_64, linux-arm64,...")
     private String platform = "linux-x86_64";
-    @CommandLine.Option(names = {"--chipExtension"},description = "The chip extension. Usually reserved for cuda. This usually covers something like cudnn.")
-    private String chipExtension = "";
+    @CommandLine.Option(names = {"--libnd4jExtension"},description = "The chip extension. Usually reserved for cuda. This usually covers something like cudnn.")
+    private String libnd4jExtension = "";
     @CommandLine.Option(names = {"--chipVersion"},description = "The version of the chip to use. Usually reserved for cuda. Values normally would be the target cuda version.")
     private String chipVersion = "";
     @CommandLine.Option(names = {"--chipCompute"},description = "The compute capability to use. Usually used for cuda.")
@@ -106,7 +110,8 @@ public class CloneBuildComponents implements Callable<Integer> {
             Properties properties = new Properties();
             properties.put("libnd4j.build",libnd4jBuildType);
             properties.put("libnd4j.platform",platform);
-            properties.put("libnd4j.extension",chipExtension);
+            properties.put("libnd4j.extension", libnd4jExtension);
+            properties.put("libnd4j.classifier",libnd4jClassifier);
             properties.put("libnd4j.compute",chipCompute);
             properties.put("libnd4j.tests","");
             properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
