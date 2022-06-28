@@ -135,6 +135,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
             properties.put("javacpp.platform",platform);
             properties.put("javacpp.platform.extension",javacppExtension);
+            
             invocationRequest.setProperties(properties);
             invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
 
@@ -156,6 +157,8 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setProjects(dl4jModules);
             }
 
+
+            invoker.setLogger(new SystemOutLogger());
             InvocationResult execute = invoker.execute(invocationRequest);
             if(execute != null && execute.getExitCode() != 0) {
                 System.err.println("DL4J build failed. Reason below:");
@@ -200,6 +203,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             Properties properties = new Properties();
             properties.put("chip",konduitServingChip);
             properties.put("javacpp.platform",platform);
+            invoker.setLogger(new SystemOutLogger());
 
             invoker.setWorkingDirectory(konduitServingLocation);
             invocationRequest.setBaseDirectory(konduitServingLocation);
