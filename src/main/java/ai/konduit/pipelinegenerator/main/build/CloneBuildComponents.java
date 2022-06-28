@@ -8,6 +8,7 @@ import picocli.CommandLine;
 
 import java.io.File;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.Callable;
 
@@ -86,6 +87,12 @@ public class CloneBuildComponents implements Callable<Integer> {
     @CommandLine.Option(names = {"--konduitServingChip"},description = "The chip to use for konduit serving.")
     private String konduitServingChip = "cpu";
 
+    @CommandLine.Option(names = {"--dl4jModule"},description = "The modules to build with dl4j")
+    private List<String> dl4jModules;
+
+
+    @CommandLine.Option(names = {"--konduitServingModule"},description = "The modules to build with konduit serving")
+    private List<String> konduitServingModule;
     public CloneBuildComponents() {
     }
 
@@ -136,6 +143,8 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setProfiles(Arrays.asList("cpu"));
             }
 
+            invocationRequest.setAlsoMake(true);
+
             if(buildCudaBackend) {
                 invocationRequest.setProfiles(Arrays.asList("cuda"));
             }
@@ -143,7 +152,9 @@ public class CloneBuildComponents implements Callable<Integer> {
             invoker.setWorkingDirectory(dl4jLocation);
             invocationRequest.setBaseDirectory(dl4jLocation);
             invoker.setMavenHome(new File(mvnHome));
-
+            if(dl4jModules != null && !dl4jModules.isEmpty()) {
+                invocationRequest.setProjects(dl4jModules);
+            }
 
             InvocationResult execute = invoker.execute(invocationRequest);
             if(execute != null && execute.getExitCode() != 0) {
@@ -181,6 +192,11 @@ public class CloneBuildComponents implements Callable<Integer> {
             InvocationRequest invocationRequest = new DefaultInvocationRequest();
             invocationRequest.setPomFile(new File(konduitServingLocation,"pom.xml"));
             invocationRequest.setGoals(Arrays.asList(konduitServingBuildCommand.split(" ")));
+            invocationRequest.setAlsoMake(true);
+
+            if(konduitServingModule != null && !konduitServingModule.isEmpty()) {
+                invocationRequest.setProjects(konduitServingModule);
+            }
             Properties properties = new Properties();
             properties.put("chip",konduitServingChip);
             properties.put("javacpp.platform",platform);
