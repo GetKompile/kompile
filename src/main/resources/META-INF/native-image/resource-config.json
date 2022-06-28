@@ -1074,15 +1074,8 @@
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"}
   ]},
   "bundles":[
-    {"name":"com.github.chirontt.lfs.server.locks.internal.LfsFileLockingText"},
-    {"name":"javax.servlet.LocalStrings"},
-    {"name":"javax.servlet.http.LocalStrings"},
     {"name":"org.eclipse.jgit.gitrepo.internal.RepoText"},
-    {"name":"org.eclipse.jgit.http.server.HttpServerText"},
     {"name":"org.eclipse.jgit.internal.JGitText"},
-    {"name":"org.eclipse.jgit.internal.storage.dfs.DfsText"},
-    {"name":"org.eclipse.jgit.lfs.internal.LfsText"},
-    {"name":"org.eclipse.jgit.lfs.server.internal.LfsServerText"},
-    {"name":"org.eclipse.jgit.transport.http.apache.internal.HttpApacheText"}
+    {"name":"org.eclipse.jgit.internal.storage.dfs.DfsText"}
   ]
 }

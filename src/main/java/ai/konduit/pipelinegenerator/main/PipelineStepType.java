@@ -22,6 +22,7 @@ public enum PipelineStepType {
     LOGGING,
     SSD_TO_BOUNDING_BOX,
     SAMEDIFF,
+    SAMEDIFF_TRAINING,
     SHOW_IMAGE,
     TENSORFLOW,
     ND4JTENSORFLOW,
@@ -122,6 +123,9 @@ public enum PipelineStepType {
                 return SSDToBoundingBoxStep.class;
             case SAMEDIFF:
                 clazz = Class.forName("ai.konduit.serving.models.samediff.step.SameDiffStep");
+                return (Class<? extends PipelineStep>) clazz;
+            case SAMEDIFF_TRAINING:
+                clazz = Class.forName("ai.konduit.serving.models.samediff.step.trainer.SameDiffTrainerStep");
                 return (Class<? extends PipelineStep>) clazz;
             case SHOW_IMAGE:
                 clazz = Class.forName("ai.konduit.serving.data.image.step.show.ShowImageStep");

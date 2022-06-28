@@ -5,6 +5,7 @@ import org.apache.commons.io.FileUtils;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "maven",mixinStandardHelpOptions = false)
@@ -29,7 +30,24 @@ public class InstallMaven implements Callable<Integer> {
         File mavenDirectory = new File(Info.mavenDirectory(),"apache-maven-3.8.6-bin.tar.gz/apache-maven-3.8.6/");
         FileUtils.copyDirectory(mavenDirectory,Info.mavenDirectory());
         FileUtils.deleteDirectory(mavenDirectory);
+        File mavenExecutable = new File(Info.mavenDirectory(),"bin/mvn");
+        if(!mavenExecutable.exists()) {
+            System.err.println("No maven executable found. Failed to install. Exiting.");
+            System.exit(1);
+        } else {
+            if(!Files.isExecutable(mavenExecutable.toPath())) {
+               if(!mavenExecutable.setExecutable(true)) {
+                   System.err.println("Failed to set maven executable after download. Failed install due to permissions. Please ensure appropriate permissions on the current directory. Exiting.");
+                   System.exit(1);
+               } else {
+                   System.out.println("Maven executable configured. Please ensure you add "  + new File(mavenDirectory.getAbsolutePath(),"bin") + " to your path.");
+               }
+
+            }
+        }
+
         System.out.println("Installed maven at " + Info.mavenDirectory());
+
         return 0;
     }
 }

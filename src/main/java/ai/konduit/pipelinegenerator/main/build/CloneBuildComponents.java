@@ -1,11 +1,9 @@
 package ai.konduit.pipelinegenerator.main.build;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.maven.shared.invoker.DefaultInvocationRequest;
-import org.apache.maven.shared.invoker.DefaultInvoker;
-import org.apache.maven.shared.invoker.InvocationRequest;
-import org.apache.maven.shared.invoker.Invoker;
+import org.apache.maven.shared.invoker.*;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.lib.TextProgressMonitor;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -16,9 +14,9 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "clone-build",description = "Clones and builds deeplearning4j and konduit-serving depending on parameters using git. Note: Git is built in to this CLI and does not need to be installed. Note that for building dl4j, various dependencies such as compilers may need to be installed as pre requisites depending on your target architecture such as CPU, CUDA, or a different architecture with cross compilation like ARM.")
 public class CloneBuildComponents implements Callable<Integer> {
     @CommandLine.Option(names = {"--dl4jDirectory"},description = "The place to clone deeplearning4j for a build: defaults to $USER/.kompile/deeplearning4j")
-    private String dl4jDirectory = System.getProperty("user.home") + ".kompile/deeplearning4j";
+    private String dl4jDirectory = System.getProperty("user.home") + "/.kompile/deeplearning4j";
     @CommandLine.Option(names = {"--konduitServingDirectory"},description = "The place to clone konduit-serving for a build: defaults to $USER/.kompile/konduit-serving")
-    private String konduitServingDirectory = System.getProperty("user.home") + ".kompile/konduit-serving";
+    private String konduitServingDirectory = System.getProperty("user.home") + "/.kompile/konduit-serving";
     @CommandLine.Option(names = {"--dl4jGitUrl"},description = "The URL to clone deeplearning4j from: Defaults to https://github.com/eclipse/deeplearning4j")
     private String dl4jGitUrl = "https://github.com/eclipse/deeplearning4j";
     @CommandLine.Option(names = {"--konduitServingGitUrl"},description = "The URL to clone konduit-serving from: Defaults to https://github.com/KonduitAI/konduit-serving")
@@ -31,7 +29,7 @@ public class CloneBuildComponents implements Callable<Integer> {
     private boolean buildDl4j = false;
 
     @CommandLine.Option(names = {"--mvnHome"},description = "The maven home.")
-    private String mvnHome = System.getProperty("user.home") + ".kompile/mvn";
+    private String mvnHome = System.getProperty("user.home") + "/.kompile/mvn";
 
     @CommandLine.Option(names = {"--buildKonduitServing"},description = "Whether to build konduit-serving or not")
     private boolean buildKonduitServing = false;
@@ -69,14 +67,15 @@ public class CloneBuildComponents implements Callable<Integer> {
     private boolean buildCpuBackend = true;
 
     @CommandLine.Option(names = {"--buildCudaBackend"},description = "Whether to build the cuda backend or not. This means including nd4j-cuda in the build.")
-    private boolean buildCudaBackend = true;
+    private boolean buildCudaBackend = false;
 
     @CommandLine.Option(names = {"--dl4jBuildCommand"},description = "The build command for maven. Defaults to clean install -Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests")
     private String dl4jBuildCommand = "clean install -Dmaven.test.skip=true";
 
     @CommandLine.Option(names = {"--konduitServingBuildCommand"},description = "The build command for maven. Defaults to clean install -Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests")
     private String konduitServingBuildCommand = "clean install -Dmaven.test.skip=true";
-
+    @CommandLine.Option(names = {"--konduitServingChip"},description = "The chip to use for konduit serving.")
+    private String konduitServingChip = "cpu";
 
     public CloneBuildComponents() {
     }
@@ -93,11 +92,12 @@ public class CloneBuildComponents implements Callable<Integer> {
             }
 
             if(!dl4jLocation.exists()) {
-                System.out.println("Dl4j location not found. Cloning to " + dl4jLocation.getAbsolutePath());
+                System.out.println("Dl4j location not found. Cloning to " + dl4jLocation.getAbsolutePath() + " from url " + dl4jGitUrl + " from branch " + dl4jBranchName);
                 Git.cloneRepository()
                         .setURI(dl4jGitUrl)
                         .setDirectory(dl4jLocation)
                         .setBranch(dl4jBranchName)
+                        .setProgressMonitor(new TextProgressMonitor())
                         .call();
             }
 
@@ -109,7 +109,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             properties.put("libnd4j.extension",chipExtension);
             properties.put("libnd4j.compute",chipCompute);
             properties.put("libnd4j.tests","");
-            properties.put("libnd4j.buildthreads",libnd4jBuildThreads);
+            properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
             properties.put("libnd4j.helper",libnd4jHelper);
             properties.put("libnd4j.operations",libnd4jOperations);
             properties.put("libnd4j.datatypes",libnd4jDataTypes);
@@ -135,9 +135,20 @@ public class CloneBuildComponents implements Callable<Integer> {
             invoker.setMavenHome(new File(mvnHome));
 
 
-            invoker.execute(invocationRequest);
-
+            InvocationResult execute = invoker.execute(invocationRequest);
+            if(execute != null && execute.getExitCode() != 0) {
+                System.err.println("DL4J build failed. Reason below:");
+                execute.getExecutionException().printStackTrace();
+            }  else if(execute.getExitCode() == 0) {
+                System.err.println("Finished cloning and building Deeplearning4j.");
+            }
+            else if(execute.getExitCode() != 0) {
+                System.err.println("Failed to build Deeplearning4j. Exiting.");
+                System.exit(1);
+            }
         }
+
+
 
         if(buildKonduitServing) {
             File konduitServingLocation = new File(konduitServingDirectory);
@@ -148,21 +159,36 @@ public class CloneBuildComponents implements Callable<Integer> {
 
 
             if(!konduitServingLocation.exists()) {
-                System.out.println("Konduit Serving location not found. Cloning to " + konduitServingLocation.getAbsolutePath());
+                System.out.println("Konduit Serving location not found. Cloning to " + konduitServingLocation.getAbsolutePath() + " from url " + konduitServingGitUrl + " from branch " + konduitServingBranchName);
                 Git.cloneRepository()
                         .setURI(konduitServingGitUrl)
                         .setDirectory(konduitServingLocation)
                         .setBranch(konduitServingBranchName)
+                        .setProgressMonitor(new TextProgressMonitor())
                         .call();
             }
 
             InvocationRequest invocationRequest = new DefaultInvocationRequest();
             invocationRequest.setPomFile(new File(konduitServingLocation,"pom.xml"));
             invocationRequest.setGoals(Arrays.asList(konduitServingBuildCommand.split(" ")));
+            Properties properties = new Properties();
+            properties.put("chip",konduitServingChip);
+            properties.put("javacpp.platform",platform);
+
             invoker.setWorkingDirectory(konduitServingLocation);
             invocationRequest.setBaseDirectory(konduitServingLocation);
             invoker.setMavenHome(new File(mvnHome));
-            invoker.execute(invocationRequest);
+            invocationRequest.setProperties(properties);
+            InvocationResult execute = invoker.execute(invocationRequest);
+            if(execute != null && execute.getExitCode() != 0) {
+                System.err.println("Konduit Serving build failed. Reason below:");
+                execute.getExecutionException().printStackTrace();
+            } else if(execute.getExitCode() == 0) {
+                System.err.println("Finished building Konduit Serving.");
+            } else {
+                System.err.println("Failed to clone Konduit Serving. Exiting.");
+                System.exit(1);
+            }
 
         }
 

@@ -22,7 +22,7 @@ echo "import numpy as np; output1= input1 + input2" >> add.py
 wget https://github.com/onnx/models/blob/main/vision/classification/alexnet/model/bvlcalexnet-3.tar.gz?raw=true
 ./kompile convert --inputFile=bvlc_alexnet/model.onnx --format=onnx
 
-https://github.com/KonduitAI/dl4j-test-resources/blob/master/src/main/resources/tf_graphs/max_lstm.pb?raw=true
+wget https://github.com/KonduitAI/dl4j-test-resources/blob/master/src/main/resources/tf_graphs/max_lstm.pb?raw=true
  mv max_lstm.pb\?raw\=true max_lstm.pb
 ./kompile convert --inputFile=max_lstm.pb --format=tensorflow
 

@@ -12029,6 +12029,14 @@
     "allPublicClasses" : true
   },
   {
+    "name":"ai.konduit.serving.models.samediff.step.trainer.SameDiffTrainerStep",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
     "name":"ai.konduit.serving.pipeline.api.TextConfig",
     "allDeclaredMethods":true
   },
