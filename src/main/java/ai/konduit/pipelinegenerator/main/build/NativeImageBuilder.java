@@ -61,6 +61,9 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = {"--javacppPlatform"},description = "Build for a specific specified platform. An example would be linux-x86_64 - this reduces binary size and prevents out of memories from trying to include binaries for too many platforms.")
     private String javacppPlatform;
 
+    @CommandLine.Option(names = {"--javacppExtension"},description = "An optional javacpp extension such as avx2 or cuda depending on the target set of dependencies.")
+    private String javacppExtension;
+
     @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
     private String pipelinePath;
 
@@ -117,7 +120,9 @@ public class NativeImageBuilder implements Callable<Void> {
 
         if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
             invocationRequest.setMavenOpts("-Djavacpp.platform=" + javacppPlatform);
-            invocationRequest.setGoals(Arrays.asList("-Djavacpp.platform=" + javacppPlatform,"-Dorg.eclipse.python4j.numpyimport=false","clean","package"));
+            invocationRequest.setGoals(Arrays.asList("-Djavacpp.platform=" + javacppPlatform,
+                    "-Djavacpp.platform.extension=" + javacppExtension,
+                    "-Dorg.eclipse.python4j.numpyimport=false","clean","package"));
         }
         else {
             invocationRequest.setGoals(Arrays.asList("clean","package"));
