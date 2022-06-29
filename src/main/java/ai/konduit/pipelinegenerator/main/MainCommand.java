@@ -5,6 +5,8 @@ import ai.konduit.pipelinegenerator.main.config.ConfigMain;
 import ai.konduit.pipelinegenerator.main.exec.*;
 import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
 import ai.konduit.pipelinegenerator.main.install.InstallMain;
+import ai.konduit.pipelinegenerator.main.models.Convert;
+import ai.konduit.pipelinegenerator.main.models.ModelMain;
 import ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.linalg.factory.Nd4jBackend;
@@ -24,7 +26,7 @@ import java.util.concurrent.Callable;
         InstallMain.class,
         UnInstallMain.class,
         Bootstrap.class,
-        Convert.class
+        ModelMain.class
 },
         mixinStandardHelpOptions = false)
 public class MainCommand implements Callable<Integer> {

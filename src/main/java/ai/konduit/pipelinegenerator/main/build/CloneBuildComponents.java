@@ -135,7 +135,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
             properties.put("javacpp.platform",platform);
             properties.put("javacpp.platform.extension",javacppExtension);
-            
+
             invocationRequest.setProperties(properties);
             invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
 

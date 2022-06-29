@@ -1,4 +1,4 @@
-package ai.konduit.pipelinegenerator.main;
+package ai.konduit.pipelinegenerator.main.models;
 
 import org.apache.commons.io.IOUtils;
 import org.deeplearning4j.nn.graph.ComputationGraph;

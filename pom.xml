@@ -363,7 +363,7 @@
                 --initialize-at-build-time=org.nd4j.common.
                 --initialize-at-build-time=org.nd4j.shade.
                 --initialize-at-run-time=org.nd4j.nativeblas
-                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.Convert
+                --initialize-at-run-time=ai.konduit.pipelinegenerator.main.models.Convert
                 --initialize-at-run-time=io.netty
                 --initialize-at-build-time=org.slf4j
                 --initialize-at-build-time=ch.qos
