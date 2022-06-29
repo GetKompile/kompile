@@ -30,6 +30,11 @@ public class PipelineCommandGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--mainClass"},description = "The main class for the image")
     private String mainClass;
 
+    @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to include")
+    private String nd4jBackend = "nd4j-native";
+
+    @CommandLine.Option(names = {"--nd4jBackendClassifier"},description = "The nd4j backend to include")
+    private String nd4jBackendClassifier = "";
 
     @CommandLine.Option(names = {"--extraDependencies"},description = "Extra dependencies to include in the form of: groupId:artifactId,version:classifier with a comma separating each dependency")
     private String extraDependencies;
@@ -76,6 +81,14 @@ public class PipelineCommandGenerator implements Callable<Void> {
 
         if(outputFile != null) {
             command.append(" --outputFile=" + outputFile.getAbsolutePath() + " ");
+        }
+
+        if(nd4jBackend != null) {
+            command.append(" --nd4jBackend=" + outputFile.getAbsolutePath() + " ");
+        }
+
+        if(nd4jBackendClassifier != null) {
+            command.append(" --nd4jBackendClassifier=" + outputFile.getAbsolutePath() + " ");
         }
 
         Pipeline pipeline = null;
