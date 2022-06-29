@@ -212,7 +212,7 @@ echo "NATIVE_IMAGE_FILE_PATH ${NATIVE_IMAGE_FILE_PATH}"
 if test -f "$PIPELINE_FILE"; then
      echo "Processing pipeline file $PIPELINE_FILE"
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
     eval "./kompile ${POM_GENERATE_COMMAND}"
     BUILD_DIR="$(pwd)"

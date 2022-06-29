@@ -6,6 +6,7 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "model",mixinStandardHelpOptions = false,
         subcommands = {
                 SameDiffSummary.class,
+                DL4jSummary.class,
                 Convert.class
         },
         description = "Utilities related to models including execution and debugging.")
