@@ -84,11 +84,11 @@ public class PipelineCommandGenerator implements Callable<Void> {
         }
 
         if(nd4jBackend != null) {
-            command.append(" --nd4jBackend=" + outputFile.getAbsolutePath() + " ");
+            command.append(" --nd4jBackend=" + nd4jBackend + " ");
         }
 
         if(nd4jBackendClassifier != null) {
-            command.append(" --nd4jBackendClassifier=" + outputFile.getAbsolutePath() + " ");
+            command.append(" --nd4jBackendClassifier=" + nd4jBackendClassifier + " ");
         }
 
         Pipeline pipeline = null;
