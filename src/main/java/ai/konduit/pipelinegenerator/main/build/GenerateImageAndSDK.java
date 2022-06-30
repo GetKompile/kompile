@@ -151,7 +151,7 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(nd4jBackend);
             }
 
-            if(nd4jClassifier != null && nd4jClassifier.isEmpty()) {
+            if(nd4jClassifier != null && !nd4jClassifier.isEmpty()) {
                 command.add("--nd4j-classifier");
                 command.add(nd4jClassifier);
             }
