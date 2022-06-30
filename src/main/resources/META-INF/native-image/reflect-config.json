@@ -43332,6 +43332,14 @@
 
   },
   {
+    "name":"org.nd4j.autodiff.samediff.TrainingConfig",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.install.InstallSDK",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,

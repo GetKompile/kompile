@@ -31,8 +31,17 @@ mv act_0.h5\?raw\=true act_0.h5
 ./kompile convert --inputFile=act_0.h5 --format=keras --kerasNetworkType=functional
 
 
+cd /kompile && ./kompile build generate-image-and-sdk   --buildPlatform=linux-x86_64 --nd4jClassifier="linux-x86_64-vednn-avx2" --pipelineFile=yolov4-pipeline.json --mavenHome=/root/.kompile/mvn --kompilePythonPath=./kompile-python --kompileCPath=./kompile-c-library --nativeImageFilesPath=/kompile/native-image
+
+
+
+ sudo docker run  -v $(pwd):/local:z -it 47ef571ca792 /bin/bash
+/kompile exec step-create samediff_training --modelUri=samediff-sgd.fb --updater=SGD \
+--numEpochs=2 --targetVariables=label --lossFunction=MSE --inputFeatures=input
 
  sudo docker  build  --ulimit nofile=98304:98304  .
+
+
 
 
 

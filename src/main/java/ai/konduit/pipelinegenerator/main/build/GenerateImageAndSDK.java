@@ -93,26 +93,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
 
 
             Map<String,String> env = new HashMap<>();
-            env.put("PIPELINE_FILE",String.valueOf(pipelineFile));
-            env.put("KOMPILE_PYTHON_PATH",kompilePythonPath);
-            env.put("KOMPILE_C_PATH",kompileCPath);
-            env.put("IMAGE_NAME",imageName);
-            env.put("PROTOCOL",protocol);
-            env.put("POM_GENERATE_OUTPUT_PATH",pomGenerateOutputPath);
-            env.put("LIB_OUTPUT_PATH",libOutputPath);
-            env.put("INCLUDE_PATH",includePath);
-            env.put("BUNDLE_OUTPUT_PATH",bundleOutputPath);
-            env.put("MAVEN_HOME",mavenHome);
-            env.put("BUILD_PLATFORM",buildPlatform);
-            env.put("BINARY_EXTENSION",binaryExtension);
-            env.put("ND4J_BACKEND",nd4jBackend);
-            env.put("ND4J_CLASSIFIER",nd4jClassifier);
-            env.put("ENABLE_JETSON_NANO",String.valueOf(enableJetsonNano));
-            env.put("BUILD_SHARED_LIBRARY",String.valueOf(buildSharedLibrary));
-            env.put("MAIN_CLASS",mainClass);
-            env.put("MIN_RAM_MEGS",String.valueOf(minRamMegs));
-            env.put("MAX_RAM_MEGS",String.valueOf(maxRamMegs));
-            env.put("NO_GC",String.valueOf(noGc));
             //setup graalvm and java home for maven
             System.out.println("Setting graalvm and java home to " + Info.graalvmDirectory().getAbsolutePath());
             env.put("GRAALVM_HOME",Info.graalvmDirectory().getAbsolutePath());
@@ -193,6 +173,8 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             command.add(String.valueOf(maxRamMegs));
             command.add("--no-garbage-collection");
             command.add(String.valueOf(noGc));
+            System.out.println("Running generate image command: " + command);
+
             return new ProcessExecutor().environment(env)
                     .command(command)
                     .readOutput(true)
