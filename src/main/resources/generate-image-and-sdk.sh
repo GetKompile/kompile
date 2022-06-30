@@ -176,8 +176,9 @@ fi
 #      MAIN_CLASS="ai.konduit.pipelinegenerator.main.NumpyEntryPoint"
 #   fi
 #fi
-
-ND4J_CLASSIFIER="${BUILD_PLATFORM}"
+if [ -z "${BUILD_PLATFORM}" ]; then
+  ND4J_CLASSIFIER="${BUILD_PLATFORM}"
+fi
 
 set_binary_extension
 
