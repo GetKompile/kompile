@@ -23,6 +23,7 @@ RUN cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.p
 COPY ./kompile-c-library /kompile/kompile-c-library
 COPY ./kompile-python /kompile/kompile-python
 COPY ./src /kompile/src
+ENV KOMPILE_PREFIX=/kompile
 COPY ./pipeline /kompile/pipeline
 COPY pom.xml /kompile/pom.xml
 RUN cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package

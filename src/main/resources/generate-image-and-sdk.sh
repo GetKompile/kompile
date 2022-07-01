@@ -33,6 +33,7 @@ MIN_RAM_MEGS=2000
 MAX_RAM_MEGS=2000
 NO_GC="false"
 NATIVE_IMAGE_FILE_PATH=
+KOMPILE_PREFIX="./"
 
 while [[ $# -gt 0 ]]
 do
@@ -103,6 +104,10 @@ case $key in
     NATIVE_IMAGE_FILE_PATH="$value"
     shift # past argument
     ;;
+    -kp|--kompile-prefix)
+      KOMPILE_PREFIX="$value"
+      shift # past argument
+      ;;
    -ngc|--no-garbage-collection)
     NO_GC="$value"
     shift # past argument
@@ -243,7 +248,7 @@ if test -f "$PIPELINE_FILE"; then
     echo "Set real include path to ${REAL_INCLUDE_PATH}"
     cd "${BUILD_DIR}"
     cp "./${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
-    cp "./src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
+    cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
     cp "${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
      if  test -f './kompile-c' ; then
          rm -rf './kompile-c'
