@@ -12,7 +12,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "native-image-generate",mixinStandardHelpOptions = false,description = "Generate a native image using the given konduit serving pipeline steps available below. This will also generate a project to build the native image with. Note that the generate-image-and-sdk command also uses this command.")
@@ -103,7 +105,7 @@ public class NativeImageBuilder implements Callable<Void> {
         if(nativeImageFilesPath != null) {
             File f = new File(nativeImageFilesPath);
             for(String resource : resources) {
-               File src = new File(nativeImageFilesPath,resource);
+                File src = new File(nativeImageFilesPath,resource);
                 File dst = new File(nativeImageResourceDir,resource);
                 if(!dst.exists())
                     dst.createNewFile();
@@ -119,10 +121,14 @@ public class NativeImageBuilder implements Callable<Void> {
         }
 
         if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
-            invocationRequest.setMavenOpts("-Djavacpp.platform=" + javacppPlatform);
-            invocationRequest.setGoals(Arrays.asList("-Djavacpp.platform=" + javacppPlatform,
-                    "-Djavacpp.platform.extension=" + javacppExtension,
-                    "-Dorg.eclipse.python4j.numpyimport=false","clean","package"));
+            List<String> goals = new ArrayList<>();
+            goals.add("-Djavacpp.platform=" + javacppPlatform);
+            if(javacppExtension != null && !javacppExtension.isEmpty())
+                goals.add("-Djavacpp.platform.extension=" + javacppExtension);
+            goals.add("-Dorg.eclipse.python4j.numpyimport=false");
+            goals.add("clean");
+            goals.add("package");
+            invocationRequest.setGoals(goals);
         }
         else {
             invocationRequest.setGoals(Arrays.asList("clean","package"));
@@ -134,6 +140,7 @@ public class NativeImageBuilder implements Callable<Void> {
         invoker.setWorkingDirectory(project);
         invocationRequest.setBaseDirectory(project);
         invoker.setMavenHome(mavenHome);
+        System.out.println("Invoking maven with args " + invocationRequest.getArgs());
         invoker.execute(invocationRequest);
     }
 
