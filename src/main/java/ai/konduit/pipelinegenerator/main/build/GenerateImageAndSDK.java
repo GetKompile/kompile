@@ -66,6 +66,9 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     @CommandLine.Option(names = "--nativeImageFilesPath",description = "The path to the files for building an image")
     private String nativeImageFilesPath;
 
+    @CommandLine.Option(names = "--kompilePrefix",description = "The kompile prefix where the relevant kompile source code is for compilation.")
+    private String kompilePrefix = "./";
+
     public GenerateImageAndSDK() {
     }
 
@@ -81,6 +84,23 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
         checkExists(Info.graalvmDirectory(),"graalvm");
         checkExists(Info.mavenDirectory(),"maven");
         checkExists(Info.pythonDirectory(),"python");
+
+        //unpack resources needed for inclusion and linking of files for the generate images script
+        File kompileResources = new File(kompilePrefix,"src/main/resources");
+        if(!kompileResources.exists()) {
+            kompileResources.mkdirs();
+        }
+
+        for(String s : new String[] {"numpy_struct.h","konduit-serving.h"}) {
+            ClassPathResource classPathResource = new ClassPathResource(s);
+            try(InputStream is = classPathResource.getInputStream()) {
+                String headerContent = IOUtils.toString(is);
+                File tempFile = new File(kompileResources,s);
+                tempFile.createNewFile();
+                tempFile.deleteOnExit();
+                FileUtils.write(tempFile,headerContent,false);
+            }
+        }
 
         ClassPathResource classPathResource = new ClassPathResource("generate-image-and-sdk.sh");
         try(InputStream is = classPathResource.getInputStream()) {
@@ -144,6 +164,11 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             if(mavenHome != null && !mavenHome.isEmpty()) {
                 command.add("--maven-home");
                 command.add(mavenHome);
+            }
+
+            if(kompilePrefix != null && !kompilePrefix.isEmpty()) {
+                command.add("--kompile-prefix");
+                command.add(kompilePrefix);
             }
 
             if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
