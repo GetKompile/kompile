@@ -68,6 +68,8 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
 
     @CommandLine.Option(names = "--kompilePrefix",description = "The kompile prefix where the relevant kompile source code is for compilation.")
     private String kompilePrefix = "./";
+    @CommandLine.Option(names = "--pythonExecutable",description = "The executable to use with python. Defaults to the python found on the path. Otherwise will use the built in python installed with ./kompile install python")
+    private String pythonExecutable = "python";
 
     public GenerateImageAndSDK() {
     }
@@ -150,6 +152,10 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(protocol);
             }
 
+            if(pythonExecutable != null && !pythonExecutable.isEmpty()) {
+                command.add("--pythonExecutable");
+                command.add(pythonExecutable);
+            }
 
             if(pomGenerateOutputPath != null && !pomGenerateOutputPath.isEmpty()) {
                 command.add("--pom-path");

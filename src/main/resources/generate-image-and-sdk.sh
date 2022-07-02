@@ -34,6 +34,14 @@ MAX_RAM_MEGS=2000
 NO_GC="false"
 NATIVE_IMAGE_FILE_PATH=
 KOMPILE_PREFIX="./"
+PYTHON_EXEC="python"
+
+path_to_executable=$(which name_of_executable)
+ if [ -x "$python" ] ; then
+    echo "Python not found: attempting install and set."
+    ./kompile install python
+    export PYTHON_EXEC="$USER/.kompile/python/bin/python"
+ fi
 
 while [[ $# -gt 0 ]]
 do
@@ -52,6 +60,10 @@ case $key in
     KOMPILE_C_PATH="$value"
     shift # past argument
     ;;
+    -pe|--python-exec)
+      PYTHON_EXEC="$value"
+      shift # past argument
+      ;;
     -i|--image-name)
     IMAGE_NAME="$value"
     shift # past argument
@@ -276,11 +288,11 @@ if test -f "$PIPELINE_FILE"; then
     #cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
     cd ./kompile-python
     mkdir -p lib
-    python setup.py build_ext --inplace
+    ${PYTHON_EXEC} setup.py build_ext --inplace
     # Work around for bundling not working properly with wheel.
     # Allow  artifacts to automatically be specified so they can be bundled.
     cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
-    python setup.py bdist_wheel
+     ${PYTHON_EXEC} setup.py bdist_wheel
     cd ..
     echo "Creating bundle directory ${IMAGE_NAME}-bundle"
     # Ensure old copies are removed
