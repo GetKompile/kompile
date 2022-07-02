@@ -153,7 +153,7 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             }
 
             if(pythonExecutable != null && !pythonExecutable.isEmpty()) {
-                command.add("--pythonExecutable");
+                command.add("--python-exec");
                 command.add(pythonExecutable);
             }
 
