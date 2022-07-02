@@ -36,12 +36,7 @@ NATIVE_IMAGE_FILE_PATH=
 KOMPILE_PREFIX="./"
 PYTHON_EXEC="python"
 
-path_to_executable=$(which name_of_executable)
- if [ -x "$python" ] ; then
-    echo "Python not found: attempting install and set."
-    ./kompile install python
-    export PYTHON_EXEC="$USER/.kompile/python/bin/python"
- fi
+
 
 while [[ $# -gt 0 ]]
 do
