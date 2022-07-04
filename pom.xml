@@ -316,6 +316,7 @@
                 -H:IncludeResources="konduit-serving.h"
                 -H:IncludeResources="numpy_struct.h"
                 -H:IncludeResources="NumpyEntryPoint.java"
+                -H:ReflectionConfigurationFiles=${project.basedir}/src/main/resources/META-INF/native-image/reflect-config.json
                 -H:IncludeResources="META-INF/native-image/jni-config.json"
                 -H:IncludeResources="META-INF/native-image/proxy-config.json"
                 -H:IncludeResources="META-INF/native-image/reflect-config.json"
@@ -348,7 +349,6 @@
                 -Dorg.bytedeco.javacpp.noPointerGC=true
                 -Dorg.bytedeco.javacpp.nopointergc=true
                 --enable-url-protocols=jar
-                -H:+AllowIncompleteClasspath
                 -H:-CheckToolchain
                 --enable-https
                 --enable-http
