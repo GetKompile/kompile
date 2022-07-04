@@ -36,7 +36,7 @@ public class MainCommand implements Callable<Integer> {
         CommandLine commandLine = new CommandLine(new MainCommand());
         try {
             NativeOps nativeOps = new Nd4jCpu();
-         
+
             NativeOpsHolder.getInstance().setDeviceNativeOps(nativeOps);
             NativeOpsHolder.getInstance().initOps();
 

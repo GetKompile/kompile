@@ -65,6 +65,12 @@
     </dependency>
 
     <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native-preset</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>org.bytedeco</groupId>
       <artifactId>openblas-platform</artifactId>
       <version>0.3.19-1.5.7</version>
