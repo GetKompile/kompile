@@ -127,6 +127,14 @@ public class PomGenerator implements Callable<Void> {
         dependency.setArtifactId(nd4jBackend);
         dependency.setVersion(dl4jVersion);
         addTo.add(dependency);
+
+
+        Dependency dependency2 = new Dependency();
+        dependency2.setGroupId("org.nd4j");
+        dependency2.setArtifactId(nd4jBackend + "-preset");
+        dependency2.setVersion(dl4jVersion);
+        addTo.add(dependency2);
+
         if(nd4jBackendClassifier != null && !nd4jBackendClassifier.isEmpty()) {
             Dependency classifierDep = new Dependency();
             classifierDep.setGroupId("org.nd4j");
