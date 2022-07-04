@@ -238,22 +238,8 @@ public class NumpyEntryPoint {
             e.printStackTrace();
         }
 
-/*
 
-        String pipelinePathConversion = CTypeConversion.toJavaString(pipelinePath);
-        NativeOps deviceNativeOps = new Nd4jCpu();
-        ImageSingletons.add(NativeOps.class,deviceNativeOps);
-        PinnedObject nativeOpsPinned = PinnedObject.create(deviceNativeOps);
-        handles.setNativeOpsHandle(ObjectHandles.getGlobal().create(nativeOpsPinned));
-        Pipeline pipeline =  Pipeline.fromJson(pipelinePathConversion);
-        ImageSingletons.add(Pipeline.class,pipeline);
-        PinnedObject pipelinePinned = PinnedObject.create(pipeline);
-        handles.setPipelineHandle(ObjectHandles.getGlobal().create(pipelinePinned));
-        PipelineExecutor pipelineExecutor = pipeline.executor();
-        ImageSingletons.add(PipelineExecutor.class,pipelineExecutor);
-        PinnedObject executorPinned = PinnedObject.create(pipelineExecutor);
-        handles.setExecutorHandle(ObjectHandles.getGlobal().create(executorPinned));
-*/
+
 
         return 0;
     }

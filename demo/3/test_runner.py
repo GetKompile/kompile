@@ -1,6 +1,7 @@
 from kompile.interface.native.interface import PipelineRunner
 import json
 import numpy as np
+# input_1: 32,416,416,3
 with open('sequence-pipeline-python.json') as f:
     input_json = f.read()
     print(str(type(input_json)))
