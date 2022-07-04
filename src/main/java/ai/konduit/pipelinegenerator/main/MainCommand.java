@@ -9,7 +9,6 @@ import ai.konduit.pipelinegenerator.main.models.Convert;
 import ai.konduit.pipelinegenerator.main.models.ModelMain;
 import ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain;
 import org.nd4j.common.config.ND4JSystemProperties;
-import org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu;
 import org.nd4j.linalg.factory.Nd4jBackend;
 import org.nd4j.nativeblas.NativeOps;
 import org.nd4j.nativeblas.NativeOpsHolder;
@@ -35,7 +34,21 @@ public class MainCommand implements Callable<Integer> {
     public static void main(String...args) throws Exception {
         CommandLine commandLine = new CommandLine(new MainCommand());
         try {
-            NativeOps nativeOps = new Nd4jCpu();
+            NativeOps nativeOps = null;
+            System.setProperty(ND4JSystemProperties.INIT_NATIVEOPS_HOLDER,"false");
+            Nd4jBackend load = Nd4jBackend.load();
+
+            if(load.getClass().getName().toLowerCase().contains("cpu")) {
+                Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu");
+                nativeOps = nativeOpsClazz.newInstance();
+            } else if(load.getClass().getName().toLowerCase().contains("cuda")) {
+                Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.linalg.jcublas.bindings.Nd4jCuda");
+                nativeOps = nativeOpsClazz.newInstance();
+
+            } else if(load.getClass().getName().toLowerCase().contains("aurora")) {
+                Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.aurora.Nd4jAuroraOps");
+                nativeOps = nativeOpsClazz.newInstance();
+            }
 
             NativeOpsHolder.getInstance().setDeviceNativeOps(nativeOps);
             NativeOpsHolder.getInstance().initOps();
