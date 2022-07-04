@@ -76,8 +76,14 @@ public class NativeImageBuilder implements Callable<Void> {
     public void runMain(String...args) throws Exception {
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
         File project = new File(imageName);
-        project.mkdirs();
+        if(project.listFiles() != null) {
+            System.err.println("Found non empty directory at " + project.getAbsolutePath() + " please specify an empty directory.");
+            System.exit(1);
+        }
+
+        Preconditions.checkState(project.mkdirs(),"Unable to make directory " + project.getAbsolutePath());
         File srcDir = new File(project,"src/main/java");
+
         Preconditions.checkState(srcDir.mkdirs(),"Unable to make directory " + srcDir.getAbsolutePath());
 
         if (numpySharedLibrary) {
