@@ -323,7 +323,7 @@
                 -H:IncludeResources="numpy_struct.h"
                 -H:IncludeResources="NumpyEntryPoint.java"
                 -H:IncludeResources="org/nd4j/.*"
-                -H:IncludeResources="*.vso"
+                -H:IncludeResources=".*.vso"
                 -H:ReflectionConfigurationFiles=${project.basedir}/src/main/resources/META-INF/native-image/reflect-config.json
                 -H:IncludeResources="META-INF/native-image/jni-config.json"
                 -H:IncludeResources="META-INF/native-image/proxy-config.json"
