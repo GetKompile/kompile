@@ -414,6 +414,8 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
         stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
         stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
+        stringBuilder.append(" -H:IncludeResources=.*/org/nd4j/.*\n");
+        stringBuilder.append(" -H:IncludeResources=*.vso\n");
         for(PomFileAppender pomFileAppender : appenders()) {
             pomFileAppender.append(stringBuilder);
             pomFileAppender.appendReInitialize(stringBuilder);
