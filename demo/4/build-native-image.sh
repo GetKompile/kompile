@@ -1,3 +1,0 @@
-#!/bin/bash
-../pipeline pom-generate --cli=true --imageName=konduit-serving --mainClass=ai.konduit.serving.cli.launcher.KonduitServingLauncher --outputFile=pom3.xml  --server=true
-../pipeline native-image-generate --imageName=konduit-serving --mainClass=ai.konduit.serving.cli.launcher.KonduitServingLauncher --outputFile=pom3.xml  --server=true --mavenHome=/mnt/c/ProgramData/chocolatey/lib/maven/apache-maven-3.6.3/

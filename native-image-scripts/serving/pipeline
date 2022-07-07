@@ -1,2 +1,0 @@
-#!/bin/bash
-java  -Dorg.eclipse.python4j.numpyimport=false -jar target/pipeline-generator-1.0-SNAPSHOT-shaded.jar "$@"

@@ -1,6 +1,0 @@
-{
-  "name" : "input2",
-  "pythonType" : "numpy.ndarray",
-  "secondaryType" : "NONE",
-  "type" : "NDARRAY"
-}

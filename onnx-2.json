@@ -1,6 +1,0 @@
-{
-  "@type" : "ONNX",
-  "modelUri" : "add.onnx",
-  "inputNames" : [ "1", "2" ],
-  "outputNames" : [ "1", "2" ]
-}

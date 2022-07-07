@@ -1,8 +1,0 @@
-{
-  "steps" : [  {
-    "@type" : "ONNX",
-    "modelUri" : "/mnt/c/Users/agibs/Documents/GitHub/pipeline-generator/demo/vending-machines/kompile/agerace_v2_simplified.onnx_quant.onnx",
-    "inputNames" : [ "input" ],
-    "outputNames" : [ "output","519","520" ]
-  } ]
-}
