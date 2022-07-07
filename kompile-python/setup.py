@@ -48,6 +48,7 @@ extension = Extension('kompile.interface.native.interface',
               sources=['kompile/interface/native/interface.pyx'],
               include_dirs=include_list,
               library_dirs=lib_list,
+            runtime_library_dirs=["."],
               libraries=['kompile_c_library','kompile-image'],
               language='c'
 )
