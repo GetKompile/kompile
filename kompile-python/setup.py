@@ -44,6 +44,7 @@ else:
 
 extension = Extension('kompile.interface.native.interface',
               extra_compile_args=[],
+              extra_link_args=["-Wl,-rpath='$ORIGIN'"],
               sources=['kompile/interface/native/interface.pyx'],
               include_dirs=include_list,
               library_dirs=lib_list,

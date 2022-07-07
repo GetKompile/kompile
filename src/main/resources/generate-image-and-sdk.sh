@@ -239,7 +239,9 @@ if test -f "$PIPELINE_FILE"; then
                 --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
                 --javacppPlatform="${BUILD_PLATFORM}" \
                 --mainClass="${MAIN_CLASS}"
-    cp "${NATIVE_LIB_DIR}/${IMAGE_NAME}.so" "${NATIVE_LIB_DIR}/lib${IMAGE_NAME}.so"
+    cd "${NATIVE_LIB_DIR}"
+    ln -s ./"${IMAGE_NAME}.so" "lib${IMAGE_NAME}.so"
+    cd -
     echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
     mkdir -p "${LIB_OUTPUT_PATH}"
