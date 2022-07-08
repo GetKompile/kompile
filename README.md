@@ -1,7 +1,7 @@
 # Kompile (README is WIP, for questions come to: https://community.konduit.ai)
 
 Kompile  is a command line interface for interacting with 
-the eclipse deeplearning4j/nd4j ecosystems and konduit serving.
+the [eclipse deeplearning4j/nd4j ecosystems](https://github.com/eclipse/deeplearning4j) and [konduit serving](https://github.com/KonduitAI/konduit-serving).
 
 
 Building container:
