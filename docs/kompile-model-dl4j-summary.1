@@ -1,0 +1,49 @@
+'\" t
+.\"     Title: kompile-model-dl4j-summary
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-MODEL\-DL4J\-SUMMARY" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+kompile\-model\-dl4j\-summary \- Print summary of a target dl4j model.
+.SH "SYNOPSIS"
+.sp
+\fBkompile model dl4j\-summary\fP \fB\-\-modelInputPath\fP=\fI<modelInputPath>\fP
+\fB\-\-modelType\fP=\fI<modelType>\fP
+.SH "DESCRIPTION"
+.sp
+Print summary of a target dl4j model.
+.SH "OPTIONS"
+.sp
+\fB\-\-modelInputPath\fP=\fI<modelInputPath>\fP
+.RS 4
+Input path to model.
+.RE
+.sp
+\fB\-\-modelType\fP=\fI<modelType>\fP
+.RS 4
+Model type: cg or mln. CG is shorthand for computation graph and mln is short hand for MultiLayerNetwork respectively.
+.RE

@@ -414,6 +414,110 @@
 
   <build>
     <plugins>
+
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.0.0</version>
+        <executions>
+          <execution>
+            <id>generateManPages</id>
+            <phase>process-classes</phase>
+            <goals>
+              <goal>java</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <includeProjectDependencies>true</includeProjectDependencies>
+          <includePluginDependencies>true</includePluginDependencies>
+          <mainClass>picocli.codegen.docgen.manpage.ManPageGenerator</mainClass>
+          <arguments>
+            <argument>--outdir=${project.build.directory}/generated-picocli-docs</argument>
+            <argument>-v</argument>
+            <!-- FIXME: remove the template-dir option after generating templates once -->
+            <argument>--template-dir=src/docs/mantemplates</argument>
+            <argument>ai.konduit.pipelinegenerator.main.MainCommand</argument>
+            <argument>ai.konduit.pipelinegenerator.main.Bootstrap</argument>
+            <argument>ai.konduit.pipelinegenerator.main.Info</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.BuildMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.CloneBuildComponents</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.GenerateImageAndSDK</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.NativeImageBuilder</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.PipelineCommandGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.build.PomGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.python.GeneratePythonVariableConfig</argument>
+            <argument>ai.konduit.pipelinegenerator.main.config.ConfigMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.ExecMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.InferenceServerCreate</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.PipelineGenerator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.SequencePipelineCombiner</argument>
+            <argument>ai.konduit.pipelinegenerator.main.exec.StepCreator</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallAll</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallGraalvm</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallMaven</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallPython</argument>
+            <argument>ai.konduit.pipelinegenerator.main.install.InstallSDK</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.Convert</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.DL4jSummary</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.OnnxPrint</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.SameDiffSummary</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.TensorflowPrint</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallAll</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallGraalvm</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallMaven</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallPython</argument>
+            <argument>ai.konduit.pipelinegenerator.main.util.ModelFileDebug</argument>
+            <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallGraalvm</argument>
+          </arguments>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli-codegen</artifactId>
+            <version>4.6.3</version>
+            <type>jar</type>
+          </dependency>
+        </dependencies>
+      </plugin>
+      <plugin>
+        <groupId>org.asciidoctor</groupId>
+        <artifactId>asciidoctor-maven-plugin</artifactId>
+        <version>2.1.0</version>
+        <executions>
+          <execution>
+            <id>output-html</id>
+            <!--            <phase>prepare-package</phase>-->
+            <phase>process-classes</phase>
+            <goals>
+              <goal>process-asciidoc</goal>
+            </goals>
+            <configuration>
+              <sourceHighlighter>coderay</sourceHighlighter>
+              <backend>html5</backend>
+            </configuration>
+          </execution>
+          <execution>
+            <id>output-manpage</id>
+            <!--            <phase>prepare-package</phase>-->
+            <phase>process-classes</phase>
+            <goals>
+              <goal>process-asciidoc</goal>
+            </goals>
+            <configuration>
+              <sourceHighlighter>coderay</sourceHighlighter>
+              <backend>manpage</backend>
+            </configuration>
+          </execution>
+        </executions>
+        <configuration>
+          <sourceDirectory>${project.build.directory}/generated-picocli-docs</sourceDirectory>
+        </configuration>
+      </plugin>
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>

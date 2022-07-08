@@ -1,0 +1,88 @@
+'\" t
+.\"     Title: kompile-exec-step-create-ssd_to_bounding_box
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-SSD_TO_BOUNDING_BOX" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-SSD_TO_BOUNDING_BOX \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create SSD_TO_BOUNDING_BOX\fP [\fB\-\-keepOtherValues\fP]
+[\fB\-\-aspectRatio\fP=\fIPARAM\fP] [\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-outputName\fP=\fIPARAM\fP] [\fB\-\-scale\fP=\fIPARAM\fP] [\fB\-\-threshold\fP=\fIPARAM\fP]
+[\fB\-\-classLabels\fP=\fIPARAM\fP]... [\fB\-\-COCO_LABELS\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-aspectRatio\fP=\fIPARAM\fP
+.RS 4
+An optional way to control the output shape (aspect ratio) of the bounding boxes. Defined in
+.sp
+terms of "width / height" \- if specified, an aspect ratio of 1.0 gives a square output; an aspect ratio of 2.0 gives
+.sp
+twice as wide as it is high. Note that for making the output the correct aspect ratio, one of the height or width
+.sp
+will be increased; the other dimension will not change. That is, the pre\-aspect\-ratio\-corrected box will be contained
+.sp
+fully within the output box
+.RE
+.sp
+\fB\-\-classLabels\fP=\fIPARAM\fP
+.RS 4
+A list of class labels.
+.RE
+.sp
+\fB\-\-COCO_LABELS\fP=\fIPARAM\fP, \fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-keepOtherValues\fP
+.RS 4
+If true, other data key and values from the previous step are kept and passed on to the next step as well.
+.RE
+.sp
+\fB\-\-outputName\fP=\fIPARAM\fP
+.RS 4
+Output key name where the bounding box will be contained in.
+.RE
+.sp
+\fB\-\-scale\fP=\fIPARAM\fP
+.RS 4
+An optional way to increase the size of the bounding boxes by some fraction. If specified, a value
+.sp
+of 1.0 is equivalent to no scaling. A scale of 2.0 means the center is unchanged, but the width and height are now
+.sp
+2.0x larger than it would otherwise be
+.RE
+.sp
+\fB\-\-threshold\fP=\fIPARAM\fP
+.RS 4
+Threadshold to the output of the SSD models for fetching bounding boxes for.
+.RE

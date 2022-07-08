@@ -1,0 +1,112 @@
+'\" t
+.\"     Title: kompile-exec-step-create-draw_bounding_box
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-DRAW_BOUNDING_BOX" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-DRAW_BOUNDING_BOX \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create DRAW_BOUNDING_BOX\fP [\fB\-\-drawCropRegion\fP] [\fB\-\-drawLabel\fP]
+[\fB\-\-drawProbability\fP] [\fB\-\-bboxName\fP=\fIPARAM\fP] [\fB\-\-color\fP=\fIPARAM\fP]
+[\fB\-\-cropRegionColor\fP=\fIPARAM\fP] [\fB\-\-DEFAULT_COLOR\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-imageName\fP=\fIPARAM\fP] [\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP] [\fB\-\-lineThickness\fP=\fIPARAM\fP]
+[\fB\-\-resizeH\fP=\fIPARAM\fP] [\fB\-\-resizeW\fP=\fIPARAM\fP] [\fB\-\-scale\fP=\fIPARAM\fP] [\fB\-\-classColors\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-bboxName\fP=\fIPARAM\fP
+.RS 4
+Name of the bounding boxes key from the previous step. If set to null, it will try to find any bounding box in the incoming data instance.
+.RE
+.sp
+\fB\-\-classColors\fP=\fIPARAM\fP
+.RS 4
+Specifies the color of different classes/labels that are drawn. The color can be a hex/HTML string like"#788E87", an RGB value like RGB \- "rgb(128,0,255)" or  it can be from a set of predefined HTML color names: [white, silver, gray, black, red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia, purple]
+.RE
+.sp
+\fB\-\-color\fP=\fIPARAM\fP
+.RS 4
+The default color to use in case a color for a label/class is not defined. The color can be a hex/HTML string like"#788E87", an RGB value like RGB \- "rgb(128,0,255)" or  it can be from a set of predefined HTML color names: [white, silver, gray, black, red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia, purple]
+.RE
+.sp
+\fB\-\-cropRegionColor\fP=\fIPARAM\fP
+.RS 4
+Color of the crop region. Only used if drawCropRegion = true.
+.RE
+.sp
+\fB\-\-DEFAULT_COLOR\fP=\fIPARAM\fP, \fB\-\-drawCropRegion\fP
+.RS 4
+If true, the cropped region based on the image array is drawn.
+.RE
+.sp
+\fB\-\-drawLabel\fP
+.RS 4
+If true, then draw the class label on top of the bounding box.
+.RE
+.sp
+\fB\-\-drawProbability\fP
+.RS 4
+If true, then draw the class probability on top of the bounding box.
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Name of the input image key from the previous step. If set to null, it will try to find any image in the incoming data instance.
+.RE
+.sp
+\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP
+.RS 4
+Used to account for the fact that n\-dimensional array from ImageToNDArrayConfig may be used to crop images before passing to the network, when the image aspect ratio doesn\(cqt match the NDArray aspect ratio. This allows the step to determine the subset of the image actually passed to the network.When specifying this on the command line, a comma separated list of fields with key=value for each field is the expected format. If specifying a normalization method, the same format applies. The normalization field must be specified in " though. Please note that escaping the " may also be necessary.
+.RE
+.sp
+\fB\-\-lineThickness\fP=\fIPARAM\fP
+.RS 4
+Line thickness to use to draw the bounding box (in pixels).
+.RE
+.sp
+\fB\-\-resizeH\fP=\fIPARAM\fP
+.RS 4
+Height threshold to be used with the scaling policy.
+.RE
+.sp
+\fB\-\-resizeW\fP=\fIPARAM\fP
+.RS 4
+Width threshold to be used with the scaling policy.
+.RE
+.sp
+\fB\-\-scale\fP=\fIPARAM\fP
+.RS 4
+The scaling policy to use for scaling the bounding boxes.
+.RE

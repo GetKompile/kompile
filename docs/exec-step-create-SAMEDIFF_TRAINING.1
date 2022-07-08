@@ -1,0 +1,150 @@
+'\" t
+.\"     Title: exec-step-create-samediff_training
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-SAMEDIFF_TRAINING" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-SAMEDIFF_TRAINING \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create SAMEDIFF_TRAINING\fP [\fB\-\-debugMode\fP] [\fB\-\-verboseMode\fP]
+[\fB\-\-weightDecayApplyLearningRate\fP]
+\fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-initialLossType\fP=\fIPARAM\fP]
+[\fB\-\-l1\fP=\fIPARAM\fP] [\fB\-\-l2\fP=\fIPARAM\fP]
+[\fB\-\-learningRate\fP=\fIPARAM\fP]
+[\fB\-\-learningRateSchedule\fP=\fIPARAM\fP]
+[\fB\-\-lossFunction\fP=\fIPARAM\fP]
+[\fB\-\-modelSaveOutputPath\fP=\fIPARAM\fP]
+[\fB\-\-modelUri\fP=\fIPARAM\fP] [\fB\-\-numEpochs\fP=\fIPARAM\fP]
+[\fB\-\-updater\fP=\fIPARAM\fP]
+[\fB\-\-weightDecayCoefficient\fP=\fIPARAM\fP]
+[\fB\-\-inputFeatures\fP=\fIPARAM\fP]...
+[\fB\-\-labels\fP=\fIPARAM\fP]...
+[\fB\-\-lossVariables\fP=\fIPARAM\fP]...
+[\fB\-\-targetVariables\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-debugMode\fP
+.RS 4
+Enable debug mode, defaults to false
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-initialLossType\fP=\fIPARAM\fP
+.RS 4
+The initial loss type for the training, defaults to float
+.RE
+.sp
+\fB\-\-inputFeatures\fP=\fIPARAM\fP
+.RS 4
+A list of names of the input variables\- the names of the input variables for training
+.RE
+.sp
+\fB\-\-l1\fP=\fIPARAM\fP
+.RS 4
+An L1 regularization coefficient for application during training.  Set this value for l1 regularization. Not applied by default.
+.RE
+.sp
+\fB\-\-l2\fP=\fIPARAM\fP
+.RS 4
+An L2 regularization coefficient for application during training. Set this value for l2 regularization. Not applied by default.
+.RE
+.sp
+\fB\-\-labels\fP=\fIPARAM\fP
+.RS 4
+A list of names of the labels variables\- the names of the true labels for prediction to calculate error against
+.RE
+.sp
+\fB\-\-learningRate\fP=\fIPARAM\fP
+.RS 4
+The learning rate to use for training
+.RE
+.sp
+\fB\-\-learningRateSchedule\fP=\fIPARAM\fP
+.RS 4
+The learning rate schedule to use for training. When specifying a learning rate or momentum schedule, comma separated values with key=value for each field is required. Valid values include: poly,step,cycle,fixed,inverse,sigmoid,exponential. Relevant schedules and their fields can be found here: \c
+.URL "https://github.com/eclipse/deeplearning4j/tree/master/nd4j/nd4j\-backends/nd4j\-api\-parent/nd4j\-api/src/main/java/org/nd4j/linalg/schedule" "" " "
+\- it is recommended when specifying this value on the command line to use " to ensure the value gets parsed properly.
+.RE
+.sp
+\fB\-\-lossFunction\fP=\fIPARAM\fP
+.RS 4
+The loss function to use for training models
+.RE
+.sp
+\fB\-\-lossVariables\fP=\fIPARAM\fP
+.RS 4
+A list of names of the loss variables\- the names of the targets to train against for the loss function
+.RE
+.sp
+\fB\-\-modelSaveOutputPath\fP=\fIPARAM\fP
+.RS 4
+Specifies the location of the model save path
+.RE
+.sp
+\fB\-\-modelUri\fP=\fIPARAM\fP
+.RS 4
+Specifies the location of a saved model file.
+.RE
+.sp
+\fB\-\-numEpochs\fP=\fIPARAM\fP
+.RS 4
+Specifies the number of epochs to run training for
+.RE
+.sp
+\fB\-\-targetVariables\fP=\fIPARAM\fP
+.RS 4
+A list of names of the prediction variables\- the names of the prediction labels for prediction to calculate error against
+.RE
+.sp
+\fB\-\-updater\fP=\fIPARAM\fP
+.RS 4
+The updater to use for training. When specifying an updater on the command line, the type is needed. Valid types include:  AMSGRAD,ADABELIEF,ADAGRAD,ADADELTA,ADAMAX,ADAM,NADAM,NESTEROVS,NOOP,RMSPROP,SGD . Each field for the updater must be specified in terms of field name = value separated by commas. Relevant updaters and their fields can be found here: \c
+.URL "https://github.com/eclipse/deeplearning4j/tree/master/nd4j/nd4j\-backends/nd4j\-api\-parent/nd4j\-api/src/main/java/org/nd4j/linalg/learning/config" "" ""
+.RE
+.sp
+\fB\-\-verboseMode\fP
+.RS 4
+Enable verbose mode, defaults to false
+.RE
+.sp
+\fB\-\-weightDecayApplyLearningRate\fP
+.RS 4
+Whether to apply learning rate during weight decay,defaults to true
+.RE
+.sp
+\fB\-\-weightDecayCoefficient\fP=\fIPARAM\fP
+.RS 4
+A weight regularization coefficient for application during training. Set this value to enable weight decay. Disabled byd efault.
+.RE

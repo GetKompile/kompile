@@ -1,0 +1,54 @@
+'\" t
+.\"     Title: exec-step-create-gray_scale
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-GRAY_SCALE" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-GRAY_SCALE \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create GRAY_SCALE\fP \fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-imageName\fP=\fIPARAM\fP]
+[\fB\-\-outputChannels\fP=\fIPARAM\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Name of the input image key from the previous step. If set to null, it will try to find any image in the incoming data instance.
+.RE
+.sp
+\fB\-\-outputChannels\fP=\fIPARAM\fP
+.RS 4
+Number of output channels, defaults to 1
+.RE

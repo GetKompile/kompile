@@ -1,0 +1,54 @@
+'\" t
+.\"     Title: exec-inference-server-create
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-INFERENCE\-SERVER\-CREATE" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-inference\-server\-create \-
+.SH "SYNOPSIS"
+.sp
+\fBexec inference\-server\-create\fP \fB\-\-pipeline\fP=\fI<pipelineFile>\fP \fB\-\-port\fP=\fI<port>\fP
+\fB\-\-protocol\fP=\fI<protocol>\fP
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-pipeline\fP=\fI<pipelineFile>\fP
+.RS 4
+Pipeline file path, must end in json, yml, or yaml
+.RE
+.sp
+\fB\-\-port\fP=\fI<port>\fP
+.RS 4
+The port to use for the inference server, defaults to 9999. 0 means that the server will pick a random port on startup.
+.RE
+.sp
+\fB\-\-protocol\fP=\fI<protocol>\fP
+.RS 4
+The protocol to use. One of kafka,mqtt,http,grpc are supported. Defaults to http
+.RE

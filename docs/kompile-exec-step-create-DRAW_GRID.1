@@ -1,0 +1,93 @@
+'\" t
+.\"     Title: kompile-exec-step-create-draw_grid
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-DRAW_GRID" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-DRAW_GRID \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create DRAW_GRID\fP [\fB\-\-coordsArePixels\fP] [\fB\-\-borderColor\fP=\fIPARAM\fP]
+[\fB\-\-borderThickness\fP=\fIPARAM\fP]
+[\fB\-\-DEFAULT_COLOR\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-gridColor\fP=\fIPARAM\fP] [\fB\-\-gridThickness\fP=\fIPARAM\fP]
+[\fB\-\-gridX\fP=\fIPARAM\fP] [\fB\-\-gridY\fP=\fIPARAM\fP]
+[\fB\-\-imageName\fP=\fIPARAM\fP] [\fB\-\-pointsName\fP=\fIPARAM\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-borderColor\fP=\fIPARAM\fP
+.RS 4
+Color of the border. The color can be a hex/HTML string like"#788E87", an RGB value like RGB \- "rgb(128,0,255)" or  it can be from a set of predefined HTML color names: [white, silver, gray, black, red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia, purple]
+.RE
+.sp
+\fB\-\-borderThickness\fP=\fIPARAM\fP
+.RS 4
+Line thickness to use to draw the border (in pixels).
+.RE
+.sp
+\fB\-\-coordsArePixels\fP
+.RS 4
+If true, the lists are in pixels coordinates, not from 0 to 1.
+.RE
+.sp
+\fB\-\-DEFAULT_COLOR\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-gridColor\fP=\fIPARAM\fP
+.RS 4
+Color of the grid. The color can be a hex/HTML string like"#788E87", an RGB value like RGB \- "rgb(128,0,255)" or  it can be from a set of predefined HTML color names: [white, silver, gray, black, red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia, purple]
+.RE
+.sp
+\fB\-\-gridThickness\fP=\fIPARAM\fP
+.RS 4
+Line thickness to use to draw the border (in pixels). If null then the same value as the borderThickness is used
+.RE
+.sp
+\fB\-\-gridX\fP=\fIPARAM\fP
+.RS 4
+The number of grid segments between (topLeft and topRight) and (bottomLeft and bottomRight)
+.RE
+.sp
+\fB\-\-gridY\fP=\fIPARAM\fP
+.RS 4
+The number of grid segments between (topLeft and bottomLeft) and (topRight and bottomRight)
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Name of the input image key from the previous step. If set to null, it will try to find any image in the incoming data instance.
+.RE
+.sp
+\fB\-\-pointsName\fP=\fIPARAM\fP
+.RS 4
+Name of the List<Point> points specifying the corners, in order: topLeft, topRight, bottomLeft, bottomRight
+.RE

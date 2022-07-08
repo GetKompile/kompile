@@ -1,0 +1,70 @@
+'\" t
+.\"     Title: exec-step-create-image_crop
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-IMAGE_CROP" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-IMAGE_CROP \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create IMAGE_CROP\fP [\fB\-\-coordsArePixels\fP] [\fB\-\-cropBox\fP=\fIPARAM\fP]
+[\fB\-\-cropName\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-imageName\fP=\fIPARAM\fP] [\fB\-\-cropPoints\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-coordsArePixels\fP
+.RS 4
+Wether the crop region (BoundingBox / List<Point> are specified in pixels, or \(aqfraction of image\(aq
+.RE
+.sp
+\fB\-\-cropBox\fP=\fIPARAM\fP
+.RS 4
+Static crop region defined as a BoundingBox
+.RE
+.sp
+\fB\-\-cropName\fP=\fIPARAM\fP
+.RS 4
+Name of the input Data field used for dynamic cropping. May be a BoundingBox or List<Point>
+.RE
+.sp
+\fB\-\-cropPoints\fP=\fIPARAM\fP
+.RS 4
+Static crop region defined as a List<Point>
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Name of the Image or List<Image> field to crop
+.RE

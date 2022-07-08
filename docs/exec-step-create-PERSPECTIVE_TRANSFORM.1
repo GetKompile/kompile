@@ -1,0 +1,102 @@
+'\" t
+.\"     Title: exec-step-create-perspective_transform
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-PERSPECTIVE_TRANSFORM" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-PERSPECTIVE_TRANSFORM \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create PERSPECTIVE_TRANSFORM\fP [\fB\-\-keepOtherFields\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-referenceHeight\fP=\fIPARAM\fP]
+[\fB\-\-referenceImage\fP=\fIPARAM\fP]
+[\fB\-\-referenceWidth\fP=\fIPARAM\fP]
+[\fB\-\-sourcePointsName\fP=\fIPARAM\fP]
+[\fB\-\-targetPointsName\fP=\fIPARAM\fP]
+[\fB\-\-inputNames\fP=\fIPARAM\fP]...
+[\fB\-\-outputNames\fP=\fIPARAM\fP]...
+[\fB\-\-sourcePoints\fP=\fIPARAM\fP]...
+[\fB\-\-targetPoints\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-inputNames\fP=\fIPARAM\fP
+.RS 4
+A list of names of the input fields to process. May be points, bounding boxes, images, or lists of these. If input names are not set, the fields of these types will be inferred automatically.
+.RE
+.sp
+\fB\-\-keepOtherFields\fP
+.RS 4
+If true, other data key and values from the previous step are kept and passed on to the next step as well.
+.RE
+.sp
+\fB\-\-outputNames\fP=\fIPARAM\fP
+.RS 4
+A list of names of the output field. If not set, the output has the same name as the input field.
+.RE
+.sp
+\fB\-\-referenceHeight\fP=\fIPARAM\fP
+.RS 4
+When a reference width and height are provided, the transform will be adjusted to make sure the entire area fits into the output image (up to 4096x4096)<br> The adjustment is applied to all inputs of the step.
+.RE
+.sp
+\fB\-\-referenceImage\fP=\fIPARAM\fP
+.RS 4
+When a referenceImage is provided, the transform will be adjusted to ensure the entire transformed image fits into the output image (up to 4096x4096).Can also reference a list of images, in which case <b>only the first</b> image is used as the reference.The adjustment is applied to all inputs of the step.
+.RE
+.sp
+\fB\-\-referenceWidth\fP=\fIPARAM\fP
+.RS 4
+When a reference width and height are provided, the transform will be adjusted to make sure the entire area fits into the output image (up to 4096x4096)<br> The adjustment is applied to all inputs of the step.
+.RE
+.sp
+\fB\-\-sourcePoints\fP=\fIPARAM\fP
+.RS 4
+Takes exactly 4 source points [topLeft, topRight, bottomLeft, bottomRight]
+.RE
+.sp
+\fB\-\-sourcePointsName\fP=\fIPARAM\fP
+.RS 4
+List of 4 source points [topLeft, topRight, bottomLeft, bottomRight]
+.RE
+.sp
+\fB\-\-targetPoints\fP=\fIPARAM\fP
+.RS 4
+Takes exactly 4 target points [topLeft, topRight, bottomLeft, bottomRight]
+.RE
+.sp
+\fB\-\-targetPointsName\fP=\fIPARAM\fP
+.RS 4
+List of 4 target points [topLeft, topRight, bottomLeft, bottomRight]
+.RE

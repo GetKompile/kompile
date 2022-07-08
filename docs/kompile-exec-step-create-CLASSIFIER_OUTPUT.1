@@ -1,0 +1,97 @@
+'\" t
+.\"     Title: kompile-exec-step-create-classifier_output
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-CLASSIFIER_OUTPUT" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-CLASSIFIER_OUTPUT \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create CLASSIFIER_OUTPUT\fP [\fB\-\-allProbabilities\fP] [\fB\-\-returnIndex\fP]
+[\fB\-\-returnLabel\fP] [\fB\-\-returnProb\fP] [\fB\-\-DEFAULT_INDEX_NAME\fP=\fIPARAM\fP]
+[\fB\-\-DEFAULT_LABEL_NAME\fP=\fIPARAM\fP] [\fB\-\-DEFAULT_PROB_NAME\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-indexName\fP=\fIPARAM\fP] [\fB\-\-inputName\fP=\fIPARAM\fP] [\fB\-\-labelName\fP=\fIPARAM\fP] [\fB\-\-probName\fP=\fIPARAM\fP]
+[\fB\-\-topN\fP=\fIPARAM\fP] [\fB\-\-labels\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-allProbabilities\fP
+.RS 4
+If true, also returns a List<List<Double>> of all probabilities (basically, converd NDArray to list. False by default.
+.RE
+.sp
+\fB\-\-DEFAULT_INDEX_NAME\fP=\fIPARAM\fP, \fB\-\-DEFAULT_LABEL_NAME\fP=\fIPARAM\fP, \fB\-\-DEFAULT_PROB_NAME\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-indexName\fP=\fIPARAM\fP
+.RS 4
+output names for the index
+.RE
+.sp
+\fB\-\-inputName\fP=\fIPARAM\fP
+.RS 4
+inputName \- optional. If set: this represents the NDArray. If not set: use DataUtils.inferField to find an NDArray field
+.RE
+.sp
+\fB\-\-labelName\fP=\fIPARAM\fP
+.RS 4
+output names for the labels
+.RE
+.sp
+\fB\-\-labels\fP=\fIPARAM\fP
+.RS 4
+as a List<String>. Optional. If not specified, the predicted class index as a string is used \- i.e., "0", "1", etc
+.RE
+.sp
+\fB\-\-probName\fP=\fIPARAM\fP
+.RS 4
+output names for the labels propabilities
+.RE
+.sp
+\fB\-\-returnIndex\fP
+.RS 4
+returnIndex, default is true
+.RE
+.sp
+\fB\-\-returnLabel\fP
+.RS 4
+returnLabel, default is true; if false, don\(cqt return label
+.RE
+.sp
+\fB\-\-returnProb\fP
+.RS 4
+returnProb, default is true
+.RE
+.sp
+\fB\-\-topN\fP=\fIPARAM\fP
+.RS 4
+Integer, null by default. If non\-null and > 1, we return List<String>, List<Long>, List<Double> for the predicted class/index/probability instead of String/Long/Double.
+.RE

@@ -1,0 +1,77 @@
+'\" t
+.\"     Title: kompile-exec-step-create-image_to_ndarray
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-IMAGE_TO_NDARRAY" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-IMAGE_TO_NDARRAY \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create IMAGE_TO_NDARRAY\fP [\fB\-\-keepOtherValues\fP] [\fB\-\-metadata\fP]
+[\fB\-\-config\fP=\fIPARAM\fP] [\fB\-\-DEFAULT_METADATA_KEY\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-metadataKey\fP=\fIPARAM\fP] [\fB\-\-META_CROP_REGION\fP=\fIPARAM\fP] [\fB\-\-META_IMG_H\fP=\fIPARAM\fP]
+[\fB\-\-META_IMG_W\fP=\fIPARAM\fP] [\fB\-\-META_INNAME_KEY\fP=\fIPARAM\fP] [\fB\-\-META_OUTNAME_KEY\fP=\fIPARAM\fP]
+[\fB\-\-keys\fP=\fIPARAM\fP]... [\fB\-\-outputNames\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-config\fP=\fIPARAM\fP
+.RS 4
+Configuration for how conversion should be performed.
+.RE
+.sp
+\fB\-\-DEFAULT_METADATA_KEY\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-keepOtherValues\fP
+.RS 4
+True by default. If true, copy all the other (non\-converted/non\-image) entries in the input data to the output data
+.RE
+.sp
+\fB\-\-keys\fP=\fIPARAM\fP
+.RS 4
+May be null. If non\-null, these are the names of images in the Data instance to convert.
+.RE
+.sp
+\fB\-\-metadata\fP
+.RS 4
+False by default. If true, include metadata about the images in the output data. For example, if/how it was cropped, and the original input size.
+.RE
+.sp
+\fB\-\-metadataKey\fP=\fIPARAM\fP
+.RS 4
+Sets the key that the metadata will be stored under. Not relevant if metadata == false.
+.RE
+.sp
+\fB\-\-META_CROP_REGION\fP=\fIPARAM\fP, \fB\-\-META_IMG_H\fP=\fIPARAM\fP, \fB\-\-META_IMG_W\fP=\fIPARAM\fP, \fB\-\-META_INNAME_KEY\fP=\fIPARAM\fP, \fB\-\-META_OUTNAME_KEY\fP=\fIPARAM\fP, \fB\-\-outputNames\fP=\fIPARAM\fP
+.RS 4
+May be null. If non\-null, the input images are renamed to this in the output Data instance after conversion to n\-dimensional array.
+.RE

@@ -1,0 +1,53 @@
+'\" t
+.\"     Title: build
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Build Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "BUILD" "1" "2022-07-09" "" "Build Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+build \- Configuration namespace for commands related to building native image binaries and SDKs
+.SH "SYNOPSIS"
+.sp
+\fBbuild\fP [COMMAND]
+.SH "DESCRIPTION"
+.sp
+Configuration namespace for commands related to building native image binaries and SDKs
+.SH "COMMANDS"
+.sp
+\fBgenerate\-image\-and\-sdk\fP
+.RS 4
+Generate and build a python SDK using an embedded shell script. Pass parameters down to the shell script using the parameters below. This command may require additional tools such as graalvm, maven and a local compiler such as gcc to run correctly.
+.RE
+.sp
+\fBnative\-image\-generate\fP
+.RS 4
+Generate a native image using the given konduit serving pipeline steps available below. This will also generate a project to build the native image with. Note that the generate\-image\-and\-sdk command also uses this command.
+.RE
+.sp
+\fBpom\-generate\fP, \fBpipeline\-command\-generate\fP, \fBclone\-build\fP
+.RS 4
+Clones and builds deeplearning4j and konduit\-serving depending on parameters using git. Note: Git is built in to this CLI and does not need to be installed. Note that for building dl4j, various dependencies such as compilers may need to be installed as pre requisites depending on your target architecture such as CPU, CUDA, or a different architecture with cross compilation like ARM.
+.RE

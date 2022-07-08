@@ -1,0 +1,65 @@
+'\" t
+.\"     Title: kompile-exec-step-create-samediff
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-SAMEDIFF" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-SAMEDIFF \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create SAMEDIFF\fP [\fB\-\-debugMode\fP] [\fB\-\-verboseMode\fP]
+\fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-modelUri\fP=\fIPARAM\fP]
+[\fB\-\-outputNames\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-debugMode\fP
+.RS 4
+Enable debug mode, defaults to false
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-modelUri\fP=\fIPARAM\fP
+.RS 4
+Specifies the location of a saved model file.
+.RE
+.sp
+\fB\-\-outputNames\fP=\fIPARAM\fP
+.RS 4
+A list of names of the output arrays \- i.e., the names of the arrays to predict/return.
+.RE
+.sp
+\fB\-\-verboseMode\fP
+.RS 4
+Enable verbose mode, defaults to false
+.RE

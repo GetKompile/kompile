@@ -1,0 +1,65 @@
+'\" t
+.\"     Title: exec-step-create-camera_frame_capture
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-CAMERA_FRAME_CAPTURE" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-CAMERA_FRAME_CAPTURE \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create CAMERA_FRAME_CAPTURE\fP [\fB\-\-camera\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-height\fP=\fIPARAM\fP] [\fB\-\-outputKey\fP=\fIPARAM\fP]
+[\fB\-\-width\fP=\fIPARAM\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-camera\fP=\fIPARAM\fP
+.RS 4
+ID of the camera from which the input is taken from. Each system cameras is assigned an ID, which is usually 0 for the first device, 1 for the second and so on...
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-height\fP=\fIPARAM\fP
+.RS 4
+Height of the incoming image frame. This will scale the original resolution height to the specified value.
+.RE
+.sp
+\fB\-\-outputKey\fP=\fIPARAM\fP
+.RS 4
+Name of the output key that will contain and carry the image frame data to the later pipeline steps.
+.RE
+.sp
+\fB\-\-width\fP=\fIPARAM\fP
+.RS 4
+Width of the incoming image frame. This will scale the original resolution width to the specified value.
+.RE

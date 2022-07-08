@@ -1,0 +1,100 @@
+'\" t
+.\"     Title: kompile-exec-step-create-draw_heatmap
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-DRAW_HEATMAP" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-DRAW_HEATMAP \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create DRAW_HEATMAP\fP [\fB\-\-keepOtherValues\fP]
+[\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP]
+[\fB\-\-fadingFactor\fP=\fIPARAM\fP] \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-height\fP=\fIPARAM\fP] [\fB\-\-image\fP=\fIPARAM\fP]
+[\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP]
+[\fB\-\-opacity\fP=\fIPARAM\fP] [\fB\-\-outputName\fP=\fIPARAM\fP]
+[\fB\-\-radius\fP=\fIPARAM\fP] [\fB\-\-width\fP=\fIPARAM\fP]
+[\fB\-\-points\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP, \fB\-\-fadingFactor\fP=\fIPARAM\fP
+.RS 4
+Fading factor. 0: no fade, 1: instant fade
+.RE
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-height\fP=\fIPARAM\fP
+.RS 4
+Must be provided when "image" isn\(cqt set. Used to resolve position of points with relative addressing (dimensions between 0 and 1)
+.RE
+.sp
+\fB\-\-image\fP=\fIPARAM\fP
+.RS 4
+An optional field, specifying the name of the image to draw on
+.RE
+.sp
+\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP
+.RS 4
+Used to account for the fact that n\-dimensional array from ImageToNDArrayConfig may be used to crop images before passing to the network, when the image aspect ratio doesn\(cqt match the NDArray aspect ratio. This allows the step to determine the subset of the image actually passed to the network.
+.RE
+.sp
+\fB\-\-keepOtherValues\fP
+.RS 4
+True by default. If true, copy all the other (non\-converted/non\-image) entries in the input data to the output data
+.RE
+.sp
+\fB\-\-opacity\fP=\fIPARAM\fP
+.RS 4
+Opacity of the heatmap. Between 0 and 1. 0: Fully transparent, 1: Fully opaque. Default: 0.5
+.RE
+.sp
+\fB\-\-outputName\fP=\fIPARAM\fP
+.RS 4
+Name of the output image
+.RE
+.sp
+\fB\-\-points\fP=\fIPARAM\fP
+.RS 4
+Name of the input data fields containing the points used for the heatmap. Accepts both single points and lists of points. Accepts both relative and absolute addressed points.
+.RE
+.sp
+\fB\-\-radius\fP=\fIPARAM\fP
+.RS 4
+Size of area influenced by a point
+.RE
+.sp
+\fB\-\-width\fP=\fIPARAM\fP
+.RS 4
+Must be provided when "image" isn\(cqt set. Used to resolve position of points with relative addressing (dimensions between 0 and 1)
+.RE

@@ -24,7 +24,7 @@ public class ModelFileDebug implements Callable<Integer> {
     @CommandLine.Option(names = {"--modelType"},
             description = "The type of model to analyze. Possible values are: keras,dl4j,pytorch,onnx,tensorflow",required = true)
     private String fileType;
-    @CommandLine.Option(names = {"--filePath"},description = "The model file to analyze.",required = true,usageHelp = true)
+    @CommandLine.Option(names = {"--filePath"},description = "The model file to analyze.",required = true)
     private String filePath;
 
     public enum FrameworkType {

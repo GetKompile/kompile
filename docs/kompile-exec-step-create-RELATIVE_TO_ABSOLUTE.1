@@ -1,0 +1,70 @@
+'\" t
+.\"     Title: kompile-exec-step-create-relative_to_absolute
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-RELATIVE_TO_ABSOLUTE" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-RELATIVE_TO_ABSOLUTE \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create RELATIVE_TO_ABSOLUTE\fP \fB\-\-fileFormat\fP=\fIPARAM\fP
+[\fB\-\-imageH\fP=\fIPARAM\fP] [\fB\-\-imageName\fP=\fIPARAM\fP] [\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP]
+[\fB\-\-imageW\fP=\fIPARAM\fP] [\fB\-\-toConvert\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-imageH\fP=\fIPARAM\fP
+.RS 4
+If imageName is not specified \- height of the input image to use
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Optional \- the name of the field in the input Data containing the Image to use (to determine H/W)
+.RE
+.sp
+\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP
+.RS 4
+Optional \- used to account for the fact that the image may have been cropped before being passed into a network that produced the points/bounding box. This allows for them to be offset, so the boxes/coordinates are specified in terms of the original image, not the cropped image
+.RE
+.sp
+\fB\-\-imageW\fP=\fIPARAM\fP
+.RS 4
+If imageName is not specified \- width of the input image to use
+.RE
+.sp
+\fB\-\-toConvert\fP=\fIPARAM\fP
+.RS 4
+Optional \- the name of the Point, List<Point>, BoundingBox or List<BoundingBox> fields to convert. If not set, the step will convert any/all fields of those types
+.RE

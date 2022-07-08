@@ -1,0 +1,78 @@
+'\" t
+.\"     Title: kompile-helper-ndarray-helper
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-HELPER\-NDARRAY\-HELPER" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-helper\-ndarray\-helper \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile helper ndarray\-helper\fP [\fB\-\-generatePipeline\fP] [\fB\-\-returnAllInputs\fP]
+[\fB\-\-setupAndRun\fP] [\fB\-\-outputFormat\fP=\fI<format>\fP]
+[\fB\-\-pythonPathResolution\fP=\fI<pythonPathResolution>\fP]
+\fB\-\-inputName\fP=\fI<inputNames>\fP
+[\fB\-\-inputName\fP=\fI<inputNames>\fP]...
+[\fB\-\-outputName\fP=\fI<outputNames>\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-generatePipeline\fP
+.RS 4
+Whether to generate a pipeline or just a python configuration
+.RE
+.sp
+\fB\-\-inputName\fP=\fI<inputNames>\fP
+.RS 4
+The input name(s) for the pipeline
+.RE
+.sp
+\fB\-\-outputFormat\fP=\fI<format>\fP
+.RS 4
+json or yaml for output, defaults to json
+.RE
+.sp
+\fB\-\-outputName\fP=\fI<outputNames>\fP
+.RS 4
+The output name(s) for the pipeline
+.RE
+.sp
+\fB\-\-pythonPathResolution\fP=\fI<pythonPathResolution>\fP
+.RS 4
+how to resolve the python path
+.RE
+.sp
+\fB\-\-returnAllInputs\fP
+.RS 4
+Whether to return all outputs from the python execution
+.RE
+.sp
+\fB\-\-setupAndRun\fP
+.RS 4
+Whether to use setup and run definition (2 separate functions for init and execution) or single script
+.RE

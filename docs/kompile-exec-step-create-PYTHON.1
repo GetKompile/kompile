@@ -1,0 +1,48 @@
+'\" t
+.\"     Title: kompile-exec-step-create-python
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-PYTHON" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-PYTHON \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create PYTHON\fP \fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-pythonConfig\fP=\fIPARAM\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-pythonConfig\fP=\fIPARAM\fP
+.RS 4
+The python configuration associated with this python step. This controls how the python step will be executed. When describing a python configuration from the command lineEach field is separated by a comma. When describing inputs and outputs (ioInput,ioOutput) ensure that values are surrounded in quotes as string literals.You can escape a " with a \(rs character. Each input/output is then space separated within the quotes. The format is:name, python type, konduit serving value type.
+.RE

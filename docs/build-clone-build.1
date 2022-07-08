@@ -1,0 +1,230 @@
+'\" t
+.\"     Title: build-clone-build
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Build Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "BUILD\-CLONE\-BUILD" "1" "2022-07-09" "" "Build Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+build\-clone\-build \- Clones and builds deeplearning4j and konduit\-serving depending on parameters using git. Note: Git is built in to this CLI and does not need to be installed. Note that for building dl4j, various dependencies such as compilers may need to be installed as pre requisites depending on your target architecture such as CPU, CUDA, or a different architecture with cross compilation like ARM.
+.SH "SYNOPSIS"
+.sp
+\fBbuild clone\-build\fP [\fB\-\-buildCpuBackend\fP] [\fB\-\-buildCudaBackend\fP] [\fB\-\-buildDl4j\fP]
+[\fB\-\-buildKonduitServing\fP] [\fB\-\-forceDl4jClone\fP]
+[\fB\-\-forceKonduitServingClone\fP] [\fB\-\-libnd4jSanitize\fP]
+[\fB\-\-libnd4jUseLto\fP] [\fB\-\-chipCompute\fP=\fI<chipCompute>\fP]
+[\fB\-\-chipVersion\fP=\fI<chipVersion>\fP]
+[\fB\-\-dl4jBranchName\fP=\fI<dl4jBranchName>\fP]
+[\fB\-\-dl4jBuildCommand\fP=\fI<dl4jBuildCommand>\fP]
+[\fB\-\-dl4jDirectory\fP=\fI<dl4jDirectory>\fP] [\fB\-\-dl4jGitUrl\fP=\fI<dl4jGitUrl>\fP]
+[\fB\-\-javacppExtension\fP=\fI<javacppExtension>\fP]
+[\fB\-\-konduitServingBranchName\fP=\fI<konduitServingBranchName>\fP]
+[\fB\-\-konduitServingBuildCommand\fP=\fI<konduitServingBuildCommand>\fP]
+[\fB\-\-konduitServingChip\fP=\fI<konduitServingChip>\fP]
+[\fB\-\-konduitServingDirectory\fP=\fI<konduitServingDirectory>\fP]
+[\fB\-\-konduitServingGitUrl\fP=\fI<konduitServingGitUrl>\fP]
+[\fB\-\-libnd4jArch\fP=\fI<libnd4jArch>\fP]
+[\fB\-\-libnd4jBuildThreads\fP=\fI<libnd4jBuildThreads>\fP]
+[\fB\-\-libnd4jBuildType\fP=\fI<libnd4jBuildType>\fP]
+[\fB\-\-libnd4jChip\fP=\fI<libnd4jChip>\fP]
+[\fB\-\-libnd4jClassifier\fP=\fI<libnd4jClassifier>\fP]
+[\fB\-\-libnd4jDataTypes\fP=\fI<libnd4jDataTypes>\fP]
+[\fB\-\-libnd4jExtension\fP=\fI<libnd4jExtension>\fP]
+[\fB\-\-libnd4jHelper\fP=\fI<libnd4jHelper>\fP]
+[\fB\-\-libnd4jOperations\fP=\fI<libnd4jOperations>\fP]
+[\fB\-\-mvnHome\fP=\fI<mvnHome>\fP] [\fB\-\-platform\fP=\fI<platform>\fP]
+[\fB\-\-dl4jModule\fP=\fI<dl4jModules>\fP]...
+[\fB\-\-konduitServingModule\fP=\fI<konduitServingModule>\fP]...
+.SH "DESCRIPTION"
+.sp
+Clones and builds deeplearning4j and konduit\-serving depending on parameters using git. Note: Git is built in to this CLI and does not need to be installed. Note that for building dl4j, various dependencies such as compilers may need to be installed as pre requisites depending on your target architecture such as CPU, CUDA, or a different architecture with cross compilation like ARM.
+.SH "OPTIONS"
+.sp
+\fB\-\-buildCpuBackend\fP
+.RS 4
+Whether to build the cpu backend or not. This means including nd4j\-native in the build.
+.RE
+.sp
+\fB\-\-buildCudaBackend\fP
+.RS 4
+Whether to build the cuda backend or not. This means including nd4j\-cuda in the build.
+.RE
+.sp
+\fB\-\-buildDl4j\fP
+.RS 4
+Whether to build dl4j or not.
+.RE
+.sp
+\fB\-\-buildKonduitServing\fP
+.RS 4
+Whether to build konduit\-serving or not
+.RE
+.sp
+\fB\-\-chipCompute\fP=\fI<chipCompute>\fP
+.RS 4
+The compute capability to use. Usually used for cuda.
+.RE
+.sp
+\fB\-\-chipVersion\fP=\fI<chipVersion>\fP
+.RS 4
+The version of the chip to use. Usually reserved for cuda. Values normally would be the target cuda version.
+.RE
+.sp
+\fB\-\-dl4jBranchName\fP=\fI<dl4jBranchName>\fP
+.RS 4
+The branch to clone for deeplearning4j: defaults to master
+.RE
+.sp
+\fB\-\-dl4jBuildCommand\fP=\fI<dl4jBuildCommand>\fP
+.RS 4
+The build command for maven. Defaults to clean install \-Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests
+.RE
+.sp
+\fB\-\-dl4jDirectory\fP=\fI<dl4jDirectory>\fP
+.RS 4
+The place to clone deeplearning4j for a build: defaults to $USER/.kompile/deeplearning4j
+.RE
+.sp
+\fB\-\-dl4jGitUrl\fP=\fI<dl4jGitUrl>\fP
+.RS 4
+The URL to clone deeplearning4j from: Defaults to \c
+.URL "https://github.com/eclipse/deeplearning4j" "" ""
+.RE
+.sp
+\fB\-\-dl4jModule\fP=\fI<dl4jModules>\fP
+.RS 4
+The modules to build with dl4j
+.RE
+.sp
+\fB\-\-forceDl4jClone\fP
+.RS 4
+Whether to force clone dl4j even if the specified directory exists. If it is, WARNING: it will be deleted.
+.RE
+.sp
+\fB\-\-forceKonduitServingClone\fP
+.RS 4
+Whether to force clone konduit\-serving even if the specified directory exists. If it is, WARNING: it will be deleted.
+.RE
+.sp
+\fB\-\-javacppExtension\fP=\fI<javacppExtension>\fP
+.RS 4
+The javacpp  extension. This should mainly be for platform extensions specific to javacpp. Also specify libnd4j to be safe.
+.RE
+.sp
+\fB\-\-konduitServingBranchName\fP=\fI<konduitServingBranchName>\fP
+.RS 4
+The branch to clone konduit\-serving: defaults to master
+.RE
+.sp
+\fB\-\-konduitServingBuildCommand\fP=\fI<konduitServingBuildCommand>\fP
+.RS 4
+The build command for maven. Defaults to clean install \-Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests
+.RE
+.sp
+\fB\-\-konduitServingChip\fP=\fI<konduitServingChip>\fP
+.RS 4
+The chip to use for konduit serving.
+.RE
+.sp
+\fB\-\-konduitServingDirectory\fP=\fI<konduitServingDirectory>\fP
+.RS 4
+The place to clone konduit\-serving for a build: defaults to $USER/.kompile/konduit\-serving
+.RE
+.sp
+\fB\-\-konduitServingGitUrl\fP=\fI<konduitServingGitUrl>\fP
+.RS 4
+The URL to clone konduit\-serving from: Defaults to \c
+.URL "https://github.com/KonduitAI/konduit\-serving" "" ""
+.RE
+.sp
+\fB\-\-konduitServingModule\fP=\fI<konduitServingModule>\fP
+.RS 4
+The modules to build with konduit serving
+.RE
+.sp
+\fB\-\-libnd4jArch\fP=\fI<libnd4jArch>\fP
+.RS 4
+Whether to build libnd4j with address sanitizer. Defaults to false.
+.RE
+.sp
+\fB\-\-libnd4jBuildThreads\fP=\fI<libnd4jBuildThreads>\fP
+.RS 4
+The number of build threads to use for libnd4j: usually known as the \-j parameter in make builds.
+.RE
+.sp
+\fB\-\-libnd4jBuildType\fP=\fI<libnd4jBuildType>\fP
+.RS 4
+How to build the libnd4j c++ code base: release or debug builds. Defaults to release.
+.RE
+.sp
+\fB\-\-libnd4jChip\fP=\fI<libnd4jChip>\fP
+.RS 4
+The libnd4j chip to build for. Usually either cpu or cuda. Defaults to cpu.
+.RE
+.sp
+\fB\-\-libnd4jClassifier\fP=\fI<libnd4jClassifier>\fP
+.RS 4
+The libnd4j classifier for the platform.
+.RE
+.sp
+\fB\-\-libnd4jDataTypes\fP=\fI<libnd4jDataTypes>\fP
+.RS 4
+The data types to build with libnd4j. If left empty, just builds with all data types. Otherwise builds with all data types. Data type list is separated with a ;. These operations are parsed as cmake lists.
+.RE
+.sp
+\fB\-\-libnd4jExtension\fP=\fI<libnd4jExtension>\fP
+.RS 4
+The chip extension. Usually reserved for cuda. This usually covers something like cudnn.
+.RE
+.sp
+\fB\-\-libnd4jHelper\fP=\fI<libnd4jHelper>\fP
+.RS 4
+The helper to use for libnd4j builds. Usually something like cudnn,onednn,vednn
+.RE
+.sp
+\fB\-\-libnd4jOperations\fP=\fI<libnd4jOperations>\fP
+.RS 4
+The operations to build with libnd4j. If left empty, just builds with all ops. Otherwise builds with all ops. Op list is separated with a ;. These operations are parsed as cmake lists.
+.RE
+.sp
+\fB\-\-libnd4jSanitize\fP
+.RS 4
+Whether to build libnd4j with address sanitizer. Defaults to false.
+.RE
+.sp
+\fB\-\-libnd4jUseLto\fP
+.RS 4
+Whether to build with link time optimization or not. When link time optimization is used, the linker can take a long time. Turn this on for smaller binaries, but longer build times. Defaults to false.
+.RE
+.sp
+\fB\-\-mvnHome\fP=\fI<mvnHome>\fP
+.RS 4
+The maven home.
+.RE
+.sp
+\fB\-\-platform\fP=\fI<platform>\fP
+.RS 4
+The libnd4j platform to build for. This usually should be the OS + system architecture to build for. Valid values are anything in javacpp.platform such as: linux\-x86_64, windows\-x86_64, linux\-arm64,...
+.RE

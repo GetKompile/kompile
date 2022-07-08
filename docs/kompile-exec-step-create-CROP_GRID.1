@@ -1,0 +1,99 @@
+'\" t
+.\"     Title: kompile-exec-step-create-crop_grid
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-EXEC\-STEP\-CREATE\-CROP_GRID" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-exec\-step\-create\-CROP_GRID \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile exec step\-create CROP_GRID\fP [\fB\-\-coordsArePixels\fP] [\fB\-\-keepOtherFields\fP]
+[\fB\-\-outputCoordinates\fP] [\fB\-\-aspectRatio\fP=\fIPARAM\fP]
+[\fB\-\-boundingBoxName\fP=\fIPARAM\fP]
+[\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP]
+\fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-gridX\fP=\fIPARAM\fP]
+[\fB\-\-gridY\fP=\fIPARAM\fP] [\fB\-\-imageName\fP=\fIPARAM\fP]
+[\fB\-\-outputName\fP=\fIPARAM\fP] [\fB\-\-pointsName\fP=\fIPARAM\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-aspectRatio\fP=\fIPARAM\fP
+.RS 4
+If set, the smaller dimensions will be increased to keep the aspect ratio correct (which may crop outside the image border).
+.RE
+.sp
+\fB\-\-boundingBoxName\fP=\fIPARAM\fP
+.RS 4
+Name of the output bounding boxes key.
+.RE
+.sp
+\fB\-\-coordsArePixels\fP
+.RS 4
+If true, the lists are in pixels coordinates, not from 0 to 1.
+.RE
+.sp
+\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-gridX\fP=\fIPARAM\fP
+.RS 4
+The number of grid segments between (topLeft and topRight) and (bottomLeft and bottomRight)
+.RE
+.sp
+\fB\-\-gridY\fP=\fIPARAM\fP
+.RS 4
+The number of grid segments between (topLeft and bottomLeft) and (topRight and bottomRight)
+.RE
+.sp
+\fB\-\-imageName\fP=\fIPARAM\fP
+.RS 4
+Name of the input image key from the previous step. If set to null, it will try to find any image in the incoming data instance.
+.RE
+.sp
+\fB\-\-keepOtherFields\fP
+.RS 4
+If true, other data key and values from the previous step are kept and passed on to the next step as well.
+.RE
+.sp
+\fB\-\-outputCoordinates\fP
+.RS 4
+If true, the two lists are returned which contains the data of grid horizontal and verticle coordinates, respectively.
+.RE
+.sp
+\fB\-\-outputName\fP=\fIPARAM\fP
+.RS 4
+Name of the key of all the cropped output images from this step.
+.RE
+.sp
+\fB\-\-pointsName\fP=\fIPARAM\fP
+.RS 4
+Name of the List<Point> points specifying the corners, in order: topLeft, topRight, bottomLeft, bottomRight
+.RE

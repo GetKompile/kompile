@@ -1,0 +1,85 @@
+'\" t
+.\"     Title: exec-step-create-draw_segmentation
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Exec Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "EXEC\-STEP\-CREATE\-DRAW_SEGMENTATION" "1" "2022-07-09" "" "Exec Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+exec\-step\-create\-DRAW_SEGMENTATION \-
+.SH "SYNOPSIS"
+.sp
+\fBexec step\-create DRAW_SEGMENTATION\fP [\fB\-\-backgroundClass\fP=\fIPARAM\fP]
+[\fB\-\-DEFAULT_OPACITY\fP=\fIPARAM\fP]
+[\fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP]
+\fB\-\-fileFormat\fP=\fIPARAM\fP [\fB\-\-image\fP=\fIPARAM\fP]
+[\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP]
+[\fB\-\-opacity\fP=\fIPARAM\fP] [\fB\-\-outputName\fP=\fIPARAM\fP]
+[\fB\-\-segmentArray\fP=\fIPARAM\fP]
+[\fB\-\-classColors\fP=\fIPARAM\fP]...
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-backgroundClass\fP=\fIPARAM\fP
+.RS 4
+An optional field, specifying a class that\(cqs not to be drawn. If not set, all classes will be drawn
+.RE
+.sp
+\fB\-\-classColors\fP=\fIPARAM\fP
+.RS 4
+This is an optional field which specifies the list of colors to use for each class. The color can be a hex/HTML string like"#788E87", an RGB value like RGB \- "rgb(128,0,255)" or  it can be from a set of predefined HTML color names: [white, silver, gray, black, red, maroon, yellow, olive, lime, green, aqua, teal, blue, navy, fuchsia, purple]
+.RE
+.sp
+\fB\-\-DEFAULT_OPACITY\fP=\fIPARAM\fP, \fB\-\-DEFAULT_OUTPUT_NAME\fP=\fIPARAM\fP, \fB\-\-fileFormat\fP=\fIPARAM\fP
+.RS 4
+The file format (either json or yaml/yml) to output the pipeline step in
+.RE
+.sp
+\fB\-\-image\fP=\fIPARAM\fP
+.RS 4
+An optional field, specifying the name of the image to draw the segmentation classes on to. If not provided, the segmentation classes are drawn onto a black background image.
+.RE
+.sp
+\fB\-\-imageToNDArrayConfig\fP=\fIPARAM\fP
+.RS 4
+Used to account for the fact that n\-dimensional array from ImageToNDArrayConfig may be used to crop images before passing to the network, when the image aspect ratio doesn\(cqt match the NDArray aspect ratio. This allows the step to determine the subset of the image actually passed to the network that produced the segmentation prediction to be drawn.
+.RE
+.sp
+\fB\-\-opacity\fP=\fIPARAM\fP
+.RS 4
+An optional field, that is used only used when <image> key name is set. This specifies, the opacity, between 0.0 and 1.0, of the mask to draw on the image. Default value of 0.5 is used if it\(cqs not set. Value of 0.0 is fully transparent, 1.0 is fully opaque.
+.RE
+.sp
+\fB\-\-outputName\fP=\fIPARAM\fP
+.RS 4
+Name of the output image
+.RE
+.sp
+\fB\-\-segmentArray\fP=\fIPARAM\fP
+.RS 4
+Name of the NDArray with the class indices, 0 to numClasses\-1. Shape [1, height, width].
+.RE

@@ -29,7 +29,7 @@ Overview
 --------------
 
 1. kompile-python: The python SDK for use with generated models. The main entry point is a PipelineRunner that allows the execution of konduit serving pipelines.
-2. kompile-c-library: The c library shim for use with a generated model.
+2. kompile-c-library: The c library shim for use with a generated model in combination with the kompile-python SDK.
 
 
 In order to build the CLI it is recommended to have 10g of RAM to build the whole CLI.
@@ -53,3 +53,6 @@ separated by categories. Categories include:
 
 Note that many of these commands may be used in conjunction with each other.
 This is especially true of the exec namespace.
+
+For more comprehensive docs, see the html pages in the [docs directory](./docs)
+or for any command just pass -h or no flags to see help output.

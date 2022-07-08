@@ -1,0 +1,159 @@
+'\" t
+.\"     Title: kompile-build-pom-generate
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Kompile Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "KOMPILE\-BUILD\-POM\-GENERATE" "1" "2022-07-09" "" "Kompile Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+kompile\-build\-pom\-generate \-
+.SH "SYNOPSIS"
+.sp
+\fBkompile build pom\-generate\fP [\fB\-\-cli\fP] [\fB\-\-debug\fP] [\fB\-\-dl4j\fP] [\fB\-\-image\fP] [\fB\-\-nd4j\fP]
+[\fB\-\-nd4j\-tensorflow\fP] [\fB\-\-numpySharedLibrary\fP] [\fB\-\-onnx\fP]
+[\fB\-\-python\fP] [\fB\-\-samediff\fP] [\fB\-\-server\fP] [\fB\-\-tensorflow\fP]
+[\fB\-\-tvm\fP] [\fB\-\-debugPort\fP=\fI<debugPort>\fP]
+[\fB\-\-extraDependencies\fP=\fI<extraDependencies>\fP]
+[\fB\-\-imageName\fP=\fI<imageName>\fP]
+[\fB\-\-includeResources\fP=\fI<includeResources>\fP]
+[\fB\-\-mainClass\fP=\fI<mainClass>\fP]
+[\fB\-\-nd4jBackend\fP=\fI<nd4jBackend>\fP]
+[\fB\-\-nd4jBackendClassifier\fP=\fI<nd4jBackendClassifier>\fP]
+[\fB\-\-outputFile\fP=\fI<outputFile>\fP]
+[\fB\-\-pipelinePath\fP=\fI<pipelinePath>\fP]
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-cli\fP
+.RS 4
+Whether to add konduit\-serving\-cli or not as a dependency
+.RE
+.sp
+\fB\-\-debug\fP
+.RS 4
+Whether to wait on debugging during image building
+.RE
+.sp
+\fB\-\-debugPort\fP=\fI<debugPort>\fP
+.RS 4
+The port to use for debugging when enabled, default is 8000
+.RE
+.sp
+\fB\-\-dl4j\fP
+.RS 4
+Whether to use dl4j or not
+.RE
+.sp
+\fB\-\-extraDependencies\fP=\fI<extraDependencies>\fP
+.RS 4
+Extra dependencies to include in the form of: groupId:artifactId,version:classifier with a comma separating each dependency
+.RE
+.sp
+\fB\-\-image\fP
+.RS 4
+Whether to use image pre processing or not or not
+.RE
+.sp
+\fB\-\-imageName\fP=\fI<imageName>\fP
+.RS 4
+The image name
+.RE
+.sp
+\fB\-\-includeResources\fP=\fI<includeResources>\fP
+.RS 4
+Extra resources to include in the image, comma separated
+.RE
+.sp
+\fB\-\-mainClass\fP=\fI<mainClass>\fP
+.RS 4
+The main class for the image
+.RE
+.sp
+\fB\-\-nd4j\fP
+.RS 4
+Whether to use nd4j or not
+.RE
+.sp
+\fB\-\-nd4j\-tensorflow\fP
+.RS 4
+Whether to use nd4j\-tensorflow or not
+.RE
+.sp
+\fB\-\-nd4jBackend\fP=\fI<nd4jBackend>\fP
+.RS 4
+The nd4j backend to include
+.RE
+.sp
+\fB\-\-nd4jBackendClassifier\fP=\fI<nd4jBackendClassifier>\fP
+.RS 4
+The nd4j backend to include
+.RE
+.sp
+\fB\-\-numpySharedLibrary\fP
+.RS 4
+Create a library with a numpy based entry point.
+.RE
+.sp
+\fB\-\-onnx\fP
+.RS 4
+Whether to use onnx or not
+.RE
+.sp
+\fB\-\-outputFile\fP=\fI<outputFile>\fP
+.RS 4
+The output file
+.RE
+.sp
+\fB\-\-pipelinePath\fP=\fI<pipelinePath>\fP
+.RS 4
+The pipeline path for building the image
+.RE
+.sp
+\fB\-\-python\fP
+.RS 4
+Whether to use python or not
+.RE
+.sp
+\fB\-\-samediff\fP
+.RS 4
+Whether to use samediff or not
+.RE
+.sp
+\fB\-\-server\fP
+.RS 4
+Whether to use an http server or not
+.RE
+.sp
+\fB\-\-tensorflow\fP
+.RS 4
+Whether to use tensorflow or not
+.RE
+.sp
+\fB\-\-tvm\fP
+.RS 4
+Whether to use tvm or not
+.RE

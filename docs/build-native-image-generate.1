@@ -1,0 +1,143 @@
+'\" t
+.\"     Title: build-native-image-generate
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Build Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "BUILD\-NATIVE\-IMAGE\-GENERATE" "1" "2022-07-09" "" "Build Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+build\-native\-image\-generate \- Generate a native image using the given konduit serving pipeline steps available below. This will also generate a project to build the native image with. Note that the generate\-image\-and\-sdk command also uses this command.
+.SH "SYNOPSIS"
+.sp
+\fBbuild native\-image\-generate\fP [\fB\-\-dl4j\fP] [\fB\-\-image\fP] [\fB\-\-nd4j\fP] [\fB\-\-numpySharedLibrary\fP]
+[\fB\-\-onnx\fP] [\fB\-\-python\fP] [\fB\-\-samediff\fP] [\fB\-\-server\fP]
+[\fB\-\-tensorflow\fP] [\fB\-\-tvm\fP]
+[\fB\-\-extraDependencies\fP=\fI<extraDependencies>\fP]
+[\fB\-\-imageName\fP=\fI<imageName>\fP]
+[\fB\-\-javacppExtension\fP=\fI<javacppExtension>\fP]
+[\fB\-\-javacppPlatform\fP=\fI<javacppPlatform>\fP]
+[\fB\-\-mainClass\fP=\fI<mainClass>\fP] \fB\-\-mavenHome\fP=\fI<mavenHome>\fP
+[\fB\-\-nativeImageFilesPath\fP=\fI<nativeImageFilesPath>\fP]
+[\fB\-\-outputFile\fP=\fI<outputFile>\fP]
+[\fB\-\-pipelinePath\fP=\fI<pipelinePath>\fP]
+.SH "DESCRIPTION"
+.sp
+Generate a native image using the given konduit serving pipeline steps available below. This will also generate a project to build the native image with. Note that the generate\-image\-and\-sdk command also uses this command.
+.SH "OPTIONS"
+.sp
+\fB\-\-dl4j\fP
+.RS 4
+Whether to use dl4j or not
+.RE
+.sp
+\fB\-\-extraDependencies\fP=\fI<extraDependencies>\fP
+.RS 4
+Extra dependencies to include in the form of: groupId:artifactId,version:classifier
+.RE
+.sp
+\fB\-\-image\fP
+.RS 4
+Whether to use image pre processing or not or not
+.RE
+.sp
+\fB\-\-imageName\fP=\fI<imageName>\fP
+.RS 4
+The image name
+.RE
+.sp
+\fB\-\-javacppExtension\fP=\fI<javacppExtension>\fP
+.RS 4
+An optional javacpp extension such as avx2 or cuda depending on the target set of dependencies.
+.RE
+.sp
+\fB\-\-javacppPlatform\fP=\fI<javacppPlatform>\fP
+.RS 4
+Build for a specific specified platform. An example would be linux\-x86_64 \- this reduces binary size and prevents out of memories from trying to include binaries for too many platforms.
+.RE
+.sp
+\fB\-\-mainClass\fP=\fI<mainClass>\fP
+.RS 4
+The main class for the image
+.RE
+.sp
+\fB\-\-mavenHome\fP=\fI<mavenHome>\fP
+.RS 4
+The maven home.
+.RE
+.sp
+\fB\-\-nativeImageFilesPath\fP=\fI<nativeImageFilesPath>\fP
+.RS 4
+The path to the files for building an image
+.RE
+.sp
+\fB\-\-nd4j\fP
+.RS 4
+Whether to use nd4j or not
+.RE
+.sp
+\fB\-\-numpySharedLibrary\fP
+.RS 4
+Create a library with a numpy based entry point.
+.RE
+.sp
+\fB\-\-onnx\fP
+.RS 4
+Whether to use onnx or not
+.RE
+.sp
+\fB\-\-outputFile\fP=\fI<outputFile>\fP
+.RS 4
+The output file
+.RE
+.sp
+\fB\-\-pipelinePath\fP=\fI<pipelinePath>\fP
+.RS 4
+The pipeline path for building the image
+.RE
+.sp
+\fB\-\-python\fP
+.RS 4
+Whether to use python or not
+.RE
+.sp
+\fB\-\-samediff\fP
+.RS 4
+Whether to use samediff or not
+.RE
+.sp
+\fB\-\-server\fP
+.RS 4
+Whether to use an http server or not
+.RE
+.sp
+\fB\-\-tensorflow\fP
+.RS 4
+Whether to use tensorflow or not
+.RE
+.sp
+\fB\-\-tvm\fP
+.RS 4
+Whether to use tvm or not
+.RE

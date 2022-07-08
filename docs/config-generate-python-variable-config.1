@@ -1,0 +1,61 @@
+'\" t
+.\"     Title: config-generate-python-variable-config
+.\"    Author: [see the "AUTHOR(S)" section]
+.\" Generator: Asciidoctor 2.0.10
+.\"      Date: 2022-07-09
+.\"    Manual: Config Manual
+.\"    Source: 
+.\"  Language: English
+.\"
+.TH "CONFIG\-GENERATE\-PYTHON\-VARIABLE\-CONFIG" "1" "2022-07-09" "" "Config Manual"
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.ss \n[.ss] 0
+.nh
+.ad l
+.de URL
+\fI\\$2\fP <\\$1>\\$3
+..
+.als MTO URL
+.if \n[.g] \{\
+.  mso www.tmac
+.  am URL
+.    ad l
+.  .
+.  am MTO
+.    ad l
+.  .
+.  LINKSTYLE blue R < >
+.\}
+.SH "NAME"
+.sp
+config\-generate\-python\-variable\-config \-
+.SH "SYNOPSIS"
+.sp
+\fBconfig generate\-python\-variable\-config\fP [\fB\-\-pythonType\fP=\fI<pythonType>\fP]
+[\fB\-\-secondaryType\fP=\fI<secondaryType>\fP]
+[\fB\-\-valueType\fP=\fI<valueType>\fP]
+\fB\-\-variableName\fP=\fI<variableName>\fP
+.SH "DESCRIPTION"
+
+.SH "OPTIONS"
+.sp
+\fB\-\-pythonType\fP=\fI<pythonType>\fP
+.RS 4
+The python type of the variable (like numpy.ndarray)
+.RE
+.sp
+\fB\-\-secondaryType\fP=\fI<secondaryType>\fP
+.RS 4
+The secondary type of the variable. Typically used for containers like lists of ndarrays
+.RE
+.sp
+\fB\-\-valueType\fP=\fI<valueType>\fP
+.RS 4
+The output variable names to generate the configuration for
+.RE
+.sp
+\fB\-\-variableName\fP=\fI<variableName>\fP
+.RS 4
+The input variable names to generate the configuration for
+.RE
