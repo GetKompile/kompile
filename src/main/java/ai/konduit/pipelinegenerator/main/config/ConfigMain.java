@@ -24,7 +24,7 @@ import java.util.concurrent.Callable;
 
 
 @CommandLine.Command(name = "config",
-       description = "Generate configuration",
+       description = "Generate configuration objects for various classes within exec. These objects are used together with various pipeline steps.",
         subcommands = {
         GeneratePythonConfig.class,
         GeneratePythonVariableConfig.class,

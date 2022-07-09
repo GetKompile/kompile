@@ -31,23 +31,24 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-@CommandLine.Command(name = "generate-python-config",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "generate-python-config",mixinStandardHelpOptions = false,description = "Generates a python configuration for use with python execution. A user should also specify a set of python variables for execution." +
+        " Inputs and outputs are required. Users can also specify other parameters such as a python path to " +
+        "use for execution.")
 public class GeneratePythonConfig implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--pythonPath"},description = "The python path to use",required = false)
     private String pythonPath;
     @CommandLine.Option(names = {"--pythonConfigType"},description = "The python path to use",required = false)
     private String pythonConfigType;
-    @CommandLine.Option(names = {"--pythonCode"},description = "The python path to use",required = false)
+    @CommandLine.Option(names = {"--pythonCode"},description = "The python code to run. ",required = false)
     private String pythonCode;
-    @CommandLine.Option(names = {"--pythonCodePath"},description = "The python path to use",required = false)
+    @CommandLine.Option(names = {"--pythonCodePath"},description = "The path to a python file to run. Should not overlap with pythonCode..",required = false)
     private String pythonCodePath;
-    @CommandLine.Option(names = {"--returnAllInputs"},description = "The python path to use",required = false)
+    @CommandLine.Option(names = {"--returnAllInputs"},description = "Whether to return all outputs of the specified python script. If set to true, a user does not need to specify output variables.",required = false)
     private boolean returnAllInputs;
-    @CommandLine.Option(names = {"--setupAndRun"},description = "The python path to use",required = false)
+    @CommandLine.Option(names = {"--setupAndRun"},description = "Whether a setup() function and run() function are specified",required = false)
     private boolean setupAndRun;
-    @CommandLine.Option(names = {"--pythonLibrariesPath"},description = "The python path to use",required = false)
-    private String pythonLibrariesPath;
+
     @CommandLine.Option(names = {"--inputVariable"},description = "The input variables to use",required = false)
     private List<String> inputVariables;
 
@@ -79,11 +80,9 @@ public class GeneratePythonConfig implements Callable<Integer> {
 
         if(pythonPath != null) {
             pythonConfig.pythonPath(pythonPath);
+            pythonConfig.pythonLibrariesPath(pythonPath);
         }
 
-        if(pythonLibrariesPath != null) {
-            pythonConfig.pythonLibrariesPath(pythonLibrariesPath);
-        }
 
         pythonConfig.returnAllInputs(returnAllInputs);
         pythonConfig.setupAndRun(setupAndRun);

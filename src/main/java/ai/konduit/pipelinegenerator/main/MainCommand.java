@@ -91,6 +91,33 @@ public class MainCommand implements Callable<Integer> {
             });
         }
 
+        //user wants to know flags for a subcommand
+        if(args.length == 1 || args.length == 2 && args[1].equals("-h")) {
+            switch(args[0]) {
+                case "exec":
+                    System.exit(new ExecMain().call());
+                    break;
+                case "build":
+                    System.exit(new BuildMain().call());
+                    break;
+                case "config":
+                    System.exit(new ConfigMain().call());
+                    break;
+                case "helper":
+                    System.exit(new HelperEntry().call());
+                    break;
+                case "info":
+                    System.exit(new Info().call());
+                    break;
+                case "install":
+                    System.exit(new InstallMain().call());
+                    break;
+                case "uninstall":
+                    System.exit(new UnInstallMain().call());
+                    break;
+            }
+        }
+
         int exit = commandLine.execute(args);
         if(args.length > 0 && !args[0].equals("serve") && args.length > 1 && !args[1].equals("serve"))
             System.exit(exit);

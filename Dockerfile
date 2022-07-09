@@ -47,6 +47,4 @@ RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j && \
 FROM rockylinux:8.5
 RUN mkdir /kompile
 COPY --from=builder /kompile/kompile /kompile/kompile
-
-
-ENTRYPOINT "/kompile/kompile"
+ENTRYPOINT ["/kompile/kompile"]

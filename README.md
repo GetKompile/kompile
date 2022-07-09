@@ -98,3 +98,19 @@ For more information see [the model convert command page](./docs/kompile-model-c
 For quick troubleshooting, other utilities for rendering a model file as text are also added.
 This includes printing summaries for [dl4j](./docs/kompile-model-dl4j-summary.html) and [samediff](./docs/samediff-summary.html)
 as well as [tensorflow](./docs/)
+
+
+Main Use Cases
+--------------
+
+1. Run a python script:
+A python script execution pipeline involves setting up
+input and output variables. Each variable will generally have a name
+and a type associated with it. This manifests itself in the form of a python config with the command:
+```bash
+./kompile config python-variable-config --variableName=test --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY
+```
+
+3. Run an imported model pipeline in python using the SDK
+
+4. Serve a model to communicate over REST
