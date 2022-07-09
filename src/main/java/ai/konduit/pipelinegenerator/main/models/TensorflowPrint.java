@@ -16,7 +16,6 @@
 
 package ai.konduit.pipelinegenerator.main.models;
 
-import onnx.Onnx;
 import org.tensorflow.framework.GraphDef;
 import picocli.CommandLine;
 
@@ -24,7 +23,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "onnx-print",description = "Print summary of a target dl4j model.")
+@CommandLine.Command(name = "tensorflow-print",description = "Print summary of a target dl4j model.")
 public class TensorflowPrint implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)

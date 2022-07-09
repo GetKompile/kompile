@@ -56,3 +56,45 @@ This is especially true of the exec namespace.
 
 For more comprehensive docs, see the html pages in the [docs directory](./docs)
 or for any command just pass -h or no flags to see help output.
+
+
+Kompile CLI workflow
+-----------------------
+
+1. Create pipeline steps: Using the exec namespace in conjunction with the [step-create](./docs/step-create.html) namespace create any number of json files that represent steps in your pipeline. This can be anything from running image pre processing to running a model.
+2. Create a pipeline: Using the exec namespace again, pass in any number of pipeline steps to [sequence-pipeline-create](./docs/sequence-pipeline-creator.html)
+3. Generate a [python SDK](./docs/generate-image-and-sdk.html) for your use case that you can pip install as a wheel to any python environment.
+
+
+Kompile Generate SDK setup
+-----------------------------
+
+Kompile has a number of components that are needed in order to setup and use it properly.
+You can manage this with the [kompile install namespace](./docs/kompile-install.html)
+Simply run:
+```bash
+./kompile install all
+```
+This will install graalvm, maven, and anaconda under $USER/.kompile.
+All necessary components are under there.
+In order to remove these components a user may run:
+```bash
+./kompile uninstall all
+```
+
+Optionally a user may also then take an output wheel and install it to their local directory using [sdk-install](./docs/sdk-install.html)
+Using the output wheel, this will install the sdk to the locally managed anaconda under $USER/.kompile/python.
+
+Kompile Model utilities
+---------------------------
+A common use case with the eclipse deeplearning4j ecosystem
+is model import to deploy models in production or finetune them in a
+java environment. Kompile also allows users to just run a conversion process
+from the command line interface without writing any code.
+
+Simply specify an input model path, the framework and the model output path.
+For more information see [the model convert command page](./docs/kompile-model-convert.html)
+
+For quick troubleshooting, other utilities for rendering a model file as text are also added.
+This includes printing summaries for [dl4j](./docs/kompile-model-dl4j-summary.html) and [samediff](./docs/samediff-summary.html)
+as well as [tensorflow](./docs/)
