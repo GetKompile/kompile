@@ -108,9 +108,39 @@ A python script execution pipeline involves setting up
 input and output variables. Each variable will generally have a name
 and a type associated with it. This manifests itself in the form of a python config with the command:
 ```bash
-./kompile config python-variable-config --variableName=test --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY
+./kompile config python-variable-config --variableName=test --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY >> input_1.json
+./kompile config python-variable-config --variableName=test2 --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY >> input_2.json
 ```
 
-3. Run an imported model pipeline in python using the SDK
+For defining a python configuration we can use:
+```bash
+./kompile config python-config --inputVariable=input1.json --inputVariable=input2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
+```
+The above configuration generates a python configuration with 2 input variables that runs the embedded python code adding the 2 variables together.
+The variables are read from files generated in the previous step.
+There are other settings such as python path which allows users to incorporate external python libraries as needed.
 
-4. Serve a model to communicate over REST
+For more information on the parameters please see the relevant [documentation](./docs/generate-python-config.html)
+
+Next we need to incorporate the python configuration in to a python step.
+An example following the 2 previous steps:
+```bash
+./kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
+```
+
+Finally we need to create a pipeline using the above pipeline step.
+An example:
+```bash
+./kompile exec sequence-pipeline-creator --pipeline=python-step.json
+```
+
+This creates a pipeline using the above pipeline step. Note that you can chain any number of pipeline steps together.
+In this case, since it's sequence oriented ordering of the pipeline specified does matter.
+
+More information can be found [here](./docs/sequence-pipeline-creator.html)
+
+
+
+4. Run an imported model pipeline in python using the SDK
+
+5. Serve a model to communicate over REST
