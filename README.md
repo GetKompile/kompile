@@ -128,7 +128,7 @@ An example following the 2 previous steps:
 ./kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
 ```
 
-Finally we need to create a pipeline using the above pipeline step.
+Finally, we need to create a pipeline using the above pipeline step.
 An example:
 ```bash
 ./kompile exec sequence-pipeline-creator --pipeline=python-step.json
@@ -139,8 +139,43 @@ In this case, since it's sequence oriented ordering of the pipeline specified do
 
 More information can be found [here](./docs/sequence-pipeline-creator.html)
 
+2. Run an imported model pipeline in python using the SDK
+
+Imported models can either be of the dl4j zip or samediff flatbuffers format.
+In order to import a custom model, a user should use the convert command first.
+This can be done as follows:
+
+```bash
+./kompile model convert --inputFile=path/to/model.pb --outputFile=path/to/outputmodel.fb
+```
+From here we can figure out this is a tensorflow model. The same is true for onnx.
+
+For importing the keras .h5 format in to the dl4j zip file format, do the following:
+```bash
+./kompile model convert --inputFile=path/to/model.h5 --outputFile=path/to/outputmodel.zip --kerasNetworkType=sequential (or functional)
+```
+The reason for the extra parameter is keras models can be either of the two types
+and aren't always just a graph. Thusly they have slightly different structures.
 
 
-4. Run an imported model pipeline in python using the SDK
+After a user converts their model, you will want to configure either a dl4j step or a samediff step
+depending on the input framework.
 
-5. Serve a model to communicate over REST
+For dl4j do:
+```bash
+./kompile  --fileFormat=json  --inputNames=... --modelUri=path/to/model.zip --outputNames=...  >> model-step.json
+```
+For samediff do:
+```bash
+./kompile  --fileFormat=json  --inputNames=... --modelUri=path/to/model.fb --outputNames=...  >> model-step.json
+```
+
+Afterwards, create a sequential step similar to the above python:
+```bash
+./kompile exec sequence-pipeline-creator --pipeline=model-step.json
+```
+
+The final output will be a valid json file you can pass to the SDK for execution.
+
+
+4. Serve a model to communicate over REST

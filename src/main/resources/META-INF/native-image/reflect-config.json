@@ -43277,7 +43277,7 @@
 
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.Convert",
+    "name":"ai.konduit.pipelinegenerator.main.models.Convert",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,

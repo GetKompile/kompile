@@ -29,3 +29,6 @@ with open('path/to/pipeline.json') as f:
 ```
 
 Note the inputs and outputs are numpy arrays mapped using dictionaries.
+The underlying function invoked is the [NumpyEntryPoint.java](../src/main/resources/NumpyEntryPoint.java)
+which is included automatically when the python SDK is compiled together.
+
