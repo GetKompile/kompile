@@ -18,7 +18,7 @@ COPY ./src /kompile/src
 ENV KOMPILE_PREFIX=/kompile
 COPY pom.xml /kompile/pom.xml
 
-RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j && \
+RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j --branch ag_build_4 && \
     cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true && \
