@@ -1077,8 +1077,5 @@
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"}
   ]},
   "bundles":[
-    {"name":"org.eclipse.jgit.gitrepo.internal.RepoText"},
-    {"name":"org.eclipse.jgit.internal.JGitText"},
-    {"name":"org.eclipse.jgit.internal.storage.dfs.DfsText"}
   ]
 }

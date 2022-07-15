@@ -42,6 +42,9 @@ BUILD_PLATFORM=
 BINARY_EXTENSION=
 ND4J_BACKEND="nd4j-native"
 ND4J_CLASSIFIER=
+ND4J_HELPER=
+ND4J_DATATYPES=
+ND4J_OPERATIONS=
 ENABLE_JETSON_NANO="false"
 BUILD_SHARED_LIBRARY="true"
 MAIN_CLASS=
@@ -51,7 +54,9 @@ NO_GC="false"
 NATIVE_IMAGE_FILE_PATH=
 KOMPILE_PREFIX="./"
 PYTHON_EXEC="python"
-
+BUILD_CUDA_BACKEND="false"
+BUILD_CPU_BACKEND="false"
+IS_SERVER="false"
 
 
 while [[ $# -gt 0 ]]
@@ -63,6 +68,18 @@ case $key in
     PIPELINE_FILE="$value"
     shift # past argument
     ;;
+     -dt|--nd4j-datatypes)
+      ND4J_DATATYPES="$value"
+      shift # past argument
+      ;;
+     -s|--server)
+        IS_SERVER="$value"
+        shift # past argument
+      ;;
+      -op|--nd4j-operations)
+        ND4J_OPERATIONS="$value"
+        shift # past argument
+      ;;
     -py|-python-sdk|--python-sdk)
     KOMPILE_PYTHON_PATH="$value"
     shift # past argument
@@ -71,6 +88,10 @@ case $key in
     KOMPILE_C_PATH="$value"
     shift # past argument
     ;;
+    -s|--is-server)
+      IS_SERVER="$value"
+      shift # past argument
+      ;;
     -pe|--python-exec)
       PYTHON_EXEC="$value"
       shift # past argument
@@ -103,6 +124,10 @@ case $key in
     ND4J_CLASSIFIER="$value"
     shift # past argument
     ;;
+    -nh|--nd4j-helper)
+      ND4J_HELPER="$value"
+      shift # past argument
+      ;;
     -en|--enable-jetson-nano)
     ENABLE_JETSON_NANO="$value"
     shift # past argument
@@ -197,13 +222,7 @@ if [ -z "${BUILD_PLATFORM}" ]; then
   set_platform
 fi
 
-#if [ -z "${MAIN_CLASS}" ]; then
-#   if [ "${PLATFORM}" == "arm64" ]; then
-#     MAIN_CLASS="ai.konduit.pipelinegenerator.main.NumpyEntryPointArm"
-#    else
-#      MAIN_CLASS="ai.konduit.pipelinegenerator.main.NumpyEntryPoint"
-#   fi
-#fi
+
 if [ -z "${BUILD_PLATFORM}" ]; then
   ND4J_CLASSIFIER="${BUILD_PLATFORM}"
 fi
@@ -236,17 +255,41 @@ echo "MIN_RAM_MEGS ${MIN_RAM_MEGS}"
 echo "MAX_RAM_MEGS ${MAX_RAM_MEGS}"
 echo "NO_GC ${NO_GC}"
 echo "NATIVE_IMAGE_FILE_PATH ${NATIVE_IMAGE_FILE_PATH}"
+echo "IS_SERVER ${IS_SERVER}"
 
+if [ "${ND4J_BACKEND}"  = "nd4j-native" ]; then
+      BUILD_CPU_BACKEND="true"
+    else
+        BUILD_CPU_BACKEND="false"
+fi
+
+if [[ "${ND4J_BACKEND}" == *"nd4j-cuda"* ]]; then
+      BUILD_CUDA_BACKEND="true"
+    else
+        BUILD_CUDA_BACKEND="false"
+fi
 
 if test -f "$PIPELINE_FILE"; then
-     echo "Processing pipeline file $PIPELINE_FILE"
+    ./kompile build clone-build \
+              --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
+              --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
+              --buildDl4j \
+              --buildKonduitServing \
+              --libnd4jClassifier="${ND4J_CLASSIFIER}" \
+              --buildCpuBackend="${BUILD_CPU_BACKEND}" \
+               --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
+               --libnd4jHelper="${ND4J_HELPER}" \
+               --libnd4jOperations="${ND4J_OPERATIONS}" \
+               --libnd4jDataTypes="${ND4J_DATATYPES}"
+    echo "Processing pipeline file $PIPELINE_FILE"
     echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
     echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
     eval "./kompile ${POM_GENERATE_COMMAND}"
     BUILD_DIR="$(pwd)"
     export NATIVE_LIB_DIR="${BUILD_DIR}/${IMAGE_NAME}/target"
     ./kompile build native-image-generate  \
+                --server="${IS_SERVER}" \
                 --nativeImageFilesPath="${NATIVE_IMAGE_FILE_PATH}" \
                 --imageName="${IMAGE_NAME}" \
                 --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
@@ -256,75 +299,79 @@ if test -f "$PIPELINE_FILE"; then
                 --javacppPlatform="${BUILD_PLATFORM}" \
                 --mainClass="${MAIN_CLASS}"
     cd "${NATIVE_LIB_DIR}"
-    ln -s ./"${IMAGE_NAME}.so" "lib${IMAGE_NAME}.so"
-    cd -
-    echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
-    mkdir -p "${LIB_OUTPUT_PATH}"
-    cd "${LIB_OUTPUT_PATH}"
-    # Resolve absolute path in case relative path is specified
-    REAL_LIB_PATH="$(pwd)"
-    echo "Set library path to ${REAL_LIB_PATH}"
-    cd "${BUILD_DIR}"
-    mkdir -p "${INCLUDE_PATH}"
-    cd "${INCLUDE_PATH}"
-    # Capture absolute path of include directory as well in case relative path is specified
-    REAL_INCLUDE_PATH="$(pwd)"
-    echo "Set real include path to ${REAL_INCLUDE_PATH}"
-    cd "${BUILD_DIR}"
-    cp "./${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
-    cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
-    cp "${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
-     if  test -f './kompile-c' ; then
-         rm -rf './kompile-c'
-    fi
-    # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
-    if  test -f "${KOMPILE_C_PATH}/CMakeCache.txt" ; then
-         rm -rf "${KOMPILE_C_PATH}/CMakeCache.txt"
-    fi
-    cp -rf "${KOMPILE_C_PATH}" ./kompile-c
+    if [ "${IS_SERVER}" == "false" ]; then
+         ln -s ./"${IMAGE_NAME}.so" "lib${IMAGE_NAME}.so"
+         cd -
+         echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
-    cd ./kompile-c
-    cmake .
-    make
-    # Note we don't quote here so it resolves the binary extension properly
-    cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
-    export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
-    cd ..
-    # Ensure link path is set for compiling the right python libraries
-    export LD_LIBRARY_PATH=""
-    export LD_LIBRARY_PATH="${KOMPILE_C_PATH}:${NATIVE_LIB_DIR}:${LD_LIBRARY_PATH}"
-    if test  -f './kompile-python' ; then
-         rm -rf './kompile-python'
-    fi
+         mkdir -p "${LIB_OUTPUT_PATH}"
+         cd "${LIB_OUTPUT_PATH}"
+         # Resolve absolute path in case relative path is specified
+         REAL_LIB_PATH="$(pwd)"
+         echo "Set library path to ${REAL_LIB_PATH}"
+         cd "${BUILD_DIR}"
+         mkdir -p "${INCLUDE_PATH}"
+         cd "${INCLUDE_PATH}"
+         # Capture absolute path of include directory as well in case relative path is specified
+         REAL_INCLUDE_PATH="$(pwd)"
+         echo "Set real include path to ${REAL_INCLUDE_PATH}"
+         cd "${BUILD_DIR}"
+         cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
+         cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
+         cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
+          if  test -f './kompile-c' ; then
+              rm -rf './kompile-c'
+         fi
+         # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
+         if  test -f "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt" ; then
+              rm -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt"
+         fi
+         cp -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}" ./kompile-c
 
-    #cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
-    cd ./kompile-python
-    mkdir -p lib
-    ${PYTHON_EXEC} setup.py build_ext --inplace
-    # Work around for bundling not working properly with wheel.
-    # Allow  artifacts to automatically be specified so they can be bundled.
-    cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
-     ${PYTHON_EXEC} setup.py bdist_wheel
-    cd ..
-    echo "Creating bundle directory ${IMAGE_NAME}-bundle"
-    # Ensure old copies are removed
-    if test -f "${IMAGE_NAME}-bundle" ; then
-        rm -rf "${IMAGE_NAME}-bundle"
-    fi
-    mkdir -p "${IMAGE_NAME}-bundle"
-    # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
-    cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
-    cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
-    echo "Real library path is ${REAL_LIB_PATH}"
-    cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
-    if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
-           mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
-    fi
-    cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
-    tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
-    echo "Bundle built for image name"
+         cd ${KOMPILE_PREFIX}./kompile-c
+         cmake .
+         make
+         # Note we don't quote here so it resolves the binary extension properly
+         cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
+         export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
+         cd ..
+         # Ensure link path is set for compiling the right python libraries
+         export LD_LIBRARY_PATH=""
+         export LD_LIBRARY_PATH="${KOMPILE_C_PATH}:${NATIVE_LIB_DIR}:${LD_LIBRARY_PATH}"
+         if test  -f '${KOMPILE_PREFIX}./kompile-python' ; then
+              rm -rf '${KOMPILE_PREFIX}./kompile-python'
+         fi
 
+         #cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
+         cd ${KOMPILE_PREFIX}./kompile-python
+         mkdir -p lib
+         ${PYTHON_EXEC} setup.py build_ext --inplace
+         # Work around for bundling not working properly with wheel.
+         # Allow  artifacts to automatically be specified so they can be bundled.
+         cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
+          ${PYTHON_EXEC} setup.py bdist_wheel
+         cd ..
+         echo "Creating bundle directory ${IMAGE_NAME}-bundle"
+         # Ensure old copies are removed
+         if test -f "${IMAGE_NAME}-bundle" ; then
+             rm -rf "${IMAGE_NAME}-bundle"
+         fi
+         mkdir -p "${IMAGE_NAME}-bundle"
+         # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
+         cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
+         cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
+         echo "Real library path is ${REAL_LIB_PATH}"
+         cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
+         if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
+                mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
+         fi
+         cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
+         tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
+         echo "Bundle built for image name"
+      else
+          echo "Built serving library. Please find executable in target/${IMAGE_NAME}"
+    fi
     else
         echo "${PIPELINE_FILE} not found. Please specify a pre existing file."
         exit 1

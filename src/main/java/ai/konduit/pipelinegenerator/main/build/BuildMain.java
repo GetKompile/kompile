@@ -21,6 +21,7 @@ import picocli.CommandLine;
 import java.util.concurrent.Callable;
 @CommandLine.Command(name = "build",subcommands = {
         GenerateImageAndSDK.class,
+        GenerateServingBinary.class,
         NativeImageBuilder.class,
         PomGenerator.class,
         PipelineCommandGenerator.class,

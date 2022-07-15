@@ -199,12 +199,6 @@
     </dependency>
 
 
-    <dependency>
-      <groupId>ai.konduit.serving</groupId>
-      <artifactId>konduit-serving-http</artifactId>
-      <version>${konduit.serving.version}</version>
-    </dependency>
-
 
     <dependency>
       <groupId>ai.konduit.serving</groupId>
@@ -335,8 +329,10 @@
                 --verbose
                 -H:+JNI
                 --allow-incomplete-classpath
+                -H:IncludeResourceBundles=org.eclipse.jgit.internal.JGitText
                 -H:IncludeResources="konduit-serving.h"
                 -H:IncludeResources="numpy_struct.h"
+                -H:IncludeResources="ServingMain.java"
                 -H:IncludeResources="NumpyEntryPoint.java"
                 -H:IncludeResources="org/nd4j/.*"
                 -H:IncludeResources=".*.vso"

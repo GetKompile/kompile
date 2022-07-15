@@ -108,13 +108,13 @@ A python script execution pipeline involves setting up
 input and output variables. Each variable will generally have a name
 and a type associated with it. This manifests itself in the form of a python config with the command:
 ```bash
-./kompile config python-variable-config --variableName=test --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY >> input_1.json
-./kompile config python-variable-config --variableName=test2 --pythonType=list --secondaryType=numpy.ndarray --valueType=NDARRAY >> input_2.json
+./kompile config generate-python-variable-config --variableName=test --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_1.json
+./kompile config generate-python-variable-config --variableName=test2 --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_2.json
 ```
 
 For defining a python configuration we can use:
 ```bash
-./kompile config python-config --inputVariable=input1.json --inputVariable=input2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
+./kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
 ```
 The above configuration generates a python configuration with 2 input variables that runs the embedded python code adding the 2 variables together.
 The variables are read from files generated in the previous step.
@@ -131,7 +131,7 @@ An example following the 2 previous steps:
 Finally, we need to create a pipeline using the above pipeline step.
 An example:
 ```bash
-./kompile exec sequence-pipeline-creator --pipeline=python-step.json
+./kompile exec sequence-pipeline-creator --pipeline=python-step.json >> python-pipeline.json
 ```
 
 This creates a pipeline using the above pipeline step. Note that you can chain any number of pipeline steps together.
@@ -154,7 +154,8 @@ For importing the keras .h5 format in to the dl4j zip file format, do the follow
 ```bash
 ./kompile model convert --inputFile=path/to/model.h5 --outputFile=path/to/outputmodel.zip --kerasNetworkType=sequential (or functional)
 ```
-The reason for the extra parameter is keras models can be either of the two types
+The r./kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
+eason for the extra parameter is keras models can be either of the two types
 and aren't always just a graph. Thusly they have slightly different structures.
 
 
@@ -176,6 +177,35 @@ Afterwards, create a sequential step similar to the above python:
 ```
 
 The final output will be a valid json file you can pass to the SDK for execution.
+```bash
+sudo docker  build  -t ghcr.io/konduitai/kompile --ulimit nofile=98304:98304   .
+ sudo docker run -it --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile
 
+ ./kompile build generate-image-and-sdk --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --kompileCPath=/kompile/kompile-c-library/ --kompilePythonPath=/kompile/kompile-python --pythonExecutable=/root/.kompile/python/bin/python
+sudo docker run -it --ulimit nofile=98304:98304    --entrypoint /bin/bash ghcr.io/konduitai/kompile
 
-4. Serve a model to communicate over REST
+```
+
+3. Serve a model to communicate over REST
+
+Firstly build a binary: 
+```bash
+./kompile build generate-serving-binary --protocol=http --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/
+
+```
+
+This will produce a binary under /kompile/kompile-image that can serve a pipeline.
+This binary can now serve pipelines via http. In order to serve a pipeline, we need to create an inference configuration.
+Let's reuse the pipeline from step  and create an inference server to go with it:
+```bash
+./kompile config generate-python-variable-config --variableName=test --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_1.json
+./kompile config generate-python-variable-config --variableName=test2 --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_2.json
+./kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
+./kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
+./kompile exec sequence-pipeline-creator --pipeline=python-step.json >> python-pipeline.json
+./kompile exec inference-server-create --protocol=http --port=8080 --pipeline=python-pipeline.json >> inference-server.json
+./kompile-image serve -id inf_server -c inference-server.json
+```
+```json
+
+```

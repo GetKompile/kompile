@@ -73,7 +73,7 @@ public class PomGenerator implements Callable<Void> {
     private String nd4jBackendClassifier = "";
 
     @CommandLine.Option(names = {"--cli"},description = "Whether to add konduit-serving-cli or not as a dependency")
-    private boolean cli = true;
+    private boolean cli = false;
     @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Create a library with a numpy based entry point.")
     private boolean numpySharedLibrary;
 
@@ -101,6 +101,7 @@ public class PomGenerator implements Callable<Void> {
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
 
+    private String picoCliVersion = "4.6.3";
     private String dnnlVersion = "2.5.2-" + javacppVersion;
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
@@ -667,8 +668,12 @@ public class PomGenerator implements Callable<Void> {
         if(tensorflow)
             addTensorflow(defaultDependencies);
 
-        if(server)
+        if(server) {
             addVertxDependencies(defaultDependencies);
+            addCli(defaultDependencies);
+            addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
+        }
+
         if(image)
             addImage(defaultDependencies);
 

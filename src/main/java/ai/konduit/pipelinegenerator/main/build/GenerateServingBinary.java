@@ -25,8 +25,6 @@ import ai.konduit.serving.models.tensorflow.step.TensorFlowStep;
 import ai.konduit.serving.models.tvm.step.TVMStep;
 import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.python.PythonStep;
-import ai.konduit.serving.vertx.config.InferenceConfiguration;
-import ai.konduit.serving.vertx.config.ServerProtocol;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
@@ -40,21 +38,19 @@ import java.nio.charset.Charset;
 import java.util.*;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "generate-image-and-sdk",
+@CommandLine.Command(name = "generate-serving-binary",
         mixinStandardHelpOptions = false,
-        description = "Generate and build a python SDK using an embedded shell script. " +
-                "Pass parameters down to the shell script using the parameters below. This command may require additional tools such as graalvm, maven and a local compiler such as gcc to run correctly.")
-public class GenerateImageAndSDK implements Callable<Integer>  {
+        description = "Generate a binary meant for serving models. This will be a static linked binary meant for execution of konduit serving pipelines." +
+                " This command may require additional tools such as graalvm, maven and a local compiler such as gcc to run correctly.")
+public class GenerateServingBinary implements Callable<Integer>  {
 
     @CommandLine.Option(names = {"--pipelineFile"},description = "Whether to use a pipeline file or not",required = false)
     private String pipelineFile;
     @CommandLine.Option(names = {"--imageName"},description = "Name of image output file",required = false)
     private String imageName = "kompile-image";
-    @CommandLine.Option(names = {"--kompilePythonPath"},description = "Path to kompile python sdk",required = false)
-    private String kompilePythonPath;
-    @CommandLine.Option(names = {"--kompileCPath"},description = "Path to kompile c library",required = false)
-    private String kompileCPath;
 
+    @CommandLine.Option(names = {"--protocol"},description = "Protocol to use for serving, http or grpc are valid",required = false)
+    private String protocol;
     @CommandLine.Option(names = {"--pomGenerateOutputPath"},description = "Output path of the generated pom.xml for compiling native image",required = false)
     private String pomGenerateOutputPath = "pom2.xml";
     @CommandLine.Option(names = {"--libOutputPath"},description = "Location of where to put c library after compilation",required = false)
@@ -87,9 +83,9 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     @CommandLine.Option(names = {"--enableJetsonNano"},description = "Whether to use jetson nano dependencies or not",required = false)
     private boolean enableJetsonNano = false;
     @CommandLine.Option(names = {"--buildSharedLibrary"},description = "Whether to build a shared library or not, defaults to true",required = false)
-    private boolean buildSharedLibrary = true;
+    private boolean buildSharedLibrary = false;
     @CommandLine.Option(names = {"--mainClass"},description = "The entry point to use in the image",required = false)
-    private String mainClass;
+    private String mainClass = "ai.konduit.pipelinegenerator.main.ServingMain";
     @CommandLine.Option(names = {"--minRamMegs"},description = "The minimum memory usage for the image",required = false)
     private long minRamMegs = 2000;
     @CommandLine.Option(names = {"--maxRamMegs"},description = "The maximum memory usage for the image",required = false)
@@ -102,10 +98,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
 
     @CommandLine.Option(names = "--kompilePrefix",description = "The kompile prefix where the relevant kompile source code is for compilation.")
     private String kompilePrefix = "./";
-    @CommandLine.Option(names = "--pythonExecutable",description = "The executable to use with python. Defaults to the python found on the path. Otherwise will use the built in python installed with ./kompile install python")
-    private String pythonExecutable = "python";
-
-
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")
     private boolean python = false;
     @CommandLine.Option(names = {"--onnx"},description = "Whether to use onnx or not")
@@ -118,9 +110,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     private boolean samediff = false;
     @CommandLine.Option(names = "--nd4j",description = "Whether to use nd4j or not")
     private boolean nd4j = false;
-    @CommandLine.Option(names = "--server",description = "Whether to the expected file is a server configuration or not. Defaults to false.")
-    private boolean server = false;
-
     @CommandLine.Option(names = "--tensorflow",description = "Whether to use tensorflow or not")
     private boolean tensorflow = false;
     @CommandLine.Option(names = "--nd4j-tensorflow",description = "Whether to use nd4j-tensorflow or not")
@@ -129,13 +118,12 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     private boolean image = false;
 
 
-    public GenerateImageAndSDK() {
+    public GenerateServingBinary() {
     }
 
     private boolean anySpecifiedPipelines() {
         return tensorflow ||
                 tvm ||
-                nd4j ||
                 nd4jTensorflow ||
                 python ||
                 dl4j ||
@@ -165,9 +153,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
 
 
         SequencePipeline build = pipeline.build();
-
-
-
         FileUtils.write(newPipeline,build.toJson(), Charset.defaultCharset());
         return newPipeline;
     }
@@ -186,7 +171,18 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
         checkExists(Info.pythonDirectory(),"python");
 
 
-
+        /**
+         * TODO: add ability to automatically add inference configuration with port
+         * + the desired pipeline potentially either automatically generating a
+         * universal binary with the defaults or also wrapping a
+         * pre existing pipeline in an inference configuration with a
+         * specified port.
+         *
+         * This could be a flag for generating a server or other things.
+         * Also note that we just changed the default to not include the CLI.
+         * We may need to add specific flags to specify whether to add the cli or not
+         * to generate image and sdk sh
+         */
         //unpack resources needed for inclusion and linking of files for the generate images script
         File kompileResources = new File(kompilePrefix,"src/main/resources");
         if(!kompileResources.exists()) {
@@ -247,8 +243,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(nd4jHelper);
             }
 
-
-
             if(nd4jDataTypes != null && !nd4jDataTypes.isEmpty()) {
                 command.add("--nd4j-datatypes");
                 command.add(nd4jDataTypes);
@@ -264,26 +258,6 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(pipelineFile);
             }
 
-            if(kompilePythonPath != null && !kompilePythonPath.isEmpty()) {
-                command.add("--python-sdk");
-                command.add(kompilePythonPath);
-            }
-
-            //set default after kompile prefix has been initialized and the c path/python sdk have not been defined.
-
-            if(kompileCPath == null) {
-                kompileCPath = kompilePrefix + "/kompile-c-library";
-            }
-
-            if(kompilePythonPath == null) {
-                kompilePythonPath = kompilePrefix + "/kompile-python";
-            }
-
-
-            if(kompileCPath != null && !kompileCPath.isEmpty()) {
-                command.add("--c-library");
-                command.add(kompileCPath);
-            }
 
             if(imageName != null && !imageName.isEmpty()) {
                 command.add("--image-name");
@@ -295,12 +269,12 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(nativeImageFilesPath);
             }
 
-
-
-            if(pythonExecutable != null && !pythonExecutable.isEmpty()) {
-                command.add("--python-exec");
-                command.add(pythonExecutable);
+            if(protocol != null && !protocol.isEmpty()) {
+                command.add("--protocol");
+                command.add(protocol);
             }
+
+
 
             if(pomGenerateOutputPath != null && !pomGenerateOutputPath.isEmpty()) {
                 command.add("--pom-path");
@@ -332,6 +306,8 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
                 command.add(nd4jClassifier);
             }
 
+            command.add("--server");
+            command.add(String.valueOf(true));
             command.add("--enable-jetson-nano");
             command.add(String.valueOf(enableJetsonNano));
             command.add("--build-shared");

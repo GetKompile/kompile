@@ -11697,6 +11697,12 @@
     "allDeclaredConstructors":true
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.ServingMain",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
@@ -43090,6 +43096,28 @@
 
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.install.InstallKompileComponents",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.build.GenerateServingBinary",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.PythonConfigTypeConverter",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
@@ -51105,5 +51133,159 @@
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
     "methods":[{"name":"<init>","parameterTypes":[] }]
+  },
+  {
+    "name":"ai.konduit.serving.vertx.config.InferenceConfiguration",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.build.extension.ServeBuildCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.ListCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.StopCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.MetricsCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.VersionCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.ConfigCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.InspectCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.LogsCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.build.extension.ProfileCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.build.cli.BuildCLI",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.cli.launcher.command.build.extension.PythonPathsCommand",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"uk.org.lidalia.sysoutslf4j.common.WrappedCheckedException",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"uk.org.lidalia.sysoutslf4j.system.PrintStreamCoordinatorImpl",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
   }
 ]

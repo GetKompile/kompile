@@ -110,6 +110,13 @@ public class NativeImageBuilder implements Callable<Void> {
 
         }
 
+        if(server) {
+            File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
+            Preconditions.checkState(cEntryPointDir.mkdirs(),"Unable to make directory " + cEntryPointDir.getAbsolutePath());
+            ClassPathResource classPathResource = new ClassPathResource("ServingMain.java");
+            FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"ServingMain.java"));
+        }
+
         File resourcesDir = new File(project,"src/main/resources");
         Preconditions.checkState(resourcesDir.mkdirs(),"Unable to make directories " + resourcesDir.getAbsolutePath());
         if (numpySharedLibrary) {

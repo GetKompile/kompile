@@ -45,6 +45,11 @@ RUN cd /kompile && git clone https://github.com/eclipse/deeplearning4j && \
 
 
 FROM rockylinux:8.5
-RUN mkdir /kompile
+RUN mkdir /kompile && yum -y install sed findutils
 COPY --from=builder /kompile/kompile /kompile/kompile
+COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
+COPY --from=builder /kompile/kompile-python /kompile/kompile-python
+COPY   /src/main/resources/META-INF/native-image /kompile/native-image
+ENV PATH=/root/.kompile/graalvm/bin/:${PATH}
+RUN yum -y install git gcc gcc-c++ cmake zlib zlib-devel
 ENTRYPOINT ["/kompile/kompile"]
