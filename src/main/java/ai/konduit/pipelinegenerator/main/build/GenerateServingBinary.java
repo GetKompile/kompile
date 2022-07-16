@@ -173,20 +173,7 @@ public class GenerateServingBinary implements Callable<Integer>  {
         checkExists(Info.graalvmDirectory(),"graalvm");
         checkExists(Info.mavenDirectory(),"maven");
         checkExists(Info.pythonDirectory(),"python");
-
-
-        /**
-         * TODO: add ability to automatically add inference configuration with port
-         * + the desired pipeline potentially either automatically generating a
-         * universal binary with the defaults or also wrapping a
-         * pre existing pipeline in an inference configuration with a
-         * specified port.
-         *
-         * This could be a flag for generating a server or other things.
-         * Also note that we just changed the default to not include the CLI.
-         * We may need to add specific flags to specify whether to add the cli or not
-         * to generate image and sdk sh
-         */
+        
         //unpack resources needed for inclusion and linking of files for the generate images script
         File kompileResources = new File(kompilePrefix,"src/main/resources");
         if(!kompileResources.exists()) {

@@ -35,7 +35,8 @@ public class ServingMain implements Callable<Integer> {
 
     public static void main(String...args) {
         CommandLine commandLine = new CommandLine(new ServingMain());
-        commandLine.usage(System.err);
+        int exec = commandLine.execute(args);
+        System.out.println("Setup server.");
     }
 
     @Override
