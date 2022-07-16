@@ -117,6 +117,10 @@ public class GenerateServingBinary implements Callable<Integer>  {
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
     private boolean image = false;
 
+    @CommandLine.Option(names = {"--dl4jBranchName"},description = "The branch to clone for deeplearning4j: defaults to master")
+    private String dl4jBranchName = "master";
+    @CommandLine.Option(names = {"--konduitServingBranchName"},description = "The branch to clone konduit-serving: defaults to master")
+    private String konduitServingBranchName = "master";
 
     public GenerateServingBinary() {
     }

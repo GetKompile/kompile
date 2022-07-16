@@ -25,8 +25,6 @@ import ai.konduit.serving.models.tensorflow.step.TensorFlowStep;
 import ai.konduit.serving.models.tvm.step.TVMStep;
 import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.python.PythonStep;
-import ai.konduit.serving.vertx.config.InferenceConfiguration;
-import ai.konduit.serving.vertx.config.ServerProtocol;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
@@ -128,6 +126,11 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
     private boolean image = false;
 
+
+    @CommandLine.Option(names = {"--dl4jBranchName"},description = "The branch to clone for deeplearning4j: defaults to master")
+    private String dl4jBranchName = "master";
+    @CommandLine.Option(names = {"--konduitServingBranchName"},description = "The branch to clone konduit-serving: defaults to master")
+    private String konduitServingBranchName = "master";
 
     public GenerateImageAndSDK() {
     }
@@ -257,6 +260,17 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
             if(nd4jOperations != null && !nd4jOperations.isEmpty()) {
                 command.add("--nd4j-operations");
                 command.add(nd4jOperations);
+            }
+
+
+            if(dl4jBranchName != null && !dl4jBranchName.isEmpty()) {
+                command.add("---dl4j-branch");
+                command.add(dl4jBranchName);
+            }
+
+            if(konduitServingBranchName != null && !konduitServingBranchName.isEmpty()) {
+                command.add("--konduit-serving-branch");
+                command.add(konduitServingBranchName);
             }
 
             if(pipelineFile != null && !pipelineFile.isEmpty()) {

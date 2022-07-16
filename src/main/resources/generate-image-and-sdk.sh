@@ -57,6 +57,8 @@ PYTHON_EXEC="python"
 BUILD_CUDA_BACKEND="false"
 BUILD_CPU_BACKEND="false"
 IS_SERVER="false"
+DL4J_BRANCH="master"
+KONDUIT_SERVING_BRANCH="master"
 
 
 while [[ $# -gt 0 ]]
@@ -64,6 +66,14 @@ do
 key="$1"
 value="${2:-}"
 case $key in
+    -db|--dl4j-branch)
+    DL4J_BRANCH="$value"
+    shift # past argument
+    ;;
+    -ksb|--konduit-serving-branch)
+      KONDUIT_SERVING_BRANCH="$value"
+      shift # past argument
+      ;;
     -p|--pipeline-file)
     PIPELINE_FILE="$value"
     shift # past argument
@@ -256,6 +266,8 @@ echo "MAX_RAM_MEGS ${MAX_RAM_MEGS}"
 echo "NO_GC ${NO_GC}"
 echo "NATIVE_IMAGE_FILE_PATH ${NATIVE_IMAGE_FILE_PATH}"
 echo "IS_SERVER ${IS_SERVER}"
+echo "DL4J_BRANCH ${DL4J_BRANCH}"
+echo "KONDUIT_SERVING_BRANCH ${KONDUIT_SERVING_BRANCH}"
 
 if [ "${ND4J_BACKEND}"  = "nd4j-native" ]; then
       BUILD_CPU_BACKEND="true"
@@ -271,6 +283,8 @@ fi
 
 if test -f "$PIPELINE_FILE"; then
     ./kompile build clone-build \
+              --dl4jBranchName=${DL4J_BRANCH} \
+              --konduitServingBranchName=${KONDUIT_SERVING_BRANCH} \
               --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
               --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
               --buildDl4j \
