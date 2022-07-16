@@ -257,6 +257,16 @@ public class GenerateServingBinary implements Callable<Integer>  {
                 command.add(nd4jOperations);
             }
 
+            if(dl4jBranchName != null && !dl4jBranchName.isEmpty()) {
+                command.add("---dl4j-branch");
+                command.add(dl4jBranchName);
+            }
+
+            if(konduitServingBranchName != null && !konduitServingBranchName.isEmpty()) {
+                command.add("--konduit-serving-branch");
+                command.add(konduitServingBranchName);
+            }
+
             if(pipelineFile != null && !pipelineFile.isEmpty()) {
                 command.add("--pipeline-file");
                 command.add(pipelineFile);
