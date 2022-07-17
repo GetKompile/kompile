@@ -148,7 +148,7 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
     }
 
     private File generatePipelineBasedOnSpec() throws IOException {
-        File newPipeline = new File(System.getProperty("java.io.tmpdir"),"temp-pipeline-" + UUID.randomUUID().toString());
+        File newPipeline = new File(System.getProperty("java.io.tmpdir"),"temp-pipeline-" + UUID.randomUUID() + ".json");
         newPipeline.deleteOnExit();
         SequencePipeline.Builder pipeline = SequencePipeline.builder();
         if(tvm)

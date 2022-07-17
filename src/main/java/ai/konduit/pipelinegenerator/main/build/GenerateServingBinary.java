@@ -137,7 +137,7 @@ public class GenerateServingBinary implements Callable<Integer>  {
     }
 
     private File generatePipelineBasedOnSpec() throws IOException {
-        File newPipeline = new File(System.getProperty("java.io.tmpdir"),"temp-pipeline-" + UUID.randomUUID().toString());
+        File newPipeline = new File(System.getProperty("java.io.tmpdir"),"temp-pipeline-" + UUID.randomUUID() + ".json");
         newPipeline.deleteOnExit();
         SequencePipeline.Builder pipeline = SequencePipeline.builder();
         if(tvm)
@@ -173,7 +173,7 @@ public class GenerateServingBinary implements Callable<Integer>  {
         checkExists(Info.graalvmDirectory(),"graalvm");
         checkExists(Info.mavenDirectory(),"maven");
         checkExists(Info.pythonDirectory(),"python");
-        
+
         //unpack resources needed for inclusion and linking of files for the generate images script
         File kompileResources = new File(kompilePrefix,"src/main/resources");
         if(!kompileResources.exists()) {
