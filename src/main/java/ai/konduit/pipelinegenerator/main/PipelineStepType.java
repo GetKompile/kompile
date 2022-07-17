@@ -25,7 +25,7 @@ import ai.konduit.serving.pipeline.impl.step.ml.ssd.SSDToBoundingBoxStep;
 public enum PipelineStepType {
     CROP_GRID,
     CROP_FIXED_GRID,
-    DL4J,
+    DEEPLEARNING4J,
     KERAS,
     DRAW_BOUNDING_BOX,
     DRAW_FIXED_GRID,
@@ -102,7 +102,7 @@ public enum PipelineStepType {
             case CROP_FIXED_GRID:
                 clazz = Class.forName("ai.konduit.serving.data.image.step.grid.crop.CropFixedGridStep");
                 return (Class<? extends PipelineStep>) clazz;
-            case DL4J:
+            case DEEPLEARNING4J:
                 clazz = Class.forName("ai.konduit.serving.models.deeplearning4j.step.DL4JStep");
                 return (Class<? extends PipelineStep>) clazz;
 

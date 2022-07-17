@@ -16,20 +16,15 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
-import ai.konduit.pipelinegenerator.main.PipelineStepType;
+import ai.konduit.pipelinegenerator.main.build.util.ModuleAppender;
 import ai.konduit.serving.pipeline.api.pipeline.Pipeline;
-import ai.konduit.serving.pipeline.api.step.PipelineStep;
-import ai.konduit.serving.pipeline.impl.pipeline.GraphPipeline;
-import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
-import ai.konduit.serving.pipeline.impl.pipeline.graph.GraphStep;
 import ai.konduit.serving.pipeline.util.ObjectMappers;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import org.nd4j.shade.jackson.databind.ObjectMapper;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.util.HashSet;
-import java.util.Map;
+import java.io.IOException;
 import java.util.Set;
 import java.util.concurrent.Callable;
 @CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = false)
@@ -99,17 +94,17 @@ public class PipelineCommandGenerator implements Callable<Void> {
             command.append(" --outputFile=" + outputFile.getAbsolutePath() + " ");
         }
 
-        if(nd4jBackend != null) {
+        if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
             command.append(" --nd4jBackend=" + nd4jBackend + " ");
         }
 
-        if(nd4jBackendClassifier != null) {
+        if(nd4jBackendClassifier != null && !nd4jBackendClassifier.isEmpty()) {
             command.append(" --nd4jBackendClassifier=" + nd4jBackendClassifier + " ");
         }
 
         Pipeline pipeline = null;
         if(isServer) {
-            if(pipelineFile.getName().equals("json")) {
+            if(pipelineFile.getName().endsWith("json")) {
                 InferenceConfiguration inferenceConfiguration = jsonMapper.readValue(pipelineFile,InferenceConfiguration.class);
                 pipeline = inferenceConfiguration.pipeline();
             } else if(pipelineFile.getName().endsWith("yaml") || pipelineFile.getName().endsWith("yml")) {
@@ -125,75 +120,24 @@ public class PipelineCommandGenerator implements Callable<Void> {
             }
         }
 
-        Set<String> commandsToAdd = getCommandsFromPipeline(pipeline);
-
-        for(String command2 : commandsToAdd) {
-            command.append("--" + command2 + "=true ");
-        }
+        appendCommands(command, pipeline);
 
         System.out.println(command);
 
         return null;
     }
 
-    private Set<String> getCommandsFromPipeline(Pipeline pipeline) throws java.io.IOException {
-        Set<String> commandsToAdd = new HashSet<>();
-        if(pipeline instanceof SequencePipeline) {
-            SequencePipeline sequencePipeline = (SequencePipeline)  pipeline;
-            for(PipelineStep pipelineStep : sequencePipeline.steps()) {
-                addCommand(commandsToAdd, pipelineStep);
-            }
-        } else if(pipeline instanceof GraphPipeline) {
-            GraphPipeline graphPipeline = (GraphPipeline) pipeline;
-            for(Map.Entry<String, GraphStep> graphStepEntry : graphPipeline.steps().entrySet()) {
-                if(graphStepEntry.getValue().hasStep()) {
-                    addCommand(commandsToAdd,graphStepEntry.getValue().getStep());
-                }
-            }
-        }
-        return commandsToAdd;
-    }
+    private void appendCommands(StringBuilder command, Pipeline pipeline) throws IOException {
+        Set<String> commandsToAdd = ModuleAppender.getCommandsFromPipeline(pipeline);
 
-    private void addCommand(Set<String> commandsToAdd, PipelineStep pipelineStep) {
-        switch(PipelineStepType.typeForClazz(pipelineStep.getClass())) {
-            case ND4JTENSORFLOW:
-                commandsToAdd.add("nd4j-tensorflow");
-                break;
-            case DRAW_BOUNDING_BOX:
-            case DRAW_SEGMENTATION:
-            case SSD_TO_BOUNDING_BOX:
-            case VIDEO_FRAME_CAPTURE:
-            case CAMERA_FRAME_CAPTURE:
-            case EXTRACT_BOUNDING_BOX:
-            case CROP_GRID:
-            case DRAW_GRID:
-            case IMAGE_TO_NDARRAY:
-            case SHOW_IMAGE:
-            case DRAW_FIXED_GRID:
-            case CROP_FIXED_GRID:
-                commandsToAdd.add("image");
-                break;
-            case ONNX:
-                commandsToAdd.add("onnx");
-                break;
-            case DL4J:
-            case KERAS:
-                commandsToAdd.add("dl4j");
-                break;
-            case PYTHON:
-                commandsToAdd.add("python");
-                break;
-            case CLASSIFIER_OUTPUT:
-            case LOGGING:
-                //already present by default in konduit-serving-pipeline as a transitive dependency
-                break;
-            case SAMEDIFF:
-                commandsToAdd.add("samediff");
-                break;
-            case TENSORFLOW:
-                commandsToAdd.add("tensorflow");
-                break;
-
+        for(String command2 : commandsToAdd) {
+            command.append("--" + command2 + "=true ");
         }
     }
+
+    public static void main(String...args) {
+        CommandLine commandLine = new CommandLine(new PipelineCommandGenerator());
+        System.exit(commandLine.execute(args));
+    }
+
 }
