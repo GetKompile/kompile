@@ -128,7 +128,7 @@ public class PipelineCommandGenerator implements Callable<Void> {
         Set<String> commandsToAdd = getCommandsFromPipeline(pipeline);
 
         for(String command2 : commandsToAdd) {
-            command.append("--" + command2 + " ");
+            command.append("--" + command2 + "=true ");
         }
 
         System.out.println(command);
@@ -137,8 +137,6 @@ public class PipelineCommandGenerator implements Callable<Void> {
     }
 
     private Set<String> getCommandsFromPipeline(Pipeline pipeline) throws java.io.IOException {
-
-
         Set<String> commandsToAdd = new HashSet<>();
         if(pipeline instanceof SequencePipeline) {
             SequencePipeline sequencePipeline = (SequencePipeline)  pipeline;
