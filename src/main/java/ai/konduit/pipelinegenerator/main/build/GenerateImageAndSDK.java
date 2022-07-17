@@ -25,6 +25,7 @@ import ai.konduit.serving.models.tensorflow.step.TensorFlowStep;
 import ai.konduit.serving.models.tvm.step.TVMStep;
 import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.python.PythonStep;
+import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
@@ -168,10 +169,12 @@ public class GenerateImageAndSDK implements Callable<Integer>  {
 
 
         SequencePipeline build = pipeline.build();
+        //ensure that it's a server for consistency with isServer flag being true in configuration
+        InferenceConfiguration inferenceConfiguration = new InferenceConfiguration()
+                .pipeline(build);
 
 
-
-        FileUtils.write(newPipeline,build.toJson(), Charset.defaultCharset());
+        FileUtils.write(newPipeline,inferenceConfiguration.toJson(), Charset.defaultCharset());
         return newPipeline;
     }
 
