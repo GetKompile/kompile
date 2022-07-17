@@ -51300,7 +51300,7 @@
 
   },
   {
-    "name":"ai.konduit.serving.vertx.config.MqttConfiguration,
+    "name":"ai.konduit.serving.vertx.config.MqttConfiguration",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
