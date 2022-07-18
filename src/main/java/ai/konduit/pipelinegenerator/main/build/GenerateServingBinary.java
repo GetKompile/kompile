@@ -58,6 +58,7 @@ public class GenerateServingBinary extends BaseGenerateImageAndSdk {
         //build static shared lib that serves models
         server = true;
         buildSharedLibrary = false;
+        mainClass ="ai.konduit.pipelinegenerator.main.ServingMain";
     }
 
     @Override

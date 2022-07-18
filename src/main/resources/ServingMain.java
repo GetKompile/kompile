@@ -50,7 +50,8 @@ public class ServingMain implements Callable<Integer> {
                     if(handler.succeeded()) {
                         System.out.println("Deployment succeeded.");
                     } else {
-                        System.out.println("Deployment failed. Exiting");
+                        System.out.println("Deployment failed. Exiting. Reason:");
+                        handler.cause().printStackTrace();
                         System.exit(1);
                     }
                 });
