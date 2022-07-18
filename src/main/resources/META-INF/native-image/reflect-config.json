@@ -51320,5 +51320,48 @@
     "allPublicClasses" : true,
     "allDeclaredFields":true
 
+  },
+  {
+    "name":"ai.konduit.serving.vertx.protocols.http.verticle.InferenceVerticleHttp",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.serving.vertx.protocols.grpc.verticle.InferenceVerticleGrpc",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },  {
+  "name":"ai.konduit.serving.vertx.protocols.mqtt.verticle.InferenceVerticleMqtt",
+  "allDeclaredConstructors" : true,
+  "allPublicConstructors" : true,
+  "allDeclaredMethods" : true,
+  "allPublicMethods" : true,
+  "allDeclaredClasses" : true,
+  "allPublicClasses" : true,
+  "allDeclaredFields":true
+
+},
+  {
+    "name":"ai.konduit.serving.vertx.protocols.kafka.verticle.InferenceVerticleKafka",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
   }
 ]
