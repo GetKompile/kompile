@@ -154,10 +154,8 @@ For importing the keras .h5 format in to the dl4j zip file format, do the follow
 ```bash
 /kompile/kompile model convert --inputFile=path/to/model.h5 --outputFile=path/to/outputmodel.zip --kerasNetworkType=sequential (or functional)
 ```
-The r/kompile/kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
-eason for the extra parameter is keras models can be either of the two types
+The reason for the extra parameter is keras models can be either of the two types
 and aren't always just a graph. Thusly they have slightly different structures.
-
 
 After a user converts their model, you will want to configure either a dl4j step or a samediff step
 depending on the input framework.
@@ -178,11 +176,11 @@ Afterwards, create a sequential step similar to the above python:
 
 The final output will be a valid json file you can pass to the SDK for execution.
 ```bash
-sudo docker  build  -t ghcr.io/konduitai/kompile --ulimit nofile=98304:98304   .
- sudo docker run -it --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile
+docker  build  -t ghcr.io/konduitai/kompile --ulimit nofile=98304:98304   .
+docker run -it --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile
 
- /kompile/kompile build generate-image-and-sdk --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --kompileCPath=/kompile/kompile-c-library/ --kompilePythonPath=/kompile/kompile-python --pythonExecutable=/root/.kompile/python/bin/python
-sudo docker run -it --ulimit nofile=98304:98304    --entrypoint /bin/bash ghcr.io/konduitai/kompile
+/kompile/kompile build generate-image-and-sdk --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --kompileCPath=/kompile/kompile-c-library/ --kompilePythonPath=/kompile/kompile-python --pythonExecutable=/root/.kompile/python/bin/python
+docker run -it --ulimit nofile=98304:98304    --entrypoint /bin/bash ghcr.io/konduitai/kompile
 
 ```
 
@@ -203,8 +201,33 @@ Let's reuse the pipeline from step  and create an inference server to go with it
 /kompile/kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
 /kompile/kompile exec sequence-pipeline-creator --pipeline=python-step.json >> python-pipeline.json
 /kompile/kompile exec inference-server-create --protocol=http --port=8080 --pipeline=python-pipeline.json >> inference-server.json
-/kompile/kompile-image/target/kompile-image serve -id inf_server -c inference-server.json
+/kompile-image  --configFile=/kompile/inference-server.json --autoConfigurePythonPath=true
 ```
-```json
+This will setup the configuration to use the inference-server.json generated earlier.
+We use autoconfigurePath to automatically use the local kompile install's python.
+When using the python runner, we need to handle setting the python path up.
 
+The user should configure this themselves using one of:
+1. --pythonPath: manually specify the python path. Required when user has custom python path requirements
+outside a standard distribution like anaconda or pip.
+
+2. autoConfigurePythonPath: uses the local kompile installs python at $USER/.kompile/python.
+The python path is obtained from the python executable found in the kompile install's python directory.
+
+3. --pythonExecutableForConfigure: configure a custom python executable. A user can either specify an absolute path
+or a python binary found on the user's path with just python.
+
+
+Lastly, depending on the python configuration and python path
+please note that the user may need to also add conda to their path.
+Our python step runner looks up certain metadata when loading the relevant dependencies
+from the python path for execution.
+
+It is recommended the user use the self contained miniconda install that comes with kompile.
+In order to circumvent any issues, a user may use the following formula for python path execution:
+```bash
+./kompile install python
+export PATH=$HOME/.kompile/python/bin:$PATH
 ```
+
+Following these steps allows a user to serve a model that runs a python script.

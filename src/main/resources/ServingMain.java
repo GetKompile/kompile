@@ -65,9 +65,9 @@ public class ServingMain implements Callable<Integer> {
             File kompilePythonExec = new File(System.getProperty("user.home"),".kompile");
             File pythonConfigureDir = new File(kompilePythonExec,"python");
             if(!kompilePythonExec.exists()) {
-                System.err.println("Specified auto configuration of python path but no kompile install found. Please run kompile install python to fix this problem.");
+                System.err.println("Specified auto configuration of python path but no kompile install found. Please run kompile install python or kompile install all to fix this problem.");
             } else if(!pythonConfigureDir.exists()) {
-                System.err.println("Specified auto configuration of python path but no kompile python install found. Please run kompile install python to fix this problem.");
+                System.err.println("Specified auto configuration of python path but no kompile python install found. Please run kompile install python or kompile install all  to fix this problem.");
             }
 
             String pythonExecDir = System.getProperty("os.name").contains("win") ? "Scripts" : "bin";
