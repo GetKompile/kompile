@@ -71,7 +71,7 @@ public class ServingMain implements Callable<Integer> {
             }
 
             String pythonExecDir = System.getProperty("os.name").contains("win") ? "Scripts" : "bin";
-            File condaPythonInstall = new File(pythonConfigureDir,pythonExecDir + File.separator + pythonExecDir);
+            File condaPythonInstall = new File(pythonConfigureDir,pythonExecDir);
             File pythonExecutable = new File(condaPythonInstall,"python");
             String pythonPath = pythonPathForExecutable(pythonExecutable);
             System.setProperty("org.eclipse.python4j.path", pythonPath);
