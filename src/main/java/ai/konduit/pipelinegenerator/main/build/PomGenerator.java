@@ -105,6 +105,7 @@ public class PomGenerator implements Callable<Void> {
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
 
+    private String zeroTurnAroundVersion = "1.12";
     private String picoCliVersion = "4.6.3";
     private String dnnlVersion = "2.5.2-" + javacppVersion;
     private List<Dependency> defaultDependencies = new ArrayList<>();
@@ -706,6 +707,7 @@ public class PomGenerator implements Callable<Void> {
             addKonduitServingCore(defaultDependencies);
         }
 
+        addDependency(defaultDependencies,"org.zeroturnaround","zt-exec",zeroTurnAroundVersion);
         //needed to access lombok features with graalvm
         addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
         //need dnnl for onnxruntime cpu
