@@ -64,8 +64,7 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = {"--mainClass"},description = "The main class for the image")
     private String mainClass;
 
-    @CommandLine.Option(names = {"--extraDependencies"},description = "Extra dependencies to include in the form of: groupId:artifactId,version:classifier")
-    private String extraDependencies;
+
 
     @CommandLine.Option(names = {"--mavenHome"},description = "The maven home.", required = true)
     private File mavenHome;

@@ -54,6 +54,10 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--kompileCPath"},description = "Path to kompile c library",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String kompileCPath;
 
+    @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
+            "passed to the native image plugin in the form of: -JSOMEARG")
+    private String[] nativeImageJvmArgs;
+
     @CommandLine.Option(names = {"--pomGenerateOutputPath"},description = "Output path of the generated pom.xml for compiling native image",
             required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String pomGenerateOutputPath = "pom2.xml";
@@ -242,6 +246,11 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         command.add(String.valueOf(maxRamMegs));
         command.add("--no-garbage-collection");
         command.add(String.valueOf(noGc));
+        if(nativeImageJvmArgs != null) {
+            for(String jvmArg : nativeImageJvmArgs) {
+                command.add("--nativeImageJvmArg=" + jvmArg);
+            }
+        }
         System.out.println("Running generate image command: " + command);
     }
 

@@ -56,6 +56,10 @@ public class PomGenerator implements Callable<Void> {
     @CommandLine.Option(names = "--server",description = "Whether to use an http server or not")
     private boolean server = false;
 
+    @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
+            "passed to the native image plugin in the form of: -JSOMEARG")
+    private String[] nativeImageJvmArgs;
+
     private Model model;
     @CommandLine.Option(names = {"--imageName"},description = "The image name")
     private String imageName = "konduit-serving";
@@ -417,6 +421,11 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
+        if(nativeImageJvmArgs != null) {
+            for(String jvmArg : nativeImageJvmArgs) {
+                stringBuilder.append("-J" + jvmArg + "\n");
+            }
+        }
         if(pipelinePath != null)
             stringBuilder.append("-Dpipeline.path=" + pipelinePath + "\n");
         //See: https://github.com/oracle/graal/issues/1722

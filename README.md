@@ -190,7 +190,7 @@ sudo docker run -it --ulimit nofile=98304:98304    --entrypoint /bin/bash ghcr.i
 
 Firstly build a binary: 
 ```bash
-/kompile/kompile build generate-serving-binary --protocol=http --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --mainClass=ai.konduit.pipelinegenerator.main.ServingMain --configFile=./inference-server.json
+/kompile/kompile build generate-serving-binary --protocol=http --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --mainClass=ai.konduit.pipelinegenerator.main.ServingMain --pipelineFile=./inference-server.json
 ```
 
 This will produce a binary under /kompile/kompile-image that can serve a pipeline.
