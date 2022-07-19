@@ -43,7 +43,7 @@ public class ServingMain implements Callable<Integer> {
             "path separator for the OS. Windows is ;, Unix (Mac and Linux) is :. Not recommended unless needing to add additional python paths.",required = false)
     private String pythonPath;
 
-    @CommandLine.Option(names = {"--pythonPath"},description = "Auto configure python path based on the installed python found by kompile's install command.",required = false)
+    @CommandLine.Option(names = {"--autoConfigurePythonPath"},description = "Auto configure python path based on the installed python found by kompile's install command.",required = false)
     private boolean autoConfigurePythonPath = false;
     @CommandLine.Option(names = {"--pythonExecutableForConfigure"},description = "Python executable for configuration. Specify this if you would like to " +
             "configure this serving binary to use the specified python executable for loading the python path for that python executable.",required = false)
