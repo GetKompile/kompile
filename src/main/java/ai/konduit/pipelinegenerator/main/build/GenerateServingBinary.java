@@ -16,28 +16,9 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
-import ai.konduit.pipelinegenerator.main.Info;
-import ai.konduit.serving.data.image.step.ndarray.ImageToNDArrayStep;
-import ai.konduit.serving.models.deeplearning4j.step.DL4JStep;
-import ai.konduit.serving.models.onnx.step.ONNXStep;
-import ai.konduit.serving.models.samediff.step.SameDiffStep;
-import ai.konduit.serving.models.tensorflow.step.TensorFlowStep;
-import ai.konduit.serving.models.tvm.step.TVMStep;
-import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
-import ai.konduit.serving.python.PythonStep;
-import ai.konduit.serving.vertx.config.InferenceConfiguration;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
-import org.nd4j.common.io.ClassPathResource;
-import org.zeroturnaround.exec.ProcessExecutor;
 import picocli.CommandLine;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.Charset;
-import java.util.*;
-import java.util.concurrent.Callable;
+import java.util.List;
 
 @CommandLine.Command(name = "generate-serving-binary",
         mixinStandardHelpOptions = false,
@@ -63,7 +44,6 @@ public class GenerateServingBinary extends BaseGenerateImageAndSdk {
 
     @Override
     public void doCustomCommands(List<String> commands) {
-
         addCommand(protocol,"--protocol",commands);
     }
 }

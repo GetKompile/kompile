@@ -45,6 +45,7 @@ ND4J_CLASSIFIER=
 ND4J_HELPER=
 ND4J_DATATYPES=
 ND4J_OPERATIONS=
+ND4J_USE_LTO="false"
 ENABLE_JETSON_NANO="false"
 BUILD_SHARED_LIBRARY="true"
 MAIN_CLASS=
@@ -98,10 +99,6 @@ case $key in
     KOMPILE_C_PATH="$value"
     shift # past argument
     ;;
-    -s|--is-server)
-      IS_SERVER="$value"
-      shift # past argument
-      ;;
     -pe|--python-exec)
       PYTHON_EXEC="$value"
       shift # past argument
@@ -125,6 +122,10 @@ case $key in
     -mh|--maven-home)
     MAVEN_HOME="$value"
     shift # past argument
+    ;;
+    -lto|--use-lto)
+      ND4J_USE_LTO="$value"
+      shift # past argument
     ;;
      -nb|--nd4j-backend)
     ND4J_BACKEND="$value"
@@ -268,6 +269,7 @@ echo "NATIVE_IMAGE_FILE_PATH ${NATIVE_IMAGE_FILE_PATH}"
 echo "IS_SERVER ${IS_SERVER}"
 echo "DL4J_BRANCH ${DL4J_BRANCH}"
 echo "KONDUIT_SERVING_BRANCH ${KONDUIT_SERVING_BRANCH}"
+echo "ND4J_USE_LTO ${ND4J_USE_LTO}"
 
 if [ "${ND4J_BACKEND}"  = "nd4j-native" ]; then
       BUILD_CPU_BACKEND="true"
@@ -287,6 +289,7 @@ if test -f "$PIPELINE_FILE"; then
       POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
 
     ./kompile build clone-build \
+              --libnd4jUseLto=${ND4J_USE_LTO} \
               --dl4jBranchName=${DL4J_BRANCH} \
               --konduitServingBranchName=${KONDUIT_SERVING_BRANCH} \
               --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
@@ -335,31 +338,21 @@ if test -f "$PIPELINE_FILE"; then
          cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
          cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
          cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
-          if  test -f './kompile-c' ; then
-              rm -rf './kompile-c'
-         fi
          # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
          if  test -f "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt" ; then
               rm -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt"
          fi
-         cp -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}" ./kompile-c
+         cp -rf "${KOMPILE_C_PATH}" ./kompile-c
 
-         cd ${KOMPILE_PREFIX}./kompile-c
+         cd ${KOMPILE_C_PATH}
          cmake .
          make
          # Note we don't quote here so it resolves the binary extension properly
          cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
          export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
          cd ..
-         # Ensure link path is set for compiling the right python libraries
-         export LD_LIBRARY_PATH=""
-         export LD_LIBRARY_PATH="${KOMPILE_C_PATH}:${NATIVE_LIB_DIR}:${LD_LIBRARY_PATH}"
-         if test  -f '${KOMPILE_PREFIX}./kompile-python' ; then
-              rm -rf '${KOMPILE_PREFIX}./kompile-python'
-         fi
 
-         #cp -rf "${KOMPILE_PYTHON_PATH}" ./kompile-python
-         cd ${KOMPILE_PREFIX}./kompile-python
+         cd ${KOMPILE_PYTHON_PATH}
          mkdir -p lib
          ${PYTHON_EXEC} setup.py build_ext --inplace
          # Work around for bundling not working properly with wheel.

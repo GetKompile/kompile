@@ -184,7 +184,7 @@ public class CloneBuildComponents implements Callable<Integer> {
             }
             else if(execute.getExitCode() != 0) {
                 System.err.println("Failed to build Deeplearning4j. Exiting.");
-                System.exit(1);
+                return 1;
             }
         }
 
@@ -233,13 +233,10 @@ public class CloneBuildComponents implements Callable<Integer> {
                 System.err.println("Finished building Konduit Serving.");
             } else {
                 System.err.println("Failed to clone Konduit Serving. Exiting.");
-                System.exit(1);
+                return 1;
             }
 
         }
-
-
-
 
         return 0;
     }

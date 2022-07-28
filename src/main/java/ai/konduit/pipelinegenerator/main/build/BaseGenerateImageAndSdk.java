@@ -50,9 +50,9 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--imageName"},description = "Name of image output file",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String imageName = "kompile-image";
     @CommandLine.Option(names = {"--kompilePythonPath"},description = "Path to kompile python sdk",required = false,scope = CommandLine.ScopeType.INHERIT)
-    protected String kompilePythonPath;
+    protected String kompilePythonPath = EnvironmentUtils.defaultKompilePythonPath();
     @CommandLine.Option(names = {"--kompileCPath"},description = "Path to kompile c library",required = false,scope = CommandLine.ScopeType.INHERIT)
-    protected String kompileCPath;
+    protected String kompileCPath = EnvironmentUtils.defaultKompileCPath();
 
     @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
             "passed to the native image plugin in the form of: -JSOMEARG")
@@ -95,7 +95,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--nd4jHelper"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String nd4jHelper;
 
-
+    @CommandLine.Option(names = {"--nd4jUseLto"},description = "Whether to build with link time optimization or not. When link time optimization is used, the linker can take a long time. Turn this on for smaller binaries, but longer build times. Defaults to false.")
+    private boolean libnd4jUseLto = false;
     @CommandLine.Option(names = {"--enableJetsonNano"},description = "Whether to use jetson nano dependencies or not",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected boolean enableJetsonNano = false;
     @CommandLine.Option(names = {"--buildSharedLibrary"},description = "Whether to build a shared library or not, defaults to true"
@@ -111,13 +112,13 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected boolean noGc = false;
 
     @CommandLine.Option(names = "--nativeImageFilesPath",description = "The path to the files for building an image",scope = CommandLine.ScopeType.INHERIT)
-    protected String nativeImageFilesPath;
+    protected String nativeImageFilesPath = EnvironmentUtils.defaultNativeImageFilesPath();
 
     @CommandLine.Option(names = "--kompilePrefix",description = "The kompile prefix where the relevant kompile source code is for compilation.",scope = CommandLine.ScopeType.INHERIT)
     protected String kompilePrefix = "./";
     @CommandLine.Option(names = "--pythonExecutable",description = "The executable to use with python. " +
             "Defaults to the python found on the path. Otherwise will use the built in python installed with ./kompile install python",scope = CommandLine.ScopeType.INHERIT)
-    protected String pythonExecutable = "python";
+    protected String pythonExecutable = EnvironmentUtils.defaultPythonExecutable();
 
 
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not",scope = CommandLine.ScopeType.INHERIT)
@@ -182,11 +183,21 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
 
 
         SequencePipeline build = pipeline.build();
-        //ensure that it's a server for consistency with isServer flag being true in configuration
-        InferenceConfiguration inferenceConfiguration = new InferenceConfiguration()
-                .pipeline(build);
+        if(server) {
+            System.out.println("Generating server.");
+            //ensure that it's a server for consistency with isServer flag being true in configuration
+            InferenceConfiguration inferenceConfiguration = new InferenceConfiguration()
+                    .pipeline(build);
+            System.out.println("Wrote json " + inferenceConfiguration.toJson());
 
-        FileUtils.write(newPipeline,inferenceConfiguration.toJson(), Charset.defaultCharset());
+            FileUtils.write(newPipeline,inferenceConfiguration.toJson(), Charset.defaultCharset());
+            System.out.println("Wrote json " + inferenceConfiguration.toJson());
+        } else {
+            System.out.println("Generating pipeline.");
+            FileUtils.write(newPipeline,build.toJson(), Charset.defaultCharset());
+            System.out.println("Wrote json " + build.toJson());
+        }
+
         return newPipeline;
     }
 
@@ -214,6 +225,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     }
 
     protected void addCommands(List<String> command) {
+        addCommand(String.valueOf(libnd4jUseLto),"--use-lto",command);
         addCommand(nd4jHelper,"--nd4j-helper",command);
         addCommand(nd4jDataTypes,"--nd4j-datatypes",command);
         addCommand(nd4jOperations,"--nd4j-operations",command);
@@ -228,9 +240,11 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(kompilePrefix,"--kompile-prefix",command);
         addCommand(nd4jBackend,"--nd4j-backend",command);
         addCommand(nd4jClassifier,"--nd4j-classifier",command);
-
+        addCommand(kompileCPath,"--c-library",command);
+        addCommand(kompilePythonPath,"--python-sdk",command);
+        addCommand(pythonExecutable,"--python-exec",command);
         command.add("--server");
-        command.add(String.valueOf(true));
+        command.add(String.valueOf(server));
         command.add("--enable-jetson-nano");
         command.add(String.valueOf(enableJetsonNano));
         command.add("--build-shared");

@@ -1,4 +1,4 @@
-# Kompile (README is WIP, for questions come to: https://community.konduit.ai)
+~~~~# Kompile (README is WIP, for questions come to: https://community.konduit.ai)
 
 Kompile  is a command line interface for interacting with 
 the [eclipse deeplearning4j/nd4j ecosystems](https://github.com/eclipse/deeplearning4j) and [konduit serving](https://github.com/KonduitAI/konduit-serving).
@@ -6,7 +6,7 @@ the [eclipse deeplearning4j/nd4j ecosystems](https://github.com/eclipse/deeplear
 
 Building container:
 ```bash
-docker  build -t konduitai/kompile:latest  .
+docker  build --ulimit nofile=98304:98304 -t konduitai/kompile:latest  .
 ```
 
 Running container cli command:
@@ -231,3 +231,8 @@ export PATH=$HOME/.kompile/python/bin:$PATH
 ```
 
 Following these steps allows a user to serve a model that runs a python script.
+
+
+
+sudo docker run -it  -v $(pwd):/local --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile~~~~
+

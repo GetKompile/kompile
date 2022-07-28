@@ -51374,5 +51374,126 @@
     "allPublicClasses" : true,
     "allDeclaredFields":true
 
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.RequiredOpsDataTypes",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.learning.regularization.WeightDecay",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.FixedSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.CycleSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.ExponentialSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.InverseSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.MapSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.PolySchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.RampSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.SigmoidSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"org.nd4j.linalg.schedule.StepSchedule",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
   }
 ]

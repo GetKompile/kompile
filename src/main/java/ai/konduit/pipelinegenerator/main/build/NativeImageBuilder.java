@@ -56,7 +56,6 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = "--server",description = "Whether to use an http server or not")
     private boolean server = false;
 
-
     private Model model;
     @CommandLine.Option(names = {"--imageName"},description = "The image name")
     private String imageName = "konduit-serving";
@@ -64,10 +63,8 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = {"--mainClass"},description = "The main class for the image")
     private String mainClass;
 
-
-
     @CommandLine.Option(names = {"--mavenHome"},description = "The maven home.", required = true)
-    private File mavenHome;
+    private File mavenHome = EnvironmentUtils.defaultMavenHome();
 
     @CommandLine.Option(names = {"--outputFile"},description = "The output file")
     private File outputFile = new File("pom2.xml");
@@ -76,7 +73,7 @@ public class NativeImageBuilder implements Callable<Void> {
     private boolean numpySharedLibrary;
 
     @CommandLine.Option(names = {"--javacppPlatform"},description = "Build for a specific specified platform. An example would be linux-x86_64 - this reduces binary size and prevents out of memories from trying to include binaries for too many platforms.")
-    private String javacppPlatform;
+    private String javacppPlatform = "linux-x86_64";
 
     @CommandLine.Option(names = {"--javacppExtension"},description = "An optional javacpp extension such as avx2 or cuda depending on the target set of dependencies.")
     private String javacppExtension;
@@ -111,7 +108,12 @@ public class NativeImageBuilder implements Callable<Void> {
 
         if(server) {
             File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
-            Preconditions.checkState(cEntryPointDir.mkdirs(),"Unable to make directory " + cEntryPointDir.getAbsolutePath());
+            if(!numpySharedLibrary)
+                Preconditions.checkState(cEntryPointDir.mkdirs(),"Unable to make directory " + cEntryPointDir.getAbsolutePath());
+            else {
+                //don't try to throw an error if it's also  a shared library build.
+                cEntryPointDir.mkdirs();
+            }
             ClassPathResource classPathResource = new ClassPathResource("ServingMain.java");
             FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"ServingMain.java"));
         }
