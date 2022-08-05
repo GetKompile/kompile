@@ -30,14 +30,16 @@ import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.nd4j.common.io.ClassPathResource;
 import org.zeroturnaround.exec.ProcessExecutor;
+import oshi.SystemInfo;
 import picocli.CommandLine;
+
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.util.*;
-import java.util.concurrent.Callable;
+import java.util.concurrent.*;
 
 /**
  * Base class for working with any generate-image-and-sdk.sh
@@ -57,6 +59,10 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
             "passed to the native image plugin in the form of: -JSOMEARG")
     private String[] nativeImageJvmArgs;
+    @CommandLine.Option(names = {"--nativeImageHeapSpace"},description = "Heap space for the native image build process. These will be" +
+            "passed to the native image plugin in the form of: -JSOMEARG. For this argument don't specify the -Xmx extra argument. Just specify memory requirements like 2g or 1000mb. Usually 6 to 8g of ram is required. If a build" +
+            "is taking a while this maybe due to JVM heap space being about used up. Specify more to fix this. Most of the time it is safe to leave this argument unspecified.")
+    private String nativeImageHeapSpace;
 
     @CommandLine.Option(names = {"--pomGenerateOutputPath"},description = "Output path of the generated pom.xml for compiling native image",
             required = false,scope = CommandLine.ScopeType.INHERIT)
@@ -249,7 +255,9 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         command.add(String.valueOf(enableJetsonNano));
         command.add("--build-shared");
         command.add(String.valueOf(buildSharedLibrary));
-
+        if(nativeImageHeapSpace != null) {
+            addCommand(nativeImageHeapSpace,"--native-image-heap-space",command);
+        }
 
         addCommand(mainClass,"--main-class",command);
 
@@ -345,6 +353,18 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         checkExists(Info.graalvmDirectory(), "graalvm");
         checkExists(Info.mavenDirectory(), "maven");
         checkExists(Info.pythonDirectory(), "python");
+
+
+        ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
+        executorService.scheduleAtFixedRate(() -> {
+            SystemInfo systemInfo = new SystemInfo();
+            System.out.println("Available Memory: " + systemInfo.getHardware().getMemory().getAvailable() + " out of Total Memory: " +  systemInfo.getHardware().getMemory().getTotal());
+            System.out.println("Swap memory used: " + systemInfo.getHardware().getMemory().getSwapUsed() + " out of Total Swap: " + systemInfo.getHardware().getMemory().getSwapTotal());
+            System.out.println("Logical Processor Count: " + systemInfo.getHardware().getProcessor().getLogicalProcessorCount());
+            System.out.println("CPU System Load Average" + systemInfo.getHardware().getProcessor().getSystemLoadAverage());
+            System.out.println("CPU Load" + systemInfo.getHardware().getProcessor().getSystemCpuLoad());
+
+        },1,1, TimeUnit.SECONDS);
 
 
         //unpack resources needed for inclusion and linking of files for the generate images script

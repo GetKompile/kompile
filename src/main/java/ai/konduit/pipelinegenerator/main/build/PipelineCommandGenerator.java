@@ -54,7 +54,9 @@ public class PipelineCommandGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--server"},description = "Whether the file is an inference  server configuration or a pipeline.")
     private boolean isServer = false;
 
-
+    @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
+            "passed to the native image plugin in the form of: -JSOMEARG")
+    private String[] nativeImageJvmArgs;
     @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Whether to build a numpy based shared library for the native image.")
     private boolean numpySharedLibrary = false;
     @CommandLine.Option(names = {"--outputFile"},description = "The output file")
@@ -100,6 +102,12 @@ public class PipelineCommandGenerator implements Callable<Void> {
 
         if(nd4jBackendClassifier != null && !nd4jBackendClassifier.isEmpty()) {
             command.append(" --nd4jBackendClassifier=" + nd4jBackendClassifier + " ");
+        }
+
+        if(nativeImageJvmArgs != null) {
+            for(String jvmArg : nativeImageJvmArgs) {
+                command.append("--nativeImageJvmArg=" + jvmArg + " ");
+            }
         }
 
         Pipeline pipeline = null;

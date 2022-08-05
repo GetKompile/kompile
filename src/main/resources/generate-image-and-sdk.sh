@@ -60,7 +60,7 @@ BUILD_CPU_BACKEND="false"
 IS_SERVER="false"
 DL4J_BRANCH="master"
 KONDUIT_SERVING_BRANCH="master"
-
+BUILD_HEAP_SPACE=
 
 while [[ $# -gt 0 ]]
 do
@@ -75,6 +75,10 @@ case $key in
       KONDUIT_SERVING_BRANCH="$value"
       shift # past argument
       ;;
+       -hs|--native-image-heap-space)
+          BUILD_HEAP_SPACE="$value"
+          shift # past argument
+          ;;
     -p|--pipeline-file)
     PIPELINE_FILE="$value"
     shift # past argument
@@ -270,7 +274,7 @@ echo "IS_SERVER ${IS_SERVER}"
 echo "DL4J_BRANCH ${DL4J_BRANCH}"
 echo "KONDUIT_SERVING_BRANCH ${KONDUIT_SERVING_BRANCH}"
 echo "ND4J_USE_LTO ${ND4J_USE_LTO}"
-
+echo "BUILD_HEAP_SPACE ${BUILD_HEAP_SPACE}"
 if [ "${ND4J_BACKEND}"  = "nd4j-native" ]; then
       BUILD_CPU_BACKEND="true"
     else
@@ -286,7 +290,12 @@ fi
 if test -f "$PIPELINE_FILE"; then
       echo "Processing pipeline file $PIPELINE_FILE"
       echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
-      POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+      # shellcheck disable=SC2236
+      if  [ ! -z "${BUILD_HEAP_SPACE}" ] && [ "$BUILD_HEAP_SPACE" != "" ]; then
+               POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH} --nativeImageJvmArg=\"-Xmx${BUILD_HEAP_SPACE}\")"
+               else
+                    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+      fi
 
     ./kompile build clone-build \
               --libnd4jUseLto=${ND4J_USE_LTO} \
@@ -316,6 +325,7 @@ if test -f "$PIPELINE_FILE"; then
                 --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
                 --javacppPlatform="${BUILD_PLATFORM}" \
                 --mainClass="${MAIN_CLASS}"
+
     cd "${NATIVE_LIB_DIR}"
 
     if [ "${IS_SERVER}" == "false" ]; then
