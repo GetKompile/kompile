@@ -45,8 +45,8 @@
      <native-image-plugin.version>0.9.11</native-image-plugin.version>-->
     <!--  <graalvm.version>21.3.2.1</graalvm.version>-->
     <!-- Graalvm 20.x -->
-    <graalvm.version>20.3.6.1</graalvm.version>
-    <native-image-plugin.version>0.9.9</native-image-plugin.version>
+    <graalvm.version>22.2.0</graalvm.version>
+    <native-image-plugin.version>0.9.13</native-image-plugin.version>
     <konduit.serving.version>0.2.0-SNAPSHOT</konduit.serving.version>
     <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
     <javacpp.version>1.5.7</javacpp.version>
@@ -321,6 +321,13 @@
       <version>${flatbuffers.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.9.0</version>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
 
 
@@ -370,6 +377,16 @@
                 -H:IncludeResources="META-INF/native-image/resource-config.json"
                 -H:IncludeResources="META-INF/native-image/serialization-config.json"
                 -H:IncludeResources="functions.properties"
+                -H:IncludeResources="cmake.dependency.rhel.properties"
+                -H:IncludeResources="cuda-11.4.dependency.rhel.properties"
+                -H:IncludeResources="cuda-11.6.dependency.rhel.properties"
+                -H:IncludeResources="curl.dependency.rhel.properties"
+                -H:IncludeResources="dependencies-rhel.properties"
+                -H:IncludeResources="gcc.dependency.rhel.properties"
+                -H:IncludeResources="gcc-9.dependency.rhel.properties"
+                -H:IncludeResources="gcc-10.dependency.rhel.properties"
+                -H:IncludeResources="make.dependency.rhel.properties"
+                -H:IncludeResources="wget.dependency.rhel.properties"
                 -H:IncludeResources="nd4j-op-def.pbtxt"
                 -H:IncludeResources="onnx.pbtxt"
                 -H:IncludeResources="onnxops.json"
