@@ -32,7 +32,10 @@ import java.util.concurrent.Callable;
         InstallMaven.class,
         InstallAll.class,
         InstallSDK.class,
-        InstallKompileComponents.class
+        InstallKompileComponents.class,
+        NativeToolsCompilation.class,
+        PropertyBasedInstaller.class,
+        ListPropertyPrograms.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

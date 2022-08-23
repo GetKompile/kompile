@@ -91,7 +91,8 @@ public class PomGenerator implements Callable<Void> {
     @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
     private String pipelinePath;
 
-    private String graalVmVersion = "20.3.6.1";
+    private String graalVmVersion = "22.2.0";
+    private String nativeImagePluginVersion = "0.9.13";
     private String microMeterVersion = "1.7.0";
     private String alpnVersion = "8.1.13.v20181017";
     private String npnVersion = "1.1.1.v20141010";
@@ -410,10 +411,11 @@ public class PomGenerator implements Callable<Void> {
     public String graalBuildArgs() {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("--no-fallback\n");
+        stringBuilder.append("--no-server\n");
         stringBuilder.append("--verbose\n");
         stringBuilder.append("-H:DeadlockWatchdogInterval=30\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.tools.Logger\n");
-        stringBuilder.append("-H:+DeadlockWatchdogExitOnTimeout\n");
+        stringBuilder.append("--initialize-at-build-time=org.nd4j.shade.jackson.core.JsonToken\n");
         stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
         stringBuilder.append(" --initialize-at-run-time=io.netty\n");
         stringBuilder.append("--initialize-at-build-time=org.slf4j\n");
@@ -500,9 +502,15 @@ public class PomGenerator implements Callable<Void> {
         build.addPlugin(compilerPlugin);
 
         Plugin graalVm = new Plugin();
-        graalVm.setGroupId("org.graalvm.nativeimage");
-        graalVm.setArtifactId("native-image-maven-plugin");
-        graalVm.setVersion(graalVmVersion);
+        graalVm.setGroupId("org.graalvm.buildtools");
+        graalVm.setArtifactId("native-maven-plugin");
+        graalVm.setVersion(nativeImagePluginVersion);
+        //adds plugin execution for actually building the native image
+        PluginExecution graalNative = new PluginExecution();
+        graalNative.setGoals(Arrays.asList("build"));
+        graalNative.setId("build-native");
+        graalNative.setPhase("package");
+        graalVm.addExecution(graalNative);
 
         Dependency lombok = new Dependency();
         lombok.setGroupId("org.projectlombok");
@@ -530,10 +538,6 @@ public class PomGenerator implements Callable<Void> {
 
         //TODO: Set include resources dynamically
 
-        PluginExecution pluginExecution = new PluginExecution();
-        pluginExecution.setGoals(Arrays.asList("native-image"));
-        pluginExecution.setPhase("package");
-        graalVm.setExecutions(Arrays.asList(pluginExecution));
         graalVm.addDependency(lombok);
         build.addPlugin(graalVm);
         model.setBuild(build);

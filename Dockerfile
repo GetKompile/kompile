@@ -26,7 +26,7 @@ RUN cd /kompile && git clone  https://github.com/eclipse/deeplearning4j && \
     cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64 && \
     cd /kompile && git clone https://github.com/KonduitAI/konduit-serving  && \
     cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu clean install -Dmaven.test.skip=true && \
-    cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package &&\
+    cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package -Dmaven.test.skip=true &&\
     mv /kompile/target/kompile /kompile && \
     chmod +x /kompile/kompile && \
     rm -rf /kompile/deeplearning4j /kompile/konduit-serving && \

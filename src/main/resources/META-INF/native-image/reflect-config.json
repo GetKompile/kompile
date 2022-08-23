@@ -227,6 +227,22 @@
   },
   {
     "name":"sun.misc.Unsafe",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"jdk.internal.Unsafe",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
     "allDeclaredFields":true
   },
   {
@@ -4709,42 +4725,6 @@
   {
     "name":"sun.misc.Cleaner",
     "methods":[{"name":"clean","parameterTypes":[] }]
-  },
-
-  {
-    "name":"sun.misc.Unsafe",
-    "allDeclaredFields":true,
-    "methods":[
-      {"name":"arrayBaseOffset","parameterTypes":["java.lang.Class"] },
-      {"name":"arrayIndexScale","parameterTypes":["java.lang.Class"] },
-      {"name":"copyMemory","parameterTypes":["long","long","long"] },
-      {"name":"copyMemory","parameterTypes":["java.lang.Object","long","java.lang.Object","long","long"] },
-      {"name":"getBoolean","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getByte","parameterTypes":["long"] },
-      {"name":"getByte","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getChar","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getFloat","parameterTypes":["long"] },
-      {"name":"getFloat","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getInt","parameterTypes":["long"] },
-      {"name":"getInt","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getLong","parameterTypes":["long"] },
-      {"name":"getLong","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getObject","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getShort","parameterTypes":["long"] },
-      {"name":"objectFieldOffset","parameterTypes":["java.lang.reflect.Field"] },
-      {"name":"putBoolean","parameterTypes":["java.lang.Object","long","boolean"] },
-      {"name":"putByte","parameterTypes":["long","byte"] },
-      {"name":"putByte","parameterTypes":["java.lang.Object","long","byte"] },
-      {"name":"putDouble","parameterTypes":["java.lang.Object","long","double"] },
-      {"name":"putFloat","parameterTypes":["java.lang.Object","long","float"] },
-      {"name":"putInt","parameterTypes":["long","int"] },
-      {"name":"putInt","parameterTypes":["java.lang.Object","long","int"] },
-      {"name":"putLong","parameterTypes":["long","long"] },
-      {"name":"putLong","parameterTypes":["java.lang.Object","long","long"] },
-      {"name":"putObject","parameterTypes":["java.lang.Object","long","java.lang.Object"] }
-    ]
   },
   {
     "name":"org.nd4j.linalg.api.ops.impl.layers.convolution.AvgPooling2D",
@@ -9773,41 +9753,6 @@
   {
     "name":"org.tensorflow.framework.VariantTensorDataProto",
     "methods":[{"name":"newBuilder","parameterTypes":[] }]
-  },
-  {
-    "name":"sun.misc.Unsafe",
-    "allDeclaredFields":true,
-    "methods":[
-      {"name":"arrayBaseOffset","parameterTypes":["java.lang.Class"] },
-      {"name":"arrayIndexScale","parameterTypes":["java.lang.Class"] },
-      {"name":"copyMemory","parameterTypes":["long","long","long"] },
-      {"name":"copyMemory","parameterTypes":["java.lang.Object","long","java.lang.Object","long","long"] },
-      {"name":"getBoolean","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getByte","parameterTypes":["long"] },
-      {"name":"getByte","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getChar","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getFloat","parameterTypes":["long"] },
-      {"name":"getFloat","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getInt","parameterTypes":["long"] },
-      {"name":"getInt","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getLong","parameterTypes":["long"] },
-      {"name":"getLong","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getObject","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getShort","parameterTypes":["long"] },
-      {"name":"objectFieldOffset","parameterTypes":["java.lang.reflect.Field"] },
-      {"name":"putBoolean","parameterTypes":["java.lang.Object","long","boolean"] },
-      {"name":"putByte","parameterTypes":["long","byte"] },
-      {"name":"putByte","parameterTypes":["java.lang.Object","long","byte"] },
-      {"name":"putDouble","parameterTypes":["java.lang.Object","long","double"] },
-      {"name":"putFloat","parameterTypes":["java.lang.Object","long","float"] },
-      {"name":"putInt","parameterTypes":["long","int"] },
-      {"name":"putInt","parameterTypes":["java.lang.Object","long","int"] },
-      {"name":"putLong","parameterTypes":["long","long"] },
-      {"name":"putLong","parameterTypes":["java.lang.Object","long","long"] },
-      {"name":"putObject","parameterTypes":["java.lang.Object","long","java.lang.Object"] }
-    ]
   },
   {
     "name":"sun.nio.ch.DirectBuffer",
@@ -27436,41 +27381,6 @@
     "methods":[{"name":"newBuilder","parameterTypes":[] }]
   },
   {
-    "name":"sun.misc.Unsafe",
-    "allDeclaredFields":true,
-    "methods":[
-      {"name":"arrayBaseOffset","parameterTypes":["java.lang.Class"] },
-      {"name":"arrayIndexScale","parameterTypes":["java.lang.Class"] },
-      {"name":"copyMemory","parameterTypes":["long","long","long"] },
-      {"name":"copyMemory","parameterTypes":["java.lang.Object","long","java.lang.Object","long","long"] },
-      {"name":"getBoolean","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getByte","parameterTypes":["long"] },
-      {"name":"getByte","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getChar","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["long"] },
-      {"name":"getDouble","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getFloat","parameterTypes":["long"] },
-      {"name":"getFloat","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getInt","parameterTypes":["long"] },
-      {"name":"getInt","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getLong","parameterTypes":["long"] },
-      {"name":"getLong","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getObject","parameterTypes":["java.lang.Object","long"] },
-      {"name":"getShort","parameterTypes":["long"] },
-      {"name":"objectFieldOffset","parameterTypes":["java.lang.reflect.Field"] },
-      {"name":"putBoolean","parameterTypes":["java.lang.Object","long","boolean"] },
-      {"name":"putByte","parameterTypes":["long","byte"] },
-      {"name":"putByte","parameterTypes":["java.lang.Object","long","byte"] },
-      {"name":"putDouble","parameterTypes":["java.lang.Object","long","double"] },
-      {"name":"putFloat","parameterTypes":["java.lang.Object","long","float"] },
-      {"name":"putInt","parameterTypes":["long","int"] },
-      {"name":"putInt","parameterTypes":["java.lang.Object","long","int"] },
-      {"name":"putLong","parameterTypes":["long","long"] },
-      {"name":"putLong","parameterTypes":["java.lang.Object","long","long"] },
-      {"name":"putObject","parameterTypes":["java.lang.Object","long","java.lang.Object"] }
-    ]
-  },
-  {
     "name":"sun.security.provider.PolicyFile",
     "methods":[{"name":"<init>","parameterTypes":[] }]
   },
@@ -43295,6 +43205,39 @@
   },
   {
     "name":"ai.konduit.pipelinegenerator.main.install.InstallAll",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.install.NativeToolsCompilation",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.install.ListPropertyPrograms",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.install.PropertyBasedInstaller",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,

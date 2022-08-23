@@ -16,6 +16,7 @@
 
 package ai.konduit.pipelinegenerator.main;
 
+import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -53,7 +54,9 @@ public class Info implements Callable<Integer> {
         stringBuilder.append("\n");
         stringBuilder.append("Maven installed: " + Info.mavenDirectory().exists());
         stringBuilder.append("\n");
-        stringBuilder.append("Python installed: " + Info.pythonDirectory().exists());
+        stringBuilder.append("Python installed: " + Info.pythonDirectory().exists() + "\n");
+        stringBuilder.append("Resolved install OS for install commands: " + OSResolver.os());
+        stringBuilder.append("\n");
         System.out.println(stringBuilder);
         return 0;
     }

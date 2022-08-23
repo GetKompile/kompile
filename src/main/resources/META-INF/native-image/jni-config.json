@@ -795,5 +795,21 @@
   },
   {
     "name":"org.bytedeco.cpython.wrapperfunc_kwds"
+  },
+  {
+    "name":"sun.misc.Unsafe",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"jdk.internal.Unsafe",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
   }
 ]

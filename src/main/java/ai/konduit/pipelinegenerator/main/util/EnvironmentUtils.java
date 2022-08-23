@@ -14,7 +14,7 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.build;
+package ai.konduit.pipelinegenerator.main.util;
 
 import ai.konduit.pipelinegenerator.main.Info;
 
@@ -41,9 +41,9 @@ public class EnvironmentUtils {
                 .map(input -> new File(input))
                 .filter(input -> input.exists())
                 .filter(input -> input.listFiles() != null && input.listFiles().length > 0)
-                .filter(input -> Arrays.asList(input.listFiles())
-                        .contains(new File(targetFile)))
-                .findFirst().get();
+                .filter(input -> Arrays.asList(input.list())
+                        .contains(targetFile))
+                .findFirst().map(input -> new File(input,targetFile)).orElse(null);
     }
 
 

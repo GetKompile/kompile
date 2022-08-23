@@ -27,9 +27,9 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
 public class InstallGraalvm implements Callable<Integer> {
 
-    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-20.3.6/graalvm-ce-java11-linux-amd64-20.3.6.tar.gz";
+    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220819_0257/graalvm-ce-java11-linux-amd64-dev.tar.gz";
     //for other platforms see: https://github.com/graalvm/graalvm-ce-builds/releases/tag/vm-20.3.6
-    public final static String FILE_NAME = "graalvm-ce-java11-linux-amd64-20.3.6.tar.gz";
+    public final static String FILE_NAME = "graalvm-ce-java11-linux-amd64-dev.tar.gz";
 
     public InstallGraalvm() {
     }
@@ -43,7 +43,7 @@ public class InstallGraalvm implements Callable<Integer> {
         File archive = InstallMain.downloadAndLoadFrom(DOWNLOAD_URL,FILE_NAME,false);
         ArchiveUtils.unzipFileTo(archive.getAbsolutePath(),graalVm.getAbsolutePath(),true);
         //extracts to a directory, move everything to parent directory
-        File graalVmDir = new File(Info.graalvmDirectory(),"graalvm-ce-java11-20.3.6");
+        File graalVmDir = new File(Info.graalvmDirectory(),"graalvm-ce-java11-22.3.0-dev");
         FileUtils.copyDirectory(graalVmDir,Info.graalvmDirectory());
         FileUtils.deleteDirectory(graalVmDir);
         File executables = new File(Info.graalvmDirectory(),"bin");

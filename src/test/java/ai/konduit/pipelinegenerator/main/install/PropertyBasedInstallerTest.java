@@ -16,21 +16,15 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
+import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
 
-import java.util.concurrent.Callable;
+public class PropertyBasedInstallerTest {
 
-@CommandLine.Command(name = "all",mixinStandardHelpOptions = false)
-public class InstallAll implements Callable<Integer> {
-
-    public InstallAll() {
+    @Test
+    public void testInstall() {
+        CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
+        commandLine.execute("--programName=gcc-7");
     }
 
-    @Override
-    public Integer call() throws Exception {
-        int exit = new InstallGraalvm().call();
-        exit = new InstallMaven().call();
-        exit = new InstallPython().call();
-        return exit;
-    }
 }

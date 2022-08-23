@@ -16,6 +16,7 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
+import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.Model;
 import org.apache.maven.shared.invoker.*;
