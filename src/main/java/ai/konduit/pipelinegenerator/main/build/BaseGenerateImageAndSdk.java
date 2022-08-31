@@ -355,6 +355,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         checkExists(Info.mavenDirectory(), "maven");
         checkExists(Info.pythonDirectory(), "python");
 
+        if(nd4jBackend.equals("nd4j-cuda-10.2"))
+            enableJetsonNano = true;
 
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {

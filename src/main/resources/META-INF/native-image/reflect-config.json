@@ -258,6 +258,24 @@
     "allDeclaredConstructors":true
   },
   {
+    "name":"org.nd4j.linalg.api.blas.BLASLapackDelegator",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"org.nd4j.linalg.cpu.nativecpu.OpenblasLapackDelegator",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"org.nd4j.linalg.cpu.nativecpu.blas.NoOpBLASDelegator",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"org.bytedeco.javacpp.DoublePointer"
   },
   {
