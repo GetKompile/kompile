@@ -24,9 +24,10 @@ public class EnvironmentUtilsTest {
 
     @Test
     public void testEnvReplace() {
-        String testValue = "${env.USER}/${env.USER}";
+        System.setProperty("SOME_PROP","value");
+        String testValue = "${env.USER}/${env.USER}/${SOME_PROP}";
         String user = System.getProperty("user.name");
-        assertEquals(user + "/" + user ,EnvironmentUtils.resolveEnvPropertyValue(testValue));
+        assertEquals(user + "/" + user + "/value" ,EnvironmentUtils.resolvePropertyValue(EnvironmentUtils.resolveEnvPropertyValue(testValue)));
 
     }
 

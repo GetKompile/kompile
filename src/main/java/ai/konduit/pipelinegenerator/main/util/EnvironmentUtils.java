@@ -28,7 +28,8 @@ public class EnvironmentUtils {
 
     public static final String KOMPILE_PREFIX = "KOMPILE_PREFIX";
 
-    public static Pattern ENV_REGEX = Pattern.compile("\\$\\{env\\.([A-Za-z])+\\}");
+    public static Pattern ENV_REGEX = Pattern.compile("\\$\\{env\\.([A-Za-z_\\.0-9])+\\}");
+    public static Pattern PROP_REGEX = Pattern.compile("\\$\\{([A-Za-z\\._0-9])+\\}");
 
     /**
      * Searches the path for a given executable.
@@ -163,6 +164,15 @@ public class EnvironmentUtils {
     }
 
 
+    /**
+     * Resolve an environment variable in a string
+     * with and replace it with the actual value.
+     * The pattern is anything matching ${env.SOME_VALUE}
+     * where SOME_VALUE can be anything matching the regex {@link #ENV_REGEX}
+     * Note that anything not defined throws an exception.
+     * @param value the value to parse
+     * @return the value from the
+     */
     public static String resolveEnvPropertyValue(String value) {
         Matcher matcher = ENV_REGEX.matcher(value);
         List<String> allMatches = new ArrayList<>();
@@ -176,19 +186,44 @@ public class EnvironmentUtils {
                     .replace("}","");
             String[] keyValueSplit = envKey.split("\\.");
             String value2 = System.getenv(keyValueSplit[1]);
-         if(value2 == null) {
-             throw new IllegalStateException("No environment variable " + keyValueSplit[1] + " found!");
-         }
+            if(value2 == null) {
+                throw new IllegalStateException("No environment variable " + keyValueSplit[1] + " found!");
+            }
+
             value = value.replace(match,value2);
         }
 
         return value;
     }
 
-    public static Map<String,String> openBlasEmbeddedEnvironmentFor(String os,String architecture) {
-        Map<String,String> ret = new HashMap<>();
-        return ret;
-    }
+    /**
+     * Resolve system property variable in a string
+     * with and replace it with the actual value.
+     * The pattern is anything matching ${SOME_VALUE}
+     * where SOME_VALUE can be anything matching the regex {@link #PROP_REGEX}
+     * Note that anything not defined throws an exception.
+     * @param value the value to parse
+     * @return the value resolved from the JVM property
+     */
+    public static String resolvePropertyValue(String value) {
+        Matcher matcher = PROP_REGEX.matcher(value);
+        List<String> allMatches = new ArrayList<>();
+        while(matcher.find()) {
+            String group = matcher.group();
+            allMatches.add(group);
+        }
 
+        for(String match : allMatches) {
+            String envKey = match.replace("${","")
+                    .replace("}","");
+            String value2 = System.getProperty(envKey);
+            if(value2 == null) {
+                throw new IllegalStateException("No system property " + envKey + " found!");
+            }
+            value = value.replace(match,value2);
+        }
+
+        return value;
+    }
 
 }
