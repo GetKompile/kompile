@@ -4,7 +4,7 @@ RUN yum -y install wget && wget https://github.com/graalvm/graalvm-ce-dev-builds
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
-RUN yum -y install git gcc cmake
+RUN yum -y install git gcc gcc-c++ cmake
 RUN /usr/java/bin/gu install native-image
 RUN mkdir /kompile
 RUN curl https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz --output /kompile/mvn.tar.gz
