@@ -30,7 +30,7 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "pipeline-command-generate",mixinStandardHelpOptions = false)
 public class PipelineCommandGenerator implements Callable<Void> {
 
-    @CommandLine.Option(names = {"--pipelineFile"},description = "The pipeline file to analyze",required = true)
+    @CommandLine.Option(names = {"--pipelineFile"},description = "The pipeline file to analyze",required = false)
     private File pipelineFile;
     @CommandLine.Option(names = {"--protocol"},description = "The protocol to use for serving")
     private String protocol = "http";
@@ -53,7 +53,8 @@ public class PipelineCommandGenerator implements Callable<Void> {
     private String includeResources;
     @CommandLine.Option(names = {"--server"},description = "Whether the file is an inference  server configuration or a pipeline.")
     private boolean isServer = false;
-
+    @CommandLine.Option(names = {"--assembly"},description = "Whether to build a maven assembly of all jars")
+    private boolean assembly;
     @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
             "passed to the native image plugin in the form of: -JSOMEARG")
     private String[] nativeImageJvmArgs;
@@ -110,25 +111,30 @@ public class PipelineCommandGenerator implements Callable<Void> {
             }
         }
 
-        Pipeline pipeline = null;
-        if(isServer) {
-            if(pipelineFile.getName().endsWith("json")) {
-                InferenceConfiguration inferenceConfiguration = jsonMapper.readValue(pipelineFile,InferenceConfiguration.class);
-                pipeline = inferenceConfiguration.pipeline();
-            } else if(pipelineFile.getName().endsWith("yaml") || pipelineFile.getName().endsWith("yml")) {
-                InferenceConfiguration inferenceConfiguration = yamlMapper.readValue(pipelineFile,InferenceConfiguration.class);
-                pipeline = inferenceConfiguration.pipeline();
+        command.append("--assembly=" + assembly + " ");
 
+        if(!assembly) {
+            Pipeline pipeline = null;
+            if(isServer) {
+                if(pipelineFile.getName().endsWith("json")) {
+                    InferenceConfiguration inferenceConfiguration = jsonMapper.readValue(pipelineFile,InferenceConfiguration.class);
+                    pipeline = inferenceConfiguration.pipeline();
+                } else if(pipelineFile.getName().endsWith("yaml") || pipelineFile.getName().endsWith("yml")) {
+                    InferenceConfiguration inferenceConfiguration = yamlMapper.readValue(pipelineFile,InferenceConfiguration.class);
+                    pipeline = inferenceConfiguration.pipeline();
+
+                }
+            } else {
+                if(pipelineFile.getName().endsWith("json")) {
+                    pipeline = jsonMapper.readValue(pipelineFile,Pipeline.class);
+                } else if(pipelineFile.getName().endsWith("yaml") || pipelineFile.getName().endsWith("yml")) {
+                    pipeline = yamlMapper.readValue(pipelineFile,Pipeline.class);
+                }
             }
-        } else {
-            if(pipelineFile.getName().endsWith("json")) {
-                pipeline = jsonMapper.readValue(pipelineFile,Pipeline.class);
-            } else if(pipelineFile.getName().endsWith("yaml") || pipelineFile.getName().endsWith("yml")) {
-                pipeline = yamlMapper.readValue(pipelineFile,Pipeline.class);
-            }
+
+            appendCommands(command, pipeline);
+
         }
-
-        appendCommands(command, pipeline);
 
         System.out.println(command);
 

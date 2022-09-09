@@ -19,7 +19,9 @@ package ai.konduit.pipelinegenerator.main.install;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OS;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
+import org.apache.commons.io.FileUtils;
 import org.jetbrains.annotations.Nullable;
+import org.nd4j.autodiff.samediff.internal.DependencyTracker;
 import org.nd4j.common.io.ClassPathResource;
 import org.zeroturnaround.exec.ProcessExecutor;
 import org.zeroturnaround.exec.ProcessResult;
@@ -28,7 +30,8 @@ import picocli.CommandLine;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Properties;
+import java.nio.charset.Charset;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 
@@ -38,7 +41,25 @@ public class PropertyBasedInstaller implements Callable<Integer> {
     private String programName;
 
 
+    private void getDepAllDeps(String program, DependencyTracker<String,String> allDeps) throws IOException {
+        String dependencies = resolveProperty(program, "dependencies", OSResolver.os());
+        if (dependencies != null) {
+            String[] deps = dependencies.split(",");
+            if (deps.length > 0) {
+                System.out.println("Dependencies found for program name " + programName + " : " + dependencies + ". Ensuring installed.");
+                for (String dep : deps) {
+                    if (dep.isEmpty()) {
+                        continue;
+                    }
 
+                    allDeps.addDependency(dep,program);
+                    getDepAllDeps(dep,allDeps);
+                }
+            } else {
+                System.out.println("No dependencies found for " + programName + ". Installing.");
+            }
+        }
+    }
     @Override
     public Integer call() throws Exception {
         //run this before even resolving properties just in case it's already installed.
@@ -47,28 +68,31 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             System.out.println("Program name " + file.getName() + " already installed. Exiting.");
             return 0;
         }
-        String dependencies = resolveProperty(programName,"dependencies",OSResolver.os());
-        if(dependencies != null) {
-            String[] deps = dependencies.split(",");
-            if(deps.length > 0) {
-                System.out.println("Dependencies found for program name" + programName + " : " + dependencies + ". Ensuring installed.");
-                for(String dep : deps) {
-                    if(dep.isEmpty()) {
-                        continue;
-                    }
 
-                    int depExitValue = install(dep);
-                    if(depExitValue != 0) {
-                        System.err.println("Installation for dependency " + dep + " of program " + programName + " failed. Exiting. Please troubleshoot this dependency or install manually before continuing.");
-                        return depExitValue;
-                    }
-                }
-            } else {
-                System.out.println("No dependenccies found for " + programName + ". Installing.");
-            }
-
+        DependencyTracker<String,String> dependencyTracker = new DependencyTracker<>();
+        getDepAllDeps(programName,dependencyTracker);
+        List<String> reverseOrder = new ArrayList<>();
+        int exit = 0;
+        dependencyTracker.markSatisfied(programName,true);
+        Set<String> ran = new HashSet<>();
+        while(dependencyTracker.hasNewAllSatisfied()) {
+            String curr = dependencyTracker.getNewAllSatisfied();
+            reverseOrder.add(curr);
+            dependencyTracker.markSatisfied(curr,true);
         }
-        return install(programName);
+
+        Collections.reverse(reverseOrder);
+        //append to end if not already added
+        if(!reverseOrder.contains(programName))
+            reverseOrder.add(programName);
+        for(String curr : reverseOrder) {
+            if(!ran.contains(curr)) {
+                exit = install(curr);
+                ran.add(curr);
+            }
+        }
+
+        return exit;
     }
 
     private int install(String programName) throws IOException, InterruptedException, ExecutionException {
@@ -85,8 +109,15 @@ public class PropertyBasedInstaller implements Callable<Integer> {
         }
 
         System.out.println("Running " + commandValue);
+        File tempFileWrite = new File(UUID.randomUUID() + ".sh");
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("#!/bin/bash\n");
+        stringBuilder.append(commandValue + "\n");
+        tempFileWrite.deleteOnExit();
+        tempFileWrite.setExecutable(true);
+        FileUtils.write(tempFileWrite,stringBuilder.toString(), Charset.defaultCharset());
         ProcessResult processResult = new ProcessExecutor()
-                .command(commandValue.split(" "))
+                .command("bash",tempFileWrite.getAbsolutePath())
                 .readOutput(true)
                 .redirectOutput(System.out)
                 .start().getFuture().get();
@@ -155,6 +186,9 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             commandValue = System.getProperty(commandProperty.toString());
             System.out.println("Resolved property " + commandProperty + " from command line. Running specified command.");
         }
+
+        //resolve all property value placeholders before returning
+        commandValue = EnvironmentUtils.resolveEnvPropertyValue(commandValue);
         return commandValue;
     }
 }

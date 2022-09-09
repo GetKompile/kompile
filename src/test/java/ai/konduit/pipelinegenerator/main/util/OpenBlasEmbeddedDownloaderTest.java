@@ -14,18 +14,16 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.install;
+package ai.konduit.pipelinegenerator.main.util;
 
-import ai.konduit.pipelinegenerator.main.build.InstallPreRequisites;
 import org.junit.jupiter.api.Test;
-import picocli.CommandLine;
 
-public class PropertyBasedInstallerTest {
+public class OpenBlasEmbeddedDownloaderTest {
 
     @Test
-    public void testInstall() {
-        CommandLine commandLine = new CommandLine(new InstallPreRequisites());
-        commandLine.execute("--nd4jBackend=nd4j-native","--os=android","--architecture=arm64");
+    public void testOpenBlasInstaller() throws Exception {
+        OpenBlasEmbeddedDownloader openBlasEmbeddedDownloader = new OpenBlasEmbeddedDownloader("linux","arm64","0.3.19-1.5.7",true);
+        openBlasEmbeddedDownloader.download();
     }
 
 }

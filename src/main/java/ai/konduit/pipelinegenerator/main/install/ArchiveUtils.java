@@ -88,6 +88,9 @@ public class ArchiveUtils {
 
                     String canonicalDestinationDirPath = new File(dest).getCanonicalPath();
                     File newFile = new File(dest + File.separator + fileName);
+                    if(!newFile.getParentFile().exists()) {
+                        newFile.getParentFile().mkdirs();
+                    }
                     String canonicalDestinationFile = newFile.getCanonicalPath();
 
                     if (!canonicalDestinationFile.startsWith(canonicalDestinationDirPath + File.separator)) {

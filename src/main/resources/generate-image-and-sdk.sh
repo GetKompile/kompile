@@ -18,7 +18,7 @@
 
 set -eu
 
-
+./kompile install all
 # Use > 1 to consume two arguments per pass in the loop (e.g. each
 # argument has a corresponding value to go with it).
 # Use > 0 to consume one or more arguments per pass in the loop (e.g.
@@ -151,6 +151,10 @@ case $key in
     BUILD_SHARED_LIBRARY="$value"
     shift # past argument
     ;;
+    -as|--assembly)
+      ASSEMBLY="$value"
+      shift # past argument
+      ;;
      -mc|--main-class)
     MAIN_CLASS="$value"
     shift # past argument
@@ -275,6 +279,8 @@ echo "DL4J_BRANCH ${DL4J_BRANCH}"
 echo "KONDUIT_SERVING_BRANCH ${KONDUIT_SERVING_BRANCH}"
 echo "ND4J_USE_LTO ${ND4J_USE_LTO}"
 echo "BUILD_HEAP_SPACE ${BUILD_HEAP_SPACE}"
+echo "ASSEMBLY ${ASSEMBLY}"
+
 if [ "${ND4J_BACKEND}"  = "nd4j-native" ]; then
       BUILD_CPU_BACKEND="true"
     else
@@ -287,110 +293,157 @@ if [[ "${ND4J_BACKEND}" == *"nd4j-cuda"* ]]; then
         BUILD_CUDA_BACKEND="false"
 fi
 
-if test -f "$PIPELINE_FILE"; then
       echo "Processing pipeline file $PIPELINE_FILE"
       echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
       # shellcheck disable=SC2236
       if  [ ! -z "${BUILD_HEAP_SPACE}" ] && [ "$BUILD_HEAP_SPACE" != "" ]; then
-               POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH} --nativeImageJvmArg=\"-Xmx${BUILD_HEAP_SPACE}\")"
-               else
-                    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate  --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+               POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY} --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH} --nativeImageJvmArg=\"-Xmx${BUILD_HEAP_SPACE}\")"
+               elif [ "$ASSEMBLY" != "true" ]; then
+                    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}   --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+              else
+                  POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}  --server=false --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER}      --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+
       fi
 
-    ./kompile build clone-build \
-              --libnd4jUseLto=${ND4J_USE_LTO} \
-              --dl4jBranchName=${DL4J_BRANCH} \
-              --konduitServingBranchName=${KONDUIT_SERVING_BRANCH} \
-              --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
-              --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
-              --buildDl4j \
-              --buildKonduitServing \
-              --libnd4jClassifier="${ND4J_CLASSIFIER}" \
-              --buildCpuBackend="${BUILD_CPU_BACKEND}" \
-               --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
-               --libnd4jHelper="${ND4J_HELPER}" \
-               --libnd4jOperations="${ND4J_OPERATIONS}" \
-               --libnd4jDataTypes="${ND4J_DATATYPES}"
-    echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
-    eval "./kompile ${POM_GENERATE_COMMAND}"
+
     BUILD_DIR="$(pwd)"
-    export NATIVE_LIB_DIR="${BUILD_DIR}/${IMAGE_NAME}/target"
-    ./kompile build native-image-generate  \
-                --server="${IS_SERVER}" \
-                --nativeImageFilesPath="${NATIVE_IMAGE_FILE_PATH}" \
-                --imageName="${IMAGE_NAME}" \
-                --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
-                --pipelinePath="${PIPELINE_FILE}" \
-                --mavenHome="${MAVEN_HOME}" \
-                --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
-                --javacppPlatform="${BUILD_PLATFORM}" \
-                --mainClass="${MAIN_CLASS}"
+    if [ "$ASSEMBLY" == "false" ]; then
+        ./kompile install install-requisites --os="${OS}" \
+                                              --architecture="${PLATFORM}" \
+                                              --nd4jBackend="${ND4J_BACKEND}" \
 
-    cd "${NATIVE_LIB_DIR}"
-
-    if [ "${IS_SERVER}" == "false" ]; then
-         ln -s ./"${IMAGE_NAME}.so" "lib${IMAGE_NAME}.so"
-         cd -
-         echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
-
-         mkdir -p "${LIB_OUTPUT_PATH}"
-         cd "${LIB_OUTPUT_PATH}"
-         # Resolve absolute path in case relative path is specified
-         REAL_LIB_PATH="$(pwd)"
-         echo "Set library path to ${REAL_LIB_PATH}"
-         cd "${BUILD_DIR}"
-         mkdir -p "${INCLUDE_PATH}"
-         cd "${INCLUDE_PATH}"
-         # Capture absolute path of include directory as well in case relative path is specified
-         REAL_INCLUDE_PATH="$(pwd)"
-         echo "Set real include path to ${REAL_INCLUDE_PATH}"
-         cd "${BUILD_DIR}"
-         cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
-         cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
-         cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
-         # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
-         if  test -f "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt" ; then
-              rm -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt"
+         if test -f "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"; then
+             echo "Loading environment for backend ${ND4J_BACKEND}"
+             source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
          fi
-         cp -rf "${KOMPILE_C_PATH}" ./kompile-c
+        ./kompile build clone-build \
+                     --libnd4jUseLto=${ND4J_USE_LTO} \
+                     --dl4jBranchName=${DL4J_BRANCH} \
+                     --konduitServingBranchName=${KONDUIT_SERVING_BRANCH} \
+                     --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
+                     --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
+                     --buildDl4j \
+                     --buildKonduitServing="${ASSEMBLY}" \
+                     --libnd4jClassifier="${ND4J_CLASSIFIER}" \
+                     --buildCpuBackend="${BUILD_CPU_BACKEND}" \
+                      --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
+                      --libnd4jHelper="${ND4J_HELPER}" \
+                      --libnd4jOperations="${ND4J_OPERATIONS}" \
+                      --libnd4jDataTypes="${ND4J_DATATYPES}"
+        echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
+        eval "./kompile ${POM_GENERATE_COMMAND}"
+        echo "Generated pom contents:"
+        cat "${POM_GENERATE_OUTPUT_PATH}"
+        export NATIVE_LIB_DIR="${BUILD_DIR}/${IMAGE_NAME}/target"
+      ./kompile build native-image-generate  \
+                      --server="${IS_SERVER}" \
+                      --nativeImageFilesPath="${NATIVE_IMAGE_FILE_PATH}" \
+                      --imageName="${IMAGE_NAME}" \
+                      --outputFile="${POM_GENERATE_OUTPUT_PATH}" \
+                      --pipelinePath="${PIPELINE_FILE}" \
+                      --mavenHome="${MAVEN_HOME}" \
+                      --numpySharedLibrary="${BUILD_SHARED_LIBRARY}" \
+                      --javacppPlatform="${BUILD_PLATFORM}" \
+                      --mainClass="${MAIN_CLASS}"
+                      cd "${NATIVE_LIB_DIR}"
 
-         cd ${KOMPILE_C_PATH}
-         cmake .
-         make
-         # Note we don't quote here so it resolves the binary extension properly
-         cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
-         export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
-         cd ..
+                        if [ "${IS_SERVER}" == "false" ]; then
+                             ln -s ./"${IMAGE_NAME}.so" "lib${IMAGE_NAME}.so"
+                             cd -
+                             echo "Creating library directory ${LIB_OUTPUT_PATH} and include directory ${INCLUDE_PATH} if not exists"
 
-         cd ${KOMPILE_PYTHON_PATH}
-         mkdir -p lib
-         ${PYTHON_EXEC} setup.py build_ext --inplace
-         # Work around for bundling not working properly with wheel.
-         # Allow  artifacts to automatically be specified so they can be bundled.
-         cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
-          ${PYTHON_EXEC} setup.py bdist_wheel
-         cd ..
-         echo "Creating bundle directory ${IMAGE_NAME}-bundle"
-         # Ensure old copies are removed
-         if test -f "${IMAGE_NAME}-bundle" ; then
-             rm -rf "${IMAGE_NAME}-bundle"
-         fi
-         mkdir -p "${IMAGE_NAME}-bundle"
-         # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
-         cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
-         cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
-         echo "Real library path is ${REAL_LIB_PATH}"
-         cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
-         if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
-                mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
-         fi
-         cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
-         tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
-         echo "Bundle built for image name"
-      else
-          echo "Built serving library. Please find executable in target/${IMAGE_NAME}"
-    fi
-    else
-        echo "${PIPELINE_FILE} not found. Please specify a pre existing file."
-        exit 1
-fi
+                             mkdir -p "${LIB_OUTPUT_PATH}"
+                             cd "${LIB_OUTPUT_PATH}"
+                             # Resolve absolute path in case relative path is specified
+                             REAL_LIB_PATH="$(pwd)"
+                             echo "Set library path to ${REAL_LIB_PATH}"
+                             cd "${BUILD_DIR}"
+                             mkdir -p "${INCLUDE_PATH}"
+                             cd "${INCLUDE_PATH}"
+                             # Capture absolute path of include directory as well in case relative path is specified
+                             REAL_INCLUDE_PATH="$(pwd)"
+                             echo "Set real include path to ${REAL_INCLUDE_PATH}"
+                             cd "${BUILD_DIR}"
+                             cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.h "${INCLUDE_PATH}"
+                             cp "${KOMPILE_PREFIX}/src/main/resources/numpy_struct.h" "${INCLUDE_PATH}"
+                             cp "${KOMPILE_PREFIX}/${IMAGE_NAME}/target/"*.${BINARY_EXTENSION} "${LIB_OUTPUT_PATH}"
+                             # Sometimes CMakeCache.txt maybe present. Remove it before copying to ensure a build proceeds.
+                             if  test -f "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt" ; then
+                                  rm -rf "${KOMPILE_PREFIX}/${KOMPILE_C_PATH}/CMakeCache.txt"
+                             fi
+                             cp -rf "${KOMPILE_C_PATH}" ./kompile-c
+
+                             cd ${KOMPILE_C_PATH}
+                             cmake .
+                             make
+                             # Note we don't quote here so it resolves the binary extension properly
+                             cp *."${BINARY_EXTENSION}" "${REAL_LIB_PATH}"
+                             export LIB_OUTPUT_PATH="${REAL_LIB_PATH}"
+                             cd ..
+
+                             cd ${KOMPILE_PYTHON_PATH}
+                             mkdir -p lib
+                             ${PYTHON_EXEC} setup.py build_ext --inplace
+                             # Work around for bundling not working properly with wheel.
+                             # Allow  artifacts to automatically be specified so they can be bundled.
+                             cp -rf ${REAL_LIB_PATH}/* ./kompile/interface/native/
+                              ${PYTHON_EXEC} setup.py bdist_wheel
+                             cd ..
+                             echo "Creating bundle directory ${IMAGE_NAME}-bundle"
+                             # Ensure old copies are removed
+                             if test -f "${IMAGE_NAME}-bundle" ; then
+                                 rm -rf "${IMAGE_NAME}-bundle"
+                             fi
+                             mkdir -p "${IMAGE_NAME}-bundle"
+                             # Copy the include directory, library directory, python sdk, pipeline file in to the bundle
+                             cp -rf kompile-python/dist/*.whl "${IMAGE_NAME}-bundle"
+                             cp -rf "${REAL_INCLUDE_PATH}" "${IMAGE_NAME}-bundle"
+                             echo "Real library path is ${REAL_LIB_PATH}"
+                             cp -rf "${REAL_LIB_PATH}" "${IMAGE_NAME}-bundle/lib"
+                             if test -f "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}"; then
+                                    mv "${IMAGE_NAME}-bundle/lib/${IMAGE_NAME}.${BINARY_EXTENSION}" "${IMAGE_NAME}-bundle/lib/lib${IMAGE_NAME}.${BINARY_EXTENSION}"
+                             fi
+                             cp "${PIPELINE_FILE}" "${IMAGE_NAME}-bundle"
+                             tar cvf "${IMAGE_NAME}-bundle.tar" "${IMAGE_NAME}-bundle"
+                             echo "Bundle built for image name"
+                          else
+                              echo "Built serving library. Please find executable in target/${IMAGE_NAME}"
+                        fi
+
+                  elif [ "$ASSEMBLY" == "true" ]; then
+                    if test -f "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"; then
+                                echo "Loading environment for backend ${ND4J_BACKEND}"
+                                source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
+                    fi
+                   echo "Building dl4j distribution"
+                    ./kompile install install-requisites --os="${OS}" \
+                                                                 --architecture="${PLATFORM}" \
+                                                                 --nd4jBackend="${ND4J_BACKEND}" \
+
+                   ./kompile build clone-build \
+                                --libnd4jUseLto=${ND4J_USE_LTO} \
+                                --dl4jBranchName=${DL4J_BRANCH} \
+                                --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
+                                --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
+                                --buildDl4j \
+                                --libnd4jClassifier="${ND4J_CLASSIFIER}" \
+                                --buildCpuBackend="${BUILD_CPU_BACKEND}" \
+                                 --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
+                                 --libnd4jHelper="${ND4J_HELPER}" \
+                                 --libnd4jOperations="${ND4J_OPERATIONS}" \
+                                 --libnd4jDataTypes="${ND4J_DATATYPES}"
+                      echo "Command pom generate command was ${POM_GENERATE_COMMAND}"
+                      eval "./kompile ${POM_GENERATE_COMMAND}"
+                      echo "Generated pom contents:"
+                      cat "${POM_GENERATE_OUTPUT_PATH}"
+                      ./kompile build dl4j-build-generate  \
+                                  --pomFile="${POM_GENERATE_OUTPUT_PATH}" \
+                                  --mavenHome="${MAVEN_HOME}" \
+                                  --javacppPlatform="${BUILD_PLATFORM}"
+
+
+           fi
+
+
+
+

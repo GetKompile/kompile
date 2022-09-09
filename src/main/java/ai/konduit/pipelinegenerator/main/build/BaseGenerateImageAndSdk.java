@@ -88,7 +88,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected String nd4jBackend = "nd4j-native";
     @CommandLine.Option(names = {"--nd4jClassifier"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String nd4jClassifier = "linux-x86_64";
-
+    @CommandLine.Option(names = {"--assembly"},description = "Whether to build a dl4j distribution tar file or a graalvm image",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected boolean assembly = false;
     @CommandLine.Option(names = {"--nd4jOperations"},description = "The operations to build with libnd4j. If left empty," +
             " just builds with all ops. Otherwise builds with all ops. Op list is separated with a ;. " +
             "These operations are parsed as cmake lists.",scope = CommandLine.ScopeType.INHERIT)
@@ -250,6 +251,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(kompileCPath,"--c-library",command);
         addCommand(kompilePythonPath,"--python-sdk",command);
         addCommand(pythonExecutable,"--python-exec",command);
+        command.add("--assembly");
+        command.add(String.valueOf(assembly));
         command.add("--server");
         command.add(String.valueOf(server));
         command.add("--enable-jetson-nano");

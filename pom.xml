@@ -359,6 +359,7 @@
             <configuration>
               <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
               <buildArgs>
+                -J-Xmx18g
                 --no-fallback
                 --verbose
                 -H:+JNI
@@ -377,6 +378,15 @@
                 -H:IncludeResources="META-INF/native-image/resource-config.json"
                 -H:IncludeResources="META-INF/native-image/serialization-config.json"
                 -H:IncludeResources="functions.properties"
+                -H:IncludeResources="cmake.dependency.rhel.properties"
+                -H:IncludeResources="openblas-android-arm.dependency.rhel.properties"
+                -H:IncludeResources="openblas-android-arm64.dependency.rhel.properties"
+                -H:IncludeResources="openblas-linux-arm.dependency.rhel.properties"
+                -H:IncludeResources="openblas-linux-arm64-arm.dependency.rhel.properties"
+                -H:IncludeResources="openblas-android-x86.dependency.rhel.properties"
+                -H:IncludeResources="ndk.dependency.rhel.properties"
+                -H:IncludeResources="openblas-linux-arm64.dependency.rhel.properties"
+                -H:IncludeResources="unzip.dependency.rhel.properties"
                 -H:IncludeResources="cmake.dependency.rhel.properties"
                 -H:IncludeResources="cuda-11.4.dependency.rhel.properties"
                 -H:IncludeResources="cuda-11.6.dependency.rhel.properties"

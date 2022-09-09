@@ -17,6 +17,7 @@
 package ai.konduit.pipelinegenerator.main.install;
 
 import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.build.InstallPreRequisites;
 import org.apache.commons.io.FileUtils;
 import picocli.CommandLine;
 
@@ -35,7 +36,9 @@ import java.util.concurrent.Callable;
         InstallKompileComponents.class,
         NativeToolsCompilation.class,
         PropertyBasedInstaller.class,
-        ListPropertyPrograms.class
+        ListPropertyPrograms.class,
+        OpenBlasInstaller.class,
+        InstallPreRequisites.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

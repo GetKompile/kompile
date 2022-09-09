@@ -42,7 +42,8 @@ import java.util.concurrent.Callable;
         InstallMain.class,
         UnInstallMain.class,
         Bootstrap.class,
-        ModelMain.class
+        ModelMain.class,
+        BackendEnvironmentInfo.class
 },
         mixinStandardHelpOptions = false)
 public class MainCommand implements Callable<Integer> {

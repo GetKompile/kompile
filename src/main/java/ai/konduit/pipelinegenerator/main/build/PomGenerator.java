@@ -35,6 +35,9 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "pom-generate",mixinStandardHelpOptions = false)
 public class PomGenerator implements Callable<Void> {
 
+    @CommandLine.Option(names = {"--assembly"},description = "Whether to build a maven assembly of all jars")
+    private boolean assembly;
+
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")
     private boolean python = false;
     @CommandLine.Option(names = {"--onnx"},description = "Whether to use onnx or not")
@@ -501,45 +504,65 @@ public class PomGenerator implements Callable<Void> {
         compilerPlugin.setConfiguration(configuration);
         build.addPlugin(compilerPlugin);
 
-        Plugin graalVm = new Plugin();
-        graalVm.setGroupId("org.graalvm.buildtools");
-        graalVm.setArtifactId("native-maven-plugin");
-        graalVm.setVersion(nativeImagePluginVersion);
-        //adds plugin execution for actually building the native image
-        PluginExecution graalNative = new PluginExecution();
-        graalNative.setGoals(Arrays.asList("build"));
-        graalNative.setId("build-native");
-        graalNative.setPhase("package");
-        graalVm.addExecution(graalNative);
+        if(assembly) {
+            Plugin assembly = new Plugin();
+            assembly.setGroupId("org.apache.maven.plugins");
+            assembly.setArtifactId("maven-assembly-plugin");
+            assembly.setVersion("3.4.2");
+            StringBuilder config = new StringBuilder();
+            config.append("<configuration>\n" +
+                    "          <descriptors>\n" +
+                    "            <descriptor>src/assembly/kompile.xml</descriptor>\n" +
+                    "          </descriptors>\n" +
+                    "        </configuration>");
+            StringReader stringReader = new StringReader(config.toString());
+            Xpp3Dom assemblyConfig = Xpp3DomBuilder.build(stringReader);
+            assembly.setConfiguration(assemblyConfig);
+            build.addPlugin(assembly);
 
-        Dependency lombok = new Dependency();
-        lombok.setGroupId("org.projectlombok");
-        lombok.setArtifactId("lombok");
-        lombok.setVersion(lombokVersion);
-        lombok.setScope("compile");
-        lombok.setOptional(true);
-        graalVm.addDependency(lombok);
+        } else {
+            Plugin graalVm = new Plugin();
+            graalVm.setGroupId("org.graalvm.buildtools");
+            graalVm.setArtifactId("native-maven-plugin");
+            graalVm.setVersion(nativeImagePluginVersion);
+            //adds plugin execution for actually building the native image
+            PluginExecution graalNative = new PluginExecution();
+            graalNative.setGoals(Arrays.asList("build"));
+            graalNative.setId("build-native");
+            graalNative.setPhase("package");
+            graalVm.addExecution(graalNative);
 
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("<configuration>\n");
-        stringBuilder.append(String.format("<skip>%s</skip>\n", "false"));
-        if(imageName != null && !imageName.isEmpty())
-            stringBuilder.append(String.format("<imageName>%s</imageName>",imageName));
-        if(mainClass != null && !mainClass.isEmpty())
-            stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
-        stringBuilder.append(String.format("<buildArgs>%s</buildArgs>",graalBuildArgs()));
+            Dependency lombok = new Dependency();
+            lombok.setGroupId("org.projectlombok");
+            lombok.setArtifactId("lombok");
+            lombok.setVersion(lombokVersion);
+            lombok.setScope("compile");
+            lombok.setOptional(true);
+            graalVm.addDependency(lombok);
 
-        stringBuilder.append("</configuration>");
-        StringReader stringReader = new StringReader(stringBuilder.toString());
-        Xpp3Dom graalVmConfiguration = Xpp3DomBuilder.build(stringReader);
-        graalVm.setConfiguration(graalVmConfiguration);
+            StringBuilder stringBuilder = new StringBuilder();
+            stringBuilder.append("<configuration>\n");
+            stringBuilder.append(String.format("<skip>%s</skip>\n", "false"));
+            if(imageName != null && !imageName.isEmpty())
+                stringBuilder.append(String.format("<imageName>%s</imageName>",imageName));
+            if(mainClass != null && !mainClass.isEmpty())
+                stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
+            stringBuilder.append(String.format("<buildArgs>%s</buildArgs>",graalBuildArgs()));
 
-        //TODO: Set buildArgs from file
+            stringBuilder.append("</configuration>");
+            StringReader stringReader = new StringReader(stringBuilder.toString());
+            Xpp3Dom graalVmConfiguration = Xpp3DomBuilder.build(stringReader);
+            graalVm.setConfiguration(graalVmConfiguration);
 
-        //TODO: Set include resources dynamically
+            //TODO: Set buildArgs from file
 
-        graalVm.addDependency(lombok);
-        build.addPlugin(graalVm);
+            //TODO: Set include resources dynamically
+
+            graalVm.addDependency(lombok);
+            build.addPlugin(graalVm);
+        }
+
+
         model.setBuild(build);
     }
 
@@ -668,50 +691,51 @@ public class PomGenerator implements Callable<Void> {
         addJavacppProfiles();
         addExtraDependencies();
 
-        if(tvm)
+        if(tvm && !assembly)
             addTvm(defaultDependencies);
 
-        if(python)
+        if(python && !assembly)
             addPython(defaultDependencies);
 
-        if(dl4j)
+        if(dl4j && !assembly)
             addDeeplearning4j(defaultDependencies);
 
-        if(onnx)
+        if(onnx && !assembly)
             addOnnx(defaultDependencies);
-        if(tensorflow)
+        if(tensorflow && !assembly)
             addTensorflow(defaultDependencies);
 
-        if(server) {
+        if(server && !assembly) {
             addVertxDependencies(defaultDependencies);
             addCli(defaultDependencies);
             addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
         }
 
-        if(image)
+        if(image && !assembly)
             addImage(defaultDependencies);
 
-        if(nd4j)
+        if(nd4j && !assembly)
             addNd4j(defaultDependencies);
 
-        if(nd4jTensorflow)
+        if(nd4jTensorflow && !assembly)
             addNd4jTensorflow(defaultDependencies);
 
-        if(samediff)
+        if(samediff && !assembly)
             addSameDiff(defaultDependencies);
 
-        if(cli)
+        if(cli && !assembly)
             addCli(defaultDependencies);
 
         if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
             addNd4jBackend(defaultDependencies);
         }
 
-        if(numpySharedLibrary) {
+        if(numpySharedLibrary && !assembly) {
             addKonduitServingCore(defaultDependencies);
         }
 
-        addDependency(defaultDependencies,"org.zeroturnaround","zt-exec",zeroTurnAroundVersion);
+        if(!assembly)
+            addDependency(defaultDependencies,"org.zeroturnaround","zt-exec",zeroTurnAroundVersion);
         //needed to access lombok features with graalvm
         addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
         //need dnnl for onnxruntime cpu
@@ -723,7 +747,8 @@ public class PomGenerator implements Callable<Void> {
         lombok.setOptional(true);
         dependencyManagement.addDependency(lombok);
 
-        addHttp(defaultDependencies);
+        if(!assembly)
+            addHttp(defaultDependencies);
         model.setDependencies(defaultDependencies);
         model.setDependencyManagement(dependencyManagement);
         MavenXpp3Writer mavenXpp3Writer = new MavenXpp3Writer();

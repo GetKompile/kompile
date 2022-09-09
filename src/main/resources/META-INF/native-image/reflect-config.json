@@ -259,20 +259,14 @@
   },
   {
     "name":"org.nd4j.linalg.api.blas.BLASLapackDelegator",
-    "allDeclaredFields":true,
-    "allDeclaredMethods":true,
     "allDeclaredConstructors":true
   },
   {
     "name":"org.nd4j.linalg.cpu.nativecpu.OpenblasLapackDelegator",
-    "allDeclaredFields":true,
-    "allDeclaredMethods":true,
     "allDeclaredConstructors":true
   },
   {
     "name":"org.nd4j.linalg.cpu.nativecpu.blas.NoOpBLASDelegator",
-    "allDeclaredFields":true,
-    "allDeclaredMethods":true,
     "allDeclaredConstructors":true
   },
   {
@@ -11655,6 +11649,36 @@
   },
   {
     "name":"ai.konduit.pipelinegenerator.main.NumpyEntryPoint",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.build.GenerateDl4jBuild",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.build.GenerateNd4jBackend",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.install.OpenBlasInstaller",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.build.InstallPreRequisites",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.BackendEnvironmentInfo",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
     "allDeclaredConstructors":true

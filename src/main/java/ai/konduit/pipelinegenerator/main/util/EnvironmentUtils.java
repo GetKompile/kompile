@@ -19,12 +19,16 @@ package ai.konduit.pipelinegenerator.main.util;
 import ai.konduit.pipelinegenerator.main.Info;
 
 import java.io.File;
-import java.util.Arrays;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class EnvironmentUtils {
 
 
     public static final String KOMPILE_PREFIX = "KOMPILE_PREFIX";
+
+    public static Pattern ENV_REGEX = Pattern.compile("\\$\\{env\\.([A-Za-z])+\\}");
 
     /**
      * Searches the path for a given executable.
@@ -157,5 +161,34 @@ public class EnvironmentUtils {
 
         return null;
     }
+
+
+    public static String resolveEnvPropertyValue(String value) {
+        Matcher matcher = ENV_REGEX.matcher(value);
+        List<String> allMatches = new ArrayList<>();
+        while(matcher.find()) {
+            String group = matcher.group();
+            allMatches.add(group);
+        }
+
+        for(String match : allMatches) {
+            String envKey = match.replace("${","")
+                    .replace("}","");
+            String[] keyValueSplit = envKey.split("\\.");
+            String value2 = System.getenv(keyValueSplit[1]);
+         if(value2 == null) {
+             throw new IllegalStateException("No environment variable " + keyValueSplit[1] + " found!");
+         }
+            value = value.replace(match,value2);
+        }
+
+        return value;
+    }
+
+    public static Map<String,String> openBlasEmbeddedEnvironmentFor(String os,String architecture) {
+        Map<String,String> ret = new HashMap<>();
+        return ret;
+    }
+
 
 }

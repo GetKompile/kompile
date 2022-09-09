@@ -16,16 +16,17 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
+import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import org.apache.commons.io.FileUtils;
 import org.apache.maven.shared.invoker.*;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.TextProgressMonitor;
+import org.zeroturnaround.exec.ProcessExecutor;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Properties;
+import java.nio.charset.Charset;
+import java.util.*;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "clone-build",description = "Clones and builds deeplearning4j and konduit-serving depending on parameters using git. Note: Git is built in to this CLI and does not need to be installed. Note that for building dl4j, various dependencies such as compilers may need to be installed as pre requisites depending on your target architecture such as CPU, CUDA, or a different architecture with cross compilation like ARM.")
@@ -133,59 +134,90 @@ public class CloneBuildComponents implements Callable<Integer> {
                         .call();
             }
 
-
-            invocationRequest.setPomFile(new File(dl4jDirectory,"pom.xml"));
-            Properties properties = new Properties();
-            properties.put("libnd4j.build",libnd4jBuildType);
-            properties.put("libnd4j.platform",platform);
-            properties.put("libnd4j.extension", libnd4jExtension);
-            properties.put("libnd4j.classifier",libnd4jClassifier);
-            properties.put("libnd4j.compute",chipCompute);
-            properties.put("libnd4j.tests","");
-            properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
-            properties.put("libnd4j.helper",libnd4jHelper);
-            properties.put("libnd4j.operations",libnd4jOperations);
-            properties.put("libnd4j.datatypes",libnd4jDataTypes);
-            properties.put("libnd4j.sanitize",libnd4jSanitize ? "ON" : "OFF");
-            properties.put("libnd4j.arch",libnd4jArch);
-            properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
-            properties.put("javacpp.platform",platform);
-            properties.put("javacpp.platform.extension",javacppExtension);
-
-            invocationRequest.setProperties(properties);
-            invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
+            //cross compile
+            if(platform.contains("arm") || platform.contains("android")) {
+                //platform
+                System.out.println("Loading configuration for environment for android/embedded.");
+                StringBuilder command = new StringBuilder();
+                command.append("cd " + new File(dl4jLocation,"libnd4j").getAbsolutePath() + " && chmod +x pi_build.sh && ./pi_build.sh");
 
 
-            if(buildCpuBackend) {
-                invocationRequest.setProfiles(Arrays.asList("cpu"));
+                Map<String, String> env = EnvironmentFile.loadFromEnvFile(EnvironmentFile.envFileForBackendAndPlatform("nd4j-native", platform));
+                File tempFileWrite = new File(UUID.randomUUID() + ".sh");
+                StringBuilder stringBuilder = new StringBuilder();
+                stringBuilder.append("#!/bin/bash\n");
+                stringBuilder.append(command + "\n");
+                tempFileWrite.deleteOnExit();
+                tempFileWrite.setExecutable(true);
+                FileUtils.write(tempFileWrite,stringBuilder.toString(), Charset.defaultCharset());
+                int  exitValue =  new ProcessExecutor().environment(System.getenv())
+                        .environment(env)
+                        .command(tempFileWrite.getAbsolutePath())
+                        .readOutput(true)
+                        .redirectOutput(System.out)
+                        .start().getFuture().get().getExitValue();
+                if(exitValue != 1) {
+                    System.err.println("DL4J Installation failed.");
+                    return 1;
+                }
+
+            } else {
+                invocationRequest.setPomFile(new File(dl4jDirectory,"pom.xml"));
+                Properties properties = new Properties();
+                properties.put("libnd4j.build",libnd4jBuildType);
+                properties.put("libnd4j.platform",platform);
+                properties.put("libnd4j.extension", libnd4jExtension);
+                properties.put("libnd4j.classifier",libnd4jClassifier);
+                properties.put("libnd4j.compute",chipCompute);
+                properties.put("libnd4j.tests","");
+                properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
+                properties.put("libnd4j.helper",libnd4jHelper);
+                properties.put("libnd4j.operations",libnd4jOperations);
+                properties.put("libnd4j.datatypes",libnd4jDataTypes);
+                properties.put("libnd4j.sanitize",libnd4jSanitize ? "ON" : "OFF");
+                properties.put("libnd4j.arch",libnd4jArch);
+                properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
+                properties.put("javacpp.platform",platform);
+                properties.put("javacpp.platform.extension",javacppExtension);
+
+                invocationRequest.setProperties(properties);
+                invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
+
+
+                if(buildCpuBackend) {
+                    invocationRequest.setProfiles(Arrays.asList("cpu"));
+                }
+
+                invocationRequest.setAlsoMake(true);
+
+                if(buildCudaBackend) {
+                    invocationRequest.setProfiles(Arrays.asList("cuda"));
+                }
+
+                invoker.setWorkingDirectory(dl4jLocation);
+                invocationRequest.setBaseDirectory(dl4jLocation);
+                invoker.setMavenHome(new File(mvnHome));
+                if(dl4jModules != null && !dl4jModules.isEmpty()) {
+                    invocationRequest.setProjects(dl4jModules);
+                }
+
+
+                invoker.setLogger(new SystemOutLogger());
+                InvocationResult execute = invoker.execute(invocationRequest);
+                if(execute != null && execute.getExitCode() != 0) {
+                    System.err.println("DL4J build failed. Reason below:");
+                    execute.getExecutionException().printStackTrace();
+                }  else if(execute.getExitCode() == 0) {
+                    System.err.println("Finished cloning and building Deeplearning4j.");
+                }
+                else if(execute.getExitCode() != 0) {
+                    System.err.println("Failed to build Deeplearning4j. Exiting.");
+                    return 1;
+                }
             }
 
-            invocationRequest.setAlsoMake(true);
-
-            if(buildCudaBackend) {
-                invocationRequest.setProfiles(Arrays.asList("cuda"));
-            }
-
-            invoker.setWorkingDirectory(dl4jLocation);
-            invocationRequest.setBaseDirectory(dl4jLocation);
-            invoker.setMavenHome(new File(mvnHome));
-            if(dl4jModules != null && !dl4jModules.isEmpty()) {
-                invocationRequest.setProjects(dl4jModules);
-            }
 
 
-            invoker.setLogger(new SystemOutLogger());
-            InvocationResult execute = invoker.execute(invocationRequest);
-            if(execute != null && execute.getExitCode() != 0) {
-                System.err.println("DL4J build failed. Reason below:");
-                execute.getExecutionException().printStackTrace();
-            }  else if(execute.getExitCode() == 0) {
-                System.err.println("Finished cloning and building Deeplearning4j.");
-            }
-            else if(execute.getExitCode() != 0) {
-                System.err.println("Failed to build Deeplearning4j. Exiting.");
-                return 1;
-            }
         }
 
 

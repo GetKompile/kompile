@@ -14,18 +14,21 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.install;
+package ai.konduit.pipelinegenerator.main.util;
 
-import ai.konduit.pipelinegenerator.main.build.InstallPreRequisites;
 import org.junit.jupiter.api.Test;
-import picocli.CommandLine;
 
-public class PropertyBasedInstallerTest {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class EnvironmentUtilsTest {
 
     @Test
-    public void testInstall() {
-        CommandLine commandLine = new CommandLine(new InstallPreRequisites());
-        commandLine.execute("--nd4jBackend=nd4j-native","--os=android","--architecture=arm64");
+    public void testEnvReplace() {
+        String testValue = "${env.USER}/${env.USER}";
+        String user = System.getProperty("user.name");
+        assertEquals(user + "/" + user ,EnvironmentUtils.resolveEnvPropertyValue(testValue));
+
     }
+
 
 }
