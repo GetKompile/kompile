@@ -1,7 +1,9 @@
-FROM ghcr.io/graalvm/graalvm-ce:latest AS builder
+FROM rockylinux/rockylinux:8.4 AS builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
-ENV JAVA_HOME=/usr/java/latest
-ENV GRAALVM_HOME=/usr/java/latest
+RUN yum -y install wget && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220902_0358/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv /home/agibsonccc/Downloads/graalvm-ce-java11-linux-amd64-dev /usr/java
+
+ENV JAVA_HOME=/usr/java/
+ENV GRAALVM_HOME=/usr/java/
 RUN microdnf install git gcc cmake
 RUN /usr/java/latest/bin/gu install native-image
 RUN mkdir /kompile
