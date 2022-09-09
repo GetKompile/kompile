@@ -363,6 +363,7 @@
                 --no-fallback
                 --verbose
                 -H:+JNI
+                --trace-class-initialization=java.util.Random
                 --allow-incomplete-classpath
                 -H:IncludeResourceBundles=org.eclipse.jgit.internal.JGitText
                 -H:IncludeResources="konduit-serving.h"
@@ -431,7 +432,9 @@
                 -H:+ReportExceptionStackTraces
                 --trace-class-initialization=org.eclipse.jgit.diff.DiffFormatter
                 --trace-class-initialization=org.eclipse.jgit.api.CommitCommand
+                --initialize-at-run-time=org.apache.commons.lang3.RandomUtils
                 --initialize-at-build-time=org.eclipse.jgit
+                --initialize-at-run-time=org.eclipse.jgit.util.FileUtils
                 --initialize-at-run-time=org.eclipse.jgit.lib.internal.WorkQueue
                 --initialize-at-run-time=org.eclipse.jgit.lib.RepositoryCache
                 --initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache

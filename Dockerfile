@@ -1,10 +1,10 @@
 FROM rockylinux/rockylinux:8.4 AS builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
-RUN yum -y install wget && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220902_0358/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
+RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220819_0257/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
-RUN yum -y install git gcc gcc-c++ cmake
+RUN yum -y install git gcc gcc-c++ cmake zlib*
 RUN /usr/java/bin/gu install native-image
 RUN mkdir /kompile
 RUN curl https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz --output /kompile/mvn.tar.gz
