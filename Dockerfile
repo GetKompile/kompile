@@ -1,4 +1,4 @@
-FROM ghcr.io/graalvm/graalvm-ce:latestAS builder
+FROM ghcr.io/graalvm/graalvm-ce:latest AS builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
 ENV JAVA_HOME=/usr/java/latest
 ENV GRAALVM_HOME=/usr/java/latest
