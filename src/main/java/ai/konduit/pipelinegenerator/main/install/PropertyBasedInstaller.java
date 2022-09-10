@@ -170,7 +170,7 @@ public class PropertyBasedInstaller implements Callable<Integer> {
         }
 
         //resolve all property value placeholders before returning
-        commandValue = EnvironmentUtils.resolveEnvPropertyValue(commandValue);
+        commandValue = EnvironmentUtils.resolveEnvPropertyValue(EnvironmentUtils.resolvePropertyValue(commandValue));
         return commandValue;
     }
 }
