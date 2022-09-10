@@ -17,17 +17,16 @@
 package ai.konduit.pipelinegenerator.main.install;
 
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
-import ai.konduit.pipelinegenerator.main.util.OS;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import org.apache.commons.io.FileUtils;
 import org.jetbrains.annotations.Nullable;
 import org.nd4j.autodiff.samediff.internal.DependencyTracker;
-import org.nd4j.common.io.ClassPathResource;
 import org.zeroturnaround.exec.ProcessExecutor;
 import org.zeroturnaround.exec.ProcessResult;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
@@ -37,9 +36,10 @@ import java.util.concurrent.ExecutionException;
 
 @CommandLine.Command(name = "install-tool",description = "Allows installation of tools by resolving install commands from command line from JVM properties or pre specified properties files that match the platform.")
 public class PropertyBasedInstaller implements Callable<Integer> {
-    @CommandLine.Option(names = {"--programName"},description = "The place to clone deeplearning4j for a build: defaults to $USER/.kompile/deeplearning4j")
+    @CommandLine.Option(names = {"--programName"},description = "The name of the program to install")
     private String programName;
-
+    @CommandLine.Option(names = {"--updateIndex"},description = "Whether to update the index or not before trying to load")
+    private boolean updateIndex = true;
 
     private void getDepAllDeps(String program, DependencyTracker<String,String> allDeps) throws IOException {
         String dependencies = resolveProperty(program, "dependencies", OSResolver.os());
@@ -68,6 +68,14 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             System.out.println("Program name " + file.getName() + " already installed. Exiting.");
             return 0;
         }
+
+        if(updateIndex) {
+            CommandLine commandLine = new CommandLine(new ProgramIndex());
+            if(commandLine.execute() != 0) {
+                System.err.println("User specified to update index, but index completion did not complete successfully.");
+            }
+        }
+
 
         DependencyTracker<String,String> dependencyTracker = new DependencyTracker<>();
         getDepAllDeps(programName,dependencyTracker);
@@ -139,43 +147,17 @@ public class PropertyBasedInstaller implements Callable<Integer> {
         String commandValue = null;
         //not set on command line try to
         if(!System.getProperties().containsKey(property)) {
-            StringBuilder resourceName = new StringBuilder();
-            resourceName.append(programName);
-            resourceName.append(".");
-            resourceName.append("dependency");
-            resourceName.append(".");
-            resourceName.append(os);
-            resourceName.append(".");
-            resourceName.append("properties");
-            ClassPathResource classPathResource = new ClassPathResource(resourceName.toString());
-            if(!classPathResource.exists()) {
-                if(OS.OS.isUnix()) {
-                    System.out.println("Resource " + resourceName + " does not exist. Trying generic-linux fallback.");
-                    String originalResourceName = resourceName.toString();
-                    resourceName = new StringBuilder();
-                    resourceName.append(programName);
-                    resourceName.append(".");
-                    resourceName.append("dependency");
-                    resourceName.append(".");
-                    resourceName.append("generic-linux");
-                    resourceName.append(".");
-                    resourceName.append("properties");
-                    classPathResource = new ClassPathResource(resourceName.toString());
-                    if(!classPathResource.exists()) {
-                        System.err.println("Unable to resolve property " + commandProperty + " for installing program " + programName + " . Tried to resolve property with resources " + originalResourceName + " and " + resourceName +  " as a fallback for generic linux systems lacking install commands.");
-                        return null;
-                    }
-                } else {
-                    System.err.println("No fall back supported for non linux systems. Returning null");
-                    return null;
-                }
+            File programResource = ProgramIndex.programResource(programName);
+            if(!programResource.exists()) {
+                ProgramIndex programIndex = new ProgramIndex();
+                CommandLine commandLine = new CommandLine(programIndex);
+                commandLine.execute("--programName=" + programName);
             }
-
             Properties properties = new Properties();
-            try(InputStream inputStream = classPathResource.getInputStream()) {
+            try(InputStream inputStream = new FileInputStream(programResource)) {
                 properties.load(inputStream);
                 if(!properties.containsKey(commandProperty.toString())) {
-                    System.err.println("Tried to use resource " + resourceName + " for property " + commandProperty + " but no property value was found. Returning null.");
+                    System.err.println("Tried to use resource " + programResource + " for property " + commandProperty + " but no property value was found. Returning null.");
                     return null;
                 }
 

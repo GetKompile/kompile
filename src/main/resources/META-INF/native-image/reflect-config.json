@@ -11672,6 +11672,12 @@
     "allDeclaredConstructors":true
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.install.ProgramIndex",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
     "name":"ai.konduit.pipelinegenerator.main.build.InstallPreRequisites",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
@@ -11679,6 +11685,12 @@
   },
   {
     "name":"ai.konduit.pipelinegenerator.main.BackendEnvironmentInfo",
+    "allDeclaredFields":true,
+    "allDeclaredMethods":true,
+    "allDeclaredConstructors":true
+  },
+  {
+    "name":"jline.UnixTerminal",
     "allDeclaredFields":true,
     "allDeclaredMethods":true,
     "allDeclaredConstructors":true

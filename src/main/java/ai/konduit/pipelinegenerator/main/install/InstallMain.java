@@ -38,11 +38,14 @@ import java.util.concurrent.Callable;
         PropertyBasedInstaller.class,
         ListPropertyPrograms.class,
         OpenBlasInstaller.class,
-        InstallPreRequisites.class
+        InstallPreRequisites.class,
+        ProgramIndex.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {
     }
+
+
     /**
      * Download and load a model from the model zoo using the given file name
      * for the given framework
@@ -51,8 +54,9 @@ public class InstallMain implements Callable<Integer> {
      * @param forceDownload whether to force the download
      * @return the
      */
-    public static File downloadAndLoadFrom(String url,String name,boolean forceDownload) throws Exception {
-        File destFile = new File(Info.homeDirectory(),name);
+    public static File downloadTo(String url,String name,boolean forceDownload) throws Exception {
+        File destFile = new File(name);
+        System.out.println("Downloading file to " + destFile.getAbsolutePath());
         if(forceDownload && destFile.exists()) {
             destFile.delete();
         }
@@ -70,6 +74,21 @@ public class InstallMain implements Callable<Integer> {
         }
 
         return destFile;
+    }
+
+
+    /**
+     * Download and load a file to the given path.
+     * This method will also prefix the kompile path automatically.
+     * If you don't need this, use {@link #downloadTo(String, String, boolean)}
+     * @param url the url to load from
+     * @param name the name of the file to load
+     * @param forceDownload whether to force the download
+     * @return the local file path
+     */
+    public static File downloadAndLoadFrom(String url,String name,boolean forceDownload) throws Exception {
+        File destFile = new File(Info.homeDirectory(),name);
+        return downloadTo(url,new File(destFile,name).getAbsolutePath(),forceDownload);
     }
 
 

@@ -16,20 +16,19 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
-import ai.konduit.pipelinegenerator.main.build.InstallPreRequisites;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class PropertyBasedInstallerTest {
+public class IndexerTests {
 
     @Test
-    @Disabled("Installation only works in AOT mode")
-    public void testInstall() {
-        CommandLine commandLine = new CommandLine(new InstallPreRequisites());
-        assertEquals(0,commandLine.execute("--nd4jBackend=nd4j-native","--os=android","--architecture=arm64"));
+    public void testIndexer() {
+        ProgramIndex indexer = new ProgramIndex();
+        CommandLine commandLine = new CommandLine(indexer);
+        assertEquals(0,commandLine.execute());
     }
+
 
 }
