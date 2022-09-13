@@ -18,7 +18,6 @@
 
 set -eu
 
-./kompile install all
 # Use > 1 to consume two arguments per pass in the loop (e.g. each
 # argument has a corresponding value to go with it).
 # Use > 0 to consume one or more arguments per pass in the loop (e.g.
@@ -206,13 +205,22 @@ else
         OS="linux"
 fi
 
-PLATFORM="$(lscpu | grep Architecture | tr -d ':'  | sed 's/Architecture//' | xargs echo -n)"
+#Set a platform default if one isn't found
+if [ -z "${ND4J_CLASSIFIER}" ]; then
+  PLATFORM="$(lscpu | grep Architecture | tr -d ':'  | sed 's/Architecture//' | xargs echo -n)"
 if [ "${PLATFORM}" == "aarch64" ];then
       PLATFORM="arm64"
 fi
-BUILD_PLATFORM="${OS}-${PLATFORM}"
-}
+      BUILD_PLATFORM="${OS}-${PLATFORM}"
+   else
+        BUILD_PLATFORM="${ND4J_CLASSIFIER}"
+        IFS=- read -r OS ARCHITECTURE <<< "${ND4J_CLASSIFIER}"
 
+        echo "READ ARCHITECTURE AND OS AS ${OS} ${ARCHITECTURE}"
+fi
+
+
+}
 
 
 
@@ -241,10 +249,6 @@ if [ -z "${BUILD_PLATFORM}" ]; then
   set_platform
 fi
 
-
-if [ -z "${BUILD_PLATFORM}" ]; then
-  ND4J_CLASSIFIER="${BUILD_PLATFORM}"
-fi
 
 set_binary_extension
 
@@ -297,11 +301,12 @@ fi
       echo "Outputting pom file for build to ${POM_GENERATE_OUTPUT_PATH}"
       # shellcheck disable=SC2236
       if  [ ! -z "${BUILD_HEAP_SPACE}" ] && [ "$BUILD_HEAP_SPACE" != "" ]; then
-               POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY} --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH} --nativeImageJvmArg=\"-Xmx${BUILD_HEAP_SPACE}\")"
+               POM_GENERATE_COMMAND=$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY} --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH} --nativeImageJvmArg=-Xmx${BUILD_HEAP_SPACE})
                elif [ "$ASSEMBLY" != "true" ]; then
-                    POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}   --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+                    POM_GENERATE_COMMAND=$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}   --server=${IS_SERVER} --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER} --mainClass=${MAIN_CLASS}   --pipelineFile=${PIPELINE_FILE}  --numpySharedLibrary=${BUILD_SHARED_LIBRARY}  --imageName=${IMAGE_NAME}  --outputFile=${POM_GENERATE_OUTPUT_PATH})
               else
-                  POM_GENERATE_COMMAND="$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}  --server=false --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER}      --outputFile=${POM_GENERATE_OUTPUT_PATH})"
+                  echo "Running assembly pom generate"
+                  POM_GENERATE_COMMAND=$(./kompile build  pipeline-command-generate --assembly=${ASSEMBLY}  --server=false --nd4jBackend=${ND4J_BACKEND} --nd4jBackendClassifier=${ND4J_CLASSIFIER}   --outputFile=${POM_GENERATE_OUTPUT_PATH})
 
       fi
 
@@ -309,7 +314,7 @@ fi
     BUILD_DIR="$(pwd)"
     if [ "$ASSEMBLY" == "false" ]; then
         ./kompile install install-requisites --os="${OS}" \
-                                              --architecture="${PLATFORM}" \
+                                              --architecture="${ARCHITECTURE}" \
                                               --nd4jBackend="${ND4J_BACKEND}" \
 
          if test -f "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"; then
@@ -317,6 +322,7 @@ fi
              source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
          fi
         ./kompile build clone-build \
+                     --nd4jBackend=${ND4J_BACKEND} \
                      --libnd4jUseLto=${ND4J_USE_LTO} \
                      --dl4jBranchName=${DL4J_BRANCH} \
                      --konduitServingBranchName=${KONDUIT_SERVING_BRANCH} \
@@ -416,8 +422,9 @@ fi
                                 source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
                     fi
                    echo "Building dl4j distribution"
+                    echo "Installing Pre requisites for OS ${OS} and architecture ${ARCHITECTURE}"
                     ./kompile install install-requisites --os="${OS}" \
-                                                                 --architecture="${PLATFORM}" \
+                                                                 --architecture="${ARCHITECTURE}" \
                                                                  --nd4jBackend="${ND4J_BACKEND}" \
 
                    ./kompile build clone-build \
@@ -426,6 +433,7 @@ fi
                                 --dl4jDirectory=${KOMPILE_PREFIX}/deeplearning4j \
                                 --konduitServingDirectory=${KOMPILE_PREFIX}/konduit-serving \
                                 --buildDl4j \
+                                --platform="${ND4J_CLASSIFIER}" \
                                 --libnd4jClassifier="${ND4J_CLASSIFIER}" \
                                 --buildCpuBackend="${BUILD_CPU_BACKEND}" \
                                  --buildCudaBackend="${BUILD_CUDA_BACKEND}" \

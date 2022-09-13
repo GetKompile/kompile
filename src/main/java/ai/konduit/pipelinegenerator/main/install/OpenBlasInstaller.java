@@ -16,6 +16,7 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.OpenBlasEmbeddedDownloader;
 import picocli.CommandLine;
@@ -53,19 +54,20 @@ public class OpenBlasInstaller implements Callable<Integer> {
         }
 
         EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"OPENBLAS_HOME",openblasHome.getAbsolutePath());
+        EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"OPENBLAS_PATH",openblasHome.getAbsolutePath());
 
         if(architecture.contains("arm") && os.equals("linux")) {
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"BUILD_USING_MAVEN","1");
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"TARGET_OS",os);
-            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CURRENT_TARGET",architecture);
+            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CURRENT_TARGET",os + "-" + architecture);
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"LIBND4J_CLASSIFIER","linux-" + architecture);
         } else if(os.equals("android")) {
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"BUILD_USING_MAVEN","1");
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"TARGET_OS",os);
-            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CURRENT_TARGET",architecture);
-            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"LIBND4J_CLASSIFIER","linux-" + architecture);
-            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"ANDROID_NDK_HOME",System.getProperty("user.home") + "/.kompile/android-ndk-r21d");
-            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CROSS_COMPILER_DIR",System.getProperty("user.home") + "/.kompile/android-ndk-r21d");
+            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CURRENT_TARGET",os + "-" + architecture);
+            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"LIBND4J_CLASSIFIER","android-" + architecture);
+            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"ANDROID_NDK_HOME", Info.homeDirectory() + "/android-ndk-r21d");
+            EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"CROSS_COMPILER_DIR",Info.homeDirectory() + "/android-ndk-r21d");
             EnvironmentFile.writeEnvForClassifierAndBackend("nd4j-native",os + "-" + architecture,"NDK_VERSION","r21d");
 
         }

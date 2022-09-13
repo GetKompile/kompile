@@ -17,11 +17,13 @@
 package ai.konduit.pipelinegenerator.main.build;
 
 import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
+import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.maven.shared.invoker.*;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.lib.TextProgressMonitor;
 import org.zeroturnaround.exec.ProcessExecutor;
+import org.zeroturnaround.exec.ProcessResult;
 import picocli.CommandLine;
 
 import java.io.File;
@@ -90,12 +92,8 @@ public class CloneBuildComponents implements Callable<Integer> {
     private String libnd4jArch = "";
     @CommandLine.Option(names = {"--libnd4jUseLto"},description = "Whether to build with link time optimization or not. When link time optimization is used, the linker can take a long time. Turn this on for smaller binaries, but longer build times. Defaults to false.")
     private boolean libnd4jUseLto = false;
-    @CommandLine.Option(names = {"--buildCpuBackend"},description = "Whether to build the cpu backend or not. This means including nd4j-native in the build.")
-    private boolean buildCpuBackend = true;
-
-    @CommandLine.Option(names = {"--buildCudaBackend"},description = "Whether to build the cuda backend or not. This means including nd4j-cuda in the build.")
-    private boolean buildCudaBackend = false;
-
+    @CommandLine.Option(names = {"--nd4jBackend"},description = "Whether to build the cpu backend or not. This means including nd4j-native in the build.")
+    private String nd4jBackend = "linux-x86_64";
     @CommandLine.Option(names = {"--dl4jBuildCommand"},description = "The build command for maven. Defaults to clean install -Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests")
     private String dl4jBuildCommand = "clean install -Dmaven.test.skip=true";
 
@@ -142,21 +140,37 @@ public class CloneBuildComponents implements Callable<Integer> {
                 command.append("cd " + new File(dl4jLocation,"libnd4j").getAbsolutePath() + " && chmod +x pi_build.sh && ./pi_build.sh");
 
 
-                Map<String, String> env = EnvironmentFile.loadFromEnvFile(EnvironmentFile.envFileForBackendAndPlatform("nd4j-native", platform));
+                File backendFile = EnvironmentFile.envFileForBackendAndPlatform("nd4j-native", platform );
+                if(!backendFile.exists()) {
+                    System.err.println("No environment file for platform " + platform + " at expected path " + backendFile.getAbsolutePath());
+                }
+
+                Map<String, String> env = EnvironmentFile.loadFromEnvFile(backendFile);
+                if(env.isEmpty()) {
+                    System.err.println("No environment found for platform " + platform);
+
+                }
+                for(Map.Entry<String,String> envEntries : env.entrySet()) {
+                    System.out.println("ENV: " + envEntries.getKey() + " = " + envEntries.getValue());
+                }
+
+
                 File tempFileWrite = new File(UUID.randomUUID() + ".sh");
+
                 StringBuilder stringBuilder = new StringBuilder();
                 stringBuilder.append("#!/bin/bash\n");
                 stringBuilder.append(command + "\n");
                 tempFileWrite.deleteOnExit();
-                tempFileWrite.setExecutable(true);
                 FileUtils.write(tempFileWrite,stringBuilder.toString(), Charset.defaultCharset());
-                int  exitValue =  new ProcessExecutor().environment(System.getenv())
+                tempFileWrite.setExecutable(true);
+
+                ProcessResult processResult = new ProcessExecutor().environment(System.getenv())
                         .environment(env)
                         .command(tempFileWrite.getAbsolutePath())
                         .readOutput(true)
                         .redirectOutput(System.out)
-                        .start().getFuture().get().getExitValue();
-                if(exitValue != 1) {
+                        .start().getFuture().get();
+                if(processResult.getExitValue() != 0) {
                     System.err.println("DL4J Installation failed.");
                     return 1;
                 }
@@ -169,7 +183,6 @@ public class CloneBuildComponents implements Callable<Integer> {
                 properties.put("libnd4j.extension", libnd4jExtension);
                 properties.put("libnd4j.classifier",libnd4jClassifier);
                 properties.put("libnd4j.compute",chipCompute);
-                properties.put("libnd4j.tests","");
                 properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
                 properties.put("libnd4j.helper",libnd4jHelper);
                 properties.put("libnd4j.operations",libnd4jOperations);
@@ -184,13 +197,17 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
 
 
-                if(buildCpuBackend) {
+                if(nd4jBackend != null && nd4jBackend.contains("native")) {
                     invocationRequest.setProfiles(Arrays.asList("cpu"));
+                }
+
+                if(nd4jBackend != null && nd4jBackend.contains("mini")) {
+                    invocationRequest.setProfiles(Arrays.asList("minimial-cpu"));
                 }
 
                 invocationRequest.setAlsoMake(true);
 
-                if(buildCudaBackend) {
+                if(nd4jBackend != null && nd4jBackend.contains("cuda")) {
                     invocationRequest.setProfiles(Arrays.asList("cuda"));
                 }
 
@@ -215,13 +232,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                     return 1;
                 }
             }
-
-
-
         }
-
-
-
         if(buildKonduitServing) {
             File konduitServingLocation = new File(konduitServingDirectory);
             if(konduitServingLocation.exists() && forceKonduitServingClone) {

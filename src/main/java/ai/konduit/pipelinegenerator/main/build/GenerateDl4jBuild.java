@@ -16,27 +16,20 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
-import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
-import ai.konduit.pipelinegenerator.main.util.OpenBlasEmbeddedDownloader;
-import org.apache.commons.io.IOUtils;
-import org.apache.maven.model.Model;
 import org.apache.maven.shared.invoker.DefaultInvocationRequest;
 import org.apache.maven.shared.invoker.DefaultInvoker;
 import org.apache.maven.shared.invoker.InvocationRequest;
 import org.apache.maven.shared.invoker.Invoker;
 import org.codehaus.plexus.util.FileUtils;
 import org.nd4j.common.base.Preconditions;
-import org.nd4j.common.io.ClassPathResource;
-import org.zeroturnaround.exec.ProcessExecutor;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.nio.charset.Charset;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "dl4j-build-generate",mixinStandardHelpOptions = false,description = "Generate a dl4j build output as a tar file containing an nd4j backend and related dependencies.")
@@ -95,41 +88,28 @@ public class GenerateDl4jBuild implements Callable<Void> {
                 "</assembly>\n");
         File assemblyXml = new File(resourcesDir,"kompile.xml");
         org.apache.commons.io.FileUtils.write(assemblyXml,config.toString(), Charset.defaultCharset());
-
-        if(javacppPlatform.contains("android") || javacppPlatform.contains("arm")) {
-            String[] platform = javacppPlatform.split("-");
-            OpenBlasEmbeddedDownloader openBlasEmbeddedDownloader = new OpenBlasEmbeddedDownloader(platform[0],platform[1],"0.3.19-1.5.7",true);
-            openBlasEmbeddedDownloader.download();
-            String command = "";
-            Map<String,String> env = EnvironmentFile.loadFromEnvFile(EnvironmentFile.envFileForBackendAndPlatform("nd4j-native",javacppPlatform));
-            new ProcessExecutor().environment(env)
-                    .command(command)
-                    .readOutput(true)
-                    .redirectOutput(System.out)
-                    .start().getFuture().get().getExitValue();
-        } else {
-            if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
-                List<String> goals = new ArrayList<>();
-                goals.add("-Djavacpp.platform=" + javacppPlatform);
-                goals.add("-Dlibnd4j.platform=" + javacppPlatform);
-                if(javacppExtension != null && !javacppExtension.isEmpty())
-                    goals.add("-Djavacpp.platform.extension=" + javacppExtension);
-                goals.add("assembly:single");
-                invocationRequest.setGoals(goals);
-            }
-            else {
-                invocationRequest.setGoals(Arrays.asList("clean","assembly:single"));
-
-            }
-
-            Invoker invoker = new DefaultInvoker();
-            invocationRequest.setPomFile(new File(project,"pom.xml"));
-            invoker.setWorkingDirectory(project);
-            invocationRequest.setBaseDirectory(project);
-            invoker.setMavenHome(mavenHome);
-            System.out.println("Invoking maven with args " + invocationRequest.getArgs());
-            invoker.execute(invocationRequest);
+        if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
+            List<String> goals = new ArrayList<>();
+            goals.add("-Djavacpp.platform=" + javacppPlatform);
+            goals.add("-Dlibnd4j.platform=" + javacppPlatform);
+            if(javacppExtension != null && !javacppExtension.isEmpty())
+                goals.add("-Djavacpp.platform.extension=" + javacppExtension);
+            goals.add("assembly:single");
+            invocationRequest.setGoals(goals);
         }
+        else {
+            invocationRequest.setGoals(Arrays.asList("clean","assembly:single"));
+
+        }
+
+        Invoker invoker = new DefaultInvoker();
+        invocationRequest.setPomFile(new File(project,"pom.xml"));
+        invoker.setWorkingDirectory(project);
+        invocationRequest.setBaseDirectory(project);
+        invoker.setMavenHome(mavenHome);
+        System.out.println("Invoking maven with args " + invocationRequest.getArgs());
+        invoker.execute(invocationRequest);
+
 
 
     }

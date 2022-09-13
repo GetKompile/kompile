@@ -16,11 +16,13 @@
 
 package ai.konduit.pipelinegenerator.main.util;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import org.apache.commons.io.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +32,7 @@ public class EnvironmentFile {
     public final static String BACKEND_ENVS_DIR = "backend-envs";
 
     public static File envFileForBackendAndPlatform(String backend,String platform) {
-        File backendsDir = new File(System.getProperty("user.home"),BACKEND_ENVS_DIR);
+        File backendsDir = new File(Info.homeDirectory(),BACKEND_ENVS_DIR);
         File backendDir = new File(backendsDir,backend);
         File envFile = new File(backendDir,platform + ".env");
         return envFile;
@@ -110,6 +112,9 @@ public class EnvironmentFile {
      * @throws IOException
      */
     public static Map<String,String> loadFromEnvFile(File file) throws IOException {
+        if(file == null || !file.exists()) {
+            return new HashMap<>();
+        }
         List<String> lines = FileUtils.readLines(file, Charset.defaultCharset());
         Map<String,String> ret = new HashMap<>();
         for(String line : lines) {

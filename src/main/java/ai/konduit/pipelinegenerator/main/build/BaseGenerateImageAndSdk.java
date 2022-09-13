@@ -17,7 +17,9 @@
 package ai.konduit.pipelinegenerator.main.build;
 
 import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
+import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import ai.konduit.serving.data.image.step.ndarray.ImageToNDArrayStep;
 import ai.konduit.serving.models.deeplearning4j.step.DL4JStep;
 import ai.konduit.serving.models.onnx.step.ONNXStep;
@@ -38,6 +40,7 @@ import picocli.CommandLine;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.Charset;
 import java.util.*;
 import java.util.concurrent.*;
@@ -216,15 +219,6 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         }
     }
 
-
-    protected void checkInstall() {
-        checkExists(Info.graalvmDirectory(),"graalvm");
-        checkExists(Info.mavenDirectory(),"maven");
-        checkExists(Info.pythonDirectory(),"python");
-
-    }
-
-
     protected void addCommand(String commandValue,String scriptName,List<String> commandList) {
         if(commandValue != null && !commandValue.isEmpty()) {
             commandList.add(scriptName);
@@ -288,18 +282,18 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
                 File tempFile = new File(kompileResources,s);
                 tempFile.createNewFile();
                 tempFile.deleteOnExit();
-                FileUtils.write(tempFile,headerContent,false);
+                FileUtils.write(tempFile,headerContent,Charset.defaultCharset(),false);
             }
         }
     }
 
 
     protected File extractScript(InputStream is) throws IOException {
-        String scriptContent = IOUtils.toString(is);
+        String scriptContent = IOUtils.toString(is,Charset.defaultCharset());
         File tempFile = new File(kompilePrefix,"generate-image-and-sdk.sh");
         tempFile.createNewFile();
         tempFile.deleteOnExit();
-        FileUtils.write(tempFile,scriptContent,false);
+        FileUtils.write(tempFile,scriptContent,Charset.defaultCharset(),false);
         tempFile.setExecutable(true);
         return tempFile;
     }
@@ -329,12 +323,25 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         }
     }
 
-    protected Map<String,String> createEnv() {
+    protected Map<String,String> createEnv() throws IOException {
         Map<String,String> env = new HashMap<>();
         //setup graalvm and java home for maven
         System.out.println("Setting graalvm and java home to " + Info.graalvmDirectory().getAbsolutePath());
         env.put("GRAALVM_HOME",Info.graalvmDirectory().getAbsolutePath());
         env.put("JAVA_HOME",Info.graalvmDirectory().getAbsolutePath());
+        if(System.getenv().containsKey("USER"))
+            env.put("USER",System.getenv("USER"));
+        else
+            env.put("USER",System.getProperty("user.name"));
+        if(System.getenv().containsKey("PLATFORM"))
+            env.put("PLATFORM",System.getenv("PLATFORM"));
+        else
+            env.put("PLATFORM", OSResolver.os());
+        if(nd4jClassifier != null && nd4jBackend != null) {
+            File file = EnvironmentFile.envFileForBackendAndPlatform(nd4jBackend, nd4jClassifier);
+            Map<String, String> envMap = EnvironmentFile.loadFromEnvFile(file);
+            env.putAll(envMap);
+        }
         return env;
     }
 
@@ -360,6 +367,11 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
 
         if(nd4jBackend.equals("nd4j-cuda-10.2"))
             enableJetsonNano = true;
+        //set just in case we need to customize flags
+        setCustomDefaults();
+        setDefaultFlagsBasedOnPipeline();
+        List<String> command = new ArrayList<>();
+
 
         ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -376,25 +388,24 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         //unpack resources needed for inclusion and linking of files for the generate images script
         File kompileResources = createResourceDirectory();
 
-        extractResources(kompileResources);
+        if(!assembly) {
+            extractResources(kompileResources);
+        }
 
-        ClassPathResource classPathResource = new ClassPathResource("generate-image-and-sdk.sh");
-        try (InputStream is = classPathResource.getInputStream()) {
+        try (InputStream is = URI.create("https://raw.githubusercontent.com/KonduitAI/kompile-program-repository/main/generate-image-and-sdk.sh").toURL().openStream()) {
             File tempFile = extractScript(is);
             Map<String, String> env = createEnv();
             System.out.println("Setting graalvm and java home to " + Info.graalvmDirectory().getAbsolutePath());
-
-            List<String> command = new ArrayList<>();
             command.add(tempFile.getAbsolutePath());
-            setDefaultFlagsBasedOnPipeline();
 
             setPipelineFile();
-            //set just in case we need to customize flags
-            setCustomDefaults();
+
             //add all command values
             addCommands(command);
             //add other values specific to command assumptions
             doCustomCommands(command);
+
+
             System.out.println("Running generate image command: " + command);
 
 

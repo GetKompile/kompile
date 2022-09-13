@@ -4,12 +4,12 @@ RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-build
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
-RUN yum -y install git gcc gcc-c++ cmake zlib*
+RUN yum -y install git gcc gcc-c++ cmake zlib* xz
 RUN /usr/java/bin/gu install native-image
 RUN mkdir /kompile
 RUN curl https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz --output /kompile/mvn.tar.gz
 RUN cd /kompile/ && tar xvf mvn.tar.gz && mv apache-maven-3.8.6 mvn
-ENV PATH="/kompile/mvn/bin/:${PATH}:/usr/java/bin/"
+ENV PATH="/kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/"
 ARG BACKEND_PROFILE=cpu
 ARG JAVCPP_PLATFORM=linux-x86_64
 ARG DL4J_BACKEND=1.0.0-SNAPSHOT
@@ -52,6 +52,7 @@ COPY --from=builder /kompile/kompile /kompile/kompile
 COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
 COPY --from=builder /kompile/kompile-python /kompile/kompile-python
 COPY   /src/main/resources/META-INF/native-image /kompile/native-image
-ENV PATH=/root/.kompile/graalvm/bin/:${PATH}
-RUN yum -y install git gcc gcc-c++ cmake zlib zlib-devel
+ENV PATH="/root/.kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/"
+ENV JAVA_HOME=/root/.kompile/graalvm
+RUN yum -y install git gcc gcc-c++ cmake zlib zlib-devel xz
 ENTRYPOINT ["/kompile/kompile"]

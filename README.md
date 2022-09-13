@@ -99,6 +99,40 @@ For quick troubleshooting, other utilities for rendering a model file as text ar
 This includes printing summaries for [dl4j](./docs/kompile-model-dl4j-summary.html) and [samediff](./docs/samediff-summary.html)
 as well as [tensorflow](./docs/)
 
+Memory management
+---------------------------
+
+When running a build such as for android, 
+more memory maybe needed. There are a few potential options
+the user has to combat memory issues when executing a build.
+1. Ensure your docker container has a good amount of memory for running builds.
+```
+docker run --ulimit nofile=98304:98304 --memory="16g" --rm -it  --entrypoint /bin/bash konduitai/kompile
+
+```
+
+Change 16g to whatever you think your memory needed might be. Some builds require > 4g of RAM to run. We recommend
+a large amount of memory for certain builds (especially the SDK builds or ones generating an nd4j backend)
+
+2. Ensure that the CLI has enough heap space to run.
+```
+./kompile build generate-nd4j-backend --nd4jBackend=nd4j-native --nd4jClassifier=android-arm64 --buildPlatform=android-arm64 -Xmx10g -Xms10g
+
+```
+This can be done as above where we are generating an android build and specifying the heap space on the end.
+
+
+
+3. Ensure that builds that involve a generated projects also have enough heap for running.
+
+Finally, set:
+```
+MIN_RAM_MEGS=2000
+MAX_RAM_MEGS=2000
+```
+
+where these are numbers sized in megabytes for SDK builds.
+
 
 Main Use Cases
 --------------

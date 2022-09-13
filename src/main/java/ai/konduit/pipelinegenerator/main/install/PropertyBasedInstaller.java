@@ -16,6 +16,7 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import org.apache.commons.io.FileUtils;
@@ -63,11 +64,9 @@ public class PropertyBasedInstaller implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         //run this before even resolving properties just in case it's already installed.
-        File file = EnvironmentUtils.executableOnPath(programName);
-        if(file != null && file.exists()) {
-            System.out.println("Program name " + file.getName() + " already installed. Exiting.");
-            return 0;
-        }
+        Integer installed = checkInstalled(programName);
+        if (installed != null) return installed;
+
 
         if(updateIndex) {
             CommandLine commandLine = new CommandLine(new ProgramIndex());
@@ -104,11 +103,9 @@ public class PropertyBasedInstaller implements Callable<Integer> {
     }
 
     private int install(String programName) throws IOException, InterruptedException, ExecutionException {
-        File file = EnvironmentUtils.executableOnPath(programName);
-        if(file != null && file.exists()) {
-            System.out.println("Program name " + file.getName() + " already installed. Exiting.");
-            return 0;
-        }
+        Integer installed = checkInstalled(programName);
+        if (installed != null) return installed;
+
         String os = OSResolver.os();
         String commandValue = resolveProperty(programName,"installCommand" ,os);
         if (commandValue == null) {
@@ -121,17 +118,48 @@ public class PropertyBasedInstaller implements Callable<Integer> {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("#!/bin/bash\n");
         stringBuilder.append(commandValue + "\n");
+        FileUtils.write(tempFileWrite,stringBuilder.toString(),Charset.defaultCharset());
         tempFileWrite.deleteOnExit();
         tempFileWrite.setExecutable(true);
-        FileUtils.write(tempFileWrite,stringBuilder.toString(), Charset.defaultCharset());
+        ProcessResult processResult1 = new ProcessExecutor()
+                .command(tempFileWrite.getAbsolutePath())
+                .readOutput(true)
+                .redirectOutput(System.out)
+                .start().getFuture().get();
+
+        if(processResult1.getExitValue() != 0) {
+            System.err.println("Unable to set " + tempFileWrite.getAbsolutePath() + " executable.");
+            return 1;
+        }
+
         ProcessResult processResult = new ProcessExecutor()
-                .command("bash",tempFileWrite.getAbsolutePath())
+                .command(tempFileWrite.getAbsolutePath())
                 .readOutput(true)
                 .redirectOutput(System.out)
                 .start().getFuture().get();
         if(processResult.hasOutput())
             System.out.println("Command output was \n " + processResult.outputUTF8());
         return processResult.getExitValue();
+    }
+
+    @Nullable
+    private static Integer checkInstalled(String programName) {
+        //run this before even resolving properties just in case it's already installed.
+        if(programName.equals("ndk")) {
+            File kompilePrefix = Info.homeDirectory();
+            File ndkDir = new File(kompilePrefix,"android-ndk-r21d");
+            if(ndkDir.exists()) {
+                System.out.println("Program name " + programName + " already installed. Exiting.");
+                return 0;
+            }
+        } else {
+            File file = EnvironmentUtils.executableOnPath(programName);
+            if(file != null && file.exists()) {
+                System.out.println("Program name " + programName + " already installed. Exiting.");
+                return 0;
+            }
+        }
+        return null;
     }
 
     @Nullable
