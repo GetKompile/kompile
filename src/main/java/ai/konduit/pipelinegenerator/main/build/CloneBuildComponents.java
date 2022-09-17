@@ -117,7 +117,7 @@ public class CloneBuildComponents implements Callable<Integer> {
         if(buildDl4j) {
             File dl4jLocation = new File(dl4jDirectory);
             InvocationRequest invocationRequest = new DefaultInvocationRequest();
-            if(dl4jLocation.exists() && forceDl4jClone) {
+            if(dl4jLocation.exists() && forceDl4jClone || dl4jLocation.exists() &&  dl4jLocation.listFiles() == null || dl4jLocation.listFiles() != null &&  dl4jLocation.listFiles().length < 1) {
                 System.out.println("Forcing deletion of specified dl4j location: " + dl4jLocation);
                 FileUtils.deleteDirectory(dl4jLocation);
             }
@@ -176,6 +176,33 @@ public class CloneBuildComponents implements Callable<Integer> {
                 }
 
             } else {
+                if(nd4jBackend.contains("cuda")) {
+                    String cudaVersion = nd4jBackend.replace("nd4j-cuda-","");
+                    File tempFileWrite = new File(UUID.randomUUID() + ".sh");
+                    System.out.println("Setting build chip to gpu");
+
+                    StringBuilder stringBuilder = new StringBuilder();
+                    stringBuilder.append("#!/bin/bash\n");
+                    stringBuilder.append("chmod +x change-cuda-versions.sh && ./change-cuda-versions.sh " + cudaVersion + " \n");
+                    tempFileWrite.deleteOnExit();
+                    FileUtils.write(tempFileWrite,stringBuilder.toString(), Charset.defaultCharset());
+                    tempFileWrite.setExecutable(true);
+                    libnd4jChip = "cuda";
+                    ProcessResult processResult = new ProcessExecutor().environment(System.getenv())
+                            .directory(dl4jLocation)
+                            .command(tempFileWrite.getAbsolutePath())
+                            .readOutput(true)
+                            .redirectOutput(System.out)
+                            .start().getFuture().get();
+                    if(processResult.getExitValue() != 0) {
+                        System.err.println("DL4J Installation failed. Unable to change cuda version.");
+                        return 1;
+                    }
+                } else {
+                    libnd4jChip = "cpu";
+                    System.out.println("Setting build chip to cpu");
+                }
+
                 invocationRequest.setPomFile(new File(dl4jDirectory,"pom.xml"));
                 Properties properties = new Properties();
                 properties.put("libnd4j.build",libnd4jBuildType);
@@ -185,6 +212,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                 properties.put("libnd4j.compute",chipCompute);
                 properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
                 properties.put("libnd4j.helper",libnd4jHelper);
+                properties.put("libnd4j.chip",libnd4jChip);
                 properties.put("libnd4j.operations",libnd4jOperations);
                 properties.put("libnd4j.datatypes",libnd4jDataTypes);
                 properties.put("libnd4j.sanitize",libnd4jSanitize ? "ON" : "OFF");
@@ -223,7 +251,11 @@ public class CloneBuildComponents implements Callable<Integer> {
                 InvocationResult execute = invoker.execute(invocationRequest);
                 if(execute != null && execute.getExitCode() != 0) {
                     System.err.println("DL4J build failed. Reason below:");
-                    execute.getExecutionException().printStackTrace();
+                    if(execute.getExecutionException() != null)
+                        execute.getExecutionException().printStackTrace();
+                    else {
+                        System.out.println("No error output from maven. Please see above for error.");
+                    }
                 }  else if(execute.getExitCode() == 0) {
                     System.err.println("Finished cloning and building Deeplearning4j.");
                 }
@@ -235,7 +267,7 @@ public class CloneBuildComponents implements Callable<Integer> {
         }
         if(buildKonduitServing) {
             File konduitServingLocation = new File(konduitServingDirectory);
-            if(konduitServingLocation.exists() && forceKonduitServingClone) {
+            if(konduitServingLocation.exists() && forceKonduitServingClone || konduitServingLocation.exists() && konduitServingLocation.listFiles() == null || konduitServingLocation.listFiles() != null && konduitServingLocation.listFiles().length < 1) {
                 System.out.println("Forcing deletion of specified konduit serving location: " + konduitServingLocation);
                 FileUtils.deleteDirectory(konduitServingLocation);
             }

@@ -36,14 +36,17 @@ public class ProgramIndex implements Callable<Integer> {
     private boolean updateIndexForce = false;
 
 
+
+    public static File pathToIndexForPlatform(String platform) {
+        File baseIndex = new File(Info.homeDirectory(),"program-index" + File.separator + platform);
+        return new File(baseIndex,"programs." + platform + ".properties");
+    }
+
     @Override
     public Integer call() throws Exception {
         String platform = OSResolver.os();
-        StringBuilder url = new StringBuilder();
-        url.append(baseUrl);
-        url.append("/");
-        String fileName = "programs." + platform + ".properties";
-        url.append(fileName);
+        String url = indexForPlatform(platform,baseUrl);
+
         File programIndex = new File(Info.homeDirectory(),"program-index");
         if(!programIndex.exists()) {
             programIndex.mkdirs();
@@ -54,13 +57,13 @@ public class ProgramIndex implements Callable<Integer> {
             platformIndex.mkdirs();
         }
 
-        File index = new File(platformIndex,fileName);
+        File index = new File(platformIndex,programsFileForPlatform(platform));
         if(!index.getParentFile().exists()) {
             index.getParentFile().mkdirs();
         }
 
         if(!index.exists() || baseUrl == null || updateIndexForce) {
-            InstallMain.downloadTo(url.toString(), index.getAbsolutePath(), true);
+            InstallMain.downloadTo(url, index.getAbsolutePath(), true);
 
             String load = FileUtils.readLines(index, Charset.defaultCharset())
                     .stream().filter(input -> input.contains("="))
@@ -71,13 +74,24 @@ public class ProgramIndex implements Callable<Integer> {
             System.out.println("Found programs... " + split[1] + " for platform " + platform);
             for (String program : programs) {
                 downloadProgram(platform, programIndex, program);
-
             }
         } else if(programName != null) {
             downloadProgram(platform,programIndex,programName);
         }
         return 0;
     }
+
+    public static String indexForPlatform(String platform,String baseUrl) {
+        StringBuilder url = new StringBuilder();
+        url.append(baseUrl);
+        url.append("/");
+        url.append(programsFileForPlatform(platform));
+        return url.toString();
+    }
+    public static String programsFileForPlatform(String platform) {
+        return "programs." + platform + ".properties";
+    }
+
 
     private void downloadProgram(String platform, File programIndex, String program) throws Exception {
         System.out.println("Downloading index for program " + program);
@@ -91,8 +105,14 @@ public class ProgramIndex implements Callable<Integer> {
         if(!platformDir.exists()) {
             platformDir.mkdirs();
         }
-        InstallMain.downloadTo(fileUrl.toString(), new File(platformDir, programFileName.toString()).getAbsolutePath(),
+
+        File file = InstallMain.downloadTo(fileUrl.toString(), new File(platformDir, programFileName.toString()).getAbsolutePath(),
                 true);
+        if(file != null) {
+            System.out.println("Downloaded " + file.getAbsolutePath());
+        } else {
+            System.out.println("Failed to download " + fileUrl + " the file might not exist.");
+        }
     }
 
     /**

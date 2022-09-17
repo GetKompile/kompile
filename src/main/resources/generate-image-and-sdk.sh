@@ -270,6 +270,7 @@ echo "MAVEN_HOME ${MAVEN_HOME}"
 echo "BUILD_PLATFORM ${BUILD_PLATFORM}"
 echo "BINARY_EXTENSION ${BINARY_EXTENSION}"
 echo "ND4J_BACKEND ${ND4J_BACKEND}"
+echo "ND4J_HELPER ${ND4J_HELPER}"
 echo "ND4J_CLASSIFIER ${ND4J_CLASSIFIER}"
 echo "ENABLE_JETSON_NANO ${ENABLE_JETSON_NANO}"
 echo "BUILD_SHARED_LIBRARY ${BUILD_SHARED_LIBRARY}"
@@ -317,10 +318,15 @@ fi
                                               --architecture="${ARCHITECTURE}" \
                                               --nd4jBackend="${ND4J_BACKEND}" \
 
-         if test -f "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"; then
-             echo "Loading environment for backend ${ND4J_BACKEND}"
-             source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
-         fi
+          if [ -z "${ND4J_HELPER}" ]; then
+                    echo "Loading environment for backend ${ND4J_BACKEND}"
+                    source "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
+             elif test -f "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}${ND4J_HELPER}.env"; then
+                  echo "Loading environment for backend ${ND4J_BACKEND}"
+                  source "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}${ND4J_HELPER}.env"
+              fi
+
+
         ./kompile build clone-build \
                      --nd4jBackend=${ND4J_BACKEND} \
                      --libnd4jUseLto=${ND4J_USE_LTO} \
@@ -331,8 +337,7 @@ fi
                      --buildDl4j \
                      --buildKonduitServing="${ASSEMBLY}" \
                      --libnd4jClassifier="${ND4J_CLASSIFIER}" \
-                     --buildCpuBackend="${BUILD_CPU_BACKEND}" \
-                      --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
+                       --nd4jBackend="${ND4J_BACKEND}" \
                       --libnd4jHelper="${ND4J_HELPER}" \
                       --libnd4jOperations="${ND4J_OPERATIONS}" \
                       --libnd4jDataTypes="${ND4J_DATATYPES}"
@@ -417,9 +422,12 @@ fi
                         fi
 
                   elif [ "$ASSEMBLY" == "true" ]; then
-                    if test -f "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"; then
-                                echo "Loading environment for backend ${ND4J_BACKEND}"
-                                source "$USER/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
+                   if [ -z "${ND4J_HELPER}" ]; then
+                            echo "Loading environment for backend ${ND4J_BACKEND}"
+                            source "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}.env"
+                    elif test -f "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}${ND4J_HELPER}.env"; then
+                              echo "Loading environment for backend ${ND4J_BACKEND}"
+                              source "$HOME/.kompile/backend-envs/${ND4J_BACKEND}/${OS}-${PLATFORM}${ND4J_HELPER}.env"
                     fi
                    echo "Building dl4j distribution"
                     echo "Installing Pre requisites for OS ${OS} and architecture ${ARCHITECTURE}"
@@ -435,8 +443,7 @@ fi
                                 --buildDl4j \
                                 --platform="${ND4J_CLASSIFIER}" \
                                 --libnd4jClassifier="${ND4J_CLASSIFIER}" \
-                                --buildCpuBackend="${BUILD_CPU_BACKEND}" \
-                                 --buildCudaBackend="${BUILD_CUDA_BACKEND}" \
+                                --nd4jBackend="${ND4J_BACKEND}" \
                                  --libnd4jHelper="${ND4J_HELPER}" \
                                  --libnd4jOperations="${ND4J_OPERATIONS}" \
                                  --libnd4jDataTypes="${ND4J_DATATYPES}"

@@ -67,8 +67,8 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     private void addCudaIfNeeded() {
         if(chip.equals("gpu") || nd4jBackend.contains("cuda")) {
-            String cudaVersion = nd4jBackend.replace("nd4j-cuda","");
-            dependencies.add(cudaVersion);
+            String cudaVersion = nd4jBackend.replace("nd4j-cuda-","");
+            dependencies.add("cuda-" + cudaVersion);
         }
     }
 

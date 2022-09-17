@@ -16,10 +16,11 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
+import ai.konduit.pipelinegenerator.main.util.BackendInfo;
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class IndexerTests {
 
@@ -27,7 +28,13 @@ public class IndexerTests {
     public void testIndexer() {
         ProgramIndex indexer = new ProgramIndex();
         CommandLine commandLine = new CommandLine(indexer);
-        assertEquals(0,commandLine.execute());
+        assertEquals(0,commandLine.execute("--updateIndexForce=true"));
+        BackendInfo backendInfo = BackendInfo.backendClassifiersForBackend("rhel");
+        assertNotNull(backendInfo.getBackends());
+        assertTrue(!backendInfo.getClassifiers().isEmpty());
+        assertTrue(!backendInfo.getBackends().isEmpty());
+
+
     }
 
 

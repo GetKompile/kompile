@@ -17,6 +17,8 @@
 package ai.konduit.pipelinegenerator.main.install;
 
 import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.util.BackendInfo;
+import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import org.apache.commons.io.FileUtils;
@@ -113,6 +115,48 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             return 1;
         }
 
+        BackendInfo backendInfo = BackendInfo.backendClassifiersForBackend(OSResolver.os());
+        if(backendInfo != null) {
+            System.out.println("Found relevant backends for program " + programName + " with backends " + backendInfo.getBackends() + " and classifiers " + backendInfo.getClassifiers());
+        }
+
+        String relevantBackends = resolveProperty(programName,  os + ".backends",os);
+
+        if(relevantBackends != null) {
+            String[] backends = relevantBackends.split(",");
+            System.out.println("Writing environments for backends " + relevantBackends);
+            for(String backend : backends) {
+                System.out.println("Writing environments for backend " + backend);
+                String backendEnvs = resolveProperty(programName,backend + ".envs",os);
+                if(backendEnvs != null) {
+                    System.out.println("Backend environments found " + backendEnvs);
+                    String[] split = backendEnvs.split(",");
+                    for(String env : split) {
+                        System.out.println("Processing environment " + env);
+                        List<String> classifiersForBackend = backendInfo.getClassifiersForBackend(backend);
+                        if(classifiersForBackend != null) {
+                            System.out.println("Writing environment properties for  for backend " + backend);
+                            for (String classifier : classifiersForBackend) {
+                                System.out.println("Processing classifier " + classifier);
+                                String property = resolveProperty(programName, backend + ".env." + env, os);
+                                if (property != null)
+                                    EnvironmentFile.writeEnvForClassifierAndBackend(backend, classifier, env, property);
+                                else {
+                                    System.out.println("No property found for " + classifier + " and backend " + backend);
+                                }
+                            }
+                        }
+
+                    }
+                } else {
+                    System.out.println("No backend environments found for " + programName + " and backend " + backend);
+                }
+            }
+
+        }
+
+
+
         System.out.println("Running " + commandValue);
         File tempFileWrite = new File(UUID.randomUUID() + ".sh");
         StringBuilder stringBuilder = new StringBuilder();
@@ -139,6 +183,10 @@ public class PropertyBasedInstaller implements Callable<Integer> {
                 .start().getFuture().get();
         if(processResult.hasOutput())
             System.out.println("Command output was \n " + processResult.outputUTF8());
+
+
+
+
         return processResult.getExitValue();
     }
 
@@ -149,6 +197,13 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             File kompilePrefix = Info.homeDirectory();
             File ndkDir = new File(kompilePrefix,"android-ndk-r21d");
             if(ndkDir.exists()) {
+                System.out.println("Program name " + programName + " already installed. Exiting.");
+                return 0;
+            }
+        } else if(programName.contains("cuda")) {
+            File kompilePrefix = Info.homeDirectory();
+            File cudaDir = new File(kompilePrefix,programName);
+            if(cudaDir.exists()) {
                 System.out.println("Program name " + programName + " already installed. Exiting.");
                 return 0;
             }
@@ -163,7 +218,7 @@ public class PropertyBasedInstaller implements Callable<Integer> {
     }
 
     @Nullable
-    private String resolveProperty(String programName, String propertyToResolve, String os) throws IOException {
+    public static  String resolveProperty(String programName, String propertyToResolve, String os) throws IOException {
         if(programName == null || programName.isEmpty()) {
             return null;
         }

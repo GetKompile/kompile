@@ -18,6 +18,7 @@ package ai.konduit.pipelinegenerator.main.util;
 
 import ai.konduit.pipelinegenerator.main.Info;
 import org.apache.commons.io.FileUtils;
+import org.nd4j.common.base.Preconditions;
 
 import java.io.File;
 import java.io.IOException;
@@ -51,18 +52,18 @@ public class EnvironmentFile {
     public static void writeEnvForClassifierAndBackend(String backend,String classifier,String key,String value) throws IOException {
         File userDir = new File(System.getProperty("user.home"),".kompile");
         if(!userDir.exists()) {
-            userDir.mkdirs();
+            Preconditions.checkState(userDir.mkdirs(),"Unable to make directory " + userDir.getAbsolutePath());
         }
 
         File backendsDir = new File(userDir,BACKEND_ENVS_DIR);
         if(!backendsDir.exists()) {
-            backendsDir.mkdirs();
+            Preconditions.checkState(backendsDir.mkdirs(),"Unable to make directory " + backendsDir.getAbsolutePath());
         }
 
 
         File backendDir = new File(backendsDir,backend);
         if(!backendDir.exists()) {
-            backendDir.mkdirs();
+            Preconditions.checkState(backendDir.mkdirs(),"Unable to make directory " + backendDir.getAbsolutePath());
         }
 
         File envFile = new File(backendDir,classifier + ".env");

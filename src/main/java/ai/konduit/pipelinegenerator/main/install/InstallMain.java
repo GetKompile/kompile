@@ -39,7 +39,8 @@ import java.util.concurrent.Callable;
         ListPropertyPrograms.class,
         OpenBlasInstaller.class,
         InstallPreRequisites.class,
-        ProgramIndex.class
+        ProgramIndex.class,
+        RefreshIndexPrograms.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {
@@ -63,6 +64,9 @@ public class InstallMain implements Callable<Integer> {
         if(!destFile.exists()) {
             URL remoteUrl = URI.create(url).toURL();
             long size = getFileSize(remoteUrl);
+            if(size < 0) {
+                return null;
+            }
             try(InputStream is = new ProgressInputStream(new BufferedInputStream(URI.create(url).toURL().openStream()),size)) {
                 FileUtils.copyInputStreamToFile(is,destFile);
 
@@ -101,8 +105,9 @@ public class InstallMain implements Callable<Integer> {
             }
             conn.getInputStream();
             return conn.getContentLength();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+         }
+        catch (IOException e) {
+            return -1;
         } finally {
             if(conn instanceof HttpURLConnection) {
                 ((HttpURLConnection)conn).disconnect();

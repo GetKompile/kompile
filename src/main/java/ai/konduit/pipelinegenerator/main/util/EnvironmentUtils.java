@@ -216,11 +216,24 @@ public class EnvironmentUtils {
         for(String match : allMatches) {
             String envKey = match.replace("${","")
                     .replace("}","");
-            String value2 = System.getProperty(envKey);
-            if(value2 == null) {
-                throw new IllegalStateException("No system property " + envKey + " found!");
+            if(envKey.contains("env.")) {
+                String value2 = System.getenv(envKey.replace("env.",""));
+                if(value2 == null) {
+                    throw new IllegalStateException("No system property " + envKey + " found!");
+                }
+
+                value = value.replace(match,value2);
+
+            } else {
+                String value2 = System.getProperty(envKey);
+                if(value2 == null) {
+                    throw new IllegalStateException("No system property " + envKey + " found!");
+                }
+
+                value = value.replace(match,value2);
+
             }
-            value = value.replace(match,value2);
+
         }
 
         return value;
