@@ -59,6 +59,14 @@ public class RefreshIndexPrograms implements Callable<Integer> {
             FileUtils.deleteDirectory(backendEnvs);
         }
 
+        //delete everything and redownload the index first so we have backend information
+        CommandLine commandLine = new CommandLine(new ProgramIndex());
+        int exec = commandLine.execute("--updateIndexForce=true");
+        if(exec != 0) {
+            System.err.println("Failed to download program index");
+            return 1;
+        }
+
         File platformIndex = new File(programIndex,os);
         platformIndex.mkdirs();
 
