@@ -30,6 +30,7 @@ public class InstallPreRequisites implements Callable<Integer> {
     private String os;
     @CommandLine.Option(names = {"--architecture"},description = "The architecture to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String architecture;
+    @CommandLine.Option(names = {"--chip"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String chip;
     @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String nd4jBackend;
@@ -38,10 +39,12 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        chip = nd4jBackend.contains("cuda")? "gpu" : "cpu";
+        if(chip == null)
+            chip = nd4jBackend.contains("cuda")? "gpu" : "cpu";
         addOpenBlasDepsIfNeeded();
         addNdkIfNeeded();
         addCudaIfNeeded();
+        addNccIfNeeded();
         System.out.println("Determined dependencies for: chip " + chip + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
         for(String dependency: dependencies) {
             CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
@@ -57,6 +60,11 @@ public class InstallPreRequisites implements Callable<Integer> {
     }
 
 
+    private void addNccIfNeeded() {
+        if(nd4jBackend.equals("nd4j-native") && chip.equals("aurora")) {
+            dependencies.add("ncc");
+        }
+    }
 
     private void addNdkIfNeeded() {
         if(os.equals("android")) {
