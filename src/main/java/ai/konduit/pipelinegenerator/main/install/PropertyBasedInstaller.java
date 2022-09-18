@@ -236,17 +236,23 @@ public class PropertyBasedInstaller implements Callable<Integer> {
                 CommandLine commandLine = new CommandLine(programIndex);
                 commandLine.execute("--programName=" + programName);
             }
-            Properties properties = new Properties();
-            try(InputStream inputStream = new FileInputStream(programResource)) {
-                properties.load(inputStream);
-                if(!properties.containsKey(commandProperty.toString())) {
-                    System.err.println("Tried to use resource " + programResource + " for property " + commandProperty + " but no property value was found. Returning null.");
-                    return null;
+
+            if(programResource.exists()) {
+                Properties properties = new Properties();
+                try(InputStream inputStream = new FileInputStream(programResource)) {
+                    properties.load(inputStream);
+                    if(!properties.containsKey(commandProperty.toString())) {
+                        System.err.println("Tried to use resource " + programResource + " for property " + commandProperty + " but no property value was found. Returning null.");
+                        return null;
+                    }
+
+                    commandValue = properties.getProperty(commandProperty.toString());
+
                 }
-
-                commandValue = properties.getProperty(commandProperty.toString());
-
+            } else {
+                System.out.println("Program resource not found after downloading. Continuing.");
             }
+
         } else {
             commandValue = System.getProperty(commandProperty.toString());
             System.out.println("Resolved property " + commandProperty + " from command line. Running specified command.");
