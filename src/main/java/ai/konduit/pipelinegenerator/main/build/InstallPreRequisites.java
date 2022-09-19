@@ -59,7 +59,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
 
     private void addNccIfNeeded() {
-        if(nd4jBackend.equals("nd4j-native") && nd4jClassifier.equals("vednn")) {
+        if(nd4jBackend.equals("nd4j-native") && nd4jClassifier.contains("vednn")) {
             dependencies.add("ncc");
         }
     }
