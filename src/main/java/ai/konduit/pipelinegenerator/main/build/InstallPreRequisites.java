@@ -81,7 +81,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     private void addOpenBlasDepsIfNeeded() {
         //only cpu and nd4j-native needs openblas
-        if(!nd4jClassifier.equals("vednn") && nd4jBackend.equals("nd4j-native")) {
+        if(!nd4jClassifier.contains("vednn") && nd4jBackend.equals("nd4j-native")) {
             StringBuilder resource = new StringBuilder();
             resource.append("openblas");
             resource.append("-");
