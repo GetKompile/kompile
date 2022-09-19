@@ -174,6 +174,9 @@ public class EnvironmentUtils {
      * @return the value from the
      */
     public static String resolveEnvPropertyValue(String value) {
+       if(value == null) {
+           return null;
+       }
         Matcher matcher = ENV_REGEX.matcher(value);
         List<String> allMatches = new ArrayList<>();
         while(matcher.find()) {
