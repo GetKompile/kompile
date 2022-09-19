@@ -30,8 +30,8 @@ public class InstallPreRequisites implements Callable<Integer> {
     private String os;
     @CommandLine.Option(names = {"--architecture"},description = "The architecture to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String architecture;
-    @CommandLine.Option(names = {"--chip"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
-    private String chip;
+    @CommandLine.Option(names = {"--nd4jClassifier"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
+    private String nd4jClassifier;
     @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String nd4jBackend;
     private List<String> dependencies = new ArrayList<>();
@@ -39,13 +39,11 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
-        if(chip == null)
-            chip = nd4jBackend.contains("cuda")? "gpu" : "cpu";
         addOpenBlasDepsIfNeeded();
         addNdkIfNeeded();
         addCudaIfNeeded();
         addNccIfNeeded();
-        System.out.println("Determined dependencies for: chip " + chip + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
+        System.out.println("Determined dependencies for: classifier " + nd4jClassifier + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
         for(String dependency: dependencies) {
             CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
             int execute = commandLine.execute("--programName=" + dependency);
@@ -61,7 +59,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
 
     private void addNccIfNeeded() {
-        if(nd4jBackend.equals("nd4j-native") && chip.equals("aurora")) {
+        if(nd4jBackend.equals("nd4j-native") && nd4jClassifier.equals("vednn")) {
             dependencies.add("ncc");
         }
     }
@@ -74,7 +72,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
 
     private void addCudaIfNeeded() {
-        if(chip.equals("gpu") || nd4jBackend.contains("cuda")) {
+        if( nd4jBackend.contains("cuda")) {
             String cudaVersion = nd4jBackend.replace("nd4j-cuda-","");
             dependencies.add("cuda-" + cudaVersion);
         }
@@ -83,7 +81,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     private void addOpenBlasDepsIfNeeded() {
         //only cpu and nd4j-native needs openblas
-        if(chip.equals("cpu") && nd4jBackend.equals("nd4j-native")) {
+        if(!nd4jClassifier.equals("vednn") && nd4jBackend.equals("nd4j-native")) {
             StringBuilder resource = new StringBuilder();
             resource.append("openblas");
             resource.append("-");
