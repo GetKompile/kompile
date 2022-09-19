@@ -47,7 +47,7 @@
     <!-- Graalvm 20.x -->
     <graalvm.version>22.2.0</graalvm.version>
     <native-image-plugin.version>0.9.13</native-image-plugin.version>
-    <konduit.serving.version>0.2.0-SNAPSHOT</konduit.serving.version>
+    <konduit.serving.version>0.4.0-SNAPSHOT</konduit.serving.version>
     <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
     <javacpp.version>1.5.7</javacpp.version>
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
@@ -197,6 +197,12 @@
     <dependency>
       <groupId>ai.konduit.serving</groupId>
       <artifactId>konduit-serving-image-config</artifactId>
+      <version>${konduit.serving.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.konduit.serving</groupId>
+      <artifactId>konduit-serving-document-parser-config</artifactId>
       <version>${konduit.serving.version}</version>
     </dependency>
 

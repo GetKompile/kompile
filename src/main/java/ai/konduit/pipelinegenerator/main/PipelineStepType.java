@@ -52,7 +52,8 @@ public enum PipelineStepType {
     PERSPECTIVE_TRANSFORM,
     IMAGE_CROP,
     GRAY_SCALE,
-    TVM;
+    TVM,
+    DOCUMENTPARSER;
 
     /**
      * Returns the {@link PipelineStepType}
@@ -75,6 +76,10 @@ public enum PipelineStepType {
     public static Class<? extends PipelineStep> clazzForType(PipelineStepType pipelineStepType) throws ClassNotFoundException {
         Class<?> clazz;
         switch (valueOf(pipelineStepType.name().toUpperCase())) {
+            case DOCUMENTPARSER:
+                clazz = Class.forName("ai.konduit.serving.documentparser.DocumentParserStep");
+                return (Class<? extends PipelineStep>) clazz;
+
             case IMAGE_CROP:
                 clazz = Class.forName("ai.konduit.serving.data.image.step.crop.ImageCropStep");
                 return (Class<? extends PipelineStep>) clazz;

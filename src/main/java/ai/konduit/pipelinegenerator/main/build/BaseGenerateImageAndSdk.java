@@ -21,6 +21,7 @@ import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
 import ai.konduit.serving.data.image.step.ndarray.ImageToNDArrayStep;
+import ai.konduit.serving.documentparser.DocumentParserStep;
 import ai.konduit.serving.models.deeplearning4j.step.DL4JStep;
 import ai.konduit.serving.models.onnx.step.ONNXStep;
 import ai.konduit.serving.models.samediff.step.SameDiffStep;
@@ -153,7 +154,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected boolean nd4jTensorflow = false;
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not",scope = CommandLine.ScopeType.INHERIT)
     protected boolean image = false;
-
+    @CommandLine.Option(names = "--doc",description = "Whether to use document  processing or not or not",scope = CommandLine.ScopeType.INHERIT)
+    protected boolean doc = false;
 
     @CommandLine.Option(names = {"--dl4jBranchName"},description = "The branch to clone for deeplearning4j: defaults to master",scope = CommandLine.ScopeType.INHERIT)
     protected String dl4jBranchName = "master";
@@ -170,7 +172,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
                 dl4j ||
                 onnx ||
                 samediff ||
-                image;
+                image ||
+                doc;
     }
 
     protected File generatePipelineBasedOnSpec() throws IOException {
@@ -185,6 +188,10 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
             pipeline.add(new TensorFlowStep());
         if(python)
             pipeline.add(new PythonStep());
+
+        if(doc)
+            pipeline.add(new DocumentParserStep());
+
         if(samediff)
             pipeline.add(new SameDiffStep());
         if(onnx)
@@ -310,6 +317,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
             nd4j = true;
             python = true;
             onnx = true;
+            doc = true;
             System.out.println("No pipeline file or specific components specified. Building all.");
         }
     }

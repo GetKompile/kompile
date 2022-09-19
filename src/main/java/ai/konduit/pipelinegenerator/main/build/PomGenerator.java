@@ -44,6 +44,9 @@ public class PomGenerator implements Callable<Void> {
     private boolean onnx = false;
     @CommandLine.Option(names = {"--tvm"},description = "Whether to use tvm or not")
     private boolean tvm = false;
+
+    @CommandLine.Option(names = {"--doc"},description = "Whether to use document parser or not")
+    private boolean doc = false;
     @CommandLine.Option(names = {"--dl4j"},description = "Whether to use dl4j or not")
     private boolean dl4j = false;
     @CommandLine.Option(names = "--samediff",description = "Whether to use samediff or not")
@@ -102,7 +105,7 @@ public class PomGenerator implements Callable<Void> {
     private String nettyTcNativeVersion = "2.0.39.Final";
     private String nettyVersion = "4.1.49.Final";
     private String concsryptVersion = "2.5.2";
-    private String konduitServingVersion = "0.2.0-SNAPSHOT";
+    private String konduitServingVersion = "0.4.0-SNAPSHOT";
     private String javacppVersion = "1.5.7";
     private String log4jVersion = "1.2.17";
     private String slf4jVersion = "1.7.24";
@@ -270,6 +273,18 @@ public class PomGenerator implements Callable<Void> {
     }
 
 
+
+    public void addDocument(List<Dependency> addTo) {
+        Dependency dependency = new Dependency();
+        dependency.setGroupId("ai.konduit.serving");
+        dependency.setArtifactId("konduit-serving-document-parser");
+        dependency.setVersion(konduitServingVersion);
+        Exclusion exclusion = new Exclusion();
+        exclusion.setArtifactId("logback-classic");
+        exclusion.setGroupId("ch.qos.logback");
+        dependency.addExclusion(exclusion);
+        addTo.add(dependency);
+    }
     public void addPython(List<Dependency> addTo) {
         Dependency dependency = new Dependency();
         dependency.setGroupId("ai.konduit.serving");
@@ -696,6 +711,9 @@ public class PomGenerator implements Callable<Void> {
 
         if(python && !assembly)
             addPython(defaultDependencies);
+
+        if(doc && !assembly)
+            addDocument(defaultDependencies);
 
         if(dl4j && !assembly)
             addDeeplearning4j(defaultDependencies);

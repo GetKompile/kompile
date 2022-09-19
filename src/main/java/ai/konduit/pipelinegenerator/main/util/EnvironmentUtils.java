@@ -206,6 +206,8 @@ public class EnvironmentUtils {
      * @return the value resolved from the JVM property
      */
     public static String resolvePropertyValue(String value) {
+        if(value == null)
+            return null;
         Matcher matcher = PROP_REGEX.matcher(value);
         List<String> allMatches = new ArrayList<>();
         while(matcher.find()) {
