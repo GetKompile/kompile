@@ -132,6 +132,10 @@ public class PipelineCommandGenerator implements Callable<Void> {
                 }
             }
 
+            if(pipeline.size() < 1) {
+                throw new IllegalStateException("Specified pipeline file invalid. Please ensure that a server is specified. This can be generated with ./kompile exec inference-server-create --pipelineFile=./yourPipelinefile.json --protocol=$YOUR_PROTOCOL --port=$YOUR_PORT");
+            }
+
             appendCommands(command, pipeline);
 
         }

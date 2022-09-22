@@ -25,10 +25,8 @@ import org.nd4j.common.base.Preconditions;
 import org.nd4j.common.io.ClassPathResource;
 import picocli.CommandLine;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
+import java.io.*;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -54,6 +52,8 @@ public class NativeImageBuilder implements Callable<Void> {
     private boolean tensorflow = false;
     @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
     private boolean image = false;
+    @CommandLine.Option(names = "--resourceBaseUrl",description = "Whether to use image pre processing or not or not")
+    private String resourceBaseUrl = "https://raw.githubusercontent.com/KonduitAI/kompile-program-repository/main/";
     @CommandLine.Option(names = "--server",description = "Whether to use an http server or not")
     private boolean server = false;
 
@@ -86,6 +86,12 @@ public class NativeImageBuilder implements Callable<Void> {
     @CommandLine.Option(names = "--nativeImageFilesPath",description = "The path to the files for building an image")
     private String nativeImageFilesPath;
 
+    private void downloadResource(String fileName,File parentPath) throws IOException {
+        try(InputStream is = URI.create(resourceBaseUrl + "/" + fileName  ).toURL().openStream();
+            FileOutputStream fileOutputStream = new FileOutputStream(new File(parentPath,fileName))) {
+            IOUtils.copy(is,fileOutputStream);
+        }
+    }
     public void runMain(String...args) throws Exception {
         InvocationRequest invocationRequest = new DefaultInvocationRequest();
         File project = new File(imageName);
@@ -102,9 +108,7 @@ public class NativeImageBuilder implements Callable<Void> {
         if (numpySharedLibrary) {
             File cEntryPointDir = new File(srcDir,"ai/konduit/pipelinegenerator/main");
             Preconditions.checkState(cEntryPointDir.mkdirs(),"Unable to make directory " + cEntryPointDir.getAbsolutePath());
-            ClassPathResource classPathResource = new ClassPathResource("NumpyEntryPoint.java");
-            FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"NumpyEntryPoint.java"));
-
+            downloadResource("NumpyEntryPoint.java",cEntryPointDir);
         }
 
         if(server) {
@@ -115,16 +119,14 @@ public class NativeImageBuilder implements Callable<Void> {
                 //don't try to throw an error if it's also  a shared library build.
                 cEntryPointDir.mkdirs();
             }
-            ClassPathResource classPathResource = new ClassPathResource("ServingMain.java");
-            FileUtils.copyFile(classPathResource.getFile(),new File(cEntryPointDir,"ServingMain.java"));
+
+            downloadResource("ServingMain.java",cEntryPointDir);
         }
 
         File resourcesDir = new File(project,"src/main/resources");
         Preconditions.checkState(resourcesDir.mkdirs(),"Unable to make directories " + resourcesDir.getAbsolutePath());
         if (numpySharedLibrary) {
-            ClassPathResource classPathResource2 = new ClassPathResource("numpy_struct.h");
-            FileUtils.copyFile(classPathResource2.getFile(),new File(resourcesDir,"numpy_struct.h"));
-
+            downloadResource("numpy_struct.h",resourcesDir);
         }
 
         FileUtils.copyFile(outputFile,new File(project,"pom.xml"));

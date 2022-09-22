@@ -1,6 +1,6 @@
 FROM rockylinux/rockylinux:8.4 AS builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
-RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220819_0257/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
+RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
@@ -52,7 +52,7 @@ COPY --from=builder /kompile/kompile /kompile/kompile
 COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
 COPY --from=builder /kompile/kompile-python /kompile/kompile-python
 COPY   /src/main/resources/META-INF/native-image /kompile/native-image
-ENV PATH="/root/.kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/"
 ENV JAVA_HOME=/root/.kompile/graalvm
 RUN yum -y install git gcc gcc-c++ cmake zlib zlib-devel xz
+ENV PATH="/root/.kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/:/root/.kompile/graalvm/bin"
 ENTRYPOINT ["/kompile/kompile"]

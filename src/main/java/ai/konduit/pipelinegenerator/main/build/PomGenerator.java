@@ -103,7 +103,7 @@ public class PomGenerator implements Callable<Void> {
     private String alpnVersion = "8.1.13.v20181017";
     private String npnVersion = "1.1.1.v20141010";
     private String nettyTcNativeVersion = "2.0.39.Final";
-    private String nettyVersion = "4.1.49.Final";
+    private String nettyVersion = "4.1.74.Final";
     private String concsryptVersion = "2.5.2";
     private String konduitServingVersion = "0.4.0-SNAPSHOT";
     private String javacppVersion = "1.5.7";
@@ -111,6 +111,7 @@ public class PomGenerator implements Callable<Void> {
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
+    private String logbackVersion = "1.4.1";
 
     private String zeroTurnAroundVersion = "1.12";
     private String picoCliVersion = "4.6.3";
@@ -405,6 +406,7 @@ public class PomGenerator implements Callable<Void> {
         addDependency(defaultDependencies,"org.bytedeco","javacpp",javacppVersion);
         addDependency(defaultDependencies,"log4j","log4j",log4jVersion);
         addDependency(defaultDependencies,"org.slf4j","slf4j-api",slf4jVersion);
+        addDependency(defaultDependencies,"ch.qos.logback","logback-classic",logbackVersion);
     }
 
 
@@ -435,9 +437,9 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.tools.Logger\n");
         stringBuilder.append("--initialize-at-build-time=org.nd4j.shade.jackson.core.JsonToken\n");
         stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
+        stringBuilder.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n");
         stringBuilder.append(" --initialize-at-run-time=io.netty\n");
-        stringBuilder.append("--initialize-at-build-time=org.slf4j\n");
-        stringBuilder.append("--initialize-at-build-time=ch.qos\n");
+        stringBuilder.append(" --initialize-at-run-time=ai.konduit.serving\n");
         stringBuilder.append("--initialize-at-run-time=org.nd4j.nativeblas\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");

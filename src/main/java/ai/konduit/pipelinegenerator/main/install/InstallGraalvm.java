@@ -27,7 +27,7 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
 public class InstallGraalvm implements Callable<Integer> {
 
-    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220819_0257/graalvm-ce-java11-linux-amd64-dev.tar.gz";
+    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz";
     //for other platforms see: https://github.com/graalvm/graalvm-ce-builds/releases/tag/vm-20.3.6
     public final static String FILE_NAME = "graalvm-ce-java11-linux-amd64-dev.tar.gz";
 

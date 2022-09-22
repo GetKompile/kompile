@@ -454,6 +454,7 @@
                 --initialize-at-build-time=org.joda
                 --initialize-at-run-time=org.nd4j.common.io.VfsUtils
                 --initialize-at-build-time=org.nd4j.ir.
+                --initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font
                 --initialize-at-run-time=org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder
                 --initialize-at-build-time=org.nd4j.common.
                 --initialize-at-build-time=org.nd4j.shade.

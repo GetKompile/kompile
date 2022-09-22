@@ -22,6 +22,7 @@ import ai.konduit.serving.pipeline.api.step.PipelineStep;
 import ai.konduit.serving.pipeline.impl.pipeline.GraphPipeline;
 import ai.konduit.serving.pipeline.impl.pipeline.SequencePipeline;
 import ai.konduit.serving.pipeline.impl.pipeline.graph.GraphStep;
+import ai.konduit.serving.pipeline.util.ObjectMappers;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import org.apache.commons.io.FileUtils;
 
@@ -55,6 +56,13 @@ public class ModuleAppender {
             case ND4JTENSORFLOW:
                 commandsToAdd.add("nd4j-tensorflow");
                 break;
+            case GRAY_SCALE:
+            case IMAGE_CROP:
+            case IMAGE_RESIZE:
+            case RELATIVE_TO_ABSOLUTE:
+            case DRAW_POINTS:
+            case DRAW_HEATMAP:
+            case PERSPECTIVE_TRANSFORM:
             case DRAW_BOUNDING_BOX:
             case DRAW_SEGMENTATION:
             case SSD_TO_BOUNDING_BOX:
@@ -84,6 +92,7 @@ public class ModuleAppender {
                 //already present by default in konduit-serving-pipeline as a transitive dependency
                 break;
             case SAMEDIFF:
+            case SAMEDIFF_TRAINING:
                 commandsToAdd.add("samediff");
                 break;
             case TENSORFLOW:
@@ -92,13 +101,16 @@ public class ModuleAppender {
             case TVM:
                 commandsToAdd.add("tvm");
                 break;
+            case DOCUMENTPARSER:
+                commandsToAdd.add("doc");
+                break;
 
         }
     }
 
     public static void main(String...args) throws Exception {
-        File newFile = new File(args[0]);
-        System.out.println(ModuleAppender.getCommandsFromPipeline(InferenceConfiguration.fromJson(FileUtils.readFileToString(newFile, Charset.defaultCharset())).pipeline()));
+        File newFile = new File("pipeline-config.json");
+        System.out.println(ModuleAppender.getCommandsFromPipeline(ObjectMappers.fromJson(FileUtils.readFileToString(newFile, Charset.defaultCharset()),Pipeline.class)));
     }
 
 }

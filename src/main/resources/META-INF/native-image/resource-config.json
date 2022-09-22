@@ -1074,7 +1074,21 @@
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/testing/utils.py\\E"},
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/include/numpy/npy_common.h\\E"},
     {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/typing/_add_docstring.py\\E"},
-    {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"}
+    {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"},
+    {"pattern":"\\Qorg/bytedeco/numpy/linux-x86_64/python/numpy/core/_internal.py\\E"},
+    {"pattern":"\\Qorg/apache/tika/mime/tika-mimetypes.xml\\E"},
+    {"pattern":"\\Qorg/apache/tika/parser/external/tika-external-parsers.xml\\E"},
+    {"pattern":"\\Qorg/apache/tika/parser/pdf/PDFParser.properties\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/afm/**/\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/glyphlist/**/\\E"},
+    {"pattern":"\\Qorg/apache/fontbox/cmap/**/\\E"},
+    {"pattern":"\\Qorg/apache/fontbox/unicode/**/\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/glyphlist/glyphlist.txt\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/glyphlist/zapfdingbats.txt\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/glyphlist/additional.txt\\E"},
+    {"pattern":"\\Qorg/apache/pdfbox/resources/BidiMirroring.txt\\E"}
+
+
   ]},
   "bundles":[
   ]
