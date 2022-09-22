@@ -142,10 +142,6 @@ public class PomGenerator implements Callable<Void> {
 
     public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version,String scope,String classifier) {
         Dependency dependency = getDependency(groupId,artifactId,version,scope,classifier);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
 
     }
@@ -444,6 +440,7 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
+        stringBuilder.append("-H:+AddAllCharsets");
         if(nativeImageJvmArgs != null) {
             for(String jvmArg : nativeImageJvmArgs) {
                 stringBuilder.append("-J" + jvmArg + "\n");

@@ -433,6 +433,7 @@
                 -H:-CheckToolchain
                 --enable-https
                 --enable-http
+                -H:+AddAllCharsets
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces
