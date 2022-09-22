@@ -440,7 +440,7 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
         stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
-        stringBuilder.append("-H:+AddAllCharsets");
+        stringBuilder.append(" -H:+AddAllCharsets\n");
         if(nativeImageJvmArgs != null) {
             for(String jvmArg : nativeImageJvmArgs) {
                 stringBuilder.append("-J" + jvmArg + "\n");
