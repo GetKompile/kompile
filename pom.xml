@@ -61,6 +61,7 @@
     <flatbuffers.version>1.12.0</flatbuffers.version>
     <nd4j.backend>nd4j-native</nd4j.backend>
     <conscrypt.version>2.5.2</conscrypt.version>
+    <slf4j.version>1.7.35</slf4j.version>
   </properties>
 
   <dependencyManagement>
@@ -75,7 +76,11 @@
 
   <dependencies>
 
-
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-nop</artifactId>
+      <version>${slf4j.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.conscrypt</groupId>
       <artifactId>conscrypt-openjdk-uber</artifactId>
@@ -114,7 +119,7 @@
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
-      <version>1.7.35</version>
+      <version>${slf4j.version}</version>
     </dependency>
 
     <dependency>
@@ -365,6 +370,7 @@
             <configuration>
               <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
               <buildArgs>
+                --trace-class-initialization=org.slf4j.LoggerFactory
                 -J-Xmx18g
                 --no-fallback
                 --verbose
@@ -436,6 +442,8 @@
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces
+                --initialize-at-run-time=org.eclipse.jgit
+                --initialize-at-run-time=org.nd4j.common.config.ND4JClassLoading
                 --initialize-at-run-time=org.apache.commons.lang3.RandomUtils
                 --initialize-at-build-time=org.eclipse.jgit
                 --initialize-at-run-time=org.eclipse.jgit.util.FileUtils
@@ -451,7 +459,6 @@
                 --initialize-at-build-time=org.apache
                 --initialize-at-build-time=org.joda
                 --initialize-at-run-time=org.nd4j.common.io.VfsUtils
-                --initialize-at-build-time=org.nd4j.ir.
                 --initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font
                 --initialize-at-run-time=org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder
                 --initialize-at-build-time=org.nd4j.shade.

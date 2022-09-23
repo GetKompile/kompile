@@ -356,6 +356,7 @@ public class PomGenerator implements Callable<Void> {
                 new KonduitDSLPomAppender(),
                 new KonduitPythonPomFileAppender(),
                 new Nd4jJacksonAppender(),
+                new Nd4jClassLoadingPomFileAppender(),
                 new OpenblasPomFileAppender(),
                 new Python4jPomFileAppender(),
                 new PythonPomFileAppender(),

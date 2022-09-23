@@ -32,7 +32,8 @@ public interface PomFileAppender {
         ND4J_JACKSON,
         PYTHON4J,
         APACHE_COMMONS,
-        KONDUIT_PYTHON
+        KONDUIT_PYTHON,
+        ND4J_CLASSLOADING
 
     }
 

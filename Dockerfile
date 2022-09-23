@@ -14,36 +14,36 @@ ARG BACKEND_PROFILE=cpu
 ARG JAVCPP_PLATFORM=linux-x86_64
 ARG DL4J_BACKEND=1.0.0-SNAPSHOT
 ARG LTO=OFF
-COPY ./kompile-c-library /kompile/kompile-c-library
-COPY ./kompile-python /kompile/kompile-python
-COPY ./src /kompile/src
-ENV KOMPILE_PREFIX=/kompile
-COPY pom.xml /kompile/pom.xml
-
-RUN cd /kompile && git clone  https://github.com/eclipse/deeplearning4j && \
+RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j && \
     cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64 && \
     cd /kompile && git clone https://github.com/KonduitAI/konduit-serving  && \
-    cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu clean install -Dmaven.test.skip=true && \
-    cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package -Dmaven.test.skip=true &&\
-    mv /kompile/target/kompile /kompile && \
-    chmod +x /kompile/kompile && \
-    rm -rf /kompile/deeplearning4j /kompile/konduit-serving && \
-   chmod -R 755 /kompile && \
-    rm -rf /root/* && \
-     rm -rf /kompile/mvn \
-               /kompile/mvn.tar.gz \
-              /kompile/miniconda3 \
-              /kompile/miniconda3.sh \
-              /kompile/target \
-              /root/.javacpp \
-              /root/.conda \
-              /root/.m2 \
-              /kompile/src \
-              /kompile/pom.xml
+    cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu clean install -Dmaven.test.skip=true
+
+COPY ./kompile-c-library /kompile/kompile-c-library
+COPY ./kompile-python /kompile/kompile-python
+COPY ./src /kompile/src
+ENV KOMPILE_PREFIX=/kompile
+COPY pom.xml /kompile/pom.xml
+RUN cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package -Dmaven.test.skip=true &&\
+        mv /kompile/target/kompile /kompile && \
+        chmod +x /kompile/kompile && \
+        rm -rf /kompile/deeplearning4j /kompile/konduit-serving && \
+         chmod -R 755 /kompile && \
+        rm -rf /root/* && \
+         rm -rf /kompile/mvn \
+                   /kompile/mvn.tar.gz \
+                  /kompile/miniconda3 \
+                  /kompile/miniconda3.sh \
+                  /kompile/target \
+                  /root/.javacpp \
+                  /root/.conda \
+                  /root/.m2 \
+                  /kompile/src \
+                  /kompile/pom.xml
 
 
 FROM rockylinux:8.5

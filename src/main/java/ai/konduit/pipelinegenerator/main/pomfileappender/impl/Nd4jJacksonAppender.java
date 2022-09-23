@@ -114,9 +114,7 @@ public class Nd4jJacksonAppender implements PomFileAppender {
                 "org.nd4j.shade.jackson.databind.PropertyMetadata",
                 "org.nd4j.shade.jackson.core.JsonParser",
                 "org.nd4j.shade.jackson.databind.ext.Java7HandlersImpl",
-                "org.nd4j.shade.jackson.databind.ext.Java7Handlers",
-                "org.nd4j.common.base.Preconditions",
-                "org.nd4j.common.config.ND4JClassLoading"
+                "org.nd4j.shade.jackson.databind.ext.Java7Handlers"
 
 
         );
