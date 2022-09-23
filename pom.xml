@@ -369,7 +369,6 @@
                 --no-fallback
                 --verbose
                 -H:+JNI
-                --trace-class-initialization=java.util.Random
                 --allow-incomplete-classpath
                 -H:IncludeResourceBundles=org.eclipse.jgit.internal.JGitText
                 -H:IncludeResources="konduit-serving.h"
@@ -437,8 +436,6 @@
                 -Djavacpp.platform=${javacpp.platform}
                 -H:+ReportUnsupportedElementsAtRuntime
                 -H:+ReportExceptionStackTraces
-                --trace-class-initialization=org.eclipse.jgit.diff.DiffFormatter
-                --trace-class-initialization=org.eclipse.jgit.api.CommitCommand
                 --initialize-at-run-time=org.apache.commons.lang3.RandomUtils
                 --initialize-at-build-time=org.eclipse.jgit
                 --initialize-at-run-time=org.eclipse.jgit.util.FileUtils
@@ -457,13 +454,10 @@
                 --initialize-at-build-time=org.nd4j.ir.
                 --initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font
                 --initialize-at-run-time=org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder
-                --initialize-at-build-time=org.nd4j.common.
                 --initialize-at-build-time=org.nd4j.shade.
                 --initialize-at-run-time=org.nd4j.nativeblas
                 --initialize-at-run-time=ai.konduit.pipelinegenerator.main.models.Convert
                 --initialize-at-run-time=io.netty
-                --initialize-at-build-time=org.slf4j
-                --initialize-at-build-time=ch.qos
                 --report-unsupported-elements-at-runtime
               </buildArgs>
             </configuration>

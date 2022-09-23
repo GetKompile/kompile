@@ -177,10 +177,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-nd4j-tensorflow");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -189,10 +185,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-tensorflow");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -201,10 +193,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-nd4j");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -214,10 +202,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-deeplearning4j");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -226,10 +210,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-samediff");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -238,10 +218,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-onnx");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -250,10 +226,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-image");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -262,10 +234,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-tvm");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -276,10 +244,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-document-parser");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
     public void addPython(List<Dependency> addTo) {
@@ -287,10 +251,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-python");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -299,10 +259,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-cli");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -311,10 +267,6 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-core");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
     }
 
@@ -324,20 +276,12 @@ public class PomGenerator implements Callable<Void> {
         dependency.setGroupId("ai.konduit.serving");
         dependency.setArtifactId("konduit-serving-http");
         dependency.setVersion(konduitServingVersion);
-        Exclusion exclusion = new Exclusion();
-        exclusion.setArtifactId("logback-classic");
-        exclusion.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion);
         addTo.add(dependency);
 
         Dependency tcNative = new Dependency();
         tcNative.setGroupId("io.netty");
         tcNative.setArtifactId("netty-tcnative");
         tcNative.setVersion(nettyTcNativeVersion);
-        Exclusion exclusion2 = new Exclusion();
-        exclusion2.setArtifactId("logback-classic");
-        exclusion2.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion2);
         addTo.add(tcNative);
 
 
@@ -346,10 +290,6 @@ public class PomGenerator implements Callable<Void> {
         prometheus.setGroupId("io.micrometer");
         prometheus.setArtifactId("micrometer-registry-prometheus");
         prometheus.setVersion(microMeterVersion);
-        Exclusion exclusion23 = new Exclusion();
-        exclusion23.setArtifactId("logback-classic");
-        exclusion23.setGroupId("ch.qos.logback");
-        dependency.addExclusion(exclusion23);
         addTo.add(prometheus);
 
 

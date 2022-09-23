@@ -38,6 +38,6 @@ public class KonduitDSLPomAppender implements PomFileAppender {
 
     @Override
     public InitializeType initializeType() {
-        return InitializeType.BUILD_TIME;
+        return InitializeType.RUNTIME;
     }
 }

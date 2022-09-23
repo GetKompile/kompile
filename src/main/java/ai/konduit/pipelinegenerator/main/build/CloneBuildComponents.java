@@ -303,7 +303,12 @@ public class CloneBuildComponents implements Callable<Integer> {
             InvocationResult execute = invoker.execute(invocationRequest);
             if(execute != null && execute.getExitCode() != 0) {
                 System.err.println("Konduit Serving build failed. Reason below:");
-                execute.getExecutionException().printStackTrace();
+                if(execute.getExecutionException() != null)
+                    execute.getExecutionException().printStackTrace();
+                else {
+                    System.err.println("Unable to find reason for konduit serving build failing. Please see error message above if any. Exiting.");
+                    return 1;
+                }
             } else if(execute.getExitCode() == 0) {
                 System.err.println("Finished building Konduit Serving.");
             } else {
