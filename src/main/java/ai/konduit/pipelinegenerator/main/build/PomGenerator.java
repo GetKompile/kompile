@@ -111,7 +111,7 @@ public class PomGenerator implements Callable<Void> {
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
     private String lombokVersion = "1.18.16";
-    private String logbackVersion = "1.4.1";
+    private String logbackVersion = "1.2.11";
 
     private String zeroTurnAroundVersion = "1.12";
     private String picoCliVersion = "4.6.3";
