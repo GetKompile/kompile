@@ -265,6 +265,8 @@ public class CloneBuildComponents implements Callable<Integer> {
                 }
             }
         }
+
+
         if(buildKonduitServing) {
             File konduitServingLocation = new File(konduitServingDirectory);
             if(konduitServingLocation.exists() && forceKonduitServingClone || konduitServingLocation.exists() && konduitServingLocation.listFiles() == null || konduitServingLocation.listFiles() != null && konduitServingLocation.listFiles().length < 1) {

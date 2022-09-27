@@ -92,6 +92,25 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected String nd4jBackend = "nd4j-native";
     @CommandLine.Option(names = {"--nd4jClassifier"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String nd4jClassifier = "linux-x86_64";
+
+
+    @CommandLine.Option(names = {"--dl4jBranch"},description = "The branch to clone dl4j from",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String dl4jBranch = "master";
+
+    @CommandLine.Option(names = {"--konduitServingBranch"},description = "The branch to clone dl4j from",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String konduitServingBranch = "master";
+
+
+
+    @CommandLine.Option(names = {"--nd4jExtension"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String nd4jExtension;
+
+    @CommandLine.Option(names = {"--gccPath"},description = "The path to a gcc folder containing libraries used for gcc. This override is mainly meant to be used where custom gcc are needed. A custom CC/CXX and PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String gccPath;
+
+    @CommandLine.Option(names = {"--glibcPath"},description = "The path to a glibc folder containing libraries used for glibc. This  override is mainly meant to be used where a custom glibc is needed. A custom LD_LIBRARY_PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String glibcPath;
+
     @CommandLine.Option(names = {"--assembly"},description = "Whether to build a dl4j distribution tar file or a graalvm image",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected boolean assembly = false;
     @CommandLine.Option(names = {"--nd4jOperations"},description = "The operations to build with libnd4j. If left empty," +
@@ -157,8 +176,6 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = "--doc",description = "Whether to use document  processing or not or not",scope = CommandLine.ScopeType.INHERIT)
     protected boolean doc = false;
 
-    @CommandLine.Option(names = {"--dl4jBranchName"},description = "The branch to clone for deeplearning4j: defaults to master",scope = CommandLine.ScopeType.INHERIT)
-    protected String dl4jBranchName = "master";
     @CommandLine.Option(names = {"--konduitServingBranchName"},description = "The branch to clone konduit-serving: defaults to master",scope = CommandLine.ScopeType.INHERIT)
     protected String konduitServingBranchName = "master";
 
@@ -238,7 +255,6 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(nd4jHelper,"--nd4j-helper",command);
         addCommand(nd4jDataTypes,"--nd4j-datatypes",command);
         addCommand(nd4jOperations,"--nd4j-operations",command);
-        addCommand(dl4jBranchName,"--dl4j-branch",command);
         addCommand(konduitServingBranchName,"--konduit-serving-branch",command);
         addCommand(pipelineFile,"--pipeline-file",command);
         addCommand(imageName,"--image-name",command);
@@ -252,6 +268,10 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(kompileCPath,"--c-library",command);
         addCommand(kompilePythonPath,"--python-sdk",command);
         addCommand(pythonExecutable,"--python-exec",command);
+        addCommand(nd4jExtension,"--nd4j-extension",command);
+        addCommand(gccPath,"--gcc-path",command);
+        addCommand(glibcPath,"--glibc-path",command);
+        addCommand(konduitServingBranch,"--konduit-serving-branch",command);
         command.add("--assembly");
         command.add(String.valueOf(assembly));
         command.add("--server");
