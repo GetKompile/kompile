@@ -16,6 +16,9 @@
 
 package ai.konduit.pipelinegenerator.main.models;
 
+import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.install.ArchiveUtils;
+import ai.konduit.pipelinegenerator.main.install.InstallMain;
 import org.apache.commons.io.IOUtils;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
@@ -30,6 +33,7 @@ import org.nd4j.samediff.frameworkimport.tensorflow.importer.TensorflowFramework
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
@@ -40,15 +44,21 @@ import java.util.concurrent.Callable;
 public class Convert implements Callable<Integer> {
 
     static {
+        try {
+            File file = InstallMain.downloadTo("https://github.com/KonduitAI/kompile-program-repository/releases/download/scanned-classes.zip/scanned-classes.zip", new File(Info.homeDirectory(), "scanned-classes.zip").getName(), true);
+            ArchiveUtils.unzipFileTo(file.getAbsolutePath(),new File(Info.homeDirectory(),"scanned-classes").getAbsolutePath());
+            try(InputStream scannedResource = new FileInputStream(new File(Info.homeDirectory() + File.separator + "scanned-classes","scanned-classes.json"))) {
+                String input = IOUtils.toString(scannedResource, Charset.defaultCharset());
+                ClassGraphHolder.loadFromJson(input);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
 
-        try(InputStream scannedResource = new ClassPathResource("scanned-import-json.json").getInputStream()) {
-            String input = IOUtils.toString(scannedResource, Charset.defaultCharset());
-            ClassGraphHolder.loadFromJson(input);
-        } catch (IOException e) {
+            ImportReflectionCache.load();
+        } catch (Exception e) {
             throw new RuntimeException(e);
         }
 
-        ImportReflectionCache.load();
     }
     @CommandLine.Option(names = {"--format"},description = "Specify: tensorflow, keras or onnx to convert to samediff format. Optional if the specified inputFile is in the correct format (.h5/.hdf5 (keras) .pb (tensorflow) or .onnx (onnx))",required = true)
     private String format;
