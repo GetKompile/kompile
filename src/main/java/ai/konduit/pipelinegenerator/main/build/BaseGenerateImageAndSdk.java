@@ -272,6 +272,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(gccPath,"--gcc-path",command);
         addCommand(glibcPath,"--glibc-path",command);
         addCommand(konduitServingBranch,"--konduit-serving-branch",command);
+        addCommand(dl4jBranch,"--dl4j-branch",command);
         command.add("--assembly");
         command.add(String.valueOf(assembly));
         command.add("--server");

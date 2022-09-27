@@ -72,4 +72,4 @@ then
 fi
 
 docker build  -t "${OS_NAME}-${CENTOS_VERSION}"-glibc-"${GLIBC_VERSION}"-gcc-"${GCC_VERSION}" --build-arg GCC_VERSION="${GCC_VERSION}" --build-arg GLIBC_VERSION="${GLIBC_VERSION}" --build-arg CENTOS_VERSION="${CENTOS_VERSION}" --build-arg OS_NAME="${OS_NAME}" .
-docker run --rm  -v $(pwd):/mnt -it centos-${CENTOS_VERSION}-glibc-"${GLIBC_VERSION}"-gcc-"${GCC_VERSION}"
+docker run --rm  -v $(pwd):/mnt -it ${OS_NAME}-${CENTOS_VERSION}-glibc-"${GLIBC_VERSION}"-gcc-"${GCC_VERSION}"
