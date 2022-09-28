@@ -32,7 +32,6 @@ import ai.konduit.serving.python.PythonStep;
 import ai.konduit.serving.vertx.config.InferenceConfiguration;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
-import org.nd4j.common.io.ClassPathResource;
 import org.zeroturnaround.exec.ProcessExecutor;
 import oshi.SystemInfo;
 import picocli.CommandLine;
@@ -105,11 +104,11 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--nd4jExtension"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String nd4jExtension;
 
-    @CommandLine.Option(names = {"--gccPath"},description = "The path to a gcc folder containing libraries used for gcc. This override is mainly meant to be used where custom gcc are needed. A custom CC/CXX and PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
-    protected String gccPath;
+    @CommandLine.Option(names = {"--gcc"},description = "The path to a gcc folder containing libraries used for gcc. This override is mainly meant to be used where custom gcc are needed. A custom CC/CXX and PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String gcc;
 
-    @CommandLine.Option(names = {"--glibcPath"},description = "The path to a glibc folder containing libraries used for glibc. This  override is mainly meant to be used where a custom glibc is needed. A custom LD_LIBRARY_PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
-    protected String glibcPath;
+    @CommandLine.Option(names = {"--glibc"},description = "The path to a glibc folder containing libraries used for glibc. This  override is mainly meant to be used where a custom glibc is needed. A custom LD_LIBRARY_PATH update will be used when running the c++ library build.",required = false,scope = CommandLine.ScopeType.INHERIT)
+    protected String glibc;
 
     @CommandLine.Option(names = {"--assembly"},description = "Whether to build a dl4j distribution tar file or a graalvm image",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected boolean assembly = false;
@@ -269,8 +268,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(kompilePythonPath,"--python-sdk",command);
         addCommand(pythonExecutable,"--python-exec",command);
         addCommand(nd4jExtension,"--nd4j-extension",command);
-        addCommand(gccPath,"--gcc-path",command);
-        addCommand(glibcPath,"--glibc-path",command);
+        addCommand(gcc,"--gcc",command);
+        addCommand(glibc,"--glibc",command);
         addCommand(konduitServingBranch,"--konduit-serving-branch",command);
         addCommand(dl4jBranch,"--dl4j-branch",command);
         command.add("--assembly");

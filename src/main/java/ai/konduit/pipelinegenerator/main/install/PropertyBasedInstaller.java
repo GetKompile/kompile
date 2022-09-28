@@ -207,6 +207,13 @@ public class PropertyBasedInstaller implements Callable<Integer> {
                 System.out.println("Program name " + programName + " already installed. Exiting.");
                 return 0;
             }
+        } else if(programName.contains("gcc") || programName.contains("glibc")) {
+            File compilerPath = new File(Info.homeDirectory(),programName);
+            if(compilerPath.exists()) {
+                System.out.println(programName + " already exists. Exiting.");
+                return 0;
+
+            }
         } else {
             File file = EnvironmentUtils.executableOnPath(programName);
             if(file != null && file.exists()) {

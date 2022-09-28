@@ -16,6 +16,7 @@
 
 package ai.konduit.pipelinegenerator.main.build;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import org.apache.commons.io.FileUtils;
@@ -105,7 +106,11 @@ public class CloneBuildComponents implements Callable<Integer> {
     @CommandLine.Option(names = {"--dl4jModule"},description = "The modules to build with dl4j")
     private List<String> dl4jModules;
 
+    @CommandLine.Option(names = {"--glibc"},description = "A custom glibc directory to use with the build. This will modify both the PATH and LD_LIBRARY_PATH for this execution.")
+    private String glibc;
 
+    @CommandLine.Option(names = {"--gcc"},description = "A custom gcc directory to use with the build. This will modify both the PATH and LD_LIBRARY_PATH for this execution.")
+    private String gcc;
     @CommandLine.Option(names = {"--konduitServingModule"},description = "The modules to build with konduit serving")
     private List<String> konduitServingModule;
     public CloneBuildComponents() {
@@ -224,6 +229,54 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setProperties(properties);
                 invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
 
+                StringBuilder libraryPath = new StringBuilder();
+                StringBuilder path = new StringBuilder();
+
+                if(glibc != null && !glibc.isEmpty()) {
+                    File glibcDir = new File(Info.homeDirectory(),glibc + File.separator + "lib64");
+                    libraryPath.append(glibcDir.getAbsolutePath());
+                }
+
+                if(gcc != null && !gcc.isEmpty()) {
+                    File gccPath = new File(Info.homeDirectory(),gcc + "/bin/gcc");
+                    File cxxPath = new File(Info.homeDirectory(),gcc + "/bin/g++");
+                    invocationRequest.addShellEnvironment("CC",gccPath.getAbsolutePath());
+                    invocationRequest.addShellEnvironment("CXX",cxxPath.getAbsolutePath());
+                    if(!libraryPath.toString().isEmpty()) {
+                        libraryPath.append(File.pathSeparator);
+                        File gccLdPath = new File(Info.homeDirectory(),"lib64");
+                        libraryPath.append(gccLdPath.getAbsolutePath());
+                    } else {
+                        File gccLdPath = new File(Info.homeDirectory(),"lib64");
+                        libraryPath.append(gccLdPath.getAbsolutePath());
+                    }
+                }
+
+                if(System.getenv().containsKey("PATH")) {
+                    if(!path.toString().isEmpty()) {
+                        path.append(File.pathSeparator);
+                        path.append(System.getenv("PATH"));
+                    } else {
+                        path.append(System.getenv("PATH"));
+                    }
+                }
+
+                if(System.getenv().containsKey("LD_LIBRARY_PATH")) {
+                    if(!libraryPath.toString().isEmpty()) {
+                        libraryPath.append(File.pathSeparator);
+                        libraryPath.append(System.getenv("LD_LIBRARY_PATH"));
+                    } else {
+                        libraryPath.append(System.getenv("LD_LIBRARY_PATH"));
+                    }
+                }
+
+                if(!path.toString().isEmpty()) {
+                    invocationRequest.addShellEnvironment("PATH",path.toString());
+                }
+
+                if(!libraryPath.toString().isEmpty()) {
+                    invocationRequest.addShellEnvironment("LD_LIBRARY_PATH",libraryPath.toString());
+                }
 
                 if(nd4jBackend != null && nd4jBackend.contains("native")) {
                     invocationRequest.setProfiles(Arrays.asList("cpu"));
