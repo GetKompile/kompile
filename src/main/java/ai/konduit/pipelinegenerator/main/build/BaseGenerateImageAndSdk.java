@@ -125,6 +125,9 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = {"--nd4jHelper"},description = "The nd4j classifier to use",required = false,scope = CommandLine.ScopeType.INHERIT)
     protected String nd4jHelper;
 
+    @CommandLine.Option(names = "--buildThreads",description = "The kompile prefix where the relevant kompile source code is for compilation.",scope = CommandLine.ScopeType.INHERIT)
+    protected long buildThreads = Runtime.getRuntime().availableProcessors();
+
     @CommandLine.Option(names = {"--nd4jUseLto"},description = "Whether to build with link time optimization or not. When link time optimization is used, the linker can take a long time. Turn this on for smaller binaries, but longer build times. Defaults to false.")
     private boolean libnd4jUseLto = false;
     @CommandLine.Option(names = {"--enableJetsonNano"},description = "Whether to use jetson nano dependencies or not",required = false,scope = CommandLine.ScopeType.INHERIT)
@@ -270,6 +273,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         addCommand(nd4jExtension,"--nd4j-extension",command);
         addCommand(gcc,"--gcc",command);
         addCommand(glibc,"--glibc",command);
+        addCommand(String.valueOf(buildThreads),"--build-threads",command);
         addCommand(konduitServingBranch,"--konduit-serving-branch",command);
         addCommand(dl4jBranch,"--dl4j-branch",command);
         command.add("--assembly");

@@ -94,7 +94,7 @@ public class CloneBuildComponents implements Callable<Integer> {
     @CommandLine.Option(names = {"--libnd4jUseLto"},description = "Whether to build with link time optimization or not. When link time optimization is used, the linker can take a long time. Turn this on for smaller binaries, but longer build times. Defaults to false.")
     private boolean libnd4jUseLto = false;
     @CommandLine.Option(names = {"--nd4jBackend"},description = "Whether to build the cpu backend or not. This means including nd4j-native in the build.")
-    private String nd4jBackend = "linux-x86_64";
+    private String nd4jBackend = "nd4j-native";
     @CommandLine.Option(names = {"--dl4jBuildCommand"},description = "The build command for maven. Defaults to clean install -Dmaven.test.skip=true for installing the relevant modules and skipping compilation of tests")
     private String dl4jBuildCommand = "clean install -Dmaven.test.skip=true";
 
@@ -119,6 +119,13 @@ public class CloneBuildComponents implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         Invoker invoker = new DefaultInvoker();
+        platform = platform.replace("-onednn","");
+        platform = platform.replace("-vednn","");
+        platform = platform.replace("-cudnn","");
+        platform = platform.replace("-avx2","");
+        platform = platform.replace("-avx512","");
+
+
         if(buildDl4j) {
             File dl4jLocation = new File(dl4jDirectory);
             InvocationRequest invocationRequest = new DefaultInvocationRequest();
@@ -211,9 +218,26 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setPomFile(new File(dl4jDirectory,"pom.xml"));
                 Properties properties = new Properties();
                 properties.put("libnd4j.build",libnd4jBuildType);
-                properties.put("libnd4j.platform",platform);
                 properties.put("libnd4j.extension", libnd4jExtension.startsWith("-") ? libnd4jExtension.substring(1) : libnd4jExtension);
-                properties.put("libnd4j.classifier",libnd4jClassifier);
+                StringBuilder classifier = new StringBuilder();
+                classifier.append(platform);
+                //build real classifier based on platform
+                if(libnd4jHelper != null && !libnd4jHelper.isEmpty()) {
+                    classifier.append("-");
+                    classifier.append(libnd4jHelper.startsWith("-") ? libnd4jHelper.substring(1) : libnd4jExtension);
+                }
+
+                if(libnd4jExtension != null && !libnd4jExtension.isEmpty()) {
+                    classifier.append("-");
+                    classifier.append(libnd4jExtension.startsWith("-") ? libnd4jExtension.substring(1) : libnd4jExtension);
+                }
+
+                if(libnd4jExtension != null && !libnd4jExtension.isEmpty()) {
+                    properties.put("libnd4j.extension",libnd4jExtension.startsWith("-") ? libnd4jExtension.substring(1) : libnd4jExtension);
+                }
+
+
+                properties.put("libnd4j.classifier",classifier.toString());
                 properties.put("libnd4j.compute",chipCompute);
                 properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
                 properties.put("libnd4j.helper",libnd4jHelper.startsWith("-") ? libnd4jHelper.substring(1): libnd4jHelper);
@@ -223,8 +247,19 @@ public class CloneBuildComponents implements Callable<Integer> {
                 properties.put("libnd4j.sanitize",libnd4jSanitize ? "ON" : "OFF");
                 properties.put("libnd4j.arch",libnd4jArch);
                 properties.put("libnd4j.lto",libnd4jUseLto ? "ON" : "OFF");
+                properties.put("libnd4j.platform",platform);
                 properties.put("javacpp.platform",platform);
-                properties.put("javacpp.platform.extension",javacppExtension);
+                StringBuilder javacppExtension = new StringBuilder();
+                if(libnd4jHelper != null && !libnd4jHelper.isEmpty()) {
+                    javacppExtension.append(!libnd4jHelper.startsWith("-") ? "-" + libnd4jHelper : libnd4jHelper);
+                }
+
+                if(libnd4jExtension != null && !libnd4jExtension.isEmpty()) {
+                    javacppExtension.append(!libnd4jExtension.startsWith("-") ? "-" + libnd4jExtension : libnd4jExtension);
+                }
+
+
+                properties.put("javacpp.platform.extension",javacppExtension.toString());
 
                 invocationRequest.setProperties(properties);
                 invocationRequest.setGoals(Arrays.asList(dl4jBuildCommand.split(" ")));
