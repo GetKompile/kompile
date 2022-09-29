@@ -1,4 +1,6 @@
-FROM centos:7 as builder
+ARG OS=centos
+ARG OS_VERSION=7
+FROM ${OS}:${OS_VERSION} as builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
 RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
 
@@ -54,7 +56,7 @@ RUN cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package -D
                   /kompile/pom.xml
 
 
-FROM centos:7
+FROM ${OS}:${OS_VERSION}
 RUN mkdir /kompile && yum -y install sed findutils
 COPY --from=builder /kompile/kompile /kompile/kompile
 COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
