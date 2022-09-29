@@ -212,11 +212,11 @@ public class CloneBuildComponents implements Callable<Integer> {
                 Properties properties = new Properties();
                 properties.put("libnd4j.build",libnd4jBuildType);
                 properties.put("libnd4j.platform",platform);
-                properties.put("libnd4j.extension", libnd4jExtension);
+                properties.put("libnd4j.extension", libnd4jExtension.startsWith("-") ? libnd4jExtension.substring(1) : libnd4jExtension);
                 properties.put("libnd4j.classifier",libnd4jClassifier);
                 properties.put("libnd4j.compute",chipCompute);
                 properties.put("libnd4j.buildthreads",String.valueOf(libnd4jBuildThreads));
-                properties.put("libnd4j.helper",libnd4jHelper);
+                properties.put("libnd4j.helper",libnd4jHelper.startsWith("-") ? libnd4jHelper.substring(1): libnd4jHelper);
                 properties.put("libnd4j.chip",libnd4jChip);
                 properties.put("libnd4j.operations",libnd4jOperations);
                 properties.put("libnd4j.datatypes",libnd4jDataTypes);
@@ -238,18 +238,31 @@ public class CloneBuildComponents implements Callable<Integer> {
                 }
 
                 if(gcc != null && !gcc.isEmpty()) {
-                    File gccPath = new File(Info.homeDirectory(),gcc + "/bin/gcc");
-                    File cxxPath = new File(Info.homeDirectory(),gcc + "/bin/g++");
+                    File gccDir = new File(Info.homeDirectory(),gcc);
+                    File gccPath = new File(gccDir, "/bin/gcc");
+                    File cxxPath = new File(gccDir, "/bin/g++");
                     invocationRequest.addShellEnvironment("CC",gccPath.getAbsolutePath());
                     invocationRequest.addShellEnvironment("CXX",cxxPath.getAbsolutePath());
                     if(!libraryPath.toString().isEmpty()) {
                         libraryPath.append(File.pathSeparator);
-                        File gccLdPath = new File(Info.homeDirectory(),"lib64");
+                        File gccLdPath = new File(gccDir,"lib64");
                         libraryPath.append(gccLdPath.getAbsolutePath());
                     } else {
-                        File gccLdPath = new File(Info.homeDirectory(),"lib64");
+                        File gccLdPath = new File(gccDir,"lib64");
                         libraryPath.append(gccLdPath.getAbsolutePath());
                     }
+
+                    if(!path.toString().isEmpty()) {
+                        path.append(File.pathSeparator);
+                        File gccBin = new File(gccDir,"bin");
+                        path.append(gccBin.getAbsolutePath());
+
+                    } else {
+                        File gccBin = new File(gccDir,"bin");
+                        path.append(gccBin.getAbsolutePath());
+                    }
+
+                    properties.put("platform.compiler",gccPath.getAbsolutePath() + File.separator + "g++");
                 }
 
                 if(System.getenv().containsKey("PATH")) {
@@ -271,10 +284,12 @@ public class CloneBuildComponents implements Callable<Integer> {
                 }
 
                 if(!path.toString().isEmpty()) {
+                    System.out.println("Using custom PATH " + path);
                     invocationRequest.addShellEnvironment("PATH",path.toString());
                 }
 
                 if(!libraryPath.toString().isEmpty()) {
+                    System.out.println("Using custom LD_LIBRARY_PATH " + libraryPath);
                     invocationRequest.addShellEnvironment("LD_LIBRARY_PATH",libraryPath.toString());
                 }
 
