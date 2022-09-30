@@ -30,8 +30,9 @@ public class InstallPreRequisites implements Callable<Integer> {
     private String os;
     @CommandLine.Option(names = {"--architecture"},description = "The architecture to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String architecture;
-    @CommandLine.Option(names = {"--nd4jClassifier"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
-    private String nd4jClassifier;
+    @CommandLine.Option(names = {"--nd4jHelper"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
+    private String nd4jHelper;
+
     @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to install pre requisites for",required = false,scope = CommandLine.ScopeType.INHERIT)
     private String nd4jBackend;
     private List<String> dependencies = new ArrayList<>();
@@ -43,7 +44,7 @@ public class InstallPreRequisites implements Callable<Integer> {
         addNdkIfNeeded();
         addCudaIfNeeded();
         addNccIfNeeded();
-        System.out.println("Determined dependencies for: classifier " + nd4jClassifier + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
+        System.out.println("Determined dependencies for: helper " + nd4jHelper + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
         for(String dependency: dependencies) {
             CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
             int execute = commandLine.execute("--programName=" + dependency);
@@ -59,7 +60,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
 
     private void addNccIfNeeded() {
-        if(nd4jBackend.equals("nd4j-native") && nd4jClassifier.contains("vednn")) {
+        if(nd4jBackend.equals("nd4j-native") && nd4jHelper.contains("vednn")) {
             dependencies.add("ncc");
         }
     }
@@ -81,7 +82,7 @@ public class InstallPreRequisites implements Callable<Integer> {
 
     private void addOpenBlasDepsIfNeeded() {
         //only cpu and nd4j-native needs openblas
-        if(!nd4jClassifier.contains("vednn") && nd4jBackend.equals("nd4j-native")) {
+        if(nd4jHelper != null && !nd4jHelper.contains("vednn") || (nd4jHelper == null && nd4jBackend.equals("nd4j-native")) || nd4jHelper.contains("onednn") && nd4jBackend.equals("nd4j-native")) {
             StringBuilder resource = new StringBuilder();
             resource.append("openblas");
             resource.append("-");
