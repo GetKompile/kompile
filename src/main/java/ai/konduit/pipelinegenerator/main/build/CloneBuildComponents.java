@@ -350,9 +350,9 @@ public class CloneBuildComponents implements Callable<Integer> {
                         && !libnd4jHelper.isEmpty()) {
                     System.out.println("Helper: " + libnd4jHelper  + " Extension: " + libnd4jExtension  + " specified. Only building subset of projects.");
                     invocationRequest.setProjects(Arrays.asList(
-                            "libnd4j",
-                            nd4jBackend,
-                            nd4jBackend + "-preset"
+                            ":libnd4j",
+                            ":" + nd4jBackend,
+                            ":" + nd4jBackend + "-preset"
                     ));
 
                 }
