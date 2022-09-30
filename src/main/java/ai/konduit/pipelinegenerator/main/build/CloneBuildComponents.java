@@ -250,9 +250,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                     javacppExtension.append(!libnd4jHelper.startsWith("-") ? "-" + libnd4jHelper : libnd4jHelper);
                 }
 
-                if(libnd4jHelper != null && libnd4jHelper.contains("vednn")) {
 
-                }
                 if(libnd4jExtension != null && !libnd4jExtension.isEmpty()) {
                     javacppExtension.append(!libnd4jExtension.startsWith("-") ? "-" + libnd4jExtension : libnd4jExtension);
                 }
@@ -337,6 +335,18 @@ public class CloneBuildComponents implements Callable<Integer> {
 
                 if(nd4jBackend != null && nd4jBackend.contains("mini")) {
                     invocationRequest.setProfiles(Arrays.asList("minimial-cpu"));
+                }
+
+                //only a subset of projects are valid, ensure we only build what's necessary
+                //the build will fail with everything that isn't the backend and related artifacts.
+                if(libnd4jExtension != null || libnd4jExtension != null) {
+                    if(nd4jBackend.equals("nd4j-native")) {
+                        invocationRequest.setProjects(Arrays.asList(
+                                "libnd4j",
+                                nd4jBackend,
+                                nd4jBackend + "-preset"
+                        ));
+                    }
                 }
 
                 invocationRequest.setAlsoMake(true);
