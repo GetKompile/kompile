@@ -62,10 +62,6 @@ public class CloneBuildComponents implements Callable<Integer> {
     private String libnd4jBuildType = "release";
     @CommandLine.Option(names = {"--libnd4jChip"},description = "The libnd4j chip to build for. Usually either cpu or cuda. Defaults to cpu.")
     private String libnd4jChip = "cpu";
-
-    @CommandLine.Option(names = {"--libnd4jClassifier"},description = "The libnd4j classifier for the platform.")
-    private String libnd4jClassifier = "linux-x86_64";
-
     @CommandLine.Option(names = {"--platform"},description = "The libnd4j platform to build for. This usually should be the OS + system architecture to build for. Valid values are anything in javacpp.platform such as: linux-x86_64, windows-x86_64, linux-arm64,...")
     private String platform = "linux-x86_64";
     @CommandLine.Option(names = {"--libnd4jExtension"},description = "The chip extension. Usually reserved for cuda. This usually covers something like cudnn.")
@@ -254,6 +250,9 @@ public class CloneBuildComponents implements Callable<Integer> {
                     javacppExtension.append(!libnd4jHelper.startsWith("-") ? "-" + libnd4jHelper : libnd4jHelper);
                 }
 
+                if(libnd4jHelper != null && libnd4jHelper.contains("vednn")) {
+
+                }
                 if(libnd4jExtension != null && !libnd4jExtension.isEmpty()) {
                     javacppExtension.append(!libnd4jExtension.startsWith("-") ? "-" + libnd4jExtension : libnd4jExtension);
                 }
@@ -328,8 +327,12 @@ public class CloneBuildComponents implements Callable<Integer> {
                     invocationRequest.addShellEnvironment("LD_LIBRARY_PATH",libraryPath.toString());
                 }
 
-                if(nd4jBackend != null && nd4jBackend.contains("native")) {
+                if(nd4jBackend != null && nd4jBackend.contains("native") && libnd4jHelper == null || !libnd4jHelper.contains("vednn")) {
                     invocationRequest.setProfiles(Arrays.asList("cpu"));
+                }
+
+                if(nd4jBackend != null && nd4jBackend.equals("nd4j-native") && libnd4jHelper != null && libnd4jHelper.contains("vednn")) {
+                    invocationRequest.setProfiles(Arrays.asList("aurora"));
                 }
 
                 if(nd4jBackend != null && nd4jBackend.contains("mini")) {
