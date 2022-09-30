@@ -340,13 +340,12 @@ public class CloneBuildComponents implements Callable<Integer> {
                 //only a subset of projects are valid, ensure we only build what's necessary
                 //the build will fail with everything that isn't the backend and related artifacts.
                 if(libnd4jExtension != null || libnd4jExtension != null) {
-                    if(nd4jBackend.equals("nd4j-native")) {
-                        invocationRequest.setProjects(Arrays.asList(
-                                "libnd4j",
-                                nd4jBackend,
-                                nd4jBackend + "-preset"
-                        ));
-                    }
+                    invocationRequest.setProjects(Arrays.asList(
+                            "libnd4j",
+                            nd4jBackend,
+                            nd4jBackend + "-preset"
+                    ));
+
                 }
 
                 invocationRequest.setAlsoMake(true);
