@@ -325,21 +325,30 @@ public class CloneBuildComponents implements Callable<Integer> {
                     invocationRequest.addShellEnvironment("LD_LIBRARY_PATH",libraryPath.toString());
                 }
 
-                if(nd4jBackend != null && nd4jBackend.contains("native") && libnd4jHelper == null || !libnd4jHelper.contains("vednn")) {
+                if(nd4jBackend != null && nd4jBackend.contains("native")
+                        && libnd4jHelper == null
+                        || !libnd4jHelper.contains("vednn") ||
+                        libnd4jHelper.contains("onednn")) {
+                    System.out.println("Setting cpu profile.");
                     invocationRequest.setProfiles(Arrays.asList("cpu"));
                 }
 
                 if(nd4jBackend != null && nd4jBackend.equals("nd4j-native") && libnd4jHelper != null && libnd4jHelper.contains("vednn")) {
+                    System.out.println("Setting aurora profile.");
                     invocationRequest.setProfiles(Arrays.asList("aurora"));
                 }
 
                 if(nd4jBackend != null && nd4jBackend.contains("mini")) {
+                    System.out.println("Setting minimizer profile.");
                     invocationRequest.setProfiles(Arrays.asList("minimial-cpu"));
                 }
 
                 //only a subset of projects are valid, ensure we only build what's necessary
                 //the build will fail with everything that isn't the backend and related artifacts.
-                if(libnd4jExtension != null || libnd4jExtension != null) {
+                if(libnd4jExtension != null && !libnd4jExtension.isEmpty()
+                        || libnd4jHelper != null
+                        && !libnd4jHelper.isEmpty()) {
+                    System.out.println("Helper: " + libnd4jHelper  + " Extension: " + libnd4jExtension  + " specified. Only building subset of projects.");
                     invocationRequest.setProjects(Arrays.asList(
                             "libnd4j",
                             nd4jBackend,
@@ -351,6 +360,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                 invocationRequest.setAlsoMake(true);
 
                 if(nd4jBackend != null && nd4jBackend.contains("cuda")) {
+                    System.out.println("Setting cuda profile.");
                     invocationRequest.setProfiles(Arrays.asList("cuda"));
                 }
 
