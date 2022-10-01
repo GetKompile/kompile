@@ -26,6 +26,9 @@ public class InstallHeaders implements Callable<Integer> {
 
     public final static String HEADERS_BASE_URL = "https://raw.githubusercontent.com/KonduitAI/kompile-program-repository/main/";
 
+    public InstallHeaders() {
+    }
+
     public static File headersDir() {
         File headers = new File(Info.homeDirectory(),"headers");
         return headers;
@@ -38,8 +41,13 @@ public class InstallHeaders implements Callable<Integer> {
             headers.mkdirs();
         }
 
-        for(String header : new String[]{"konduit-serving.h","numpy_struct.h"})
-            InstallMain.downloadAndLoadFrom(HEADERS_BASE_URL + "/" + header,header,true);
+        for(String header : new String[]{"konduit-serving.h","numpy_struct.h"}) {
+            File file = InstallMain.downloadAndLoadFrom(HEADERS_BASE_URL + "/" + header, header, true);
+            if(!file.exists()) {
+                System.err.println("No file for " + header + " found.");
+                return 1;
+            }
+        }
 
         return 0;
     }
