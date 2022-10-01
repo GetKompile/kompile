@@ -32,6 +32,9 @@ public class ClassifierHelper implements Callable<Integer> {
     @CommandLine.Option(names = {"--helper"},description = "Helper to generate classifier for",required = false)
     private String helper;
 
+    public ClassifierHelper() {
+    }
+
     @Override
     public Integer call() throws Exception {
         StringBuilder stringBuilder = new StringBuilder();
