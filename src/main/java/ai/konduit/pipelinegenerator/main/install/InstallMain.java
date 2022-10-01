@@ -59,7 +59,7 @@ public class InstallMain implements Callable<Integer> {
     public static File downloadTo(String url,String filePath,boolean forceDownload) throws Exception {
         File destFile = new File(filePath);
         System.out.println("Downloading file to " + destFile.getAbsolutePath());
-        if(!destFile.getParentFile().exists()) {
+        if(destFile.getParentFile() != null && !destFile.getParentFile().exists()) {
             destFile.getParentFile().mkdirs();
         }
         if(forceDownload && destFile.exists()) {
