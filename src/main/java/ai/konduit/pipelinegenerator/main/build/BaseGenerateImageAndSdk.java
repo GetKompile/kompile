@@ -17,6 +17,7 @@
 package ai.konduit.pipelinegenerator.main.build;
 
 import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.install.InstallHeaders;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
@@ -38,6 +39,7 @@ import picocli.CommandLine;
 
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -307,7 +309,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
 
     protected void extractResources(File kompileResources) throws IOException {
         for(String s : new String[] {"numpy_struct.h","konduit-serving.h"}) {
-            try(InputStream is = URI.create("https://raw.githubusercontent.com/KonduitAI/kompile/main/" + s).toURL().openStream()) {
+            try(InputStream is =new FileInputStream(new File(InstallHeaders.headersDir(),s))) {
                 String headerContent = IOUtils.toString(is);
                 File tempFile = new File(kompileResources,s);
                 tempFile.createNewFile();
