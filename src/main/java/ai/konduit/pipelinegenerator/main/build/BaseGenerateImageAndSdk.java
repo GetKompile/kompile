@@ -307,7 +307,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
 
     protected void extractResources(File kompileResources) throws IOException {
         for(String s : new String[] {"numpy_struct.h","konduit-serving.h"}) {
-            try(InputStream is = URI.create("https://raw.githubusercontent.com/KonduitAI/kompile/main/src/main/resources/" + s).toURL().openStream()) {
+            try(InputStream is = URI.create("https://raw.githubusercontent.com/KonduitAI/kompile/main/" + s).toURL().openStream()) {
                 String headerContent = IOUtils.toString(is);
                 File tempFile = new File(kompileResources,s);
                 tempFile.createNewFile();
