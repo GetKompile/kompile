@@ -63,7 +63,7 @@ COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
 COPY --from=builder /kompile/kompile-python /kompile/kompile-python
 COPY   /src/main/resources/META-INF/native-image /kompile/native-image
 ENV JAVA_HOME=/root/.kompile/graalvm
-RUN yum -y install git gcc gcc-c++ zlib zlib-devel xz
+RUN yum -y install git gcc gcc-c++ zlib zlib-devel xz  freetype freetype-devel
 RUN /kompile/kompile install install-tool --programName=cmake
 ENV PATH="/root/.kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/:/root/.kompile/graalvm/bin"
 ENTRYPOINT ["/kompile/kompile"]
