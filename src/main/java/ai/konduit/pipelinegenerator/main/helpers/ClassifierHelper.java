@@ -43,6 +43,7 @@ public class ClassifierHelper implements Callable<Integer> {
         stringBuilder.append(os);
         if(architecture.endsWith("-"))
             architecture = architecture.substring(0,architecture.length() - 2);
+        stringBuilder.append("-");
         stringBuilder.append(architecture);
         if(helper != null) {
             if(helper.endsWith("-"))
