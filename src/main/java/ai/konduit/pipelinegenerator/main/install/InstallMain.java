@@ -40,7 +40,8 @@ import java.util.concurrent.Callable;
         OpenBlasInstaller.class,
         InstallPreRequisites.class,
         ProgramIndex.class,
-        RefreshIndexPrograms.class
+        RefreshIndexPrograms.class,
+        InstallHeaders.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

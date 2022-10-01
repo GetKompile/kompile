@@ -371,15 +371,12 @@ public class PomGenerator implements Callable<Void> {
         stringBuilder.append("--no-server\n");
         stringBuilder.append("--verbose\n");
         stringBuilder.append("-H:DeadlockWatchdogInterval=30\n");
-        stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.tools.Logger\n");
         stringBuilder.append("--initialize-at-build-time=org.nd4j.shade.jackson.core.JsonToken\n");
         stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
         stringBuilder.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n");
         stringBuilder.append(" --initialize-at-run-time=io.netty\n");
         stringBuilder.append(" --initialize-at-run-time=ai.konduit.serving\n");
         stringBuilder.append("--initialize-at-run-time=org.nd4j.nativeblas\n");
-        stringBuilder.append("--trace-class-initialization=org.bytedeco.javacpp.Loader\n");
-        stringBuilder.append("--trace-class-initialization=org.bytedeco.openblas.presets.openblas_nolapack\n");
         stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
         stringBuilder.append(" -H:+AddAllCharsets\n");
         if(nativeImageJvmArgs != null) {

@@ -40,6 +40,7 @@ public class InstallGraalvm implements Callable<Integer> {
         if(graalVm.exists() && graalVm.list().length > 0) {
             System.out.println("Graalvm already installed. Skipping. If there is a problem with your install, please call ./kompile uninstall graalvm");
         }
+
         File archive = InstallMain.downloadAndLoadFrom(DOWNLOAD_URL,FILE_NAME,false);
         ArchiveUtils.unzipFileTo(archive.getAbsolutePath(),graalVm.getAbsolutePath(),true);
         //extracts to a directory, move everything to parent directory

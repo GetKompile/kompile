@@ -6,7 +6,7 @@ RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-build
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
-RUN yum -y install git gcc gcc-c++ zlib* xz make cmake
+RUN yum -y install git gcc gcc-c++ zlib* xz make cmake freetype freetype-devel
 RUN yum -y group install "Development Tools" && yum -y update
 ENV PATH=/opt/cmake/bin:${PATH}
 RUN /usr/java/bin/gu install native-image

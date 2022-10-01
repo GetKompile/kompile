@@ -16,22 +16,31 @@
 
 package ai.konduit.pipelinegenerator.main.install;
 
+import ai.konduit.pipelinegenerator.main.Info;
 import picocli.CommandLine;
 
+import java.io.File;
 import java.util.concurrent.Callable;
+@CommandLine.Command(name = "headers",mixinStandardHelpOptions = false)
+public class InstallHeaders implements Callable<Integer> {
 
-@CommandLine.Command(name = "all",mixinStandardHelpOptions = false)
-public class InstallAll implements Callable<Integer> {
+    public final static String HEADERS_BASE_URL = "https://raw.githubusercontent.com/KonduitAI/kompile-program-repository/main/";
 
-    public InstallAll() {
+    public static File headersDir() {
+        File headers = new File(Info.homeDirectory(),"headers");
+        return headers;
     }
 
     @Override
     public Integer call() throws Exception {
-        int exit = new InstallGraalvm().call();
-        exit = new InstallMaven().call();
-        exit = new InstallPython().call();
-        exit = new InstallHeaders().call();
-        return exit;
+        File headers = headersDir();
+        if(!headers.exists()) {
+            headers.mkdirs();
+        }
+
+        for(String header : new String[]{"konduit-serving.h","numpy_struct.h"})
+            InstallMain.downloadAndLoadFrom(HEADERS_BASE_URL + "/" + header,header,true);
+
+        return 0;
     }
 }
