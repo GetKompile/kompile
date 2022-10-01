@@ -42,7 +42,7 @@ public class InstallHeaders implements Callable<Integer> {
         }
 
         for(String header : new String[]{"konduit-serving.h","numpy_struct.h"}) {
-            File file = InstallMain.downloadAndLoadFrom(HEADERS_BASE_URL + "/" + header, "headers", true);
+            File file = InstallMain.downloadTo(HEADERS_BASE_URL + "/" + header, new File(InstallHeaders.headersDir(),header).getAbsolutePath(), true);
             if(!file.exists()) {
                 System.err.println("No file for " + header + " found.");
                 return 1;

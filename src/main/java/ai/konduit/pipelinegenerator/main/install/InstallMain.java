@@ -52,13 +52,16 @@ public class InstallMain implements Callable<Integer> {
      * Download and load a model from the model zoo using the given file name
      * for the given framework
      * @param url the framework to load from
-     * @param name the name of the file to load
+     * @param filePath the absolute path of the file to load
      * @param forceDownload whether to force the download
-     * @return the
+     * @return the downloaded file path
      */
-    public static File downloadTo(String url,String name,boolean forceDownload) throws Exception {
-        File destFile = new File(name);
+    public static File downloadTo(String url,String filePath,boolean forceDownload) throws Exception {
+        File destFile = new File(filePath);
         System.out.println("Downloading file to " + destFile.getAbsolutePath());
+        if(!destFile.getParentFile().exists()) {
+            destFile.getParentFile().mkdirs();
+        }
         if(forceDownload && destFile.exists()) {
             destFile.delete();
         }
@@ -106,7 +109,7 @@ public class InstallMain implements Callable<Integer> {
             }
             conn.getInputStream();
             return conn.getContentLength();
-         }
+        }
         catch (IOException e) {
             return -1;
         } finally {
