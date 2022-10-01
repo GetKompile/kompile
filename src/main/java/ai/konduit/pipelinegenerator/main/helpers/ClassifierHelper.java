@@ -47,6 +47,8 @@ public class ClassifierHelper implements Callable<Integer> {
         if(helper != null) {
             if(helper.endsWith("-"))
                 helper = helper.substring(0,helper.length() - 2);
+            if(helper.startsWith("-"))
+                helper = helper.substring(1);
             stringBuilder.append("-");
             stringBuilder.append(helper);
 
@@ -56,11 +58,14 @@ public class ClassifierHelper implements Callable<Integer> {
         if(extension != null) {
             if(extension.endsWith("-"))
                 extension = extension.substring(0,extension.length() - 2);
+            if(extension.startsWith("-"))
+                extension = extension.substring(1);
             stringBuilder.append("-");
             stringBuilder.append(extension);
 
         }
 
+        System.out.println(stringBuilder);
 
 
         return 0;
