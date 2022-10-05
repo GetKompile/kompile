@@ -310,7 +310,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected void extractResources(File kompileResources) throws IOException {
         for(String s : new String[] {"numpy_struct.h","konduit-serving.h"}) {
             try(InputStream is =new FileInputStream(new File(InstallHeaders.headersDir(),s))) {
-                String headerContent = IOUtils.toString(is);
+                String headerContent = IOUtils.toString(is,Charset.defaultCharset());
                 File tempFile = new File(kompileResources,s);
                 tempFile.createNewFile();
                 tempFile.deleteOnExit();

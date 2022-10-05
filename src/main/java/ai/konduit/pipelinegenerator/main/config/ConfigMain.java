@@ -18,17 +18,21 @@ package ai.konduit.pipelinegenerator.main.config;
 
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig;
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonVariableConfig;
+import ai.konduit.pipelinegenerator.main.config.updater.ScheduleGenerator;
+import ai.konduit.pipelinegenerator.main.config.updater.UpdaterGenerator;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
 
 
 @CommandLine.Command(name = "config",
-       description = "Generate configuration objects for various classes within exec. These objects are used together with various pipeline steps.",
+        description = "Generate configuration objects for various classes within exec. These objects are used together with various pipeline steps.",
         subcommands = {
-        GeneratePythonConfig.class,
-        GeneratePythonVariableConfig.class,
-}, mixinStandardHelpOptions = false)
+                GeneratePythonConfig.class,
+                GeneratePythonVariableConfig.class,
+                ScheduleGenerator.class,
+                UpdaterGenerator.class
+        }, mixinStandardHelpOptions = false)
 public class ConfigMain implements Callable<Integer> {
     public ConfigMain() {
     }

@@ -45,7 +45,7 @@ public class ClassifierHelper implements Callable<Integer> {
             architecture = architecture.substring(0,architecture.length() - 2);
         stringBuilder.append("-");
         stringBuilder.append(architecture);
-        if(helper != null) {
+        if(helper != null && !helper.isEmpty()) {
             if(helper.endsWith("-"))
                 helper = helper.substring(0,helper.length() - 2);
             if(helper.startsWith("-"))
@@ -56,7 +56,7 @@ public class ClassifierHelper implements Callable<Integer> {
         }
 
 
-        if(extension != null) {
+        if(extension != null && !extension.isEmpty()) {
             if(extension.endsWith("-"))
                 extension = extension.substring(0,extension.length() - 2);
             if(extension.startsWith("-"))
