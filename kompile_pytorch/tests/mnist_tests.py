@@ -1,0 +1,25 @@
+import unittest
+import torch
+from torchvision import datasets, transforms
+from kompile.pytorch.trainer import KompileTrainer
+
+
+class PytorchTestCase(unittest.TestCase):
+    def test_something(self):
+        train_loader = torch.utils.data.DataLoader(datasets.MNIST('../mnist_data',
+                                                                  download=True,
+                                                                  train=True,
+                                                                  transform=transforms.Compose([
+                                                                      transforms.ToTensor(),
+                                                                      # first, convert image to PyTorch tensor
+                                                                      transforms.Normalize((0.1307,), (0.3081,))
+                                                                      # normalize inputs
+                                                                  ])),
+                                                   batch_size=10,
+                                                   shuffle=True)
+        trainer = KompileTrainer(pipeline_path='', variable_names=[])
+        trainer.fit(train_loader)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -41,6 +41,7 @@ public class InstallPython implements Callable<Integer> {
             System.out.println("Python already installed. Skipping. If there is a problem with your install, please call ./kompile uninstall python");
             return 0;
         }
+
         File newFile = InstallMain.downloadAndLoadFrom(PYTHON_URL,FILE_NAME,false);
         Preconditions.checkState(newFile.setExecutable(true),"Unable to set file executable. Please ensure your user has proper permissions for installing anaconda.");
         int exitValue =  new ProcessExecutor().environment(System.getenv())
@@ -55,6 +56,8 @@ public class InstallPython implements Callable<Integer> {
                 .readOutput(true)
                 .redirectOutput(System.out)
                 .start().getFuture().get().getExitValue();
+
+
         return exitValue;
 
     }

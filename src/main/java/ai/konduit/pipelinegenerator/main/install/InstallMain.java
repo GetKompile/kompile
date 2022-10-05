@@ -41,7 +41,8 @@ import java.util.concurrent.Callable;
         InstallPreRequisites.class,
         ProgramIndex.class,
         RefreshIndexPrograms.class,
-        InstallHeaders.class
+        InstallHeaders.class,
+        InstallPythonWrappers.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

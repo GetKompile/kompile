@@ -52077,6 +52077,16 @@
     "allDeclaredFields":true
   },
   {
+    "name": "ai.konduit.pipelinegenerator.main.install.InstallPythonWrappers",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
     "name": "ai.konduit.pipelinegenerator.main.config.updater.ScheduleGenerator",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,

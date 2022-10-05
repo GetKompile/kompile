@@ -55,6 +55,7 @@ public class InstallKompileComponents implements Callable<Integer> {
             System.err.println("Kompile directory already found at: " + kompileLocation + ". Please either use --forceClone to force a new clone, delete this directory manually, or specify a different location.");
             return 1;
         }
+
         Git.cloneRepository()
                 .setURI(kompileGitUrl)
                 .setDirectory(cloneRepo)
