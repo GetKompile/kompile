@@ -19,6 +19,7 @@ package ai.konduit.pipelinegenerator.main.models;
 import ai.konduit.pipelinegenerator.main.Info;
 import ai.konduit.pipelinegenerator.main.install.ArchiveUtils;
 import ai.konduit.pipelinegenerator.main.install.InstallMain;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
@@ -45,14 +46,23 @@ public class Convert implements Callable<Integer> {
 
     static {
         try {
-            File file = InstallMain.downloadTo("https://github.com/KonduitAI/kompile-program-repository/releases/download/scanned-classes.zip/scanned-classes.zip", new File(Info.homeDirectory(), "scanned-classes.zip").getName(), true);
-            ArchiveUtils.unzipFileTo(file.getAbsolutePath(),new File(Info.homeDirectory(),"scanned-classes").getAbsolutePath());
-            try(InputStream scannedResource = new FileInputStream(new File(Info.homeDirectory() + File.separator + "scanned-classes","scanned-classes.json"))) {
-                String input = IOUtils.toString(scannedResource, Charset.defaultCharset());
+            File loadedJson = new File(Info.homeDirectory(),"scanned-classes");
+            File scannedClassesFile = new File(loadedJson,"scanned-classes.json");
+            if(!scannedClassesFile.exists()) {
+                System.out.println("Downloading model import metadata. This process needs to only happen once.");
+                File file = InstallMain.downloadTo("https://github.com/KonduitAI/kompile-program-repository/releases/download/scanned-classes.zip/scanned-classes.zip", new File(Info.homeDirectory(), "scanned-classes.zip").getName(), true);
+                ArchiveUtils.unzipFileTo(file.getAbsolutePath(),new File(Info.homeDirectory(),"scanned-classes").getAbsolutePath());
+                try(InputStream scannedResource = new FileInputStream(new File(Info.homeDirectory() + File.separator + "scanned-classes","scanned-classes.json"))) {
+                    String input = IOUtils.toString(scannedResource, Charset.defaultCharset());
+                    ClassGraphHolder.loadFromJson(input);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            } else {
+                String input = FileUtils.readFileToString(scannedClassesFile, Charset.defaultCharset());
                 ClassGraphHolder.loadFromJson(input);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
             }
+
 
             ImportReflectionCache.load();
         } catch (Exception e) {

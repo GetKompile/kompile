@@ -1,7 +1,17 @@
 {
   "resources":{
   "includes":[
-    {"pattern":"\\QMETA-INF/maven/extension.xml\\E"},
+    {"pattern":"\\Qnd4j-op-def.pbtxt\\E"},
+    {"pattern":"\\Qonnx.pbtxt\\E"},
+    {"pattern":"\\Qonnxops.json\\E"},
+    {"pattern":"\\Qops.proto\\E"},
+    {"pattern":"\\Qonnx-mapping-ruleset.pbtxt\\E"},
+    {"pattern":"\\Qonnx-op-def.pbtxt\\E"},
+    {"pattern":"\\Qonnx-op-defs.pb\\E"},
+    {"pattern":"\\Qtensorflow-mapping-ruleset.pbtxt\\E"},
+    {"pattern":"\\Qtensorflow-op-def.pbtxt\\E"},
+
+
     {"pattern":"\\QMETA-INF/maven/org.apache.maven/maven-core/pom.properties\\E"},
     {"pattern":"\\QMETA-INF/maven/slf4j-configuration.properties\\E"},
     {"pattern":"\\QMETA-INF/plexus/components.xml\\E"},

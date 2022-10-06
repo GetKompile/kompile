@@ -25,7 +25,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "onnx-print",description = "Print summary of a target dl4j model.")
+@CommandLine.Command(name = "onnx-print",description = "Print summary of a target onnx model.")
 public class OnnxPrint implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)
@@ -42,7 +42,7 @@ public class OnnxPrint implements Callable<Integer> {
             System.exit(1);
         }
 
-        Onnx.ModelProto onnxModelProto = Onnx.ModelProto.parseDelimitedFrom(new FileInputStream(modelFile));
+        Onnx.ModelProto onnxModelProto = Onnx.ModelProto.parseFrom(new FileInputStream(modelFile));
         System.out.println(onnxModelProto);
 
         return 0;
