@@ -129,7 +129,7 @@ public class NativeToolsCompilation implements Callable<Integer> {
         cd .. && \
         rm -rf protobuf-3.8.0
         RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/eclipse/deeplearning4j
+        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
         RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
         wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-arm.jar && \
         unzip openblas-0.3.19-1.5.7-android-arm.jar
@@ -162,7 +162,7 @@ public class NativeToolsCompilation implements Callable<Integer> {
         cd .. && \
         rm -rf protobuf-3.8.0
         RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/eclipse/deeplearning4j
+        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
         RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
         wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-x86.jar && \
         unzip openblas-0.3.19-1.5.7-android-x86.jar
@@ -194,7 +194,7 @@ public class NativeToolsCompilation implements Callable<Integer> {
         cd .. && \
         rm -rf protobuf-3.8.0
         RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/eclipse/deeplearning4j
+        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
         RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
         wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-x86_64.jar && \
         unzip openblas-0.3.19-1.5.7-android-x86_64.jar
@@ -228,7 +228,7 @@ public class NativeToolsCompilation implements Callable<Integer> {
         cd .. && \
         rm -rf protobuf-3.8.0
         RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/eclipse/deeplearning4j
+        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
         RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
         wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-linux-armhf.jar && \
         unzip openblas-0.3.19-1.5.7-linux-armhf.jar
@@ -262,7 +262,7 @@ public class NativeToolsCompilation implements Callable<Integer> {
         cd .. && \
         rm -rf protobuf-3.8.0
         RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/eclipse/deeplearning4j
+        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
         RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
         wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-linux-arm64.jar && \
         unzip openblas-0.3.19-1.5.7-linux-arm64.jar

@@ -17,15 +17,15 @@
 package ai.konduit.pipelinegenerator.main.exec;
 
 import ai.konduit.pipelinegenerator.main.PipelineStepType;
-import ai.konduit.pipelinegenerator.main.converter.ImageToNDArrayConfigTypeConverter;
-import ai.konduit.pipelinegenerator.main.converter.PointConverter;
-import ai.konduit.pipelinegenerator.main.converter.PythonConfigTypeConverter;
+import ai.konduit.pipelinegenerator.main.converter.*;
 import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
 import ai.konduit.serving.data.image.convert.ImageToNDArrayConfig;
 import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.pipeline.api.data.Point;
 import ai.konduit.serving.pipeline.api.step.PipelineStep;
 import io.swagger.v3.oas.annotations.media.Schema;
+import org.nd4j.linalg.learning.config.IUpdater;
+import org.nd4j.linalg.schedule.ISchedule;
 import picocli.CommandLine;
 
 import java.lang.reflect.Field;
@@ -110,6 +110,8 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
         converters.put(ImageToNDArrayConfig.class.getName(),new ImageToNDArrayConfigTypeConverter());
         converters.put(Point.class.getName(),new PointConverter());
         converters.put(PythonConfig.class.getName(),new PythonConfigTypeConverter());
+        converters.put(IUpdater.class.getName(),new IUpdaterTypeConverter());
+        converters.put(ISchedule.class.getName(),new IScheduleTypeConverter());
     }
 
 

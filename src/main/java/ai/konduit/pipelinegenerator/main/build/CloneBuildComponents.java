@@ -38,8 +38,8 @@ public class CloneBuildComponents implements Callable<Integer> {
     private String dl4jDirectory = System.getProperty("user.home") + "/.kompile/deeplearning4j";
     @CommandLine.Option(names = {"--konduitServingDirectory"},description = "The place to clone konduit-serving for a build: defaults to $USER/.kompile/konduit-serving")
     private String konduitServingDirectory = System.getProperty("user.home") + "/.kompile/konduit-serving";
-    @CommandLine.Option(names = {"--dl4jGitUrl"},description = "The URL to clone deeplearning4j from: Defaults to https://github.com/eclipse/deeplearning4j")
-    private String dl4jGitUrl = "https://github.com/eclipse/deeplearning4j";
+    @CommandLine.Option(names = {"--dl4jGitUrl"},description = "The URL to clone deeplearning4j from: Defaults to https://github.com/deeplearning4j/deeplearning4j")
+    private String dl4jGitUrl = "https://github.com/deeplearning4j/deeplearning4j";
     @CommandLine.Option(names = {"--konduitServingGitUrl"},description = "The URL to clone konduit-serving from: Defaults to https://github.com/KonduitAI/konduit-serving")
     private String konduitServingGitUrl = "https://github.com/KonduitAI/konduit-serving";
     @CommandLine.Option(names = {"--dl4jBranchName"},description = "The branch to clone for deeplearning4j: defaults to master")

@@ -223,28 +223,28 @@ public class UpdaterGenerator implements Callable<Integer> {
         if(epsilon != null) {
             return epsilonUpdaters.contains(updaterType);
         }
-        return false;
+        return true;
     }
 
     private boolean validateMomentum() {
         if(momentum != null) {
             return updaterType.equals("momentum");
         }
-        return false;
+        return true;
     }
 
     private boolean validateRho() {
         if(rho != null) {
             return updaterType.equals("rmsprop");
         }
-        return false;
+        return true;
     }
 
     private boolean validateRmsDecay() {
         if(rmsDecay != null) {
             return updaterType.equals("rmsprop");
         }
-        return false;
+        return true;
     }
 
 }

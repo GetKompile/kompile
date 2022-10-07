@@ -19,10 +19,14 @@ package ai.konduit.pipelinegenerator.main.models;
 import onnx.Onnx;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
+import org.tensorflow.framework.NodeDef;
 import picocli.CommandLine;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "onnx-print",description = "Print summary of a target onnx model.")
@@ -30,6 +34,15 @@ public class OnnxPrint implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)
     private String modelInputPath;
+
+    @CommandLine.Option(names = {"--printNodes"},description = "Whether to print only the node names in the graph",required = false)
+    private boolean printNodes = false;
+    @CommandLine.Option(names = {"--printVarNames"},description = "Whether to print the graph variable names",required = false)
+    private boolean printVarNames = false;
+    @CommandLine.Option(names = {"--printFullGraph"},description = "Whether to print the full graph protobuf txt",required = false)
+    private boolean printFullGraph = false;
+    @CommandLine.Option(names = {"--nodeNameToPrint"},description = "A node name to print ",required = false)
+    private List<String> nodeNameToPrint;
 
     public OnnxPrint() {
     }
@@ -43,7 +56,47 @@ public class OnnxPrint implements Callable<Integer> {
         }
 
         Onnx.ModelProto onnxModelProto = Onnx.ModelProto.parseFrom(new FileInputStream(modelFile));
-        System.out.println(onnxModelProto);
+        Onnx.GraphProto graphDef = onnxModelProto.getGraph();
+        if(printNodes) {
+            StringBuilder stringBuilder = new StringBuilder();
+            for(int i = 0; i < graphDef.getNodeCount(); i++) {
+                Onnx.NodeProto nodeDef = graphDef.getNode(i);
+                stringBuilder.append(nodeDef.getName());
+                if(i < graphDef.getNodeCount() - 1)
+                    stringBuilder.append(",");
+            }
+
+            System.out.println(stringBuilder);
+
+        }
+
+        if(printVarNames) {
+            Set<String> graphVars = new LinkedHashSet<>();
+            for(int i = 0; i < graphDef.getNodeCount(); i++) {
+                Onnx.NodeProto nodeDef = graphDef.getNode(i);
+                for(String input : nodeDef.getInputList()) {
+                    graphVars.add(input);
+                }
+                graphVars.add(nodeDef.getName());
+            }
+
+            System.out.println(graphVars);
+        }
+
+        if(nodeNameToPrint != null) {
+            graphDef.getNodeList().forEach(node -> {
+                if(nodeNameToPrint.contains(node.getName())) {
+                    System.out.println(node);
+                }
+            });
+        }
+
+
+
+        if(printFullGraph)
+            System.out.println(onnxModelProto);
+
+
 
         return 0;
     }

@@ -2,16 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import datasets, transforms
 
 from kompile.pytorch.convert import convert_pytorch
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.optim.lr_scheduler import StepLR
 
 
 class Net(nn.Module):
@@ -52,6 +45,6 @@ train_loader = torch.utils.data.DataLoader(datasets.MNIST('../mnist_data',
 # for data in train_loader:
 #     print(data)
 
-x = torch.from_numpy(np.ones((1,28,28), dtype=np.float32))
+x = torch.from_numpy(np.ones((1,1,28,28), dtype=np.float32))
 # ./kompile model convert --format=onnx --inputFile=/api/kompile_pytorch/tests/output_cnn_mnist.onnx
 convert_pytorch(clf,x,'output_cnn_mnist.onnx')
