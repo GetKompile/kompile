@@ -28,6 +28,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
 @CommandLine.Command(name = "onnx-print",description = "Print summary of a target onnx model.")
 public class OnnxPrint implements Callable<Integer> {
@@ -43,6 +44,11 @@ public class OnnxPrint implements Callable<Integer> {
     private boolean printFullGraph = false;
     @CommandLine.Option(names = {"--nodeNameToPrint"},description = "A node name to print ",required = false)
     private List<String> nodeNameToPrint;
+    @CommandLine.Option(names = {"--printInputs"},description = "Whether to print inputs for graph. ",required = false)
+    private boolean printInputs;
+
+    @CommandLine.Option(names = {"--printOutputs"},description = "Whether to print inputs for graph. ",required = false)
+    private boolean printOutputs;
 
     public OnnxPrint() {
     }
@@ -91,7 +97,13 @@ public class OnnxPrint implements Callable<Integer> {
             });
         }
 
+        if(printInputs) {
+            System.out.println(onnxModelProto.getGraph().getInputList().stream().map(input -> input.getName()).collect(Collectors.toList()));
+        }
 
+        if(printOutputs) {
+            System.out.println(onnxModelProto.getGraph().getOutputList().stream().map(input -> input.getName()).collect(Collectors.toList()));
+        }
 
         if(printFullGraph)
             System.out.println(onnxModelProto);

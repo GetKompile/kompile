@@ -157,7 +157,7 @@ public class Convert implements Callable<Integer> {
         switch(format) {
             case "onnx":
             case "tensorflow":
-                return ".pb";
+                return ".fb";
             case "keras":
                 return ".zip";
             default:

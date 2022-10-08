@@ -26,7 +26,9 @@ import java.util.concurrent.Callable;
                 Convert.class,
                 OnnxPrint.class,
                 TensorflowPrint.class,
-                RequiredOpsDataTypes.class
+                RequiredOpsDataTypes.class,
+                AddLoss.class,
+                AddVariable.class
         },
         description = "Utilities related to models including execution and debugging.")
 public class ModelMain implements Callable<Integer> {
