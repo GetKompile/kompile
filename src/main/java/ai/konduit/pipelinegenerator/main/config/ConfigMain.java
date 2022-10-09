@@ -18,10 +18,7 @@ package ai.konduit.pipelinegenerator.main.config;
 
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig;
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonVariableConfig;
-import ai.konduit.pipelinegenerator.main.config.updater.LossDescriptorGenerator;
-import ai.konduit.pipelinegenerator.main.config.updater.ScheduleGenerator;
-import ai.konduit.pipelinegenerator.main.config.updater.UpdaterGenerator;
-import ai.konduit.pipelinegenerator.main.config.updater.VariableDescriptorGenerator;
+import ai.konduit.pipelinegenerator.main.config.updater.*;
 import ai.konduit.pipelinegenerator.main.models.AddLoss;
 import ai.konduit.pipelinegenerator.main.models.AddVariable;
 import picocli.CommandLine;
@@ -37,7 +34,9 @@ import java.util.concurrent.Callable;
                 ScheduleGenerator.class,
                 UpdaterGenerator.class,
                 VariableDescriptorGenerator.class,
-                LossDescriptorGenerator.class
+                LossDescriptorGenerator.class,
+                TrainingConfigGenerator.class,
+                RegularizationGenerator.class
         }, mixinStandardHelpOptions = false)
 public class ConfigMain implements Callable<Integer> {
     public ConfigMain() {

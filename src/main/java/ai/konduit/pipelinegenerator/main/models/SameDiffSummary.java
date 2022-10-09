@@ -47,7 +47,7 @@ public class SameDiffSummary implements Callable<Integer> {
         File modelFile = new File(modelInputPath);
         if(!modelFile.exists()) {
             System.err.println("No model file found at path " + modelInputPath + " exiting.");
-            System.exit(1);
+            return 1;
         }
 
         SameDiff sameDiff = SameDiff.load(new File(modelInputPath),false);

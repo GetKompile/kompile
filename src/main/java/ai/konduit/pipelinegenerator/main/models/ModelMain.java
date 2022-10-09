@@ -28,7 +28,8 @@ import java.util.concurrent.Callable;
                 TensorflowPrint.class,
                 RequiredOpsDataTypes.class,
                 AddLoss.class,
-                AddVariable.class
+                AddVariable.class,
+                AddTrainingConfig.class
         },
         description = "Utilities related to models including execution and debugging.")
 public class ModelMain implements Callable<Integer> {
