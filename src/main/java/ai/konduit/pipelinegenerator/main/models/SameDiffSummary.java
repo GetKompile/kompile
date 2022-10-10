@@ -16,10 +16,16 @@
 
 package ai.konduit.pipelinegenerator.main.models;
 
+import ai.konduit.pipelinegenerator.main.converter.VariableTypeConverter;
+import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.autodiff.samediff.VariableType;
+import org.nd4j.autodiff.samediff.internal.SameDiffOp;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
@@ -28,16 +34,25 @@ public class SameDiffSummary implements Callable<Integer> {
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)
     private String modelInputPath;
 
-    @CommandLine.Option(names = {"--printOpNames"},description = "Print op names",required = false)
-    private boolean printOpNames;
-    @CommandLine.Option(names = {"--printVariableNames"},description = "Print variable names.",required = false)
-    private boolean printVariableNames;
+    @CommandLine.Option(names = {"--printOpSummary"},description = "Print op summary including name, inputs, outputs, op types,..",required = false)
+    private boolean printOpSummary;
+    @CommandLine.Option(names = {"--opTypeToPrint"},description = "Print ops only of a certain type",required = false)
+    private String[] opTypes;
+
+    @CommandLine.Option(names = {"--printVariableSummary"},description = "Print summary of variables including their types, shapes, name",required = false)
+    private boolean printVariableSummary;
     @CommandLine.Option(names = {"--printFullSummary"},description = "Print full summary.",required = false)
     private boolean printFullSummary;
     @CommandLine.Option(names = {"--printTrainingConfig"},description = "Print training config only.",required = false)
     private boolean printTrainingConfig;
     @CommandLine.Option(names = {"--printLossVariables"},description = "Print loss variables only.",required = false)
     private boolean printLossVariables;
+    @CommandLine.Option(names = {"--variableTypeToPrint"},description = "Print only certain variable types. Valid types are:" +
+            "variable, placeholder,constant,array,sequence ",required = false,converter = VariableTypeConverter.class)
+    private VariableType[] typesToPrint;
+    @CommandLine.Option(names = {"--printOpTypes"},description = "Print list of op types in graph.",required = false)
+    private boolean printOpTypes;
+
 
     public SameDiffSummary() {
     }
@@ -51,17 +66,53 @@ public class SameDiffSummary implements Callable<Integer> {
         }
 
         SameDiff sameDiff = SameDiff.load(new File(modelInputPath),false);
-        if(printVariableNames)
-            sameDiff.variables().stream().map(input -> input.name()).collect(Collectors.toList()).
-                    forEach(variable -> System.out.println(variable));
-        if(printOpNames)
-            sameDiff.getOps().keySet().stream()
-                    .forEach(input -> System.out.println(input));
+        if(printVariableSummary) {
+            StringBuilder variablePrint = new StringBuilder();
+            variablePrint.append("Variable name,Variable Type,Shape,Data type\n");
+            if(this.typesToPrint != null) {
+                List<VariableType> variableTypeList = Arrays.asList(typesToPrint);
+                sameDiff.variables().stream().
+                        filter(input -> variableTypeList.contains(input.getVariableType())).
+                        forEach(variable -> appendVariableToStringBuilder(variablePrint,variable));
+            } else {
+                sameDiff.variables().stream().
+                        forEach(variable -> appendVariableToStringBuilder(variablePrint,variable));
+            }
+
+
+            System.out.println(variablePrint);
+        }
+
+        if(printOpSummary) {
+            StringBuilder stringBuilder = new StringBuilder();
+            stringBuilder.append("Name, Op name, Op type, Op inputs, Op outputs\n");
+            if(opTypes != null) {
+                List<String> opTypes = Arrays.asList(this.opTypes);
+                sameDiff.getOps().values().stream()
+                        .filter(input -> opTypes.contains(input.getOp().opName()))
+                        .forEach(input ->
+                                appendOpToStringBuilder(stringBuilder,input));
+
+            } else {
+                sameDiff.getOps().values().stream()
+                        .forEach(input ->
+                                appendOpToStringBuilder(stringBuilder,input));
+            }
+
+            System.out.println(stringBuilder);
+
+        }
         if(printFullSummary)
             System.out.println(sameDiff.summary());
 
         if(printLossVariables) {
             System.out.println(sameDiff.getLossVariables());
+        }
+
+        if(printOpTypes) {
+            System.out.println(sameDiff.getOps().values()
+                    .stream().map(input -> input.getOp().opName())
+                    .collect(Collectors.toSet()));
         }
 
         if(printTrainingConfig) {
@@ -75,4 +126,28 @@ public class SameDiffSummary implements Callable<Integer> {
 
         return 0;
     }
+
+    private void appendOpToStringBuilder(StringBuilder stringBuilder, SameDiffOp sameDiffOp) {
+        stringBuilder.append(sameDiffOp.getName());
+        stringBuilder.append(",");
+        stringBuilder.append(sameDiffOp.getOp().getOwnName());
+        stringBuilder.append(",");
+        stringBuilder.append(sameDiffOp.getOp().opName());
+        stringBuilder.append(",");
+        stringBuilder.append(sameDiffOp.getInputsToOp());
+        stringBuilder.append(",");
+        stringBuilder.append(sameDiffOp.getOutputsOfOp());
+        stringBuilder.append("\n");
+    }
+
+    private void appendVariableToStringBuilder(StringBuilder stringBuilder, SDVariable variable) {
+        stringBuilder.append(variable.name());
+        stringBuilder.append(",");
+        stringBuilder.append(variable.getVariableType());
+        stringBuilder.append(Arrays.toString(variable.getShape()));
+        stringBuilder.append(",");
+        stringBuilder.append(variable.dataType());
+        stringBuilder.append("\n");
+    }
+
 }

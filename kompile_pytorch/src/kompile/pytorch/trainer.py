@@ -20,7 +20,7 @@ class KompileTrainer(object):
         self.variable_names = variable_names
 
     def fit(self, dataset: DataLoader):
-        '''
+        """
         Invokes a training epoch for the data provided
         by the data loader.
         This will convert every loaded dataset to a list of numpy arrays
@@ -28,10 +28,9 @@ class KompileTrainer(object):
          by named dictionary.
         :param dataset:  the data loader to use to train
         :return:
-        '''
+        """
         for data in dataset:
             input_dict = {}
             for i in range(len(self.variable_names)):
                 input_dict[self.variable_names[i]] = data[i].numpy()
             self.pipeline_runner.run(input_dict)
-

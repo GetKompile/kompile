@@ -52746,5 +52746,36 @@
     "allDeclaredClasses" : true,
     "allPublicClasses" : true,
     "allDeclaredFields":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.converter.VariableTypeConverter",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"org.nd4j.linalg.api.ops.impl.transforms.custom.LogSoftMax",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"java.lang.Integer",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
   }
+
 ]
