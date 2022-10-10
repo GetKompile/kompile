@@ -1,5 +1,5 @@
 from torch.utils.data import DataLoader
-from kompile_pytorch.interface.native.interface import PipelineRunner
+from kompile.interface.native.interface import PipelineRunner
 
 
 class KompileTrainer(object):

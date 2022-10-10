@@ -1,6 +1,7 @@
-from torch.utils.data import DataLoader
 from kompile.interface.native.interface import PipelineRunner
 from tensorflow.python.data.ops.dataset_ops import Dataset
+
+
 class KompileTrainer(object):
     def __init__(self, pipeline_path='',
                  variable_names=[]):
@@ -34,4 +35,3 @@ class KompileTrainer(object):
             for i in range(len(self.variable_names)):
                 input_dict[self.variable_names[i]] = data[i]
             self.pipeline_runner.run(input_dict)
-
