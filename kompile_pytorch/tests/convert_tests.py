@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 
-from kompile.pytorch.convert import convert_pytorch
+from kompile_pytorch.convert import convert_pytorch
 
 
 class Net(nn.Module):
@@ -46,5 +46,5 @@ train_loader = torch.utils.data.DataLoader(datasets.MNIST('../mnist_data',
 #     print(data)
 
 x = torch.from_numpy(np.ones((1,1,28,28), dtype=np.float32))
-# ./kompile model convert --format=onnx --inputFile=/api/kompile_pytorch/tests/output_cnn_mnist.onnx
+# ./kompile_pytorch model convert --format=onnx --inputFile=/api/kompile_pytorch/tests/output_cnn_mnist.onnx
 convert_pytorch(clf,x,'output_cnn_mnist.onnx')

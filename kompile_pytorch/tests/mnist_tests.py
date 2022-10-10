@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from kompile.pytorch.trainer import KompileTrainer
+from kompile_pytorch.trainer import KompileTrainer
 
 
 class PytorchTestCase(unittest.TestCase):
