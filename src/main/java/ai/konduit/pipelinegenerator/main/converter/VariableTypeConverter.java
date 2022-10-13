@@ -17,11 +17,12 @@
 package ai.konduit.pipelinegenerator.main.converter;
 
 import org.nd4j.autodiff.samediff.VariableType;
+import org.nd4j.linalg.api.buffer.DataType;
 import picocli.CommandLine;
 
 public class VariableTypeConverter implements CommandLine.ITypeConverter<VariableType> {
     @Override
-    public VariableType convert(String value) throws Exception {
-        return VariableType.valueOf(value.toUpperCase());
+    public VariableType convert(String s) throws Exception {
+        return VariableType.valueOf(s.toUpperCase());
     }
 }

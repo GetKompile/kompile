@@ -43353,7 +43353,7 @@
 
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.models.SameDiffSummary",
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.SameDiffSummary",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
@@ -52638,7 +52638,7 @@
     "allDeclaredFields":true
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.models.AddLoss",
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.AddLoss",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
@@ -52648,7 +52648,7 @@
     "allDeclaredFields":true
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.models.AddVariable",
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.AddVariable",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
@@ -52708,7 +52708,7 @@
     "allDeclaredFields":true
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.models.AddTrainingConfig",
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.AddTrainingConfig",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
@@ -52776,6 +52776,70 @@
     "allDeclaredClasses" : true,
     "allPublicClasses" : true,
     "allDeclaredFields":true
+  },
+  {
+    "name":"org.nd4j.linalg.api.blas.BLASLapackDelegator",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.cpu.nativecpu.blas.NoOpBLASDelegator",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.linalg.cpu.nativecpu.OpenblasLapackDelegator",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.ChangeVariableType",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.converter.VariableTypeConverter",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.autodiff.samediff.VariableType",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.SameDiffMain",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
   }
-
 ]

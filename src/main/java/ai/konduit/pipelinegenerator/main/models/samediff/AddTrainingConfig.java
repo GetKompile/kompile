@@ -14,7 +14,7 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.models;
+package ai.konduit.pipelinegenerator.main.models.samediff;
 
 import org.apache.commons.io.FileUtils;
 import org.nd4j.autodiff.samediff.SameDiff;

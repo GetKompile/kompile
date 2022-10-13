@@ -19,8 +19,6 @@ package ai.konduit.pipelinegenerator.main.config;
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonConfig;
 import ai.konduit.pipelinegenerator.main.config.python.GeneratePythonVariableConfig;
 import ai.konduit.pipelinegenerator.main.config.updater.*;
-import ai.konduit.pipelinegenerator.main.models.AddLoss;
-import ai.konduit.pipelinegenerator.main.models.AddVariable;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;

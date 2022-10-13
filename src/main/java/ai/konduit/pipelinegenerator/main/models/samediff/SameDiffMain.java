@@ -14,29 +14,28 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.models;
+package ai.konduit.pipelinegenerator.main.models.samediff;
 
-import ai.konduit.pipelinegenerator.main.models.samediff.*;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "model",mixinStandardHelpOptions = false,
+
+@CommandLine.Command(name = "samediff",mixinStandardHelpOptions = false,
         subcommands = {
-                DL4jSummary.class,
-                Convert.class,
-                OnnxPrint.class,
-                TensorflowPrint.class,
-                RequiredOpsDataTypes.class,
-                SameDiffMain.class
+                SameDiffSummary.class,
+                AddLoss.class,
+                AddTrainingConfig.class,
+                AddVariable.class,
+                ChangeVariableType.class
         },
-        description = "Utilities related to models including execution and debugging.")
-public class ModelMain implements Callable<Integer> {
-    public ModelMain() {
+        description = "Utilities related to samediff models")
+public class SameDiffMain implements Callable<Integer> {
+    public SameDiffMain() {
     }
 
     @Override
     public Integer call() throws Exception {
-        CommandLine commandLine = new CommandLine(new ModelMain());
+        CommandLine commandLine = new CommandLine(new SameDiffMain());
         commandLine.usage(System.err);
         return 0;
     }

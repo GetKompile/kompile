@@ -78,6 +78,9 @@ public class Convert implements Callable<Integer> {
     private File outputFile;
     @CommandLine.Option(names = {"--kerasNetworkType"},description = "Specify: sequential or functional ",required = false)
     private String kerasNetworkType;
+    @CommandLine.Option(names = {"--unfreeze"},description = "Unfreeze a model before saving it. This will convert all constants to variables.",required = false)
+    private boolean unfreeze;
+
 
     public Convert() {
 
@@ -102,7 +105,7 @@ public class Convert implements Callable<Integer> {
 
         if(format == null) {
             System.err.println("No format specified and unable to infer format from file extension. Please specify a format (onnx,tensorflow,keras) or ensure your input file is a correct extension.");
-            System.exit(1);
+            return 1;
         }
 
         String fileName = inputFile.getName().substring(0,inputFile.getName().lastIndexOf('.'));
@@ -118,12 +121,16 @@ public class Convert implements Callable<Integer> {
             case "onnx":
                 FrameworkImporter onnxFrameworkImporter = new OnnxFrameworkImporter();
                 SameDiff sameDiff = onnxFrameworkImporter.runImport(inputFile.getAbsolutePath(), Collections.emptyMap(), true);
+                if(unfreeze)
+                    sameDiff.convertConstantsToVariables();
                 sameDiff.asFlatFile(outputFile);
                 System.out.println("Saved converted file to " + outputFile.getAbsolutePath());
                 break;
             case "tensorflow":
                 FrameworkImporter tensorflowFrameworkImporter = new TensorflowFrameworkImporter();
                 SameDiff sameDiff1 = tensorflowFrameworkImporter.runImport(inputFile.getAbsolutePath(),Collections.emptyMap(),true);
+                if(unfreeze)
+                    sameDiff1.convertConstantsToVariables();
                 sameDiff1.asFlatFile(outputFile);
                 System.out.println("Saved converted file to " + outputFile.getAbsolutePath());
                 break;

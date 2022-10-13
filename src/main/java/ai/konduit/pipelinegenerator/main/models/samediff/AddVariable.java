@@ -14,23 +14,17 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.models;
+package ai.konduit.pipelinegenerator.main.models.samediff;
 
 import ai.konduit.pipelinegenerator.main.config.updater.VariableDescriptor;
 import org.apache.commons.io.FileUtils;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.tensorflow.framework.GraphDef;
-import org.tensorflow.framework.NodeDef;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.nio.charset.Charset;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "samediff-add-variable",description = "Add variable to an existing samediff model.")

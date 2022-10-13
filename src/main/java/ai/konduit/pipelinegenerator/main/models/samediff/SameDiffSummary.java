@@ -14,7 +14,7 @@
  *     SPDX-License-Identifier: Apache-2.0
  */
 
-package ai.konduit.pipelinegenerator.main.models;
+package ai.konduit.pipelinegenerator.main.models.samediff;
 
 import ai.konduit.pipelinegenerator.main.converter.VariableTypeConverter;
 import org.nd4j.autodiff.samediff.SDVariable;
@@ -29,7 +29,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-@CommandLine.Command(name = "samediff-summary",description = "Print summary of a target samediff model.")
+@CommandLine.Command(name = "summary",description = "Print summary of a target samediff model.")
 public class SameDiffSummary implements Callable<Integer> {
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)
     private String modelInputPath;
@@ -144,6 +144,7 @@ public class SameDiffSummary implements Callable<Integer> {
         stringBuilder.append(variable.name());
         stringBuilder.append(",");
         stringBuilder.append(variable.getVariableType());
+        stringBuilder.append(",");
         stringBuilder.append(Arrays.toString(variable.getShape()));
         stringBuilder.append(",");
         stringBuilder.append(variable.dataType());
