@@ -370,7 +370,6 @@
             <configuration>
               <mainClass>ai.konduit.pipelinegenerator.main.MainCommand</mainClass>
               <buildArgs>
-                --trace-class-initialization=org.slf4j.LoggerFactory
                 -J-Xmx18g
                 --no-fallback
                 --verbose
@@ -413,7 +412,6 @@
                 -H:+DeadlockWatchdogExitOnTimeout
                 -Dorg.nd4j.samediff.frameworkimport.initcache=true
                 --initialize-at-build-time=onnx.
-                -H:+PrintClassInitialization
                 -H:+ReportExceptionStackTraces
                 -Dorg.eclipse.python4j.numpyimport=false
                 -H:Log=registerResource
@@ -510,7 +508,7 @@
             <argument>ai.konduit.pipelinegenerator.main.models.Convert</argument>
             <argument>ai.konduit.pipelinegenerator.main.models.DL4jSummary</argument>
             <argument>ai.konduit.pipelinegenerator.main.models.OnnxPrint</argument>
-            <argument>ai.konduit.pipelinegenerator.main.models.SameDiffSummary</argument>
+            <argument>ai.konduit.pipelinegenerator.main.models.samediff.SameDiffSummary</argument>
             <argument>ai.konduit.pipelinegenerator.main.models.TensorflowPrint</argument>
             <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallAll</argument>
             <argument>ai.konduit.pipelinegenerator.main.uninstall.UnInstallGraalvm</argument>
