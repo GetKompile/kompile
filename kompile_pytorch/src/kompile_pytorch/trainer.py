@@ -37,6 +37,6 @@ class KompileTrainer(object):
             for i in range(len(self.variable_names)):
                 curr_arr = data[i]
                 if self.pre_process_fns is not None and self.variable_names[i] in self.pre_process_fns:
-                    curr_arr = self.pre_process_fns[i](curr_arr)
+                    curr_arr = self.pre_process_fns[self.variable_names[i]](curr_arr)
                 input_dict[self.variable_names[i]] = curr_arr.numpy()
             self.pipeline_runner.run(input_dict)
