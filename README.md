@@ -6,7 +6,7 @@ the [eclipse deeplearning4j/nd4j ecosystems](https://github.com/deeplearning4j/d
 
 Building container:
 ```bash
-docker  build --ulimit nofile=98304:98304 -t konduitai/kompile:latest  .
+docker  build -f Dockerfile.rockylinux8 --ulimit nofile=98304:98304 -t konduitai/kompile:latest  .
 ```
 
 Running container cli command:
