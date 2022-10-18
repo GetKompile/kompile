@@ -17,7 +17,6 @@
 package ai.konduit.pipelinegenerator.main.config.updater;
 
 import ai.konduit.pipelinegenerator.main.MainCommand;
-import ai.konduit.pipelinegenerator.main.models.samediff.ChangeVariableType;
 import org.codehaus.plexus.util.FileUtils;
 import org.junit.jupiter.api.Test;
 import org.nd4j.autodiff.samediff.SameDiff;

@@ -448,8 +448,8 @@ public class PomGenerator implements Callable<Void> {
 
         StringBuilder configurationBuilder = new StringBuilder();
         configurationBuilder.append("<configuration>");
-        configurationBuilder.append(String.format("<source>%s</source>","1.8"));
-        configurationBuilder.append(String.format("<target>%s</target>","1.8"));
+        configurationBuilder.append(String.format("<source>%s</source>","11"));
+        configurationBuilder.append(String.format("<target>%s</target>","11"));
         configurationBuilder.append("</configuration>");
         StringReader configurationBuilderReader = new StringReader(configurationBuilder.toString());
         Xpp3Dom configuration = Xpp3DomBuilder.build(configurationBuilderReader);

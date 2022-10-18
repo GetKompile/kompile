@@ -3978,6 +3978,15 @@
     "allPublicClasses" : true
   },
   {
+    "name":"org.nd4j.presets.cpu.Nd4jCpuHelper",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
     "name":"org.nd4j.linalg.cpu.nativecpu.buffer.DefaultDataBufferFactory",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
@@ -4078,6 +4087,24 @@
   },
   {
     "name":"org.nd4j.linalg.jcublas.bindings.Nd4jCuda",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.presets.cuda.Nd4jCudaHelper",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true
+  },
+  {
+    "name":"org.nd4j.presets.cuda.Nd4jCudaPresets",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
@@ -52805,13 +52832,24 @@
     "allPublicClasses" : true
   },
   {
-    "name":"ai.konduit.pipelinegenerator.main.models.samediff.ChangeVariableType",
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.ChangeType",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,
     "allDeclaredMethods" : true,
     "allPublicMethods" : true,
     "allDeclaredClasses" : true,
     "allPublicClasses" : true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.ChangeVariableType",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+
+    "allDeclaredFields":true
   },
   {
     "name":"ai.konduit.pipelinegenerator.main.converter.VariableTypeConverter",

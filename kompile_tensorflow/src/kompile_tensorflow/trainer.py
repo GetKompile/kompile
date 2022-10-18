@@ -13,8 +13,12 @@ class KompileTrainer(object):
         :param pipeline_path:  the path to the pipeline json
         :param variable_names: the list of all variable names in list order
         for the data loader.
+        :param pre_process_fns: a dictionary of pre process functions by variable name.
+
         """
         self.pipeline_path = pipeline_path
+        self.pre_process_fns = pre_process_fns
+
         with open(self.pipeline_path) as f:
             self.pipeline_runner = PipelineRunner(pipeline_json=f.read())
         self.variable_names = variable_names
@@ -33,5 +37,8 @@ class KompileTrainer(object):
         for data in dataset.as_numpy_iterator():
             input_dict = {}
             for i in range(len(self.variable_names)):
-                input_dict[self.variable_names[i]] = data[i]
+                curr_arr = data[i]
+                if self.pre_process_fns is not None and self.variable_names[i] in self.pre_process_fns:
+                    curr_arr = self.pre_process_fns[i](curr_arr)
+                input_dict[self.variable_names[i]] = curr_arr
             self.pipeline_runner.run(input_dict)

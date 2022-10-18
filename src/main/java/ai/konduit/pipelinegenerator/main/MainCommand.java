@@ -44,8 +44,7 @@ import java.util.concurrent.Callable;
         Bootstrap.class,
         ModelMain.class,
         BackendEnvironmentInfo.class
-},
-        mixinStandardHelpOptions = false)
+})
 public class MainCommand implements Callable<Integer> {
 
     public static void main(String...args) throws Exception {
