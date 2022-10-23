@@ -27,7 +27,7 @@ import java.io.File;
 import java.nio.charset.Charset;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "samediff-add-variable",description = "Add variable to an existing samediff model.")
+@CommandLine.Command(name = "add-variable",description = "Add variable to an existing samediff model.")
 public class AddVariable implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)

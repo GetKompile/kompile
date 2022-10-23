@@ -25,7 +25,6 @@ import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.modelimport.keras.KerasModelImport;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.nd4j.autodiff.samediff.SameDiff;
-import org.nd4j.common.io.ClassPathResource;
 import org.nd4j.samediff.frameworkimport.FrameworkImporter;
 import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
 import org.nd4j.samediff.frameworkimport.reflect.ClassGraphHolder;
@@ -122,7 +121,7 @@ public class Convert implements Callable<Integer> {
                 FrameworkImporter onnxFrameworkImporter = new OnnxFrameworkImporter();
                 SameDiff sameDiff = onnxFrameworkImporter.runImport(inputFile.getAbsolutePath(), Collections.emptyMap(), true);
                 if(unfreeze)
-                    sameDiff.convertConstantsToVariables();
+                    sameDiff.prepareForTraining();
                 sameDiff.asFlatFile(outputFile);
                 System.out.println("Saved converted file to " + outputFile.getAbsolutePath());
                 break;

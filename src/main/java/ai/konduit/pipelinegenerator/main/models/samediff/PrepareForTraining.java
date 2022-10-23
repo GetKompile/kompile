@@ -16,27 +16,26 @@
 
 package ai.konduit.pipelinegenerator.main.models.samediff;
 
+import ai.konduit.pipelinegenerator.main.config.updater.LossDescriptor;
 import org.apache.commons.io.FileUtils;
+import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
-import org.nd4j.autodiff.samediff.TrainingConfig;
 import picocli.CommandLine;
 
 import java.io.File;
 import java.nio.charset.Charset;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "add-training-config",description = "Add variable to an existing samediff model.")
-public class AddTrainingConfig implements Callable<Integer> {
+@CommandLine.Command(name = "prepare-for-training",description = "After a loss function, updater and training configuration are added, this ensures all variables are ready for training.")
+public class PrepareForTraining implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--modelInputPath"},description = "Input path to model.",required = true)
     private String modelInputPath;
-    @CommandLine.Option(names = {"--trainingConfigFile"},description = "Input path to json file generated with ./kompile config variable-descriptor-generator.",required = true)
-    private File trainingConfigFile;
-
-    @CommandLine.Option(names = {"--newModelOutputPath"},description = "Output path to new model file for saving a new model with the newly added variable.",required = true)
+    @CommandLine.Option(names = {"--newModelOutputPath"},description = "Output path to new.",required = false)
     private File newModelOutputPath;
 
-    public AddTrainingConfig() {
+
+    public PrepareForTraining() {
     }
 
     @Override
@@ -47,19 +46,38 @@ public class AddTrainingConfig implements Callable<Integer> {
             return 1;
         }
 
-        if(!trainingConfigFile.exists()) {
-            System.err.println("No descriptor file found at path " + trainingConfigFile + " exiting.");
-            return 1;
-        }
 
-        TrainingConfig trainingConfig = TrainingConfig.fromJson(FileUtils.readFileToString(trainingConfigFile, Charset.defaultCharset()));
+        if(newModelOutputPath == null) {
+            newModelOutputPath = new File(modelInputPath);
+        }
 
 
         SameDiff sameDiff = SameDiff.load(modelFile,false);
-        sameDiff.setTrainingConfig(trainingConfig);
+        System.out.println("Loaded model.");
+        if(sameDiff.getTrainingConfig() == null) {
+            System.err.println("Unable to prepare for training: missing training configuration. Add one with ./kompile model samediff add-training-configuration");
+            return 1;
+        }
+
+        if(sameDiff.getLossVariables() == null) {
+            System.err.println("Missing loss variables. Please add them with ./kompile model samediff add-loss");
+            return 1;
+        }
+
+
+
+        sameDiff.prepareForTraining();
         sameDiff.asFlatFile(newModelOutputPath);
 
         System.out.println("Saved model at " + newModelOutputPath);
         return 0;
+    }
+
+
+
+    private SDVariable getOptionalVariable(SameDiff sameDiff,String name) {
+        return sameDiff.getVariables().containsKey(name) ?
+                sameDiff
+                        .getVariable(name) : null;
     }
 }

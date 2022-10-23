@@ -19,8 +19,9 @@ package ai.konduit.pipelinegenerator.main.models;
 import ai.konduit.pipelinegenerator.main.models.samediff.*;
 import picocli.CommandLine;
 
+import java.util.Arrays;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "model",mixinStandardHelpOptions = false,
+@CommandLine.Command(name = "model",
         subcommands = {
                 DL4jSummary.class,
                 Convert.class,
@@ -40,4 +41,29 @@ public class ModelMain implements Callable<Integer> {
         commandLine.usage(System.err);
         return 0;
     }
+    public static void main(String...args) {
+        CommandLine commandLine = new CommandLine(new ModelMain());
+
+        if(args == null || args.length < 1) {
+            commandLine.usage(System.err);
+        }
+        //creation step is dynamically generated and needs special support
+        if(Arrays.asList(args).contains("add-op")) {
+            commandLine.setExecutionStrategy(parseResult -> {
+                try {
+                    return AddOp.run(parseResult);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+
+                return 1;
+            });
+        }
+
+        int exit = commandLine.execute(args);
+        if(args.length > 0 && !args[0].equals("add-op") && args.length > 1 && !args[1].equals("add-op"))
+            System.exit(exit);
+
+    }
+
 }

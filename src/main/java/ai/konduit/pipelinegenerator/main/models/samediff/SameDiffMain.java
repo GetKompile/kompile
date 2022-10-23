@@ -18,16 +18,19 @@ package ai.konduit.pipelinegenerator.main.models.samediff;
 
 import picocli.CommandLine;
 
+import java.util.Arrays;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "samediff",mixinStandardHelpOptions = false,
+@CommandLine.Command(name = "samediff",
         subcommands = {
                 SameDiffSummary.class,
                 AddLoss.class,
                 AddTrainingConfig.class,
                 AddVariable.class,
-                ChangeVariableType.class
-        },
+                ChangeVariableType.class,
+                PrepareForTraining.class,
+                CreateBlank.class
+        },modelTransformer = AddOp.class,
         description = "Utilities related to samediff models")
 public class SameDiffMain implements Callable<Integer> {
     public SameDiffMain() {
@@ -39,4 +42,31 @@ public class SameDiffMain implements Callable<Integer> {
         commandLine.usage(System.err);
         return 0;
     }
+
+
+    public static void main(String...args) {
+        CommandLine commandLine = new CommandLine(new SameDiffMain());
+
+        if(args == null || args.length < 1) {
+            commandLine.usage(System.err);
+        }
+
+        //creation step is dynamically generated and needs special support
+        if(Arrays.asList(args).contains("add-op")) {
+            commandLine.setExecutionStrategy(parseResult -> {
+                try {
+                    return AddOp.run(parseResult);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+
+                return 1;
+            });
+        }
+
+        int exit = commandLine.execute(args);
+        if(args.length > 0 && !args[0].equals("add-op") && args.length > 1 && !args[1].equals("add-op"))
+            System.exit(exit);
+    }
+
 }

@@ -23,6 +23,7 @@ import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
 import ai.konduit.pipelinegenerator.main.install.InstallMain;
 import ai.konduit.pipelinegenerator.main.models.Convert;
 import ai.konduit.pipelinegenerator.main.models.ModelMain;
+import ai.konduit.pipelinegenerator.main.models.samediff.AddOp;
 import ai.konduit.pipelinegenerator.main.uninstall.UnInstallMain;
 import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.linalg.factory.Nd4jBackend;
@@ -89,6 +90,16 @@ public class MainCommand implements Callable<Integer> {
 
                 return 1;
             });
+        } else if(Arrays.asList(args).contains("add-op")) {
+            commandLine.setExecutionStrategy(parseResult -> {
+                try {
+                    return AddOp.run(parseResult);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    return 1;
+                }
+            });
+
         }
 
         //user wants to know flags for a subcommand

@@ -27,7 +27,7 @@ import java.io.File;
 import java.nio.charset.Charset;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "samediff-add-loss",description = "Add loss function to an existing samediff model.")
+@CommandLine.Command(name = "add-loss",description = "Add loss function to an existing samediff model.")
 public class AddLoss implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--lossVariableName"},description = "The output variable name for the loss calculation.",required = false)

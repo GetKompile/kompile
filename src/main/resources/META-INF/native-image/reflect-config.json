@@ -52675,6 +52675,37 @@
     "allDeclaredFields":true
   },
   {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.AddOp",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.CreateBlank",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+    "name":"ai.konduit.pipelinegenerator.main.models.samediff.PrepareForTraining",
+    "allDeclaredConstructors" : true,
+    "allPublicConstructors" : true,
+    "allDeclaredMethods" : true,
+    "allPublicMethods" : true,
+    "allDeclaredClasses" : true,
+    "allPublicClasses" : true,
+    "allDeclaredFields":true
+  },
+  {
+
     "name":"ai.konduit.pipelinegenerator.main.models.samediff.AddVariable",
     "allDeclaredConstructors" : true,
     "allPublicConstructors" : true,

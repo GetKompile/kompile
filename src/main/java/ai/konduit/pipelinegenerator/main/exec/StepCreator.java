@@ -18,7 +18,6 @@ package ai.konduit.pipelinegenerator.main.exec;
 
 import ai.konduit.pipelinegenerator.main.PipelineStepType;
 import ai.konduit.pipelinegenerator.main.converter.*;
-import ai.konduit.pipelinegenerator.main.helpers.HelperEntry;
 import ai.konduit.serving.data.image.convert.ImageToNDArrayConfig;
 import ai.konduit.serving.model.PythonConfig;
 import ai.konduit.serving.pipeline.api.data.Point;
@@ -30,7 +29,6 @@ import picocli.CommandLine;
 
 import java.lang.reflect.Field;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
@@ -41,10 +39,7 @@ public class StepCreator implements CommandLine.IModelTransformer, Callable<Void
     public StepCreator(){}
 
     private Map<String, CommandLine.ITypeConverter> converters = new HashMap<>();
-    @CommandLine.Parameters
-    private List<String> params;
-    @CommandLine.Spec
-    private CommandLine.Model.CommandSpec spec; // injected by picocli
+
 
     @Override
     public CommandLine.Model.CommandSpec transform(CommandLine.Model.CommandSpec commandSpec) {

@@ -22,8 +22,6 @@ import org.nd4j.autodiff.samediff.VariableType;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.util.Properties;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "change-variable-type",description = "Change variable in an existing samediff model.")
