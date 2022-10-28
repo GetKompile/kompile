@@ -77,7 +77,7 @@ public class AddLoss implements Callable<Integer> {
 
         for(String inputVar : new String[]{lossDescriptor.getInputVariable(),lossDescriptor.getLabelVariable()}) {
             if (!sameDiff.hasVariable(inputVar)) {
-                System.err.println("Missing input variable: " + lossDescriptor.getInputVariable());
+                System.err.println("Missing input variable: " + inputVar);
                 return 1;
             }
         }

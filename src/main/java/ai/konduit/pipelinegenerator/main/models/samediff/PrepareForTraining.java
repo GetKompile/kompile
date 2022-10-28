@@ -16,14 +16,11 @@
 
 package ai.konduit.pipelinegenerator.main.models.samediff;
 
-import ai.konduit.pipelinegenerator.main.config.updater.LossDescriptor;
-import org.apache.commons.io.FileUtils;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.nio.charset.Charset;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "prepare-for-training",description = "After a loss function, updater and training configuration are added, this ensures all variables are ready for training.")

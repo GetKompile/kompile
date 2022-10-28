@@ -33,7 +33,7 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-@CommandLine.Command(name = "add-op",description = "Add loss function to an existing samediff model.")
+@CommandLine.Command(name = "add-op",description = "Add op to an existing samediff model.")
 public class AddOp implements CommandLine.IModelTransformer, Callable<Integer> {
 
     private static Map<String,Op> ops = new LinkedHashMap<>();
@@ -191,17 +191,20 @@ public class AddOp implements CommandLine.IModelTransformer, Callable<Integer> {
         CommandLine.ParseResult namespace = parseResult.subcommand();
         String namespaceName = namespace.commandSpec().name();
         CommandLine.ParseResult op = namespace.subcommand();
-        System.out.println(op);
+
+
         File inputPath = op.matchedOption("--modelInputPath").getValue();
         SameDiff sameDiff = SameDiff.load(inputPath,true);
         File outputPath = op.matchedOption("--modelOutputPath").getValue();
+        //actual function name does not match namespace it's an abbreviation
+        if(namespaceName.equals("neuralnetwork"))
+            namespaceName = "nn";
+
         Method namespaceRet = sameDiff.getClass().getDeclaredMethod(namespaceName);
         //get the namespace associated with this function to invoke
         Object namespaceToInvoke = namespaceRet.invoke(sameDiff);
         Method method = methodWithName(op.commandSpec().name(),namespaceToInvoke.getClass());
-        /**
-         * TODO: match command line values to parameters by name.
-         */
+
 
         Op opToUse = ops.get(op.commandSpec().name());
         Object[] args = new Object[method.getParameters().length];
@@ -209,6 +212,12 @@ public class AddOp implements CommandLine.IModelTransformer, Callable<Integer> {
         String outputVariableName = op.hasMatchedOption("--outputVariableName")  ? op.matchedOption("--outputVariableName").getValue().toString()
                 : null;
         args[argIndex] = outputVariableName;
+
+        if(outputVariableName != null && sameDiff.hasVariable(outputVariableName)) {
+            System.err.println("Found specified output variable name in graph: " + outputVariableName + " Exiting.");
+            return 1;
+        }
+
         argIndex++;
         for(Input input : opToUse.getInputs()) {
             CommandLine.Model.OptionSpec optionSpec = op.matchedOption("--" + input.name());
@@ -223,13 +232,31 @@ public class AddOp implements CommandLine.IModelTransformer, Callable<Integer> {
 
         for(Arg arg : opToUse.getArgs()) {
             CommandLine.Model.OptionSpec optionSpec = op.matchedOption("--" + arg.name());
-            args[argIndex] = optionSpec.getValue();
-            argIndex++;
+            if(optionSpec == null) {
+                System.err.println("Arg name " + arg.name() + " not found in options!");
+                return 1;
+            }
+            if(optionSpec.getValue() != null) {
+                args[argIndex] = optionSpec.getValue();
+                argIndex++;
+            }
+
         }
 
+        System.out.println("Invoking method " + method.getName() + " with args " + Arrays.toString(args));
+
+       Object output =  method.invoke(namespaceToInvoke, args);
+       if(output instanceof SDVariable) {
+           SDVariable newOutput = (SDVariable) output;
+           System.out.println("Output variables from op " + method.getName() + newOutput);
+
+       } else if(output instanceof SDVariable[]) {
+           SDVariable[] outputs2 = (SDVariable[]) output;
+           System.out.println("Output variables from op " + method.getName() + Arrays.toString(outputs2));
+
+       }
 
 
-        method.invoke(namespaceToInvoke,args);
 
         sameDiff.asFlatFile(outputPath);
 

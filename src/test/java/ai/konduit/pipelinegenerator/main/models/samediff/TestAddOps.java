@@ -9,6 +9,7 @@ import java.io.File;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestAddOps {
 
@@ -28,11 +29,12 @@ public class TestAddOps {
         File tempFile = new File("tmp.fb");
         tempFile.deleteOnExit();
         blank.asFlatFile(tempFile);
-        commandLine.execute("model","samediff","add-op","bitwise","bitRotr","--x=1","--shift=0","--modelInputPath=tmp.fb","--modelOutputPath=outputpath.fb");
+        commandLine.execute("model","samediff","add-op","bitwise","bitRotr","--x=1","--shift=0","--modelInputPath=tmp.fb","--modelOutputPath=outputpath.fb","--outputVariableName=output");
         File output = new File("outputpath.fb");
         SameDiff converted = SameDiff.load(new File("outputpath.fb"),true);
         output.deleteOnExit();
         assertEquals(1,converted.ops().length);
+        assertTrue(converted.hasVariable("output"));
     }
 
 }

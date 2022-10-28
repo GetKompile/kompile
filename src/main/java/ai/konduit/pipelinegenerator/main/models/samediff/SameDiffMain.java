@@ -29,7 +29,10 @@ import java.util.concurrent.Callable;
                 AddVariable.class,
                 ChangeVariableType.class,
                 PrepareForTraining.class,
-                CreateBlank.class
+                CreateBlank.class,
+                RemoveOp.class,
+                RemoveVariable.class,
+                RenameVariable.class
         },modelTransformer = AddOp.class,
         description = "Utilities related to samediff models")
 public class SameDiffMain implements Callable<Integer> {
