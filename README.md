@@ -16,7 +16,7 @@ docker run --rm -it  konduitai/kompile
 
 Running container interactively:
 ```bash
-docker run --ulimit nofile=98304:98304 --rm -it  --entrypoint /bin/bash konduitai/kompile
+docker run --ulimit nofile=98304:98304 --rm -it  -v $(pwd):/mnt/:Z --entrypoint /bin/bash konduitai/kompile
 ```
 
 

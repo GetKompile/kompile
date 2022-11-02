@@ -27,9 +27,9 @@ import java.util.concurrent.Callable;
 @CommandLine.Command(name = "graalvm",mixinStandardHelpOptions = false)
 public class InstallGraalvm implements Callable<Integer> {
 
-    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz";
+    public final static String DOWNLOAD_URL = "https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.3.0/graalvm-ce-java11-linux-amd64-22.3.0.tar.gz";
     //for other platforms see: https://github.com/graalvm/graalvm-ce-builds/releases/tag/vm-20.3.6
-    public final static String FILE_NAME = "graalvm-ce-java11-linux-amd64-dev.tar.gz";
+    public final static String FILE_NAME = "graalvm-ce-java11-linux-amd64-22.3.0.tar.gz";
 
     public InstallGraalvm() {
     }
@@ -42,9 +42,14 @@ public class InstallGraalvm implements Callable<Integer> {
         }
 
         File archive = InstallMain.downloadAndLoadFrom(DOWNLOAD_URL,FILE_NAME,false);
+        if(archive == null) {
+            System.err.println("File archive for folder " + graalVm + " named " + FILE_NAME + " appears to already exist or be corrupt. Please delete and try again.");
+            return 1;
+        }
+        archive.getParentFile().mkdirs();
         ArchiveUtils.unzipFileTo(archive.getAbsolutePath(),graalVm.getAbsolutePath(),true);
         //extracts to a directory, move everything to parent directory
-        File graalVmDir = new File(Info.graalvmDirectory(),"graalvm-ce-java11-22.3.0-dev");
+        File graalVmDir = new File(Info.graalvmDirectory(),"graalvm-ce-java11-22.3.0");
         FileUtils.copyDirectory(graalVmDir,Info.graalvmDirectory());
         FileUtils.deleteDirectory(graalVmDir);
         File executables = new File(Info.graalvmDirectory(),"bin");

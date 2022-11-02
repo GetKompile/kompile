@@ -97,7 +97,7 @@ public class InstallMain implements Callable<Integer> {
      */
     public static File downloadAndLoadFrom(String url,String name,boolean forceDownload) throws Exception {
         File destFile = new File(Info.homeDirectory(),name);
-        return downloadTo(url,new File(destFile,name).getAbsolutePath(),forceDownload);
+        return downloadTo(url,new File(destFile.getParentFile(),name).getAbsolutePath(),forceDownload);
     }
 
 

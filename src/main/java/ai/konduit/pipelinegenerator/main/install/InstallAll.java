@@ -29,9 +29,32 @@ public class InstallAll implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         int exit = new InstallGraalvm().call();
+        if(exit != 0) {
+            System.err.println("Failed to install graalvm.");
+            return exit;
+        }
         exit = new InstallMaven().call();
+        if(exit != 0) {
+            System.err.println("Failed to install maven.");
+            return exit;
+        }
         exit = new InstallPython().call();
+        if(exit != 0) {
+            System.err.println("Failed to install python.");
+            return exit;
+        }
         exit = new InstallHeaders().call();
+        if(exit != 0) {
+            System.err.println("Failed to install headers.");
+            return exit;
+        }
         return exit;
     }
+
+
+    public static void main(String...args) {
+        CommandLine commandLine = new CommandLine(new InstallAll());
+        System.exit(commandLine.execute(args));
+    }
+
 }
