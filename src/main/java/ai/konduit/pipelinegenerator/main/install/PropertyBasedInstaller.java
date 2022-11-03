@@ -39,7 +39,7 @@ import java.util.concurrent.ExecutionException;
 
 @CommandLine.Command(name = "install-tool",description = "Allows installation of tools by resolving install commands from command line from JVM properties or pre specified properties files that match the platform.")
 public class PropertyBasedInstaller implements Callable<Integer> {
-    @CommandLine.Option(names = {"--programName"},description = "The name of the program to install")
+    @CommandLine.Option(names = {"--programName"},description = "The name of the program to install",required = true)
     private String programName;
     @CommandLine.Option(names = {"--updateIndex"},description = "Whether to update the index or not before trying to load")
     private boolean updateIndex = true;
@@ -96,8 +96,11 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             reverseOrder.add(programName);
         for(String curr : reverseOrder) {
             if(!ran.contains(curr)) {
-                exit = install(curr);
-                ran.add(curr);
+                if(checkInstalled(curr) == null) {
+                    exit = install(curr);
+                    ran.add(curr);
+                }
+
             }
         }
 
@@ -176,18 +179,14 @@ public class PropertyBasedInstaller implements Callable<Integer> {
             return 1;
         }
 
-        ProcessResult processResult = new ProcessExecutor()
-                .command(tempFileWrite.getAbsolutePath())
-                .readOutput(true)
-                .redirectOutput(System.out)
-                .start().getFuture().get();
-        if(processResult.hasOutput())
-            System.out.println("Command output was \n " + processResult.outputUTF8());
+
+        if(processResult1.hasOutput())
+            System.out.println("Command output was \n " + processResult1.outputUTF8());
 
 
 
 
-        return processResult.getExitValue();
+        return processResult1.getExitValue();
     }
 
     @Nullable
@@ -214,7 +213,14 @@ public class PropertyBasedInstaller implements Callable<Integer> {
                 return 0;
 
             }
-        } else {
+        } else if(programName.equals("diffutils")) {
+            File file = EnvironmentUtils.executableOnPath("diff");
+            if(file != null && file.exists()) {
+                System.out.println("Program name " + programName + " already installed. Exiting.");
+                return 0;
+            }
+        }
+        else {
             File file = EnvironmentUtils.executableOnPath(programName);
             if(file != null && file.exists()) {
                 System.out.println("Program name " + programName + " already installed. Exiting.");
@@ -269,4 +275,12 @@ public class PropertyBasedInstaller implements Callable<Integer> {
         commandValue = EnvironmentUtils.resolveEnvPropertyValue(EnvironmentUtils.resolvePropertyValue(commandValue));
         return commandValue;
     }
+
+    public static void main(String...args) {
+        CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
+        int exec = commandLine.execute(args);
+        System.exit(exec);
+    }
+
+
 }
