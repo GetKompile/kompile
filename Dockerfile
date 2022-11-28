@@ -2,7 +2,7 @@ ARG OS=centos
 ARG OS_VERSION=7
 FROM ${OS}:${OS_VERSION} as builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
-RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
+RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.3.0/graalvm-ce-java11-linux-amd64-22.3.0.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-22.3.0.tar.gz && mv graalvm-ce-java11-22.3.0/ /usr/java
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
@@ -24,7 +24,7 @@ RUN yum install -y centos-release-scl
 RUN yum install -y devtoolset-9
 RUN echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc
 SHELL ["/bin/bash", "--login", "-c"]
-RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j -b ag_jdk8_migration && \
+RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j && \
     cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true && \

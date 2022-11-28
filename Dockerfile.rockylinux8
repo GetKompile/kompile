@@ -2,7 +2,7 @@ ARG OS=rockylinux
 ARG OS_VERSION=8
 FROM ${OS}:${OS_VERSION} as builder
 LABEL org.opencontainers.image.source="https://github.com/KonduitAI/kompile"
-RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-dev-builds/releases/download/22.3.0-dev-20220915_2039/graalvm-ce-java11-linux-amd64-dev.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-dev.tar.gz && mv graalvm-ce-java11-22.3.0-dev/ /usr/java
+RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.3.0/graalvm-ce-java11-linux-amd64-22.3.0.tar.gz && tar xvf graalvm-ce-java11-linux-amd64-22.3.0.tar.gz && mv graalvm-ce-java11-22.3.0/ /usr/java
 
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
@@ -15,19 +15,18 @@ RUN curl https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.
 RUN cd /kompile/ && tar xvf mvn.tar.gz && mv apache-maven-3.8.6 mvn
 ENV PATH="/kompile/mvn/bin/:/root/.kompile/python/bin/:${PATH}:/usr/java/bin/"
 ARG BACKEND_PROFILE=cpu
-ARG JAVCPP_PLATFORM=linux-x86_64
+ARG JAVACPP_PLATFORM=linux-x86_64
 ARG DL4J_BACKEND=1.0.0-SNAPSHOT
 ARG LTO=OFF
 RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j
-RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
-RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
-RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
-RUN cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true
-RUN cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
-RUN cd /kompile/deeplearning4j && cd codegen && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=linux-x86_64  install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd codegen && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64
-RUN cd /kompile && git clone https://github.com/KonduitAI/konduit-serving
-RUN cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu clean install -Dmaven.test.skip=true
+RUN cd /kompile && git clone https://github.com/KonduitAI/konduit-serving && cd /kompile/konduit-serving && mvn -Dmaven.enforcer.skip=true  -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=linux-x86_64 -Djavacpp-presets.version=1.5.8 -Dmkl.version=2022.2 -Dopenblas.version=0.3.21 -Dchip=cpu clean install -Dmaven.test.skip=true
 
 COPY ./kompile-c-library /kompile/kompile-c-library
 COPY ./kompile-python /kompile/kompile-python
