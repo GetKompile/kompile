@@ -31,7 +31,7 @@ RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j &
     cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
     cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64 && \
     cd /kompile && git clone https://github.com/KonduitAI/konduit-serving  && \
-    cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu clean install -Dmaven.test.skip=true
+    cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu  -Djavacpp-presets.version=1.5.8 -Dmkl.version=2022.2 -Dopenblas.version=0.3.21 -Dffmpeg.version=5.1.2  clean install -Dmaven.test.skip=true
 
 COPY ./kompile-c-library /kompile/kompile-c-library
 COPY ./kompile-python /kompile/kompile-python
