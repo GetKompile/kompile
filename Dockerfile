@@ -7,6 +7,7 @@ RUN yum -y install wget  && wget https://github.com/graalvm/graalvm-ce-builds/re
 ENV JAVA_HOME=/usr/java/
 ENV GRAALVM_HOME=/usr/java/
 RUN yum -y install git gcc gcc-c++ zlib* xz make openssl openssl-devel
+RUN mkdir -p /root/.kompile
 RUN   curl -LO https://github.com/Kitware/CMake/releases/download/v3.22.2/cmake-3.22.2-linux-x86_64.tar.gz && tar -xvf cmake-3.22.2-linux-x86_64.tar.gz && mv cmake-3.22.2-linux-x86_64 $HOME/.kompile/cmake
 
 RUN yum -y group install "Development Tools" && yum -y update
