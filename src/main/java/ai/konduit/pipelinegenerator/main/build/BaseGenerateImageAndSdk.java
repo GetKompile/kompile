@@ -17,7 +17,10 @@
 package ai.konduit.pipelinegenerator.main.build;
 
 import ai.konduit.pipelinegenerator.main.Info;
+import ai.konduit.pipelinegenerator.main.install.InstallGraalvm;
 import ai.konduit.pipelinegenerator.main.install.InstallHeaders;
+import ai.konduit.pipelinegenerator.main.install.InstallPython;
+import ai.konduit.pipelinegenerator.main.install.PropertyBasedInstaller;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentFile;
 import ai.konduit.pipelinegenerator.main.util.EnvironmentUtils;
 import ai.konduit.pipelinegenerator.main.util.OSResolver;
@@ -179,6 +182,9 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     protected boolean image = false;
     @CommandLine.Option(names = "--doc",description = "Whether to use document  processing or not or not",scope = CommandLine.ScopeType.INHERIT)
     protected boolean doc = false;
+    @CommandLine.Option(names = "--overridePath",description = "Whether to override path with various utilities for builds. This contains programs used for building various tools including: cmake,mvn,graalvm. The files managed by kompile will be automatically included in the path." +
+            "",scope = CommandLine.ScopeType.INHERIT)
+    protected boolean overridePaths = true;
 
     @CommandLine.Option(names = {"--konduitServingBranchName"},description = "The branch to clone konduit-serving: defaults to master",scope = CommandLine.ScopeType.INHERIT)
     protected String konduitServingBranchName = "master";
@@ -375,6 +381,61 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
             Map<String, String> envMap = EnvironmentFile.loadFromEnvFile(file);
             env.putAll(envMap);
         }
+
+        //add additional environment variables to the path like mvn,cmake,python,java
+        StringBuilder addPath = new StringBuilder();
+        String currPath = System.getenv("PATH");
+        if(currPath == null)
+            currPath = "";
+        addPath.append(currPath);
+        if(!addPath.toString().isEmpty()) {
+            addPath.append(File.pathSeparator);
+        }
+
+        if(overridePaths) {
+            String[] additionalBuilds = {"cmake","mvn","java"};
+            System.out.println("Overriding paths adding cmake,mvn,java managed by kompile to path");
+            for(String exec : additionalBuilds) {
+                File execFile = EnvironmentUtils.executableOnPath(exec);
+                if(execFile != null) {
+                    addPath.append(execFile.getParentFile().getAbsolutePath());
+                    addPath.append(File.pathSeparator);
+                } else {
+                    switch (exec) {
+                        case "java":
+                            InstallGraalvm installGraalvm = new InstallGraalvm();
+                            CommandLine commandLine = new CommandLine(installGraalvm);
+                            commandLine.execute();
+                            break;
+                        case "mvn":
+                            PropertyBasedInstaller propertyBasedInstaller = new PropertyBasedInstaller();
+                            CommandLine commandLine2 = new CommandLine(propertyBasedInstaller);
+                            commandLine2.execute("--programName=mvn");
+                            break;
+                        case "python":
+                            InstallPython installPython = new InstallPython();
+                            CommandLine commandLine1 = new CommandLine(installPython);
+                            commandLine1.execute();
+                            break;
+                        case "cmake":
+                            PropertyBasedInstaller propertyBasedInstaller2 = new PropertyBasedInstaller();
+                            CommandLine commandLine23 = new CommandLine(propertyBasedInstaller2);
+                            commandLine23.execute("--programName=cmake");
+                            break;
+                    }
+
+                    execFile = EnvironmentUtils.executableOnPath(exec);
+                    addPath.append(execFile.getParentFile().getAbsolutePath());
+                    addPath.append(File.pathSeparator);
+                }
+            }
+
+        }
+
+
+
+        env.put("PATH",addPath.toString());
+
         return env;
     }
 
