@@ -25,6 +25,7 @@ RUN yum install -y centos-release-scl
 RUN yum install -y devtoolset-9
 RUN echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc
 SHELL ["/bin/bash", "--login", "-c"]
+ENV PATH=/root/.kompile/cmake/bin:${PATH}
 RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j
 RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=linux-x86_64  install -Dmaven.test.skip=true
 RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
