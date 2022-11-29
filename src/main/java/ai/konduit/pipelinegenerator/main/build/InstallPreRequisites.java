@@ -44,6 +44,8 @@ public class InstallPreRequisites implements Callable<Integer> {
         addNdkIfNeeded();
         addCudaIfNeeded();
         addNccIfNeeded();
+        //cmake needed by default for every build
+        dependencies.add("cmake");
         System.out.println("Determined dependencies for: helper " + nd4jHelper + " os: " + os + " arch: " + architecture + " nd4j backend: " + nd4jBackend + " to be " + dependencies);
         for(String dependency: dependencies) {
             CommandLine commandLine = new CommandLine(new PropertyBasedInstaller());
