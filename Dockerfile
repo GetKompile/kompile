@@ -24,14 +24,15 @@ RUN yum install -y centos-release-scl
 RUN yum install -y devtoolset-9
 RUN echo "source /opt/rh/devtoolset-9/enable" >> /etc/bashrc
 SHELL ["/bin/bash", "--login", "-c"]
-RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j && \
-    cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
-    cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
-    cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=${JAVCPP_PLATFORM} install -Dmaven.test.skip=true && \
-    cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=${JAVCPP_PLATFORM}  install -Dmaven.test.skip=true && \
-    cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64 && \
-    cd /kompile && git clone https://github.com/KonduitAI/konduit-serving  && \
-    cd /kompile/konduit-serving && mvn -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=${JAVCPP_PLATFORM} -Dchip=cpu  -Djavacpp-presets.version=1.5.8 -Dmkl.version=2022.2 -Dopenblas.version=0.3.21 -Dffmpeg.version=5.1.2  clean install -Dmaven.test.skip=true
+RUN cd /kompile && git clone  https://github.com/deeplearning4j/deeplearning4j
+RUN cd /kompile/deeplearning4j && cd libnd4j && mvn -P${BACKEND_PROFILE} -Dlibnd4j.lto=${LTO} -Djavacpp.platform=linux-x86_64  install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd nd4j && mvn -P${BACKEND_PROFILE} -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd datavec && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd python4j && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd codegen && mvn -Djavacpp.platform=linux-x86_64 install -Dmaven.test.skip=true
+RUN cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64
+RUN cd /kompile && git clone https://github.com/KonduitAI/konduit-serving && cd /kompile/konduit-serving && mvn -Dmaven.enforcer.skip=true  -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=linux-x86_64 -Djavacpp-presets.version=1.5.8 -Djavacpp.version=1.5.8 -Dmkl.version=2022.2 -Dopenblas.version=0.3.21 -Dffmpeg.version=5.1.2 -Dchip=cpu clean install -Dmaven.test.skip=true
 
 COPY ./kompile-c-library /kompile/kompile-c-library
 COPY ./kompile-python /kompile/kompile-python
