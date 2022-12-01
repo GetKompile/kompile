@@ -28,6 +28,7 @@ import org.zeroturnaround.exec.ProcessResult;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -265,7 +266,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                 StringBuilder path = new StringBuilder();
 
                 if(glibc != null && !glibc.isEmpty()) {
-                    File glibcDir = new File(Info.homeDirectory(),glibc + File.separator + "lib64");
+                    File glibcDir = new File(Info.homeDirectory(),glibc + File.separator + "lib");
                     libraryPath.append(glibcDir.getAbsolutePath());
                 }
 
@@ -280,7 +281,7 @@ public class CloneBuildComponents implements Callable<Integer> {
                         File gccLdPath = new File(gccDir,"lib64");
                         libraryPath.append(gccLdPath.getAbsolutePath());
                     } else {
-                        File gccLdPath = new File(gccDir,"lib64");
+                        File gccLdPath = new File(gccDir,"lib");
                         libraryPath.append(gccLdPath.getAbsolutePath());
                     }
 
@@ -364,22 +365,27 @@ public class CloneBuildComponents implements Callable<Integer> {
                     invocationRequest.setProfiles(Arrays.asList("cuda"));
                 }
 
-                invoker.setWorkingDirectory(dl4jLocation);
                 invocationRequest.setBaseDirectory(dl4jLocation);
                 invoker.setMavenHome(new File(mvnHome));
                 if(dl4jModules != null && !dl4jModules.isEmpty()) {
                     invocationRequest.setProjects(dl4jModules);
                 }
 
-
+                invocationRequest.setShowErrors(true);
+                invocationRequest.setErrorHandler(s -> System.out.println(s));
+                invocationRequest.setDebug(true);
                 invoker.setLogger(new SystemOutLogger());
+
                 InvocationResult execute = invoker.execute(invocationRequest);
                 if(execute != null && execute.getExitCode() != 0) {
-                    System.err.println("DL4J build failed. Reason below:");
-                    if(execute.getExecutionException() != null)
+                    if(execute.getExecutionException() != null) {
+                        System.err.println("DL4J build failed. Reason below:");
                         execute.getExecutionException().printStackTrace();
+                        return execute.getExitCode();
+                    }
                     else {
-                        System.out.println("No error output from maven. Please see above for error.");
+                        System.err.println("No error output from maven. Please see above for error.");
+                        return execute.getExitCode();
                     }
                 }  else if(execute.getExitCode() == 0) {
                     System.err.println("Finished cloning and building Deeplearning4j.");
@@ -414,6 +420,9 @@ public class CloneBuildComponents implements Callable<Integer> {
             invocationRequest.setPomFile(new File(konduitServingLocation,"pom.xml"));
             invocationRequest.setGoals(Arrays.asList(konduitServingBuildCommand.split(" ")));
             invocationRequest.setAlsoMake(true);
+            invocationRequest.setShowErrors(true);
+            invocationRequest.setErrorHandler(s -> System.out.println(s));
+            invocationRequest.setDebug(true);
 
             if(konduitServingModule != null && !konduitServingModule.isEmpty()) {
                 invocationRequest.setProjects(konduitServingModule);
@@ -423,7 +432,6 @@ public class CloneBuildComponents implements Callable<Integer> {
             properties.put("javacpp.platform",platform);
             invoker.setLogger(new SystemOutLogger());
 
-            invoker.setWorkingDirectory(konduitServingLocation);
             invocationRequest.setBaseDirectory(konduitServingLocation);
             invoker.setMavenHome(new File(mvnHome));
             invocationRequest.setProperties(properties);

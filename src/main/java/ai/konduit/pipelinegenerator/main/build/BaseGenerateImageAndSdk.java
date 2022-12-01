@@ -387,18 +387,18 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
         String currPath = System.getenv("PATH");
         if(currPath == null)
             currPath = "";
-        addPath.append(currPath);
-        if(!addPath.toString().isEmpty()) {
-            addPath.append(File.pathSeparator);
-        }
+
 
         if(overridePaths) {
             String[] additionalBuilds = {"cmake","mvn","java"};
             System.out.println("Overriding paths adding cmake,mvn,java managed by kompile to path");
             for(String exec : additionalBuilds) {
                 File execFile = EnvironmentUtils.executableOnPath(exec);
-                if(execFile != null) {
+                File kompileHome = Info.homeDirectory();
+                //check that it's the managed installation, we need this to ensure libc compatibility and to guarantee builds happen
+                if(execFile != null && execFile.getParentFile().getName().equals(".kompile")) {
                     addPath.append(execFile.getParentFile().getAbsolutePath());
+                    System.out.println("Added path for " + exec + " as " + execFile.getAbsolutePath());
                     addPath.append(File.pathSeparator);
                 } else {
                     switch (exec) {
@@ -406,35 +406,46 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
                             InstallGraalvm installGraalvm = new InstallGraalvm();
                             CommandLine commandLine = new CommandLine(installGraalvm);
                             commandLine.execute();
+                            execFile = new File(kompileHome,"graalvm" + File.separator + "bin" + File.separator + "java");
                             break;
                         case "mvn":
                             PropertyBasedInstaller propertyBasedInstaller = new PropertyBasedInstaller();
                             CommandLine commandLine2 = new CommandLine(propertyBasedInstaller);
                             commandLine2.execute("--programName=mvn");
+                            execFile = new File(kompileHome,"mvn" + File.separator + "bin" + File.separator + "mvn");
                             break;
                         case "python":
                             InstallPython installPython = new InstallPython();
                             CommandLine commandLine1 = new CommandLine(installPython);
                             commandLine1.execute();
+                            execFile = new File(kompileHome,"python" + File.separator + "bin" + File.separator + "python");
                             break;
                         case "cmake":
                             PropertyBasedInstaller propertyBasedInstaller2 = new PropertyBasedInstaller();
                             CommandLine commandLine23 = new CommandLine(propertyBasedInstaller2);
                             commandLine23.execute("--programName=cmake");
+                            execFile = new File(kompileHome,"cmake" + File.separator + "bin" + File.separator + "cmake");
                             break;
                     }
 
-                    execFile = EnvironmentUtils.executableOnPath(exec);
                     addPath.append(execFile.getParentFile().getAbsolutePath());
                     addPath.append(File.pathSeparator);
+                    System.out.println("New path for executable " + exec + " with file " + execFile);
                 }
             }
 
         }
 
+        if(currPath != null) {
+            if(!addPath.toString().isEmpty())
+                addPath.append(File.pathSeparator);
+            addPath.append(currPath);
+        }
 
+        String realPath = addPath.toString().replace(File.pathSeparator + File.pathSeparator,File.pathSeparator);
+        System.out.println("Added additional path: " + realPath);
 
-        env.put("PATH",addPath.toString());
+        env.put("PATH",realPath);
 
         return env;
     }

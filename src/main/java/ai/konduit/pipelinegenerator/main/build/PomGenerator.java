@@ -106,16 +106,16 @@ public class PomGenerator implements Callable<Void> {
     private String nettyVersion = "4.1.74.Final";
     private String concsryptVersion = "2.5.2";
     private String konduitServingVersion = "0.4.0-SNAPSHOT";
-    private String javacppVersion = "1.5.7";
+    private String javacppVersion = "1.5.8";
     private String log4jVersion = "1.2.17";
     private String slf4jVersion = "1.7.24";
     private String dl4jVersion = "1.0.0-SNAPSHOT";
-    private String lombokVersion = "1.18.16";
+    private String lombokVersion = "1.18.24";
     private String logbackVersion = "1.2.11";
 
     private String zeroTurnAroundVersion = "1.12";
     private String picoCliVersion = "4.6.3";
-    private String dnnlVersion = "2.5.2-" + javacppVersion;
+    private String dnnlVersion = "2.7.1-" + javacppVersion;
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
     //Set the resource to be the model generated based on pipeline
