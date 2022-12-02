@@ -344,21 +344,6 @@ public class CloneBuildComponents implements Callable<Integer> {
                     invocationRequest.setProfiles(Arrays.asList("minimial-cpu"));
                 }
 
-                //only a subset of projects are valid, ensure we only build what's necessary
-                //the build will fail with everything that isn't the backend and related artifacts.
-                if(libnd4jExtension != null && !libnd4jExtension.isEmpty()
-                        || libnd4jHelper != null
-                        && !libnd4jHelper.isEmpty()) {
-                    System.out.println("Helper: " + libnd4jHelper  + " Extension: " + libnd4jExtension  + " specified. Only building subset of projects.");
-                    invocationRequest.setProjects(Arrays.asList(
-                            ":libnd4j",
-                            ":" + nd4jBackend,
-                            ":" + nd4jBackend + "-preset"
-                    ));
-
-                }
-
-                invocationRequest.setAlsoMake(true);
 
                 if(nd4jBackend != null && nd4jBackend.contains("cuda")) {
                     System.out.println("Setting cuda profile.");
@@ -388,6 +373,34 @@ public class CloneBuildComponents implements Callable<Integer> {
                         return execute.getExitCode();
                     }
                 }  else if(execute.getExitCode() == 0) {
+                    //only a subset of projects are valid, ensure we only build what's necessary
+                    //the build will fail with everything that isn't the backend and related artifacts.
+                    if(libnd4jExtension != null && !libnd4jExtension.isEmpty()
+                            || libnd4jHelper != null
+                            && !libnd4jHelper.isEmpty()) {
+                        System.out.println("Base build completed. Building for subset.");
+                        System.out.println("Helper: " + libnd4jHelper  + " Extension: " + libnd4jExtension  + " specified. Only building subset of projects.");
+                        invocationRequest.setProjects(Arrays.asList(
+                                ":libnd4j",
+                                ":" + nd4jBackend,
+                                ":" + nd4jBackend + "-preset"
+                        ));
+
+                    }
+
+                    invocationRequest.setAlsoMake(true);
+                    execute = invoker.execute(invocationRequest);
+                    if(execute != null && execute.getExitCode() != 0) {
+                        if (execute.getExecutionException() != null) {
+                            System.err.println("DL4J build failed. Reason below:");
+                            execute.getExecutionException().printStackTrace();
+                            return execute.getExitCode();
+                        } else {
+                            System.err.println("No error output from maven. Please see above for error.");
+                            return execute.getExitCode();
+                        }
+                    }
+
                     System.err.println("Finished cloning and building Deeplearning4j.");
                 }
                 else if(execute.getExitCode() != 0) {
