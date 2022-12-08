@@ -157,6 +157,8 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
     @CommandLine.Option(names = "--pythonExecutable",description = "The executable to use with python. " +
             "Defaults to the python found on the path. Otherwise will use the built in python installed with ./kompile install python",scope = CommandLine.ScopeType.INHERIT)
     protected String pythonExecutable = EnvironmentUtils.defaultPythonExecutable();
+    @CommandLine.Option(names = {"--allowExternalCompilers"},description = "Whether to allow external compilers outside of managed .kompile installs in builds. Setting this flag means you need to specify the absolute path to the parent directory of the gcc and g++ executables.")
+    private boolean allowExternalCompilers = false;
 
 
     @CommandLine.Option(names = {"--python"},description = "Whether to use python or not",scope = CommandLine.ScopeType.INHERIT)
@@ -262,6 +264,7 @@ public abstract class BaseGenerateImageAndSdk implements Callable<Integer> {
 
     protected void addCommands(List<String> command) {
         addCommand(String.valueOf(libnd4jUseLto),"--use-lto",command);
+        addCommand(String.valueOf(allowExternalCompilers),"--allow-external-compilers",command);
         addCommand(nd4jHelper,"--nd4j-helper",command);
         addCommand(nd4jDataTypes,"--nd4j-datatypes",command);
         addCommand(nd4jOperations,"--nd4j-operations",command);
