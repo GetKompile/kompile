@@ -50,8 +50,16 @@ public class CloneBuildComponents implements Callable<Integer> {
     @CommandLine.Option(names = {"--buildDl4j"},description = "Whether to build dl4j or not.")
     private boolean buildDl4j = false;
 
+
+    @CommandLine.Option(names = {"--allowExternalCompilers"},description = "Whether to allow external compilers outside of managed .kompile installs in builds. Setting this flag means you need to specify the absolute path to the parent directory of the gcc and g++ executables.")
+    private boolean allowExternalCompilers = false;
+
     @CommandLine.Option(names = {"--mvnHome"},description = "The maven home.")
     private String mvnHome = System.getProperty("user.home") + "/.kompile/mvn";
+
+
+
+
 
     @CommandLine.Option(names = {"--buildKonduitServing"},description = "Whether to build konduit-serving or not")
     private boolean buildKonduitServing = false;
@@ -271,9 +279,12 @@ public class CloneBuildComponents implements Callable<Integer> {
                 }
 
                 if(gcc != null && !gcc.isEmpty()) {
-                    File gccDir = new File(Info.homeDirectory(),gcc);
-                    File gccPath = new File(gccDir, "/bin/gcc");
-                    File cxxPath = new File(gccDir, "/bin/g++");
+                    File gccDir = allowExternalCompilers ? new File(gcc) : new File(Info.homeDirectory(),gcc);
+                    File gccPath = allowExternalCompilers ? new File(gcc,"gcc") : new File(gccDir, "/bin/gcc");
+                    File cxxPath = allowExternalCompilers ? new File(gcc,"g++") : new File(gccDir, "/bin/g++");
+                    if(!gccPath.exists()) {
+                        return 1;
+                    }
                     invocationRequest.addShellEnvironment("CC",gccPath.getAbsolutePath());
                     invocationRequest.addShellEnvironment("CXX",cxxPath.getAbsolutePath());
                     if(!libraryPath.toString().isEmpty()) {
