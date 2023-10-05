@@ -1,19 +1,44 @@
-Python Interface
------------------------------
+# Build a tool to automatically generate more optimized configuration files.
 
-Context
---------------------------
-A user will get a pre generated single python file that contains a predict function that uses numpy arrays to interact with the ML pipeline
-generated using graalvm's shared library support.
+## Status
+Proposed
 
-A binary is compiled with a python sdk generated that knows how to load and use the given file. Cpython interaction and associated dependencies will be used
-in order to automatically configure the interface.
+Proposed by: Adam Gibson (10-05-2023)
 
-The reason for this is many deep learning frameworks accept and return numpy arrays as output. By providing a simple interface, it enables users to change 1 line of code to load
-the model and call predict.
+Discussed with: N/A
 
-Generating a native shared library with graalvm:
-https://www.graalvm.org/reference-manual/native-image/
+## Context
+- Graalvm native-image build tool use some configuration files to solve with dynamic aspects of the application such as: reflection, jni, resources...
+- Currently, here are the classes which are needed to put on configuration files are 102 classes inside Kompile, and many libraries: google, javacpp, jdk, org.nd4j, org.bytedeco, konduit.
+- Right now the configuration files are almost manually built, and they contain many redundant classes which we don't need.
+- Since, we're planning to have a "tool" to generate these configuration files with two objectives: automatic and efficient.
 
-CFFI for interacting with python:
-https://cffi.readthedocs.io/en/latest/overview.html
+## Proposal
+1. For classes inside Kompile, define our own annotation. Create a configuration file and add all needed classes so that the agent can include them into .json configuration files. \
+   Example: Define the @ReflectionConfig annotation. Create GraalConfig class to contain all the reflection configs. \
+   &nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig( \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;type = StringReverser.class, \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;methods = { \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig.ReflectiveMethodConfig(name = "reverse", parameterTypes = {String.class}) \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+   &nbsp;&nbsp;&nbsp;&nbsp;) \
+   &nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig( \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;type = StringCapitalizer.class, \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;methods = { \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig.ReflectiveMethodConfig(name = "capitalize", parameterTypes = {String.class}) \
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+   &nbsp;&nbsp;&nbsp;&nbsp;) \
+   &nbsp;&nbsp;&nbsp;&nbsp;class GraalConfig{}\
+   The agent will scan the Configuration class then find the configurations which are marked with our annotation and insert data in .json file.
+2. For libraries: Firstly, write our own Java Agent (or use Tracing Agent if we can get the source code). Secondly, define a test suit (or something like that), to run all the Kompile APIs with the java agent and generate .json configuration files. \
+   Define an interface: ConfigurationGenerator. \
+   Define a class: GenerateImageAndSDKConfigurationGenerator extends above interface. \
+   Define a main class: In this class, The main method will load all the classes which extends ConfigurationGenerator run them with the agent embedded, check if any classes which use reflection or jni, then insert data in .json files.
+
+## Consequences
+### Advantages
+- The process of generating configuration files is automatic. Each time we have changes in Konduit/Dl4j, we don't have to manually editing the .json configuration files.
+- We just include only the classes and methods which will be used to run the CLI, so the native image size will be decreased.
+
+### Disadvantages
+- Required write all the cases of the test suite. It's somehow impossible to have code coverage 100%.
