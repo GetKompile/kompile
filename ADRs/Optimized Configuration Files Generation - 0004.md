@@ -46,12 +46,12 @@ Discussed with: Adam Gibson
    &nbsp;&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp;&nbsp;// TODO how to use NativeImageAgent \
    &nbsp;&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp;&nbsp;generateImageAndSDKCommand.call(); \
    &nbsp;&nbsp;&nbsp;&nbsp;} \
-   } \
+   }
    - Define a main class: In this class, The main method will load all the classes which extends ConfigurationGenerator run them with the agent embedded, check if any classes which use reflection or jni, then insert data in .json files. \
    &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator { \
-   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List<ConfigurationGenerator> configurationGenerators;\
+   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List\<ConfigurationGenerator\> configurationGenerators;\
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
-     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator(List<ConfigurationGenerator> configurationGenerators) { \
+     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator(List\<ConfigurationGenerator\> configurationGenerators) { \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.configurationGenerators = configurationGenerators; \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static void main(String[] args) { \
