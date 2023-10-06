@@ -3,9 +3,9 @@
 ## Status
 Proposed
 
-Proposed by: Adam Gibson (10-05-2023)
+Proposed by: Nguyen Dang Thanh (05-10-2023)
 
-Discussed with: N/A
+Discussed with: Adam Gibson
 
 ## Context
 - Graalvm native-image build tool use some configuration files to solve with dynamic aspects of the application such as: reflection, jni, resources...
