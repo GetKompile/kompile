@@ -8,10 +8,10 @@ Proposed by: Nguyen Dang Thanh (05-10-2023)
 Discussed with: Adam Gibson
 
 ## Context
-- Graalvm native-image build tool use some configuration files to solve with dynamic aspects of the application such as: reflection, jni, resources...
-- Currently, here are the classes which are needed to put on configuration files are 102 classes inside Kompile, and many libraries: google, javacpp, jdk, org.nd4j, org.bytedeco, konduit.
-- Right now the configuration files are almost manually built, and they contain many redundant classes which we don't need.
-- Since, we're planning to have a "tool" to generate these configuration files with two objectives: automatic and efficient.
+- Graalvm native-image build tool uses some configuration files to solve dynamic aspects of the application such as: reflection, jni, resources...
+- Currently, all the classes which are needed to put on configuration files are: 102 classes in Kompile, and many libraries (google, javacpp, jdk, org.nd4j, org.bytedeco, konduit).
+- Right now, the configuration files are manually built, and they contain many redundant classes which are not needed in the build process.
+- Therefore, we plan to have a "tool" which will generate these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
 1. For classes inside Kompile, define our own annotation. Create a configuration file and add all needed classes so that the agent can include them into .json configuration files. \
