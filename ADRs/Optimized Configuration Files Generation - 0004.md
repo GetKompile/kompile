@@ -38,9 +38,9 @@ Discussed with: Adam Gibson
    &nbsp;&nbsp;&nbsp;&nbsp;} 
    - Define classes which implement above interface: \
    &nbsp;&nbsp;&nbsp;&nbsp;public class GenerateImageAndSDKConfigurationGenerator implements ConfigurationGenerator{ \
-   &nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+   &nbsp;&nbsp;&nbsp;&nbsp;@Inject \
    &nbsp;&nbsp;&nbsp;&nbsp;NativeImageAgent nativeImageAgent; \
-   &nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+   &nbsp;&nbsp;&nbsp;&nbsp;@Inject \
    &nbsp;&nbsp;&nbsp;&nbsp;GenerateImageAndSDK generateImageAndSDKCommand; \
    &nbsp;&nbsp;&nbsp;&nbsp;@Override \
    &nbsp;&nbsp;&nbsp;&nbsp;public void generate() { \
@@ -51,7 +51,7 @@ Discussed with: Adam Gibson
    - Define a main class: In this class, The main method will load all the classes which extends ConfigurationGenerator run them with the agent embedded, check if any classes which use reflection or jni, then insert data in .json files. \
    &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator { \
    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List\<ConfigurationGenerator\> configurationGenerators;\
-     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Inject \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator(List\<ConfigurationGenerator\> configurationGenerators) { \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.configurationGenerators = configurationGenerators; \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
@@ -69,7 +69,7 @@ $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/home/temp/ -
   &nbsp;&nbsp;&nbsp;&nbsp;} 
 - Create command class: \
   &nbsp;&nbsp;&nbsp;&nbsp;public class GenerateImageAndSDKCommandRunner implements CommandRunner{ \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Inject \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenerateImageAndSDK generateImageAndSDKCommand; \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Override \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public void runCommand() { \
@@ -79,7 +79,7 @@ $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/home/temp/ -
 - Create Main class:\
   &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator2 { \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List<CommandRunner> commandRunners; \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Inject \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator2(List<CommandRunner> commandRunners) { \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.commandRunners = commandRunners; \
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
