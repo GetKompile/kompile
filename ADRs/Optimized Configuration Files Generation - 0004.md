@@ -11,7 +11,7 @@ Discussed with: Adam Gibson
 - Graalvm native-image build tool uses some configuration files to solve dynamic aspects of the application such as: reflection, jni, resources...
 - Currently, all the classes which are needed to put on configuration files are: 102 classes in Kompile, and many libraries (google, javacpp, jdk, org.nd4j, org.bytedeco, konduit).
 - Right now, the configuration files are manually built, and they contain many redundant classes which are not needed in the build process.
-- Therefore, we plan to have a "tool" which will generate these configuration files with two objectives: automatic and efficient.
+- Therefore, we plan to have a "tool" which generates these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
 ### First option: Using Tracing Agent API
