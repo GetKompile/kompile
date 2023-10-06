@@ -14,6 +14,7 @@ Discussed with: Adam Gibson
 - Therefore, we plan to have a "tool" which will generate these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
+### First option: Using Tracing Agent API
 1. For classes inside Kompile, define our own annotation. Create a configuration file and add all needed classes so that the agent can include them into .json configuration files. 
    - Define the @ReflectionConfig annotation. Create GraalConfig class to contain all the reflection configs. \
    &nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig( \
@@ -58,6 +59,35 @@ Discussed with: Adam Gibson
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;configurationGenerators.forEach(ConfigurationGenerator::generate); \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
      &nbsp;&nbsp;&nbsp;&nbsp;}
+### Second option: Using Tracing Agent as a sub-process
+1. Run the kompile with tracing-agent: \
+$JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/home/temp/ -jar kompile-1.0-SNAPSHOT.jar.jar
+2. Create a seperate MainConfigurationGenerator class then run all commands in main method: 
+- Create interface:\
+  &nbsp;&nbsp;&nbsp;&nbsp;public interface CommandRunner { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void runCommand(); \
+  &nbsp;&nbsp;&nbsp;&nbsp;} 
+- Create command class: \
+  &nbsp;&nbsp;&nbsp;&nbsp;public class GenerateImageAndSDKCommandRunner implements CommandRunner{ \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenerateImageAndSDK generateImageAndSDKCommand; \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Override \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public void runCommand() { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;generateImageAndSDKCommand.call; \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+  &nbsp;&nbsp;&nbsp;&nbsp;} 
+- Create Main class:\
+  &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator2 { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List<CommandRunner> commandRunners; \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Autowired \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator2(List<CommandRunner> commandRunners) { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.commandRunners = commandRunners; \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static void main(String[] args) { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;commandRunners.forEach(CommandRunner::runCommand); \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+  &nbsp;&nbsp;&nbsp;&nbsp;} 
+
 ## Consequences
 ### Advantages
 - The process of generating configuration files is automatic. Each time we have changes in Konduit/Dl4j, we don't have to manually editing the .json configuration files.
