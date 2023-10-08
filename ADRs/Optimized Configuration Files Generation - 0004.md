@@ -14,7 +14,23 @@ Discussed with: Adam Gibson
 - Therefore, we plan to have a "tool" which generates these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
-### First option: Using Tracing Agent API
+### First option: Using Tracing Agent as a sub-process
+1. Run the kompile with tracing-agent: \
+   $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/home/temp/ -jar kompile-1.0-SNAPSHOT.jar
+2. Create a separate MainConfigurationGenerator class then run all commands in main method:
+- Create Main class:\
+  &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static void main(String[] args) { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;String[] nativeCommandArgs = getLatestCommandArgs(); \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;new CommandLine(new NativeImageBuilder()).execute(nativeCommandArgs); \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}\
+  &nbsp;&nbsp;&nbsp;&nbsp;private static String[] getLatestCommandArgs() { \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;// TODO define arguments for native image builder command \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return new String[0]; \
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
+  &nbsp;&nbsp;&nbsp;&nbsp;} \
+  We can add as many command to run to fulfill the configuration files.
+### Second option: Using Tracing Agent API
 1. For classes inside Kompile, define our own annotation. Create a configuration file and add all needed classes so that the agent can include them into .json configuration files. 
    - Define the @ReflectionConfig annotation. Create GraalConfig class to contain all the reflection configs. \
    &nbsp;&nbsp;&nbsp;&nbsp;@ReflectionConfig( \
@@ -59,34 +75,6 @@ Discussed with: Adam Gibson
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;configurationGenerators.forEach(ConfigurationGenerator::generate); \
      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
      &nbsp;&nbsp;&nbsp;&nbsp;}
-### Second option: Using Tracing Agent as a sub-process
-1. Run the kompile with tracing-agent: \
-$JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/home/temp/ -jar kompile-1.0-SNAPSHOT.jar.jar
-2. Create a seperate MainConfigurationGenerator class then run all commands in main method: 
-- Create interface:\
-  &nbsp;&nbsp;&nbsp;&nbsp;public interface CommandRunner { \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;void runCommand(); \
-  &nbsp;&nbsp;&nbsp;&nbsp;} 
-- Create command class: \
-  &nbsp;&nbsp;&nbsp;&nbsp;public class GenerateImageAndSDKCommandRunner implements CommandRunner{ \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Inject \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenerateImageAndSDK generateImageAndSDKCommand; \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Override \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public void runCommand() { \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;generateImageAndSDKCommand.call; \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
-  &nbsp;&nbsp;&nbsp;&nbsp;} 
-- Create Main class:\
-  &nbsp;&nbsp;&nbsp;&nbsp;public class MainConfigurationGenerator2 { \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static List<CommandRunner> commandRunners; \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Inject \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public MainConfigurationGenerator2(List<CommandRunner> commandRunners) { \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.commandRunners = commandRunners; \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;public static void main(String[] args) { \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;commandRunners.forEach(CommandRunner::runCommand); \
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;} \
-  &nbsp;&nbsp;&nbsp;&nbsp;} 
 
 ## Consequences
 ### Advantages
