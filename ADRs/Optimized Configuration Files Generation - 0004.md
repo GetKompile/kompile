@@ -48,8 +48,10 @@ Poc Reference link: https://github.com/ndthanhit/POCs
 
 ## Consequences
 ### Advantages
-- The process of generating configuration files is automatic. Each time we have changes in Konduit/Dl4j, we don't have to manually edit the .json configuration files.
-- We just include only the classes and methods that are used to run the CLI, so the native image size will be decreased.
+- For the UT Suite approach, we can utilize existing unit test suites, this will save time for us.
+- For the sub-process approach, we can choose to run main-flow sub-processes. In this way, we have more control over the code.
 
 ### Disadvantages
-- Required to write all the cases of the test suite. It's somehow impossible to have code coverage 100%.
+- For the UT Suite approach, even if we can utilize the existing unit test suites, we still have to collect and reorganize all the test suites into one place.
+- For the sub-process approach, we almost have to start from scratch, and then it takes more time for us to write sub-process classes.
+- Both approaches have a code coverage problem. We can't make sure that our test suites or sub-processes classes have 100% coverage. This will affect the quality of the metadata.
