@@ -15,15 +15,17 @@ Discussed with: Adam Gibson
 
 ## Proposal
 ### First option: Running tracing agent with a Unit test Suite:
-1. Step 1: Writing an overall unit test suite: \
-   @Test \
-   public void testNd4j() { \
-   &emsp;&emsp;INDArray nd1 = Nd4j.create(new double[] {1, 2, 3, 4, 5, 6}, 2, 3); \
-   &emsp;&emsp;INDArray ndv = nd1.add(1); \
-   &emsp;&emsp;ndv = nd1.mul(5); \
-   &emsp;&emsp;ndv = nd1.sub(3); \
-   &emsp;&emsp;ndv = nd1.div(2); \
-   &emsp;&emsp;// asserts() \
+1. Step 1: Writing an overall unit test suite which includes all the library that we use: \
+   Example: Test class for Nd4j: \
+   public class Nd4jTest {  \
+   &emsp;&emsp;@Test  \
+   &emsp;&emsp;public void testNd4jAdd() {  \
+   &emsp;&emsp;&emsp;&emsp;// ...  \
+   &emsp;&emsp;}  \
+   &emsp;&emsp;@Test  \
+   &emsp;&emsp;public void testNd4jMultiply() {  \
+   &emsp;&emsp;&emsp;&emsp;// ...  \
+   &emsp;&emsp;}  \
    } 
 2. Step 2: Configure the tracing agent in pom.xml file:  \
    \<plugin>  \
@@ -39,25 +41,35 @@ Discussed with: Adam Gibson
    Poc Reference link: https://github.com/ndthanhit/POCs
   
 ### Second option: Run sub-process runners inside a parent process
-1. Step 1: Write sub processes:  \
-   public class Nd4jRunner { \
+1. Step 1: Write a based Runner interface: \
+   public interface BasedRunner { \
+   &emsp;&emsp;void run(); \
+   }
+2. Step 2: Write runner classes: \
+   Example: \
+   public class Nd4jRunner implements BasedRunner { \
    &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;INDArray nd1 = Nd4j.create(new double[] {1, 2, 3, 4, 5, 6}, 2, 3); \
-   &emsp;&emsp;&emsp;&emsp;INDArray ndv = nd1.add(1); \
-   &emsp;&emsp;&emsp;&emsp;ndv = nd1.mul(5); \
-   &emsp;&emsp;&emsp;&emsp;ndv = nd1.sub(3); \
-   &emsp;&emsp;&emsp;&emsp;ndv = nd1.div(2); \
+   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().run(); \
    &emsp;&emsp;} \
-   } 
-2. Step 2: Write a main process that load and run all sub processes with tracing agent: \
+   &emsp;&emsp;@Override \
+   &emsp;&emsp;public void run() { \
+   &emsp;&emsp;&emsp;&emsp;runAddMethod(); \
+   &emsp;&emsp;&emsp;&emsp;runMultiplyMethod(); \
+   &emsp;&emsp;} \
+   &emsp;&emsp;private void runAddMethod() { \
+   &emsp;&emsp;&emsp;&emsp; // ... \
+   &emsp;&emsp;} \
+   &emsp;&emsp;private void runMultiplyMethod() { \
+   &emsp;&emsp;&emsp;&emsp; // ... \
+   &emsp;&emsp;} \
+   }
+3. Write a main process that load and run all sub-processes with tracing agents:
    public class MainApplication { \
-   &emsp;&emsp;public static void main(String[] args) throws IOException, InterruptedException, TimeoutException { \
-   &emsp;&emsp;&emsp;&emsp;String separator = System.getProperty("file.separator"); \
-   &emsp;&emsp;&emsp;&emsp;String path = System.getProperty("java.home") + separator + "bin" + separator + "java"; \
-   &emsp;&emsp;&emsp;&emsp;String classpath = System.getProperty("java.class.path"); \
-   &emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-agentlib:native-image-agent=config-output-dir=META-INF/native-image/", "-cp", classpath, Nd4jRunner.class.getName()); \
-   &emsp;&emsp;&emsp;&emsp;String output = processExecutor.readOutput(true).execute().outputUTF8(); \
-   &emsp;&emsp;&emsp;&emsp;System.out.println(output); \
+   &emsp;&emsp;public static void main(String[] args) { \
+   &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
+   &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> { \
+   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-cp", classpath, klass.getName()); \
+   &emsp;&emsp;&emsp;&emsp;}); \
    &emsp;&emsp;} \
    } \
    Poc Reference link: https://github.com/ndthanhit/POCs
