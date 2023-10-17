@@ -63,7 +63,7 @@ Discussed with: Adam Gibson
    &emsp;&emsp;&emsp;&emsp; // ... \
    &emsp;&emsp;} \
    }
-3. Write a main process that load and run all sub-processes with tracing agents:
+3. Write a main process that load and run all sub-processes with tracing agents: \
    public class MainApplication { \
    &emsp;&emsp;public static void main(String[] args) { \
    &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
