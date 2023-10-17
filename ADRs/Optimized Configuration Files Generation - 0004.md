@@ -14,66 +14,38 @@ Discussed with: Adam Gibson
 - Therefore, we plan to have a "tool" that generates these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
+- Graalvm provides a Tracing Agent to easily gather metadata  and prepare configuration files.
+- The agent tracks all usages of dynamic features during application execution on a regular Java VM.
+- We can enable the agent con the command line as below:
+  $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/path/to/config-dir/ ...
+- When run, the agent looks up classes, methods, fields, resources for which the native-image tools needs. When
+  the application completes, and the JVM exits, the agent writes metadata to Json files in the specified output
+  directory.
+- Therefore, we can utilize this tool for our generating metadata step.
+
 ### First option: Running tracing agent with a Unit test Suite:
-1. Step 1: Writing an overall unit test suite which includes all the library that we use: \
-   Example: Test class for Nd4j: \
-   public class Nd4jTest {  \
-   &emsp;&emsp;@Test  \
-   &emsp;&emsp;public void testNd4jAdd() {  \
-   &emsp;&emsp;&emsp;&emsp;// ...  \
-   &emsp;&emsp;}  \
-   &emsp;&emsp;@Test  \
-   &emsp;&emsp;public void testNd4jMultiply() {  \
-   &emsp;&emsp;&emsp;&emsp;// ...  \
-   &emsp;&emsp;}  \
-   } 
-2. Step 2: Configure the tracing agent in pom.xml file:  \
-   \<plugin>  \
-   &emsp;&emsp;\<groupId>org.apache.maven.plugins\</groupId> \
-   &emsp;&emsp;\<artifactId>maven-surefire-plugin\</artifactId> \
-   &emsp;&emsp;\<version>2.12.4\</version> \
-   &emsp;&emsp;\<configuration> \
-   &emsp;&emsp;&emsp;&emsp;\<argLine>-agentlib:native-image-agent=config-output-dir=src/main/resources/META-INF/native-image\</argLine> \
-   &emsp;&emsp;\</configuration> \
-   &emsp;&emsp;\</plugin>
-3. Step 3: Run the command line to generate configuration files:  \
-    mvn clean install  \
-   Poc Reference link: https://github.com/ndthanhit/POCs
+- Graalvm also supports generating metadata while you run a Unit Test Suite, we just need to add the plugin into pom.xml file: \
+  &emsp;&emsp;\<plugin>  \
+  &emsp;&emsp;&emsp;&emsp;\<groupId>org.apache.maven.plugins\</groupId> \
+  &emsp;&emsp;&emsp;&emsp;\<artifactId>maven-surefire-plugin\</artifactId> \
+  &emsp;&emsp;&emsp;&emsp;\<version>2.12.4\</version> \
+  &emsp;&emsp;&emsp;&emsp;\<configuration> \
+  &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;\<argLine>-agentlib:native-image-agent=config-output-dir=src/main/resources/META-INF/native-image\</argLine> \
+  &emsp;&emsp;&emsp;&emsp;\</configuration> \
+  &emsp;&emsp;\</plugin>
+- Then we can write our own test suite and run mvn command for generating metadata.
   
 ### Second option: Run sub-process runners inside a parent process
-1. Step 1: Write a based Runner interface: \
-   public interface BasedRunner { \
-   &emsp;&emsp;void run(); \
-   }
-2. Step 2: Write runner classes: \
-   Example: \
-   public class Nd4jRunner implements BasedRunner { \
-   &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().run(); \
-   &emsp;&emsp;} \
-   &emsp;&emsp;@Override \
-   &emsp;&emsp;public void run() { \
-   &emsp;&emsp;&emsp;&emsp;runAddMethod(); \
-   &emsp;&emsp;&emsp;&emsp;runMultiplyMethod(); \
-   &emsp;&emsp;} \
-   &emsp;&emsp;private void runAddMethod() { \
-   &emsp;&emsp;&emsp;&emsp; // ... \
-   &emsp;&emsp;} \
-   &emsp;&emsp;private void runMultiplyMethod() { \
-   &emsp;&emsp;&emsp;&emsp; // ... \
-   &emsp;&emsp;} \
-   }
-3. Write a main process that load and run all sub-processes with tracing agents: \
-   public class MainApplication { \
-   &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
-   &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> { \
-   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-cp", classpath, klass.getName()); \
-   &emsp;&emsp;&emsp;&emsp;}); \
-   &emsp;&emsp;} \
-   } \
-   Poc Reference link: https://github.com/ndthanhit/POCs
-   
+- Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite, 
+  we can use a main process which contains many sub-processes with an embedded agent for generating metadata.
+- From the main process, we can use zt-exec to exec the sub-processes: \
+  new ProcessExecutor(path, "-agentlib:native-image-agent=config-output-dir=META-INF/native-image", "-cp", classpath, SubProcess.getName())
+- Note: We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
+  We can get the classpath of current process by this way: \
+  &emsp;&emsp;System.getProperty("java.class.path");
+
+Poc Reference link: https://github.com/ndthanhit/POCs
+
 ## Consequences
 ### Advantages
 - The process of generating configuration files is automatic. Each time we have changes in Konduit/Dl4j, we don't have to manually edit the .json configuration files.
