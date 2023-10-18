@@ -60,22 +60,37 @@ Discussed with: Adam Gibson
 - Next, we will write our runner classes. \
   The runner classes implement the BasedRunner interface, which has a generateConfigFiles() method. We provide all running flows in its run method().
   Here's example of a runner class, we run the Add and Multiply methods of Nd4j : \
-   public class Nd4jRunner implements ConfigGeneratorRunner { \
-   &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().generateConfigFiles(); \
-   &emsp;&emsp;} \
-   &emsp;&emsp;@Override \
-   &emsp;&emsp;public void generateConfigFiles() { \
-   &emsp;&emsp;&emsp;&emsp;runAddMethod(); \
-   &emsp;&emsp;&emsp;&emsp;runMultiplyMethod(); \
-   &emsp;&emsp;} \
-   &emsp;&emsp;private void runAddMethod() { \
-   &emsp;&emsp;&emsp;&emsp; // ... \
-   &emsp;&emsp;} \
-   &emsp;&emsp;private void runMultiplyMethod() { \
-   &emsp;&emsp;&emsp;&emsp; // ... \
-   &emsp;&emsp;} \
-   }
+  public class Nd4jRunner implements ConfigGeneratorRunner { \
+  &emsp;&emsp;public static void main(String[] args) { \
+  &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().generateConfigFiles(); \
+  &emsp;&emsp;} \
+  &emsp;&emsp;@Override \
+  &emsp;&emsp;public void generateConfigFiles() { \
+  &emsp;&emsp;&emsp;&emsp;testBasedOperations(); \
+  &emsp;&emsp;&emsp;&emsp;testReshapeOperations(); \
+  &emsp;&emsp;&emsp;&emsp;testReshapeOperations(); \
+  &emsp;&emsp;} \
+  &emsp;&emsp;private void testElementWiseOperations() { \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd1 = Nd4j.create(new double[] {1, 2, 3, 4, 5, 6}, 2, 3);  \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd2 = Nd4j.rand(3, 5); \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd3 = Nd4j.zeros(1, 440); \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd4 = Nd4j.ones(1, 440); \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd5 = Nd4j.accumulate(nd3, nd4); \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd6 = Nd4j.concat(0, nd4, nd5); \
+  &emsp;&emsp;} \
+  &emsp;&emsp;private void testReshapeOperations(INDArray nd) { \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd = Nd4j.create(new float[]{1, 2, 3, 4}, 2, 2); \
+  &emsp;&emsp;&emsp;&emsp;INDArray ndv; \
+  &emsp;&emsp;&emsp;&emsp;ndv = nd.transpose() \
+  &emsp;&emsp;} \
+  &emsp;&emsp;private void testElementWiseOperations() { \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd1 = Nd4j.create(new double[]{1,2,3,4,5,6}, 2,3); \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd2 = Nd4j.create(new double[]{10,20}, 2,1); //vector as column \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd3 = Nd4j.create(new double[]{30,40,50}, 1, 3); //vector as row \
+  &emsp;&emsp;&emsp;&emsp;INDArray ndv1 = nd1.addColumnVector(nd2); \
+  &emsp;&emsp;&emsp;&emsp;INDArray ndv2 = nd1.addRowVector(nd3); \
+  &emsp;&emsp;} \
+  }
 - Finally, we write a main process that load and run all sub-processes with tracing agents: \
    We will use ClassLoader or Reflection to find all the Runners in the predefined package. 
    Then we use zt-exec to execute the command line with a tracing-agent embedded. \
