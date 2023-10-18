@@ -16,9 +16,9 @@ Discussed with: Adam Gibson
 ## Proposal
 - Graalvm provides a Tracing Agent to easily gather metadata  and prepare configuration files.
 - The agent tracks all usages of dynamic features during application execution on a regular Java VM.
-- We can enable the agent con the command line as below:
+- We can enable the agent by the command line as below:
   $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/path/to/config-dir/ ...
-- When run, the agent looks up classes, methods, fields, resources for which the native-image tools needs. When
+- When running, the agent looks up classes, methods, fields, resources for which the native-image tool needs. When
   the application completes, and the JVM exits, the agent writes metadata to Json files in the specified output
   directory.
 - Therefore, we can utilize this tool for our generating metadata step.
@@ -38,6 +38,7 @@ Discussed with: Adam Gibson
 ### Second option: Run sub-process runners inside a parent process
 - Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite, 
   we can use a main process which contains many sub-processes with an embedded agent for generating metadata.
+- Sub-processes are wrapped inside Runners, which are the interface implementations that run basic flows of our application.
 - From the main process, we can use zt-exec to exec the sub-processes: \
   new ProcessExecutor(path, "-agentlib:native-image-agent=config-output-dir=META-INF/native-image", "-cp", classpath, SubProcess.getName())
 - Note: We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
