@@ -82,11 +82,15 @@ Discussed with: Adam Gibson
    public class MainApplication { \
    &emsp;&emsp;public static void main(String[] args) { \
    &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
+   &emsp;&emsp;&emsp;&emsp;String classpath = System.getProperty("java.class.path"); \
    &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> { \
    &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-cp", classpath, klass.getName()); \
    &emsp;&emsp;&emsp;&emsp;}); \
    &emsp;&emsp;} \
-   } \
+   } 
+- Note: We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
+  We can get the classpath of current process by this way: \
+  &emsp;&emsp;System.getProperty("java.class.path");
    
 Poc Reference link: https://github.com/ndthanhit/POCs
 
