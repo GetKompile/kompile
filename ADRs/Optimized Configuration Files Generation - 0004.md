@@ -58,7 +58,7 @@ Discussed with: Adam Gibson
    &emsp;&emsp;void generateConfigFiles(); \
    }
 - Next, we will write our runner classes. \
-  The runner classes implement the BasedRunner interface, which has a run() method. We provide all running flows in its run method().
+  The runner classes implement the BasedRunner interface, which has a generateConfigFiles() method. We provide all running flows in its run method().
   Here's example of a runner class, we run the Add and Multiply methods of Nd4j : \
    public class Nd4jRunner implements ConfigGeneratorRunner { \
    &emsp;&emsp;public static void main(String[] args) { \
