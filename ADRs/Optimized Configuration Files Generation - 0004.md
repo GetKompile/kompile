@@ -14,7 +14,7 @@ Discussed with: Adam Gibson
 - Therefore, we plan to have a "tool" that generates these configuration files with two objectives: automatic and efficient.
 
 ## Proposal
-- Graalvm provides a Tracing Agent to easily gather metadata  and prepare configuration files.
+- Graalvm provides a Tracing Agent to easily gather metadata and prepare configuration files.
 - The agent tracks all usages of dynamic features during application execution on a regular Java VM.
 - We can enable the agent by the command line as below:
   $JAVA_HOME/bin/java -agentlib:native-image-agent=config-output-dir=/path/to/config-dir/ ...
@@ -23,8 +23,8 @@ Discussed with: Adam Gibson
   directory.
 - Therefore, we can utilize this tool for our generating metadata step.
 
-### First option: Running tracing agent with unit test suites:
-- Graalvm also supports generating metadata while you run a UT suite, we just need to add the plugin into pom.xml file: \
+### First option: Running tracing agent with a Unit test Suite:
+- Graalvm also supports generating metadata while you run a UT suite, we just need to add the plugin into pom.xml file:\
   &emsp;&emsp;\<plugin>  \
   &emsp;&emsp;&emsp;&emsp;\<groupId>org.apache.maven.plugins\</groupId> \
   &emsp;&emsp;&emsp;&emsp;\<artifactId>maven-surefire-plugin\</artifactId> \
@@ -33,18 +33,61 @@ Discussed with: Adam Gibson
   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;\<argLine>-agentlib:native-image-agent=config-output-dir=src/main/resources/META-INF/native-image\</argLine> \
   &emsp;&emsp;&emsp;&emsp;\</configuration> \
   &emsp;&emsp;\</plugin>
-- Then we can write our own test suite and run maven command for generating metadata.
+
+- Then we can write our own unit test suite which run basic flows of our libraries:
+  Below is the example of Unit test class for Nd4j, this class will contain all test methods of Nd4j class. \
+  public class Nd4jTest {  \
+  &emsp;&emsp;@Test  \
+  &emsp;&emsp;public void testNd4jAdd() {  \
+  &emsp;&emsp;&emsp;&emsp;// ...  \
+  &emsp;&emsp;}  \
+  &emsp;&emsp;@Test  \
+  &emsp;&emsp;public void testNd4jMultiply() {  \
+  &emsp;&emsp;&emsp;&emsp;// ...  \
+  &emsp;&emsp;}  \
+  }
+- Finally, we can run the command to generate the configuration files: \
+  mvn clean install
   
 ### Second option: Run sub-process runners inside a parent process
-- Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite, 
+- Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite,
   we can use a main process which contains many sub-processes with an embedded agent for generating metadata.
 - Sub-processes are wrapped inside Runners, which are the interface implementations that run basic flows of our application.
-- From the main process, we can use zt-exec to exec the sub-processes: \
-  new ProcessExecutor(path, "-agentlib:native-image-agent=config-output-dir=META-INF/native-image", "-cp", classpath, SubProcess.getName())
-- Note: We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
-  We can get the classpath of current process by this way: \
-  &emsp;&emsp;System.getProperty("java.class.path");
-
+  Example of BasedRunner interface: \
+   public interface BasedRunner { \
+   &emsp;&emsp;void run(); \
+   }
+- Next, we will write our runner classes. \
+  The runner classes implement the BasedRunner interface, which has a run() method. We provide all running flows in its run method().
+  Here's example of a runner class, we run the Add and Multiply methods of Nd4j : \
+   public class Nd4jRunner implements BasedRunner { \
+   &emsp;&emsp;public static void main(String[] args) { \
+   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().run(); \
+   &emsp;&emsp;} \
+   &emsp;&emsp;@Override \
+   &emsp;&emsp;public void run() { \
+   &emsp;&emsp;&emsp;&emsp;runAddMethod(); \
+   &emsp;&emsp;&emsp;&emsp;runMultiplyMethod(); \
+   &emsp;&emsp;} \
+   &emsp;&emsp;private void runAddMethod() { \
+   &emsp;&emsp;&emsp;&emsp; // ... \
+   &emsp;&emsp;} \
+   &emsp;&emsp;private void runMultiplyMethod() { \
+   &emsp;&emsp;&emsp;&emsp; // ... \
+   &emsp;&emsp;} \
+   }
+3. Finally, we write a main process that load and run all sub-processes with tracing agents: \
+   We will use ClassLoader or Reflection to find all the Runners in the predefined package. 
+   Then we use zt-exec to execute the command line with a tracing-agent embedded. \
+   public class MainApplication { \
+   &emsp;&emsp;public static void main(String[] args) { \
+   &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
+   &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> { \
+   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-cp", classpath, klass.getName()); \
+   &emsp;&emsp;&emsp;&emsp;}); \
+   &emsp;&emsp;} \
+   } \
+   
 Poc Reference link: https://github.com/ndthanhit/POCs
 
 ## Consequences
