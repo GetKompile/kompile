@@ -95,21 +95,34 @@ Discussed with: Adam Gibson
   &emsp;&emsp;&emsp;&emsp;INDArray ndv2 = nd1.addRowVector(nd3); \
   &emsp;&emsp;} \
   }
-- Finally, we write a main process that load and run all sub-processes with tracing agents: \
-   We will use ClassLoader or Reflection to find all the Runners in the predefined package. 
-   Then we use zt-exec to execute the command line with a tracing-agent embedded. \
-   public class MainApplication { \
-   &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega"); \
-   &emsp;&emsp;&emsp;&emsp;String classpath = System.getProperty("java.class.path"); \
-   &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> { \
-   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(path, "-cp", classpath, klass.getName()); \
-   &emsp;&emsp;&emsp;&emsp;}); \
-   &emsp;&emsp;} \
-   } 
-- Note: We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
+- We can use the RunnerExecutor to execute the Runner: \
+  public class RunnerExecutor { \
+  &emsp;&emsp;public void execute(ConfigGeneratorRunner basedRunner) { \
+  &emsp;&emsp;&emsp;&emsp;ProcessExecutor processExecutor = new ProcessExecutor(getJavaPath(), TRACING_AGENT_OPTION, "-cp", getClasspath(), basedRunner.getClass().getName()); \
+  &emsp;&emsp;&emsp;&emsp;processExecutor.execute(); \
+  &emsp;&emsp;} \
+  &emsp;&emsp;private String getJavaPath() { \
+  &emsp;&emsp;&emsp;&emsp;String separator = System.getProperty("file.separator"); \
+  &emsp;&emsp;&emsp;&emsp;return System.getProperty("java.home") + separator + "bin" + separator + "java"; \
+  &emsp;&emsp;} \
+  &emsp;&emsp;private String getClasspath() { \
+  &emsp;&emsp;&emsp;&emsp;return System.getProperty("java.class.path"); \
+  &emsp;&emsp;} \
+  } \
+  We use zt-exec to execute the command line with a tracing-agent embedded. \
+  We should pay attention to classpath of the sub-process. The sub process will always use the classpath of the parent process.
   We can get the classpath of current process by this way: \
   &emsp;&emsp;System.getProperty("java.class.path");
+- Finally, we write a main process that load and run all sub-processes with tracing agents: \
+  We will use ClassLoader or Reflection to find all the Runners in the predefined package. \
+  public class MainApplication {\
+  &emsp;&emsp;public static void main(String[] args) {\
+  &emsp;&emsp;&emsp;&emsp;List<Class> runnerClasses = findAllClassesWithinPackage("dev.danvega");\
+  &emsp;&emsp;&emsp;&emsp;runnerClasses.forEach(klass -> {\
+  &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;new RunnerExecutor().execute(klass.getConstructor(String.class).newInstance());\
+  &emsp;&emsp;&emsp;&emsp;});\
+  &emsp;&emsp;}\
+  }
    
 Poc Reference link: https://github.com/ndthanhit/POCs
 
