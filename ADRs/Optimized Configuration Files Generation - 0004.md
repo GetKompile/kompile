@@ -52,20 +52,20 @@ Discussed with: Adam Gibson
 ### Second option: Run sub-process runners inside a parent process
 - Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite,
   we can use a main process which contains many sub-processes with an embedded agent for generating metadata.
-- Sub-processes are wrapped inside Runners, which are the interface implementations that run basic flows of our application.
-  Example of BasedRunner interface: \
-   public interface BasedRunner { \
-   &emsp;&emsp;void run(); \
+- Sub-processes are wrapped inside Runners, which are the interface implementations that run basic flows of our application. \
+  Example of ConfigGeneratorRunner interface: \
+   public interface ConfigGeneratorRunner { \
+   &emsp;&emsp;void generateConfigFiles(); \
    }
 - Next, we will write our runner classes. \
   The runner classes implement the BasedRunner interface, which has a run() method. We provide all running flows in its run method().
   Here's example of a runner class, we run the Add and Multiply methods of Nd4j : \
-   public class Nd4jRunner implements BasedRunner { \
+   public class Nd4jRunner implements ConfigGeneratorRunner { \
    &emsp;&emsp;public static void main(String[] args) { \
-   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().run(); \
+   &emsp;&emsp;&emsp;&emsp;new Nd4jRunner().generateConfigFiles(); \
    &emsp;&emsp;} \
    &emsp;&emsp;@Override \
-   &emsp;&emsp;public void run() { \
+   &emsp;&emsp;public void generateConfigFiles() { \
    &emsp;&emsp;&emsp;&emsp;runAddMethod(); \
    &emsp;&emsp;&emsp;&emsp;runMultiplyMethod(); \
    &emsp;&emsp;} \
@@ -76,7 +76,7 @@ Discussed with: Adam Gibson
    &emsp;&emsp;&emsp;&emsp; // ... \
    &emsp;&emsp;} \
    }
-3. Finally, we write a main process that load and run all sub-processes with tracing agents: \
+- Finally, we write a main process that load and run all sub-processes with tracing agents: \
    We will use ClassLoader or Reflection to find all the Runners in the predefined package. 
    Then we use zt-exec to execute the command line with a tracing-agent embedded. \
    public class MainApplication { \
