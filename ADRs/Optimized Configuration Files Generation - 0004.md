@@ -23,8 +23,8 @@ Discussed with: Adam Gibson
   directory.
 - Therefore, we can utilize this tool for our generating metadata step.
 
-### First option: Running tracing agent with a Unit test Suite:
-- Graalvm also supports generating metadata while you run a Unit Test Suite, we just need to add the plugin into pom.xml file: \
+### First option: Running tracing agent with unit test suites:
+- Graalvm also supports generating metadata while you run a UT suite, we just need to add the plugin into pom.xml file: \
   &emsp;&emsp;\<plugin>  \
   &emsp;&emsp;&emsp;&emsp;\<groupId>org.apache.maven.plugins\</groupId> \
   &emsp;&emsp;&emsp;&emsp;\<artifactId>maven-surefire-plugin\</artifactId> \
@@ -33,7 +33,7 @@ Discussed with: Adam Gibson
   &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;\<argLine>-agentlib:native-image-agent=config-output-dir=src/main/resources/META-INF/native-image\</argLine> \
   &emsp;&emsp;&emsp;&emsp;\</configuration> \
   &emsp;&emsp;\</plugin>
-- Then we can write our own test suite and run mvn command for generating metadata.
+- Then we can write our own test suite and run maven command for generating metadata.
   
 ### Second option: Run sub-process runners inside a parent process
 - Tracing Agent generates metadata by checking which classes are used for specific purposes. Therefore, other than unit test suite, 
