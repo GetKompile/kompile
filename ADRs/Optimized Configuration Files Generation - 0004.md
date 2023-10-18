@@ -38,12 +38,16 @@ Discussed with: Adam Gibson
   Below is the example of Unit test class for Nd4j, this class will contain all test methods of Nd4j class. \
   public class Nd4jTest {  \
   &emsp;&emsp;@Test  \
-  &emsp;&emsp;public void testNd4jAdd() {  \
-  &emsp;&emsp;&emsp;&emsp;// ...  \
+  &emsp;&emsp;public void testReshapeOperations() {  \
+  &emsp;&emsp;&emsp;&emsp;INDArray nd = Nd4j.create(new float[]{1, 2, 3, 4}, 2, 2); \
+  &emsp;&emsp;&emsp;&emsp;INDArray ndv; \
+  &emsp;&emsp;&emsp;&emsp;ndv = nd.transpose() \
   &emsp;&emsp;}  \
   &emsp;&emsp;@Test  \
-  &emsp;&emsp;public void testNd4jMultiply() {  \
-  &emsp;&emsp;&emsp;&emsp;// ...  \
+  &emsp;&emsp;public void testAccumulateOperations() {  \
+  &emsp;&emsp;&emsp;&emsp;INDArray originalArray = Nd4j.linspace(1,15,15).reshape('c',3,5);   \
+  &emsp;&emsp;&emsp;&emsp;INDArray avgAlong1 = originalArray.mean(1);   \
+  &emsp;&emsp;&emsp;&emsp;INDArray argMaxAlongDim0 = Nd4j.argMax(originalArray,0);   \
   &emsp;&emsp;}  \
   }
 - Finally, we can run the command to generate the configuration files: \
