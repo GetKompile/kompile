@@ -498,7 +498,7 @@
             <argument>--outdir=${project.build.directory}/generated-picocli-docs</argument>
             <argument>-v</argument>
             <!-- FIXME: remove the template-dir option after generating templates once -->
-            <argument>--template-dir=src/docs/mantemplates</argument>
+            <argument>--template-dir=/kompile/src/docs/mantemplates</argument>
             <argument>ai.konduit.pipelinegenerator.main.MainCommand</argument>
             <argument>ai.konduit.pipelinegenerator.main.Bootstrap</argument>
             <argument>ai.konduit.pipelinegenerator.main.Info</argument>
