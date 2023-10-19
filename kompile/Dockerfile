@@ -36,9 +36,9 @@ RUN cd /kompile/deeplearning4j && cd codegen && mvn -Djavacpp.platform=linux-x86
 RUN cd /kompile/deeplearning4j && cd deeplearning4j && mvn -pl :deeplearning4j-modelimport   install -Dmaven.test.skip=true --also-make -Djavacpp.platform=linux-x86_64
 RUN cd /kompile && git clone https://github.com/KonduitAI/konduit-serving && cd /kompile/konduit-serving && mvn -Dmaven.enforcer.skip=true  -Ddl4j.version=1.0.0-SNAPSHOT -Djavacpp.platform=linux-x86_64 -Djavacpp-presets.version=1.5.8 -Djavacpp.version=1.5.8 -Dmkl.version=2022.2 -Dopenblas.version=0.3.21 -Dffmpeg.version=5.1.2 -Dchip=cpu clean install -Dmaven.test.skip=true
 
-COPY ./kompile-c-library /kompile/kompile-c-library
-COPY ./kompile-python /kompile/kompile-python
-COPY ./src /kompile/src
+COPY kompile-core/kompile-c-library /kompile/kompile-c-library
+COPY kompile-core/kompile-python /kompile/kompile-python
+COPY ../kompile-core/src /kompile/src
 ENV KOMPILE_PREFIX=/kompile
 COPY pom.xml /kompile/pom.xml
 RUN cd /kompile && mvn -Djavacpp.platform=linux-x86_64 -Pnative clean package -Dmaven.test.skip=true &&\
@@ -64,7 +64,7 @@ RUN mkdir /kompile && yum -y install sed findutils
 COPY --from=builder /kompile/kompile /kompile/kompile
 COPY --from=builder /kompile/kompile-c-library /kompile/kompile-c-library
 COPY --from=builder /kompile/kompile-python /kompile/kompile-python
-COPY   /src/main/resources/META-INF/native-image /kompile/native-image
+COPY   /META-INF/native-image /kompile/native-image
 ENV JAVA_HOME=/root/.kompile/graalvm
 RUN yum -y install git gcc gcc-c++ zlib zlib-devel xz  freetype freetype-devel
 RUN /kompile/kompile install install-tool --programName=cmake

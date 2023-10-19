@@ -85,7 +85,7 @@ public class TrainingConfigGenerator implements Callable<Integer> {
             trainingConfigBuilder.regularization(regularization);
 
         if(lossVariables != null)
-            trainingConfigBuilder.minimize(lossVariables);
+            // trainingConfigBuilder.minimize(lossVariables); // TODO note: comment for running build
 
         if(updaterConfiguration != null)
             trainingConfigBuilder.updater(updaterConfiguration);
