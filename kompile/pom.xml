@@ -39,48 +39,6 @@
     </repository>
   </repositories>
 
-
-  <properties>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.source>11</maven.compiler.source>
-    <maven.compiler.target>11</maven.compiler.target>
-    <pico.version>4.6.3</pico.version>
-    <maven-shade-plugin.version>3.2.1</maven-shade-plugin.version>
-    <!-- Graalvm version 22, does not work till javacpp 1.5.8-->
-    <!-- <graalvm.version>22.1.0.1</graalvm.version>
-     <native-image-plugin.version>0.9.11</native-image-plugin.version>-->
-    <!--  <graalvm.version>21.3.2.1</graalvm.version>-->
-    <!-- Graalvm 20.x -->
-    <graalvm.version>22.2.0</graalvm.version>
-    <native-image-plugin.version>0.9.16</native-image-plugin.version>
-    <konduit.serving.version>0.4.0-SNAPSHOT</konduit.serving.version>
-    <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
-    <javacpp.version>1.5.7</javacpp.version>
-    <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
-    <ztexec.version>1.12</ztexec.version>
-    <ztprocesskiller.version>1.10</ztprocesskiller.version>
-    <progressbar.version>0.5.5</progressbar.version>
-    <netty.version>4.1.74.Final</netty.version>
-    <kotlin.version>1.7.20</kotlin.version>
-    <kotlin.compiler.jvmTarget>1.8</kotlin.compiler.jvmTarget>
-    <kotlin.compiler.incremental>true</kotlin.compiler.incremental>
-    <flatbuffers.version>1.12.0</flatbuffers.version>
-    <nd4j.backend>nd4j-native</nd4j.backend>
-    <conscrypt.version>2.5.2</conscrypt.version>
-    <slf4j.version>1.7.35</slf4j.version>
-    <jgit.version>6.3.0.202209071007-r</jgit.version>
-  </properties>
-
-  <dependencyManagement>
-    <dependencies>
-      <dependency>
-        <groupId>io.github.classgraph</groupId>
-        <artifactId>classgraph</artifactId>
-        <version>4.8.90</version>
-      </dependency>
-    </dependencies>
-  </dependencyManagement>
-
   <dependencies>
     <dependency>
       <groupId>org.nd4j</groupId>
