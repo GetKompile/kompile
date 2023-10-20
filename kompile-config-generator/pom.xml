@@ -49,6 +49,11 @@
             <artifactId>zt-exec</artifactId>
             <version>${ztexec.version}</version>
         </dependency>
+        <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli</artifactId>
+            <version>${pico.version}</version>
+        </dependency>
     </dependencies>
     <build>
         <plugins>
