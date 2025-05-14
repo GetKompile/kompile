@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>ai.kompile</groupId>
+  <artifactId>rag-mcp-assistant-parent</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <parent>
+    <groupId>ai.kompile</groupId>
+    <artifactId>kompile</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <name>RAG MCP Assistant - Parent</name>
+  <description>Parent POM for the RAG MCP Assistant multi-module project</description>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <java.version>17</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <spring-boot.version>3.2.5</spring-boot.version>
+    <spring-ai.version>1.0.0-M8</spring-ai.version>
+    <anserini.version>0.24.0</anserini.version>
+    <log4j2.version>2.21.1</log4j2.version>
+    <jsoup.version>1.17.2</jsoup.version>
+    <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
+    <lombok.version>1.18.38</lombok.version>
+
+    <frontend-maven-plugin.version>1.15.0</frontend-maven-plugin.version>
+    <node.version>v20.11.1</node.version>
+    <npm.version>10.2.4</npm.version>
+
+    <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+    <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
+    <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
+    <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
+    <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
+    <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
+    <native-maven-plugin.version>0.10.6</native-maven-plugin.version>
+  </properties>
+
+  <modules>
+    <module>kompile-app-core</module>
+    <module>kompile-app-loaders-orchestrator</module>
+    <module>kompile-loader-tika</module>
+    <module>kompile-loader-pdf</module>
+    <module>kompile-app-anserini</module>
+    <module>kompile-app-openai-llm</module>
+    <module>kompile-app-anthropic-llm</module>
+    <module>kompile-app-gemini-llm</module>
+    <module>kompile-embedding-openai</module>
+    <module>kompile-embedding-sentence-transformer</module>
+    <module>kompile-vectorstore-chroma</module>
+    <module>kompile-vectorstore-pgvector</module>
+    <module>kompile-tool-filesystem</module>
+    <module>kompile-tool-rag</module>
+    <module>kompile-app-main</module>
+  </modules>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.logging.log4j</groupId>
+        <artifactId>log4j-bom</artifactId>
+        <version>${log4j2.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>io.anserini</groupId>
+        <artifactId>anserini</artifactId>
+        <version>${anserini.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.module</groupId>
+        <artifactId>jackson-module-jsonSchema</artifactId>
+        <version>${jackson.module.jsonschema.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jsoup</groupId>
+        <artifactId>jsoup</artifactId>
+        <version>${jsoup.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <version>${lombok.version}</version>
+        <optional>true</optional>
+      </dependency>
+
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-loaders-orchestrator</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-tika</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-pdf</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency><groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-anserini</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-openai-llm</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-anthropic-llm</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-gemini-llm</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-embedding-openai</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-embedding-sentence-transformer</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-vectorstore-chroma</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-vectorstore-pgvector</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-filesystem</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-rag</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <version>${spring-boot.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>com.github.eirslett</groupId>
+          <artifactId>frontend-maven-plugin</artifactId>
+          <version>${frontend-maven-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${maven-compiler-plugin.version}</version>
+          <configuration>
+            <release>${java.version}</release>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-resources-plugin</artifactId>
+          <version>${maven-resources-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>${maven-jar-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${maven-surefire-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-clean-plugin</artifactId>
+          <version>${maven-clean-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-install-plugin</artifactId>
+          <version>${maven-install-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.graalvm.buildtools</groupId>
+          <artifactId>native-maven-plugin</artifactId>
+          <version>${native-maven-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+
+</project>

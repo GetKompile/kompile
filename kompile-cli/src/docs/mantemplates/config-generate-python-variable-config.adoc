@@ -1,0 +1,20 @@
+:includedir: /home/agibsonccc/Documents/GitHub/kompile/target/generated-picocli-docs
+//include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-full-manpage]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-header]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-name]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-synopsis]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-description]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-options]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-arguments]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-commands]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-exit-status]
+
+include::{includedir}/config-generate-python-variable-config.adoc[tag=picocli-generated-man-section-footer]

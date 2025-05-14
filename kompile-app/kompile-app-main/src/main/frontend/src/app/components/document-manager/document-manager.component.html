@@ -1,0 +1,63 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="document-manager-container">
+  <h2>Document Management</h2>
+
+  <div *ngIf="message" class="message success">{{ message }}</div>
+  <div *ngIf="errorMessage" class="message error">{{ errorMessage }}</div>
+  <div *ngIf="isLoading" class="message loading">Loading...</div>
+
+  <section>
+    <h3>Add New Document Source</h3>
+    <div>
+      <h4>Upload File</h4>
+      <input type="file" (change)="onFileSelected($event)" id="fileUploadInput" />
+      <button (click)="onUploadFile()" [disabled]="!selectedFile || isLoading">Upload Selected File</button>
+    </div>
+    <hr>
+    <div>
+      <h4>Add from URL</h4>
+      <input type="url" [(ngModel)]="addUrlValue" placeholder="Enter document URL" />
+      <input type="text" [(ngModel)]="addUrlFileName" placeholder="Optional: Desired file name (e.g., page.html)" />
+      <button (click)="onAddUrl()" [disabled]="!addUrlValue.trim() || isLoading">Add URL</button>
+    </div>
+  </section>
+  <hr>
+  <section>
+    <h3>Index Control</h3>
+    <button (click)="onRebuildIndex()" [disabled]="isLoading">Rebuild Anserini Index</button>
+    <p><small>Note: Rebuilding the index will process all configured sources, including newly uploaded files.</small></p>
+  </section>
+  <hr>
+  <section>
+    <h3>Configured Document Sources (from properties)</h3>
+    <button (click)="loadConfiguredSources()" [disabled]="isLoading">Refresh Sources List</button>
+    <ul *ngIf="configuredSources.length > 0; else noConfiguredSources">
+      <li *ngFor="let source of configuredSources">{{ source }}</li>
+    </ul>
+    <ng-template #noConfiguredSources><p>No document sources configured or loaded.</p></ng-template>
+  </section>
+  <hr>
+  <section>
+    <h3>Files in Uploads Directory ({{ uploadedFilesLocation }})</h3>
+    <button (click)="loadUploadedFiles()" [disabled]="isLoading">Refresh Uploaded Files List</button>
+    <ul *ngIf="uploadedFiles.length > 0; else noUploadedFiles">
+      <li *ngFor="let file of uploadedFiles">{{ file }}</li>
+    </ul>
+    <ng-template #noUploadedFiles><p>No files found in the uploads directory or directory not accessible.</p></ng-template>
+  </section>
+</div>

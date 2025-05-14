@@ -1,0 +1,92 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-framework</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <groupId>ai.kompile</groupId>
+    <artifactId>kompile-pipelines-steps-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Kompile Pipelines :: Steps (Parent)</name>
+    <description>Parent POM for Kompile Pipelines Step Implementation Modules.</description>
+    <modules>
+        <module>kompile-pipeline-steps-onnx</module>
+        <module>kompile-pipelines-steps-deeplearning4j</module>
+        <module>kompile-pipelines-steps-python</module>
+        <module>kompile-pipelines-steps-samediff</module>
+        <module>kompile-pipline-steps-document-parser</module>
+        <module>kompile-pipeline-steps-nd4j-common</module>
+    </modules>
+
+    <properties>
+        <tika.version>2.9.1</tika.version>
+    </properties>
+
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>ai.kompile</groupId>
+                <artifactId>kompile-pipelines-framework-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ai.kompile</groupId>
+                <artifactId>kompile-pipelines-framework-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>
