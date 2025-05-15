@@ -44,10 +44,10 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--instanceGroupId"}, description = "GroupId for the generated RAG instance", defaultValue = "ai.kompile.rag.instance")
     private String instanceGroupId;
 
-    @Option(names = {"--instanceVersion"}, description = "Version for the generated RAG instance", defaultValue = "0.0.1-SNAPSHOT")
+    @Option(names = {"--instanceVersion"}, description = "Version for the generated RAG instance", defaultValue = "0.1.0-SNAPSHOT")
     private String instanceVersion;
 
-    @Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.0.1-SNAPSHOT")
+    @Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.1.0-SNAPSHOT")
     private String ragMcpVersion;
 
     // --- RAG Module Selection Flags (mirrored from RagPomGenerator) ---

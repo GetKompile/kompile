@@ -45,10 +45,10 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--instanceArtifactId"}, description = "ArtifactId for the generated RAG instance", defaultValue = "my-rag-app")
     private String instanceArtifactId;
 
-    @CommandLine.Option(names = {"--instanceVersion"}, description = "Version for the generated RAG instance", defaultValue = "0.0.1-SNAPSHOT")
+    @CommandLine.Option(names = {"--instanceVersion"}, description = "Version for the generated RAG instance", defaultValue = "0.1.0-SNAPSHOT")
     private String instanceVersion;
 
-    @CommandLine.Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.0.1-SNAPSHOT")
+    @CommandLine.Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.1.0-SNAPSHOT")
     private String ragMcpVersion;
 
     // --- RAG Module Selection Flags ---

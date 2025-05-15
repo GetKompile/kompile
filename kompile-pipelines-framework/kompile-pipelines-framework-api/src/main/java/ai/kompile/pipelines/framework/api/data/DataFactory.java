@@ -33,7 +33,7 @@ public interface DataFactory {
      * Creates a new, empty {@link Data} instance.
      * @return An empty Data object.
      */
-    Data empty();
+     Data empty();
 
     /**
      * Creates a {@link Data} instance from a JSON string.

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,49 +20,145 @@ import ai.kompile.cli.main.util.OSResolver;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.InputStream;
+import java.util.Properties;
 import java.util.concurrent.Callable;
+
 @CommandLine.Command(name = "info",mixinStandardHelpOptions = false,description = "Display information on current kompile installation.")
 public class Info implements Callable<Integer> {
+
+    private static final String KOMPILE_PROPERTIES_FILE = "kompile-cli-versions.properties";
+    private static final Properties buildProperties = new Properties();
+
+    static {
+        try (InputStream is = Info.class.getClassLoader().getResourceAsStream(KOMPILE_PROPERTIES_FILE)) {
+            if (is != null) {
+                buildProperties.load(is);
+            } else {
+                System.err.println("WARNING: " + KOMPILE_PROPERTIES_FILE + " not found on classpath. Using default versions.");
+                loadDefaultVersions();
+            }
+        } catch (Exception e) {
+            System.err.println("Error loading " + KOMPILE_PROPERTIES_FILE + ": " + e.getMessage() + ". Using default versions.");
+            loadDefaultVersions();
+        }
+    }
+
+    private static void loadDefaultVersions() {
+        // These should match the current project versions if properties file fails
+        buildProperties.setProperty("kompile.cli.version", "0.1.0-SNAPSHOT"); // Version of the CLI itself (kompile parent)
+        buildProperties.setProperty("kompile.pipelines.version", "0.1.0-SNAPSHOT"); // Version for kompile-pipelines-* modules
+        buildProperties.setProperty("kompile.app.version", "0.0.1-SNAPSHOT"); // Version for kompile-app-* modules (RAG parent)
+        buildProperties.setProperty("spring.boot.version", "3.2.5");
+        buildProperties.setProperty("spring.ai.version", "1.0.0-M8");
+        buildProperties.setProperty("native.image.plugin.version", "0.10.6");
+    }
 
     public Info() {
     }
 
+    public static File homeDirectory() {
+        return new File(System.getProperty("user.home"), ".kompile");
+    }
+
     public static File mavenDirectory() {
-        return new File(homeDirectory(),"mvn");
+        return new File(homeDirectory(), "mvn");
     }
 
     public static File graalvmDirectory() {
-        return new File(homeDirectory(),"graalvm");
+        return new File(homeDirectory(), "graalvm");
     }
-
 
     public static File pythonDirectory() {
-        return new File(homeDirectory(),"python");
+        return new File(homeDirectory(), "python");
     }
-    public static File homeDirectory() {
-        return new File(System.getProperty("user.home"),".kompile");
+
+    public static File cmakeDirectory() {
+        return new File(homeDirectory(), "cmake");
     }
+
+    /**
+     * Gets the overall Kompile project version (typically from the parent POM of kompile-cli).
+     * @return The version string.
+     */
+    public static String getVersion() {
+        return buildProperties.getProperty("kompile.cli.version", "0.1.0-SNAPSHOT");
+    }
+
+    /**
+     * Gets the version for Kompile Pipelines Framework modules.
+     * @return The version string.
+     */
+    public static String getKompilePipelinesVersion() {
+        return buildProperties.getProperty("kompile.pipelines.version", getVersion());
+    }
+
+    /**
+     * Gets the version for Kompile App modules (e.g., rag-mcp-assistant-parent and its children).
+     * @return The version string.
+     */
+    public static String getKompileAppVersion() {
+        return buildProperties.getProperty("kompile.app.version", "0.0.1-SNAPSHOT");
+    }
+
+    /**
+     * Gets the Spring Boot version used by kompile-app modules.
+     * @return The version string.
+     */
+    public static String getSpringBootVersion() {
+        return buildProperties.getProperty("spring.boot.version", "3.2.5");
+    }
+
+    /**
+     * Gets the Spring AI version used by kompile-app modules.
+     * @return The version string.
+     */
+    public static String getSpringAiVersion() {
+        return buildProperties.getProperty("spring.ai.version", "1.0.0-M8");
+    }
+
+    /**
+     * Gets the GraalVM Native Image Maven Plugin version.
+     * @return The version string.
+     */
+    public static String getNativeImagePluginVersion() {
+        return buildProperties.getProperty("native.image.plugin.version", "0.10.6");
+    }
+
 
     @Override
     public Integer call() throws Exception {
         StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("Kompile SDK information\n");
-        File f = new File(System.getProperty("user.home"),".kompile");
-        stringBuilder.append("Kompile Home directory location at " + f.getAbsolutePath() + " is installed: " + f.exists());
-        stringBuilder.append("\n");
-        stringBuilder.append("Graalvm Installed: " + Info.graalvmDirectory().exists());
-        stringBuilder.append("\n");
-        stringBuilder.append("Maven installed: " + Info.mavenDirectory().exists());
-        stringBuilder.append("\n");
-        stringBuilder.append("Python installed: " + Info.pythonDirectory().exists() + "\n");
-        stringBuilder.append("Resolved install OS for install commands: " + OSResolver.os());
-        stringBuilder.append("\n");
+        stringBuilder.append("Kompile CLI Version: ").append(getVersion()).append("\n");
+        stringBuilder.append("Kompile Pipelines Modules Version: ").append(getKompilePipelinesVersion()).append("\n");
+        stringBuilder.append("Kompile App Modules (RAG Parent) Version: ").append(getKompileAppVersion()).append("\n");
+        stringBuilder.append("  Spring Boot Version (for apps): ").append(getSpringBootVersion()).append("\n");
+        stringBuilder.append("  Spring AI Version (for apps): ").append(getSpringAiVersion()).append("\n");
+        stringBuilder.append("  Native Image Plugin Version (for apps): ").append(getNativeImagePluginVersion()).append("\n");
+        stringBuilder.append("Kompile Home Directory: ").append(homeDirectory().getAbsolutePath()).append(" (exists: ").append(homeDirectory().exists()).append(")\n");
+        stringBuilder.append("  GraalVM Installed: ").append(graalvmDirectory().exists()).append(" (at ").append(graalvmDirectory().getAbsolutePath()).append(")\n");
+        stringBuilder.append("  Maven Installed: ").append(mavenDirectory().exists()).append(" (at ").append(mavenDirectory().getAbsolutePath()).append(")\n");
+        stringBuilder.append("  Python Installed: ").append(pythonDirectory().exists()).append(" (at ").append(pythonDirectory().getAbsolutePath()).append(")\n");
+        stringBuilder.append("  CMake Installed: ").append(cmakeDirectory().exists()).append(" (at ").append(cmakeDirectory().getAbsolutePath()).append(")\n");
+        stringBuilder.append("Resolved OS for Install Commands: ").append(OSResolver.os()).append("\n");
+        stringBuilder.append("Resolved Architecture: ").append(OSResolver.arch()).append("\n");
+        stringBuilder.append("Shared Library Extension: ").append(OSResolver.sharedLibraryExtension()).append("\n");
         System.out.println(stringBuilder);
         return 0;
     }
 
-    public static void main(String...args) throws Exception {
-        new Info().call();
+    public static class ManifestVersionProvider implements CommandLine.IVersionProvider {
+        @Override
+        public String[] getVersion() throws Exception {
+            String implTitle = Info.class.getPackage().getImplementationTitle();
+            if (implTitle == null) {
+                implTitle = "Kompile CLI"; // Fallback if not in manifest
+            }
+            return new String[]{ implTitle + " version " + Info.getVersion() };
+        }
     }
 
+    public static void main(String...args) throws Exception {
+        new CommandLine(new Info()).execute(args);
+    }
 }

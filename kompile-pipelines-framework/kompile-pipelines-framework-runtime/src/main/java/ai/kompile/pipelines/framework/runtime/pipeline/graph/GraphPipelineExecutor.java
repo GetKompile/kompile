@@ -1,572 +1,491 @@
-/*
- * Copyright 2025 Kompile Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
+// Suggested Path: upload/kompile-pipelines-framework-runtime/src/main/java/ai/kompile/pipelines/framework/runtime/pipeline/GraphPipelineExecutor.java
 package ai.kompile.pipelines.framework.runtime.pipeline.graph;
 
+import ai.kompile.pipelines.framework.api.Pipeline; // Should be GraphPipeline
+import ai.kompile.pipelines.framework.api.PipelineExecutor;
 import ai.kompile.pipelines.framework.api.PipelineStepRunner;
 import ai.kompile.pipelines.framework.api.PipelineStepRunnerFactory;
 import ai.kompile.pipelines.framework.api.StepConfig;
+import ai.kompile.pipelines.framework.api.configschema.StepSchemaProvider;
 import ai.kompile.pipelines.framework.api.context.Context;
 import ai.kompile.pipelines.framework.api.data.Data;
+import ai.kompile.pipelines.framework.api.data.DataFactory;
+import ai.kompile.pipelines.framework.api.data.PipelineDataConstants;
+import ai.kompile.pipelines.framework.api.data.PipelineToolCallRequest; // Assuming this POJO exists
+import ai.kompile.pipelines.framework.api.data.ValueType;
 import ai.kompile.pipelines.framework.core.context.DefaultContext;
-import ai.kompile.pipelines.framework.runtime.pipeline.BasePipelineExecutor;
-import ai.kompile.pipelines.framework.runtime.pipeline.graph.*;
-import lombok.extern.slf4j.Slf4j;
+import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
+import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Queue;
+import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
- * Executes a {@link GraphPipeline}.
- * This executor manages the directed acyclic graph (DAG) of steps,
- * handling data flow and specialized graph nodes like MERGE, SWITCH, ANY, and COMBINE_FN.
- * <p>
- * The current execution model processes nodes in a topological order.
- * For nodes that can run in parallel (independent branches), this implementation
- * will execute them sequentially based on their order in the ready queue.
- * True parallelism would require submitting tasks to the asyncExecutorService and managing futures.
+ * Executes a GraphPipeline, managing dependencies and data flow between steps.
+ * Supports pausable and resumable executions for tool calls.
+ *
+ * Assumptions:
+ * - A GraphPipeline interface/class exists and provides graph structure.
+ * - StepConfig includes a unique 'id' and dependency information.
  */
+public class GraphPipelineExecutor implements PipelineExecutor {
+    private static final Logger logger = LoggerFactory.getLogger(GraphPipelineExecutor.class);
 
-public class GraphPipelineExecutor extends BasePipelineExecutor {
+    // Special Step ID for initial pipeline input
+    public static final String PIPELINE_INPUT_ID = "@PIPELINE_INPUT@";
 
-    private final GraphPipeline graphPipeline;
-    // Adjacency list: nodeName -> list of its direct successor nodeNames
-    private final Map<String, List<String>> successorsMap;
-    // Predecessor list: nodeName -> list of its direct predecessor nodeNames (actual graph nodes, not the pipeline input string)
-    private final Map<String, List<String>> predecessorsMap;
+    private final GraphPipeline graphPipeline; // Assuming a GraphPipeline type
+    private final Map<String, PipelineStepRunner> runnersMap; // stepId -> runner
+    private final boolean ownRunners;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final DataFactory dataFactory;
+    private final Supplier<Context> defaultContextFactory;
+    private final ExecutorService asyncExecutorService;
 
-    private final Map<String, PipelineStepRunner> nodeRunners;
-    private final Map<String, SwitchFn> switchFunctions;
-    private final Map<String, CombineFn> combineFunctions;
+    // For managing state of paused graph executions
+    private final Map<String, PausedGraphExecutionState> pausedExecutions = new ConcurrentHashMap<>();
 
-    // To store which successors a SWITCH node has selected for the current execution
-    private final ThreadLocal<Map<String, List<String>>> currentExecutionSwitchSelections = ThreadLocal.withInitial(HashMap::new);
-
-
-    public GraphPipelineExecutor(GraphPipeline pipeline, boolean initializeRunners) throws Exception {
-        super(pipeline, false); // Base initializes common fields; we handle specific init
-        this.graphPipeline = Objects.requireNonNull(pipeline, "GraphPipeline cannot be null.");
-        this.successorsMap = new ConcurrentHashMap<>();
-        this.predecessorsMap = new ConcurrentHashMap<>();
-        this.nodeRunners = new ConcurrentHashMap<>();
-        this.switchFunctions = new ConcurrentHashMap<>();
-        this.combineFunctions = new ConcurrentHashMap<>();
-
-        parseAndValidateGraphStructure();
-
-        if (initializeRunners) {
-            initializeGraphNodeRunnersAndFunctions();
-        }
-    }
-
-    private void parseAndValidateGraphStructure() {
-        Map<String, GraphNodeConfig> nodes = graphPipeline.getGraphNodes();
-
-        if (nodes.isEmpty()) {
-            if (!GraphPipeline.DEFAULT_GRAPH_INPUT_NAME.equals(graphPipeline.getOutputNodeName())) {
-                throw new IllegalStateException("Graph pipeline " + graphPipeline.id() + " has no nodes, but output node '" +
-                        graphPipeline.getOutputNodeName() + "' is not the default pipeline input name ('" +
-                        GraphPipeline.DEFAULT_GRAPH_INPUT_NAME + "'). An empty graph must output its input.");
-            }
-            return;
-        }
-
-        // Initialize maps
-        nodes.keySet().forEach(nodeName -> {
-            successorsMap.put(nodeName, new ArrayList<>());
-            predecessorsMap.put(nodeName, new ArrayList<>());
-        });
-
-        // Build successor and predecessor maps
-        for (Map.Entry<String, GraphNodeConfig> entry : nodes.entrySet()) {
-            String nodeName = entry.getKey();
-            GraphNodeConfig nodeConfig = entry.getValue();
-
-            if (nodeConfig.getInputs() == null) {
-                throw new IllegalStateException(String.format("Node '%s' in pipeline '%s' has a null inputs list.", nodeName, graphPipeline.id()));
-            }
-
-            for (String inputSourceName : nodeConfig.getInputs()) {
-                if (inputSourceName == null || inputSourceName.trim().isEmpty()) {
-                    throw new IllegalStateException(String.format("Node '%s' in pipeline '%s' has a null or empty input source name.", nodeName, graphPipeline.id()));
-                }
-
-                if (!inputSourceName.equals(graphPipeline.getInputNodeName())) { // If it's a regular node
-                    if (!nodes.containsKey(inputSourceName)) {
-                        throw new IllegalStateException(String.format("Node '%s' in pipeline '%s' declares input from undefined node: '%s'.", nodeName, graphPipeline.id(), inputSourceName));
-                    }
-                    successorsMap.get(inputSourceName).add(nodeName);
-                    predecessorsMap.get(nodeName).add(inputSourceName);
-                }
-                // No need to add to predecessorsMap for PIPELINE_INPUT here, as in-degree calculation will handle it by checking nodeConfig.getInputs()
-            }
-        }
-
-        // Validate output node existence
-        if (!graphPipeline.getOutputNodeName().equals(GraphPipeline.DEFAULT_GRAPH_INPUT_NAME) &&
-                !nodes.containsKey(graphPipeline.getOutputNodeName())) {
-            throw new IllegalStateException(String.format("Output node '%s' is not defined in the graph nodes for pipeline: %s",
-                    graphPipeline.getOutputNodeName(), graphPipeline.id()));
-        }
-
-        // Basic cycle detection using Kahn's algorithm preparation (will be done fully in exec)
-        // is implicitly part of the validation during topological sort.
-        // A more explicit cycle check during parsing can be added if needed.
-        detectCycles(); // Perform an explicit cycle check during parsing
-    }
-
-
-    private void initializeGraphNodeRunnersAndFunctions() throws Exception {
-        // Use a shared root context for the initialization phase of all runners/functions.
-        // The originalInput for this init context is empty as it's not an execution context.
-        Context initRootContext = new DefaultContext(Data.empty(), graphPipeline.id() + "-init", "graph-init", null, null, null);
-
-        for (Map.Entry<String, GraphNodeConfig> entry : graphPipeline.getGraphNodes().entrySet()) {
-            String nodeName = entry.getKey();
-            GraphNodeConfig nodeConfig = entry.getValue();
-            Context nodeInitContext = initRootContext.child("init.node." + nodeName);
-
-
-            if (nodeConfig instanceof StandardGraphNodeConfig) {
-                StandardGraphNodeConfig stdConfig = (StandardGraphNodeConfig) nodeConfig;
-                StepConfig actualStepConfig = stdConfig.getStepConfig();
-                String runnerClassName = actualStepConfig.runnerClassName();
-                PipelineStepRunnerFactory factory = runnerFactories.get(runnerClassName);
-                if (factory == null) {
-                    throw new IllegalStateException(String.format(
-                            "No PipelineStepRunnerFactory found for runner class '%s' of STANDARD node '%s'. Ensure factory is registered.",
-                            runnerClassName, nodeName));
-                }
-                PipelineStepRunner runner = factory.create();
-                runner.init(actualStepConfig, nodeInitContext); // Pass node-specific init context
-                nodeRunners.put(nodeName, runner);
-            } else if (nodeConfig instanceof SwitchNodeConfig) {
-                SwitchNodeConfig switchConfig = (SwitchNodeConfig) nodeConfig;
-                try {
-                    Class<?> switchFnClass = Class.forName(switchConfig.getSwitchFunctionClassName());
-                    SwitchFn switchFn = (SwitchFn) switchFnClass.getDeclaredConstructor().newInstance();
-                    // TODO: Add an init(Data params, Context context) method to SwitchFn if they can be stateful or configurable
-                    // if (switchFn instanceof InitializableSwitchFn) {
-                    //    ((InitializableSwitchFn) switchFn).init(switchConfig.getSwitchFunctionParams(), nodeInitContext);
-                    // }
-                    switchFunctions.put(nodeName, switchFn);
-                } catch (ReflectiveOperationException e) {
-                    throw new Exception(String.format("Failed to instantiate SwitchFn '%s' for node '%s'",
-                            switchConfig.getSwitchFunctionClassName(), nodeName), e);
-                }
-            } else if (nodeConfig instanceof CombineNodeConfig) {
-                CombineNodeConfig combineConfig = (CombineNodeConfig) nodeConfig;
-                try {
-                    Class<?> combineFnClass = Class.forName(combineConfig.getCombineFunctionClassName());
-                    CombineFn combineFn = (CombineFn) combineFnClass.getDeclaredConstructor().newInstance();
-                    // TODO: Add an init(Data params, Context context) method to CombineFn
-                    // if (combineFn instanceof InitializableCombineFn) {
-                    //    ((InitializableCombineFn) combineFn).init(combineConfig.getCombineFunctionParams(), nodeInitContext);
-                    // }
-                    combineFunctions.put(nodeName, combineFn);
-                } catch (ReflectiveOperationException e) {
-                    throw new Exception(String.format("Failed to instantiate CombineFn '%s' for node '%s'",
-                            combineConfig.getCombineFunctionClassName(), nodeName), e);
-                }
-            }
-            // MERGE and ANY nodes are typically handled by the executor's logic directly.
-        }
-    }
+    private enum StepRunState { PENDING, RUNNABLE, RUNNING, COMPLETED, FAILED, PAUSED_AWAITING_TOOLS }
 
     /**
-     * Ensures runners and functions are initialized if they weren't at construction.
-     * This method is idempotent.
-     * @throws Exception if initialization fails.
+     * Represents the overall state of a paused graph execution.
      */
-    public void ensureRunnersInitialized() throws Exception {
-        boolean needsInit = graphPipeline.getGraphNodes().values().stream().anyMatch(gnc ->
-                (gnc.getGraphStepType() == GraphStepType.STANDARD && !nodeRunners.containsKey(gnc.getName())) ||
-                        (gnc.getGraphStepType() == GraphStepType.SWITCH && !switchFunctions.containsKey(gnc.getName())) ||
-                        (gnc.getGraphStepType() == GraphStepType.COMBINE_FN && !combineFunctions.containsKey(gnc.getName()))
-        );
+    private static class PausedGraphExecutionState {
+        final Map<String, Data> completedStepOutputs; // Outputs of steps already completed before pause
+        final Map<String, StepRunState> stepStates;   // State of all steps at the moment of pause
+        final String pausedByStepId;                 // The ID of the step that triggered the pause
+        final Data toolCallRequestPayload;           // The Data object containing the tool call requests
+        final Context originalContext;               // Context when execution paused
 
-        if (needsInit && !this.closed) { // Only init if not closed
-            initializeGraphNodeRunnersAndFunctions();
+        PausedGraphExecutionState(Map<String, Data> outputs, Map<String, StepRunState> states,
+                                  String pausedByStepId, Data toolCallRequestPayload, Context context) {
+            this.completedStepOutputs = new HashMap<>(outputs); // Defensive copy
+            this.stepStates = new HashMap<>(states);           // Defensive copy
+            this.pausedByStepId = pausedByStepId;
+            this.toolCallRequestPayload = toolCallRequestPayload;
+            this.originalContext = context;
         }
     }
 
 
+    public GraphPipelineExecutor(GraphPipeline pipeline, boolean ownRunners) throws Exception {
+        this(pipeline, ownRunners, Data.Factory.get(), null, null);
+    }
+
+    public GraphPipelineExecutor(
+            GraphPipeline pipeline,
+            boolean ownRunners,
+            DataFactory dataFactory,
+            ExecutorService executorService,
+            Supplier<Context> defaultContextFactory
+    ) throws Exception {
+        this.graphPipeline = Objects.requireNonNull(pipeline, "GraphPipeline cannot be null");
+        this.ownRunners = ownRunners;
+        this.dataFactory = Objects.requireNonNull(dataFactory, "DataFactory cannot be null");
+        this.asyncExecutorService = (executorService != null) ? executorService : Executors.newCachedThreadPool();
+        this.defaultContextFactory = (defaultContextFactory != null) ? defaultContextFactory :
+                () -> new DefaultContext(this.dataFactory.empty(), "default-graph-exec-" + System.nanoTime(), "default-graph-ctx-" + System.nanoTime(), null, NoOpMetrics.INSTANCE, NoOpProfiler.INSTANCE);
+
+        this.graphPipeline.validate();
+        this.runnersMap = new HashMap<>();
+        Context initContext = this.defaultContextFactory.get().child("graph-runners-init");
+        Map<String, PipelineStepRunnerFactory> factories = loadRunnerFactories();
+
+        for (StepConfig stepConfig : this.graphPipeline.getStepsAsMap().values()) {
+            String stepId = graphPipeline.getStepId(stepConfig); // Assumes GraphPipeline can provide a stable ID for a StepConfig
+            if (stepId == null) throw new IllegalStateException("StepConfig must have a resolvable ID in a GraphPipeline.");
+
+            PipelineStepRunnerFactory factory = factories.get(stepConfig.runnerClassName());
+            if (factory == null) {
+                throw new IllegalStateException("No PipelineStepRunnerFactory found for runner type: " + stepConfig.runnerClassName());
+            }
+            PipelineStepRunner runner = factory.create();
+            runner.init(stepConfig, initContext.child(stepId + "-init"));
+            this.runnersMap.put(stepId, runner);
+        }
+        logger.info("GraphPipelineExecutor initialized for pipeline '{}' with {} steps.", pipeline.id(), this.runnersMap.size());
+    }
+
+    private Map<String, PipelineStepRunnerFactory> loadRunnerFactories() {
+        Map<String, PipelineStepRunnerFactory> factories = new ConcurrentHashMap<>();
+        ServiceLoader.load(PipelineStepRunnerFactory.class).forEach(factory -> factories.put(factory.getRunnerType(), factory));
+        return factories;
+    }
+
     @Override
-    public Data exec(Data initialInput, Context rootContext) throws Exception {
-        checkIfClosed();
-        Objects.requireNonNull(initialInput, "Initial input Data cannot be null for graph exec.");
-        Objects.requireNonNull(rootContext, "Root context cannot be null for graph exec.");
+    public Data exec(Data input) throws Exception {
+        return exec(input, defaultContextFactory.get());
+    }
 
-        ensureRunnersInitialized(); // Make sure everything is ready
+    @Override
+    public Data exec(Data input, Context context) throws Exception {
+        if (closed.get()) throw new IllegalStateException("PipelineExecutor is closed.");
+        Objects.requireNonNull(input, "Input Data cannot be null.");
+        Objects.requireNonNull(context, "Context cannot be null.");
+        String executionId = context.executionId().orElseThrow(() ->
+                new IllegalArgumentException("Context must provide an executionId for graph executions."));
 
-
-        if (GraphPipeline.DEFAULT_GRAPH_INPUT_NAME.equals(graphPipeline.getOutputNodeName())) {
-            return initialInput;
+        if (pausedExecutions.containsKey(executionId)) {
+            throw new IllegalStateException("Execution with ID '" + executionId + "' is already paused. Use resume().");
         }
-        if (graphPipeline.getGraphNodes().isEmpty()) {
-            return Data.empty();
+
+        Map<String, Data> completedStepOutputs = new HashMap<>();
+        completedStepOutputs.put(PIPELINE_INPUT_ID, input); // Initial pipeline input
+
+        Map<String, StepRunState> stepStates = new HashMap<>();
+        for (String stepId : graphPipeline.getStepsAsMap().keySet()) {
+            stepStates.put(stepId, StepRunState.PENDING);
         }
 
-        Map<String, Data> results = new ConcurrentHashMap<>(); // Stores output of each executed node
-        Map<String, Integer> currentInDegree = new HashMap<>();
-        Queue<String> readyToExecuteQueue = new LinkedList<>(); // Nodes ready to execute
+        return processGraph(executionId, context, stepStates, completedStepOutputs, null);
+    }
 
-        // Initialize in-degrees based on graph structure (not pipeline_input string)
-        for (String nodeName : graphPipeline.getGraphNodes().keySet()) {
-            currentInDegree.put(nodeName, predecessorsMap.getOrDefault(nodeName, Collections.emptyList())
-                    .stream()
-                    .filter(pred -> !pred.equals(graphPipeline.getInputNodeName())) // Count only actual node predecessors
-                    .collect(Collectors.toList()).size());
+    @Override
+    public Data resume(Context context, Data toolResponses) throws Exception {
+        if (closed.get()) throw new IllegalStateException("PipelineExecutor is closed.");
+        Objects.requireNonNull(context, "Context cannot be null for resume.");
+        Objects.requireNonNull(toolResponses, "Tool responses data cannot be null for resume.");
+        String executionId = context.executionId().orElseThrow(() ->
+                new IllegalArgumentException("Context must provide an executionId to resume."));
 
-            if (currentInDegree.get(nodeName) == 0) {
-                // Node only depends on pipeline input or has no graph predecessors.
-                // Further check: it must have graphPipeline.getInputNodeName() as an input if it has inputs.
-                boolean dependsOnlyOnPipelineInput = graphPipeline.getGraphNodes().get(nodeName).getInputs().isEmpty() ||
-                        graphPipeline.getGraphNodes().get(nodeName).getInputs().stream()
-                                .allMatch(in -> in.equals(graphPipeline.getInputNodeName()));
-                if(dependsOnlyOnPipelineInput || predecessorsMap.getOrDefault(nodeName, Collections.emptyList()).isEmpty()){
-                    readyToExecuteQueue.add(nodeName);
+        PausedGraphExecutionState pausedState = pausedExecutions.remove(executionId);
+        if (pausedState == null) {
+            throw new IllegalStateException("No paused execution found for ID '" + executionId + "'.");
+        }
+
+        // The step that paused needs to receive the tool responses.
+        // The 'toolResponses' Data object should be merged or passed to the paused step.
+        String stepToResumeId = pausedState.pausedByStepId;
+
+        // We will effectively re-run the step that paused, but now with tool_responses in its input.
+        // The `pausedState.completedStepOutputs` already contains outputs from *other* completed steps.
+        // The input for the `stepToResumeId` needs to be reconstructed, now including `toolResponses`.
+
+        logger.info("Resuming graph execution for ID '{}', focusing on step '{}' with tool responses.", executionId, stepToResumeId);
+
+        // Mark the previously paused step as PENDING or RUNNABLE again to re-evaluate it with new inputs.
+        // The actual input construction for this step will happen inside processGraph.
+        // We need to ensure processGraph knows to feed toolResponses to this specific step.
+        pausedState.stepStates.put(stepToResumeId, StepRunState.PENDING); // Reset state to re-process
+
+        // The `toolResponses` Data object (which contains a list of PipelineToolCallResponse)
+        // will be passed to `processGraph` and injected into the input of the step that paused.
+        return processGraph(executionId, context, pausedState.stepStates, pausedState.completedStepOutputs, toolResponses);
+    }
+
+
+    private Data processGraph(String executionId, Context currentContext,
+                              Map<String, StepRunState> stepStates,
+                              Map<String, Data> completedStepOutputs,
+                              Data toolResponsesForResumedStep // Null if not a resume, or if resume is for a different step
+    ) throws Exception {
+
+        Set<String> runnableSteps = new HashSet<>();
+        boolean graphChangedState;
+
+        do {
+            graphChangedState = false;
+            // Identify runnable steps
+            runnableSteps.clear();
+            for (String stepId : graphPipeline.getStepsAsMap().keySet()) {
+                if (stepStates.get(stepId) == StepRunState.PENDING && areDependenciesMet(stepId, completedStepOutputs)) {
+                    runnableSteps.add(stepId);
                 }
             }
-        }
 
-        if (readyToExecuteQueue.isEmpty() && !graphPipeline.getGraphNodes().isEmpty()) {
-            throw new IllegalStateException("Graph has no nodes ready for initial execution (all have graph predecessors). Possible cycle or misconfiguration in pipeline: " + graphPipeline.id());
-        }
-
-
-        int executedCount = 0;
-        currentExecutionSwitchSelections.set(new HashMap<>()); // Reset for this execution
-
-        // ExecutorService for parallel execution of ready nodes
-        // Using the one from BasePipelineExecutor, ensure it's suitable (e.g., cached or fixed pool)
-        List<Future<NodeExecutionResult>> futures = new ArrayList<>();
-
-
-        while (executedCount < graphPipeline.getGraphNodes().size()) {
-            List<String> currentReadyBatch = new ArrayList<>();
-            while(!readyToExecuteQueue.isEmpty()){
-                currentReadyBatch.add(readyToExecuteQueue.poll());
+            if (runnableSteps.isEmpty() && !anyStepRunningOrPaused(stepStates)) {
+                // No more runnable steps, and nothing is currently running or paused that could make others runnable.
+                // This means the graph execution for this "turn" is complete or stuck.
+                break;
             }
 
-            if (currentReadyBatch.isEmpty() && executedCount < graphPipeline.getGraphNodes().size()) {
-                Set<String> allNodes = new HashSet<>(graphPipeline.getGraphNodes().keySet());
-                results.keySet().forEach(allNodes::remove); // Remove executed nodes
-                throw new IllegalStateException("Cycle detected or graph disconnected in pipeline: " + graphPipeline.id() +
-                        ". Not all nodes could be scheduled. Unprocessed nodes: " + allNodes);
-            }
-            if(currentReadyBatch.isEmpty()) break; // All processed
+            // Execute runnable steps (simplified: sequential execution of ready steps for now)
+            // A true graph executor might run these in parallel if independent.
+            for (String stepIdToRun : new ArrayList<>(runnableSteps)) { // Copy to allow modification of stepStates
+                if (stepStates.get(stepIdToRun) != StepRunState.PENDING) continue; // Already processed in this iteration by a parallel branch
 
-            for (String nodeName : currentReadyBatch) {
-                GraphNodeConfig nodeConfig = graphPipeline.getGraphNodes().get(nodeName);
-                Context stepContext = rootContext.child("node." + nodeName);
+                stepStates.put(stepIdToRun, StepRunState.RUNNING);
+                graphChangedState = true;
+                logger.debug("Execution ID '{}': Running step '{}'", executionId, stepIdToRun);
 
-                // Prepare inputs for this node. This needs to be robust.
-                Data nodeInput = prepareNodeInputForExecution(nodeName, nodeConfig, initialInput, results);
+                PipelineStepRunner runner = runnersMap.get(stepIdToRun);
+                StepConfig config = graphPipeline.getStepsAsMap().get(stepIdToRun);
+                Context stepContext = currentContext.child("step-" + stepIdToRun);
 
-                Callable<NodeExecutionResult> task = () -> {
-                    String eventName = String.format("node.%s.%s.exec", nodeName, nodeConfig.getGraphStepType());
-                    Data outputData;
-                    try {
-                        outputData = rootContext.profiler().profile(eventName, () ->
-                                executeSingleNodeLogic(nodeName, nodeConfig, nodeInput, stepContext, initialInput, results)
-                        );
-                        rootContext.metrics().counter("pipeline.graph.node.executions.total", "Total node executions",
-                                        "pipeline_id", graphPipeline.id(), "node_name", nodeName, "node_type", nodeConfig.getGraphStepType().name())
-                                .increment();
-                    } catch (Exception e) {
-                        rootContext.metrics().counter("pipeline.graph.node.errors.total", "Total node execution errors",
-                                        "pipeline_id", graphPipeline.id(), "node_name", nodeName, "node_type", nodeConfig.getGraphStepType().name())
-                                .increment();
-                        throw e; // Re-throw to be caught by Future.get()
+                // Prepare input for this step
+                Data stepInput = dataFactory.empty();
+                // 1. Aggregate inputs from predecessors
+                Map<String, String> inputMappings = graphPipeline.getInputDataMappings(stepIdToRun, config);
+                for (Map.Entry<String, String> mapping : inputMappings.entrySet()) {
+                    String targetInputSlotName = mapping.getKey();
+                    String sourceRef = mapping.getValue(); // e.g., "prevStepId.outputSlot" or "@PIPELINE_INPUT@.someKey"
+
+                    String sourceStepId = sourceRef.contains(".") ? sourceRef.substring(0, sourceRef.indexOf('.')) : sourceRef;
+                    String sourceOutputKey = sourceRef.contains(".") ? sourceRef.substring(sourceRef.indexOf('.') + 1) : null;
+
+                    Data sourceData = completedStepOutputs.get(sourceStepId);
+                    if (sourceData == null) {
+                        throw new IllegalStateException("Execution ID '" + executionId + "': Missing output from dependency '" + sourceStepId + "' for step '" + stepIdToRun + "'");
                     }
-                    if (outputData == null) {
-                        throw new IllegalStateException("Node '" + nodeName + "' returned null Data.");
-                    }
-                    return new NodeExecutionResult(nodeName, outputData);
-                };
-                futures.add(asyncExecutorService.submit(task));
-            }
 
-            // Process completed futures from this batch before preparing next batch
-            for (Future<NodeExecutionResult> future : futures) {
-                try {
-                    NodeExecutionResult result = future.get(); // This blocks until this task is done
-                    String executedNodeName = result.getNodeName();
-                    results.put(executedNodeName, result.getOutputData());
-                    executedCount++;
-
-                    List<String> nodeSuccessors = successorsMap.getOrDefault(executedNodeName, Collections.emptyList());
-
-                    // Special handling for SWITCH node outputs
-                    GraphNodeConfig executedNodeConfig = graphPipeline.getGraphNodes().get(executedNodeName);
-                    if (executedNodeConfig.getGraphStepType() == GraphStepType.SWITCH) {
-                        List<String> selectedSwitchOutputs = currentExecutionSwitchSelections.get().get(executedNodeName);
-                        if (selectedSwitchOutputs != null) {
-                            nodeSuccessors = selectedSwitchOutputs.stream()
-                                    .filter(successorsMap.getOrDefault(executedNodeName, Collections.emptyList())::contains) // Ensure selected outputs are valid successors
-                                    .collect(Collectors.toList());
+                    if (sourceOutputKey != null) { // Specific key from source Data
+                        if (sourceData.has(sourceOutputKey)) {
+                            stepInput.put(targetInputSlotName, Optional.ofNullable(sourceData.get(sourceOutputKey)));
                         } else {
-                            // Keep nodeSuccessors as all defined successors
+                            logger.warn("Execution ID '{}': Source key '{}' not found in output of step '{}' for step '{}' input '{}'. Skipping.",
+                                    executionId, sourceOutputKey, sourceStepId, stepIdToRun, targetInputSlotName);
                         }
+                    } else { // Entire output of source step
+                        stepInput.merge(sourceData); // Or put under targetInputSlotName if that's the convention
                     }
+                }
+
+                // 2. If this is the step being resumed, inject tool responses
+                // The `toolResponsesForResumedStep` Data object contains the list of `PipelineToolCallResponse`
+                if (toolResponsesForResumedStep != null && stepIdToRun.equals( // Check if this is the step that was paused
+                        pausedExecutions.get(executionId) != null ? pausedExecutions.get(executionId).pausedByStepId : null // Check if still in map before removing during resume
+                        // This check needs to be more robust; pausedByStepId should be passed to processGraph if resuming a specific step
+                )) {
+                    if (toolResponsesForResumedStep.has(PipelineDataConstants.TOOL_CALL_RESPONSES_KEY)) {
+                        stepInput.put(PipelineDataConstants.TOOL_CALL_RESPONSES_KEY,
+                                toolResponsesForResumedStep.getList(PipelineDataConstants.TOOL_CALL_RESPONSES_KEY, ValueType.DATA));
+                    }
+                    toolResponsesForResumedStep = null; // Consume it for this step
+                }
 
 
-                    for (String successorName : nodeSuccessors) {
-                        currentInDegree.compute(successorName, (k, v) -> {
-                            if (v == null) { // Should not happen if graph is parsed correctly
-                                return 0; // Avoid NPE, but indicates a problem
-                            }
-                            int newDegree = v - 1;
-                            if (newDegree == 0) {
-                                readyToExecuteQueue.add(successorName);
-                            }
-                            return newDegree;
-                        });
+                try {
+                    Data stepOutput = currentContext.profiler().profile("step:" + stepIdToRun, () -> runner.exec(stepInput, stepContext));
+                    Objects.requireNonNull(stepOutput, "Step " + stepIdToRun + " returned null data.");
+                    logger.debug("Execution ID '{}': Step '{}' completed.", executionId, stepIdToRun);
+
+                    if (stepOutput.getBoolean(PipelineDataConstants.IS_TOOL_CALL_REQUEST_FLAG_KEY, false)) {
+                        logger.info("Execution ID '{}': Step '{}' requests tool call(s). Pausing graph execution.", executionId, stepIdToRun);
+                        stepStates.put(stepIdToRun, StepRunState.PAUSED_AWAITING_TOOLS);
+                        // Save the entire graph state
+                        pausedExecutions.put(executionId, new PausedGraphExecutionState(
+                                new HashMap<>(completedStepOutputs), // outputs so far, *excluding* the current step's tool request
+                                new HashMap<>(stepStates),
+                                stepIdToRun,
+                                stepOutput, // This is the data containing tool call requests
+                                currentContext
+                        ));
+                        return stepOutput; // Return to caller (e.g., KompilePipelineLanguageModelImpl)
+                    } else {
+                        completedStepOutputs.put(stepIdToRun, stepOutput);
+                        stepStates.put(stepIdToRun, StepRunState.COMPLETED);
                     }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    // Cancel remaining futures
-                    futures.forEach(f -> f.cancel(true));
-                    throw e;
-                } catch (ExecutionException e) {
-                    futures.forEach(f -> f.cancel(true));
-                    throw (Exception) e.getCause();
+                } catch (Exception e) {
+                    logger.error("Execution ID '{}': Error executing step '{}'", executionId, stepIdToRun, e);
+                    stepStates.put(stepIdToRun, StepRunState.FAILED);
+                    // Propagate or handle error based on pipeline's error strategy
+                    throw new RuntimeException("Error in step " + stepIdToRun, e);
+                }
+            } // End for each runnable step
+
+        } while (graphChangedState && !allFinalStepsCompleted(stepStates, completedStepOutputs)); // Loop if state changed and not all final outputs are ready
+
+        // If loop finishes, and no step is PAUSED, then execution for this "turn" is done.
+        if (anyStepPaused(stepStates)) {
+            // This should not happen if pause returns immediately. Defensive.
+            throw new IllegalStateException("Execution ID '" + executionId + "': Graph processing loop ended but a step is still paused.");
+        }
+
+        pausedExecutions.remove(executionId); // Clean up if successfully completed this turn without a pause
+        return aggregateFinalOutput(completedStepOutputs);
+    }
+
+    private boolean anyStepRunningOrPaused(Map<String, StepRunState> states) {
+        return states.values().stream().anyMatch(s -> s == StepRunState.RUNNING || s == StepRunState.PAUSED_AWAITING_TOOLS);
+    }
+    private boolean anyStepPaused(Map<String, StepRunState> states) {
+        return states.values().stream().anyMatch(s -> s == StepRunState.PAUSED_AWAITING_TOOLS);
+    }
+
+
+    private boolean areDependenciesMet(String stepId, Map<String, Data> completedStepOutputs) {
+        Set<String> predecessorStepIds = graphPipeline.getPredecessorStepIds(stepId);
+        if (predecessorStepIds.isEmpty() && !graphPipeline.getInitialStepIds().contains(stepId)) { // True initial step needs pipeline input
+            return completedStepOutputs.containsKey(PIPELINE_INPUT_ID);
+        }
+        for (String depId : predecessorStepIds) {
+            if (!completedStepOutputs.containsKey(depId)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean allFinalStepsCompleted(Map<String, StepRunState> stepStates, Map<String, Data> completedStepOutputs) {
+        List<String> finalStepIds = graphPipeline.getFinalOutputContributingStepIds();
+        if (finalStepIds.isEmpty()) { // If no specific final steps, graph is done when no more PENDING/RUNNABLE
+            return stepStates.values().stream().noneMatch(s -> s == StepRunState.PENDING || s == StepRunState.RUNNABLE || s == StepRunState.RUNNING);
+        }
+        for (String stepId : finalStepIds) {
+            if (stepStates.get(stepId) != StepRunState.COMPLETED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Data aggregateFinalOutput(Map<String, Data> completedStepOutputs) {
+        // Aggregation logic depends on how GraphPipeline defines its final output.
+        // For example, merge outputs of all steps marked as "final output contributors".
+        Data finalOutput = dataFactory.empty();
+        List<String> finalStepIds = graphPipeline.getFinalOutputContributingStepIds();
+
+        if (finalStepIds.isEmpty()) { // No specific final steps, maybe take output of last completed step(s) or all leaves
+            // This logic needs to be clearly defined by the GraphPipeline contract
+            // For now, merge all available outputs if no specific final steps.
+            logger.warn("No specific final output steps defined for pipeline '{}'. Merging all completed step outputs.", graphPipeline.id());
+            for(Data outputData : completedStepOutputs.values()){
+                if(outputData != completedStepOutputs.get(PIPELINE_INPUT_ID)) { // Don't merge back the initial input
+                    finalOutput.merge(outputData);
                 }
             }
-            futures.clear(); // Clear for the next batch of ready nodes
+        } else {
+            for (String stepId : finalStepIds) {
+                Data stepOutputData = completedStepOutputs.get(stepId);
+                if (stepOutputData != null) {
+                    // Option 1: Merge all final outputs
+                    // finalOutput.merge(stepOutputData);
+                    // Option 2: Put each final output under its stepId key
+                    finalOutput.put(stepId, stepOutputData);
+                } else {
+                    logger.warn("Expected final output from step '{}' not found in completed outputs for pipeline '{}'.", stepId, graphPipeline.id());
+                }
+            }
         }
-        currentExecutionSwitchSelections.remove(); // Clean up ThreadLocal
-
-        if (executedCount != graphPipeline.getGraphNodes().size()) {
-            Set<String> allGraphNodeNames = new HashSet<>(graphPipeline.getGraphNodes().keySet());
-            results.keySet().forEach(allGraphNodeNames::remove); // Nodes that did not produce a result
-            throw new IllegalStateException("Cycle detected or graph disconnected in pipeline: " + graphPipeline.id() + ". Not all nodes were executed.");
-        }
-
-        Data finalOutput = results.get(graphPipeline.getOutputNodeName());
-        if (finalOutput == null) {
-            throw new IllegalStateException("Output node '" + graphPipeline.getOutputNodeName() + "' did not produce a result.");
+        if (finalOutput.isEmpty() && !runnersMap.isEmpty()) {
+            logger.warn("Graph pipeline '{}' execution resulted in an empty aggregated output.", graphPipeline.id());
         }
         return finalOutput;
     }
 
-    private Data prepareNodeInputForExecution(String nodeName, GraphNodeConfig nodeConfig, Data pipelineInitialInput, Map<String, Data> intermediateResults) {
-        List<String> inputSourceNames = nodeConfig.getInputs();
-
-        // If the node explicitly takes the pipeline input.
-        if (inputSourceNames.size() == 1 && inputSourceNames.get(0).equals(graphPipeline.getInputNodeName())) {
-            return pipelineInitialInput.dup(); // Provide a copy
-        }
-
-        // For nodes that are supposed to handle their multiple inputs directly (MERGE, COMBINE_FN, ANY)
-        // they will look up their inputs from intermediateResults or pipelineInitialInput
-        // within their executeSingleNodeLogic. So, we can pass a placeholder or the first input if single.
-        if (nodeConfig.getGraphStepType() == GraphStepType.MERGE ||
-                nodeConfig.getGraphStepType() == GraphStepType.COMBINE_FN ||
-                nodeConfig.getGraphStepType() == GraphStepType.ANY) {
-            // These nodes will aggregate inputs themselves. We pass an empty Data or a signal.
-            // For simplicity now, let's pass an empty one, they should use intermediateResults.
-            return Data.empty();
-        }
-
-        // For STANDARD and SWITCH nodes, they typically expect a single Data input object.
-        // If they list multiple inputs, it's an error unless the first one is the intended one or an implicit merge is assumed (not good).
-        // The graph validation should ensure STANDARD/SWITCH nodes have one logical input source after any MERGEs.
-        if (inputSourceNames.isEmpty()) { // Node depends only on pipeline input (implicit) or no inputs
-            if (predecessorsMap.getOrDefault(nodeName, Collections.emptyList()).stream().allMatch(p -> p.equals(graphPipeline.getInputNodeName()))) {
-                return pipelineInitialInput.dup();
-            }
-            return Data.empty();
-        }
-
-        // Assuming single input for STANDARD and SWITCH after graph validation/construction.
-        String sourceName = inputSourceNames.get(0); // Should only be one graph node input here after MERGEs
-        Data sourceData = sourceName.equals(graphPipeline.getInputNodeName()) ?
-                pipelineInitialInput :
-                intermediateResults.get(sourceName);
-
-        if (sourceData == null) {
-            throw new IllegalStateException(String.format(
-                    "Input data from source '%s' not found for node '%s' in pipeline '%s'. This indicates a flaw in execution order or graph structure.",
-                    sourceName, nodeName, graphPipeline.id()));
-        }
-        return sourceData.dup(); // Return a copy
+    // --- Async resume and other methods ---
+    @Override
+    public CompletableFuture<Data> execAsync(Data input) {
+        return execAsync(input, defaultContextFactory.get());
     }
 
-
-    private Data executeSingleNodeLogic(String nodeName, GraphNodeConfig nodeConfig, Data nodeInput, Context nodeContext,
-                                        Data pipelineInitialInput, Map<String, Data> intermediateResults) throws Exception {
-        switch (nodeConfig.getGraphStepType()) {
-            case STANDARD:
-                PipelineStepRunner runner = nodeRunners.get(nodeName);
-                if (runner == null || !runner.isInitialized()) {
-                    throw new IllegalStateException("Runner for STANDARD node '" + nodeName + "' not found or not initialized.");
-                }
-                return runner.exec(nodeInput, nodeContext);
-            case MERGE:
-                MergeNodeConfig mergeConfig = (MergeNodeConfig) nodeConfig;
-                Data mergedData = Data.empty();
-                for (String inputSourceName : mergeConfig.getInputs()) {
-                    Data dataToMerge = inputSourceName.equals(graphPipeline.getInputNodeName()) ?
-                            pipelineInitialInput.dup() : // Use a copy of pipeline input
-                            intermediateResults.get(inputSourceName).dup(); // Use a copy of intermediate result
-                    if (dataToMerge == null) {
-                        throw new IllegalStateException("Missing input '" + inputSourceName + "' for MERGE node '" + nodeName + "'.");
-                    }
-                    mergedData.merge(dataToMerge);
-                }
-                return mergedData;
-            case SWITCH:
-                SwitchNodeConfig switchConfig = (SwitchNodeConfig) nodeConfig;
-                SwitchFn switchFn = switchFunctions.get(nodeName);
-                if (switchFn == null) {
-                    throw new IllegalStateException("SwitchFn for SWITCH node '" + nodeName + "' not found.");
-                }
-                // SwitchFn receives the single resolved input to the switch node.
-                List<String> selectedOutputs = switchFn.selectOutput(nodeInput,
-                        // Provide actual configured successor names for this switch node
-                        successorsMap.getOrDefault(nodeName, Collections.emptyList()),
-                        switchConfig.getSwitchFunctionParams());
-                currentExecutionSwitchSelections.get().put(nodeName, selectedOutputs != null ? selectedOutputs : Collections.emptyList());
-                return nodeInput.dup(); // Switch node passes its input data through to selected branches.
-            case ANY:
-                AnyNodeConfig anyConfig = (AnyNodeConfig) nodeConfig;
-                // In Kahn's, ANY executes when all inputs are "available".
-                // It should take the first *meaningful* data from its inputs.
-                for (String inputSourceName : anyConfig.getInputs()) {
-                    Data dataToPass = inputSourceName.equals(graphPipeline.getInputNodeName()) ?
-                            pipelineInitialInput :
-                            intermediateResults.get(inputSourceName);
-                    if(dataToPass != null && !dataToPass.isEmpty()){ // Define what "meaningful" means.
-                        return dataToPass.dup();
-                    }
-                }
-                return Data.empty();
-            case COMBINE_FN:
-                CombineNodeConfig combineConfig = (CombineNodeConfig) nodeConfig;
-                CombineFn combineFn = combineFunctions.get(nodeName);
-                if (combineFn == null) {
-                    throw new IllegalStateException("CombineFn for COMBINE_FN node '" + nodeName + "' not found.");
-                }
-                Map<String, Data> combineInputs = new HashMap<>();
-                for (String inputSourceName : combineConfig.getInputs()) {
-                    Data dataToCombine = inputSourceName.equals(graphPipeline.getInputNodeName()) ?
-                            pipelineInitialInput : // Pass reference, CombineFn should dup if it modifies
-                            intermediateResults.get(inputSourceName);
-                    if (dataToCombine == null) {
-                        throw new IllegalStateException("Missing input '" + inputSourceName + "' for COMBINE_FN node '" + nodeName + "'.");
-                    }
-                    combineInputs.put(inputSourceName, dataToCombine);
-                }
-                return combineFn.combine(combineInputs, combineConfig.getCombineFunctionParams());
-            default:
-                throw new IllegalStateException("Unsupported GraphStepType: " + nodeConfig.getGraphStepType() + " for node '" + nodeName + "'.");
-        }
+    @Override
+    public CompletableFuture<Data> execAsync(Data input, Context context) {
+        if (closed.get()) return CompletableFuture.failedFuture(new IllegalStateException("PipelineExecutor is closed."));
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return exec(input, context);
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }, asyncExecutorService);
     }
 
-    private void detectCycles() {
-        Map<String, VisitState> visitStates = new HashMap<>();
-        for (String node : graphPipeline.getGraphNodes().keySet()) {
-            visitStates.put(node, VisitState.UNVISITED);
-        }
-
-        for (String node : graphPipeline.getGraphNodes().keySet()) {
-            if (visitStates.get(node) == VisitState.UNVISITED) {
-                if (hasCycleDfs(node, visitStates, new HashSet<>())) {
-                    throw new IllegalStateException("Cycle detected in the graph pipeline: " + graphPipeline.id());
-                }
-            }
-        }
+    @Override
+    public CompletableFuture<Data> resumeAsync(Context context, Data toolResponses) {
+        if (closed.get()) return CompletableFuture.failedFuture(new IllegalStateException("PipelineExecutor is closed."));
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return resume(context, toolResponses);
+            } catch (Exception e) { throw new RuntimeException(e); }
+        }, asyncExecutorService);
+    }
+    @Override
+    public void execAsync(Data input, Consumer<Data> onSuccess, Consumer<Throwable> onFailure) {
+        execAsync(input, defaultContextFactory.get(), onSuccess, onFailure);
     }
 
-    private boolean hasCycleDfs(String node, Map<String, VisitState> visitStates, Set<String> recursionStack) {
-        visitStates.put(node, VisitState.VISITING);
-        recursionStack.add(node);
-
-        for (String neighbor : successorsMap.getOrDefault(node, Collections.emptyList())) {
-            if (!graphPipeline.getGraphNodes().containsKey(neighbor)) continue; // Should be caught by parseAndValidate
-
-            if (recursionStack.contains(neighbor)) {
-                return true; // Cycle detected
-            }
-            if (visitStates.get(neighbor) == VisitState.UNVISITED) {
-                if (hasCycleDfs(neighbor, visitStates, recursionStack)) {
-                    return true;
-                }
-            }
-        }
-
-        recursionStack.remove(node);
-        visitStates.put(node, VisitState.VISITED);
-        return false;
+    @Override
+    public void execAsync(Data input, Context context, Consumer<Data> onSuccess, Consumer<Throwable> onFailure) {
+        execAsync(input, context).thenAccept(onSuccess).exceptionally(err -> {onFailure.accept(err); return null;});
+    }
+    @Override
+    public void resumeAsync(Context context, Data toolResponses, Consumer<Data> onSuccess, Consumer<Throwable> onFailure) {
+        resumeAsync(context, toolResponses).thenAccept(onSuccess).exceptionally(err -> {onFailure.accept(err); return null;});
     }
 
-    private enum VisitState {UNVISITED, VISITING, VISITED}
-
-    private static class NodeExecutionResult {
-        private final String nodeName;
-        private final Data outputData;
-
-        public NodeExecutionResult(String nodeName, Data outputData) {
-            this.nodeName = nodeName;
-            this.outputData = outputData;
+    // execStream for Graph is non-trivial and depends heavily on graph structure and desired stream semantics.
+    // A simple implementation might perform a full graph execution and return its result(s) as a single-element stream
+    // if the graph doesn't naturally lend itself to streaming multiple distinct Data outputs over time.
+    // If tool calls are involved, making execStream resumable is even more complex.
+    @Override
+    public Iterator<Data> execStream(Data initialInput) throws Exception {
+        return execStream(initialInput, defaultContextFactory.get());
+    }
+    @Override
+    public Iterator<Data> execStream(Data initialInput, Context context) throws Exception {
+        // For a graph, a simple stream might be a single execution result.
+        // Or, if the graph has multiple designated output steps, stream them one by one after full execution.
+        // This version will just execute and return final result as a single item stream for simplicity.
+        // It does NOT support pausing/resuming for tool calls within the stream itself in this basic form.
+        Data result = exec(initialInput, context);
+        if (result.getBoolean(PipelineDataConstants.IS_TOOL_CALL_REQUEST_FLAG_KEY, false)){
+            logger.warn("execStream for GraphPipeline received tool call request. Streaming will yield this request. Resumption must happen outside the stream context for this executionId.");
         }
-        public String getNodeName() { return nodeName; }
-        public Data getOutputData() { return outputData; }
+        return Collections.singletonList(result).iterator();
+    }
+    @Override
+    public Iterator<Data> execStream(Pipeline pipeline, Data initialInput, Context context) throws Exception {
+        if (!(pipeline instanceof GraphPipeline)) {
+            throw new IllegalArgumentException("GraphPipelineExecutor can only execute GraphPipeline instances for streaming.");
+        }
+        if (this.graphPipeline != pipeline) {
+            // This executor is tied to its initially configured graphPipeline and runners.
+            // Executing a different pipeline instance here would require re-initialization or different design.
+            throw new UnsupportedOperationException("This GraphPipelineExecutor instance is bound to a specific GraphPipeline.");
+        }
+        return execStream(initialInput, context); // Delegate to the instance's pipeline
     }
 
 
     @Override
-    public void close() throws Exception {
-        if (closed) {
-            return;
-        }
-        Exception firstException = null;
-
-        for (PipelineStepRunner runner : nodeRunners.values()) {
-            try {
-                if (runner.isInitialized()) {
-                    runner.close();
-                }
-            } catch (Exception e) {
-                if (firstException == null) firstException = e; else firstException.addSuppressed(e);
-            }
-        }
-        nodeRunners.clear();
-        switchFunctions.clear(); // Assuming SwitchFn and CombineFn don't need explicit close, or add AutoCloseable
-        combineFunctions.clear();
-
-        // Call super.close() to shutdown asyncExecutorService and set closed flag
-        try {
-            super.close();
-        } catch (Exception e) {
-            if (firstException == null) firstException = e; else firstException.addSuppressed(e);
-        }
-
-        if (firstException != null) throw firstException;
+    public Pipeline getPipeline() {
+        return graphPipeline;
     }
+
+    @Override
+    public void close() throws Exception {
+        if (closed.compareAndSet(false, true)) {
+            logger.info("Closing GraphPipelineExecutor for pipeline '{}'...", graphPipeline.id());
+            pausedExecutions.clear();
+            if (asyncExecutorService != null && !asyncExecutorService.isShutdown()) { // Assuming we own it if we created it
+                asyncExecutorService.shutdown();
+            }
+            if (ownRunners) {
+                List<Exception> closeExceptions = new ArrayList<>();
+                for (PipelineStepRunner runner : runnersMap.values()) {
+                    try {
+                        runner.close();
+                    } catch (Exception e) {
+                        closeExceptions.add(e);
+                        logger.error("Error closing runner " + runner.getClass().getName(), e);
+                    }
+                }
+                if (!closeExceptions.isEmpty()) {
+                    throw new RuntimeException("Errors closing runners: " + closeExceptions);
+                }
+            }
+            logger.info("GraphPipelineExecutor for pipeline '{}' closed.", graphPipeline.id());
+        }
+    }
+
+
 }

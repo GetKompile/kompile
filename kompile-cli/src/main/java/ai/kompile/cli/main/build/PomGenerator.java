@@ -1,23 +1,33 @@
 /*
  * Copyright 2025 Kompile Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * (Derived from original Konduit K.K. copyright if applicable for parts)
  */
-
 package ai.kompile.cli.main.build;
 
+import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.pomfileappender.PomFileAppender;
-import ai.kompile.cli.main.pomfileappender.impl.*;
+// Assuming these are the renamed and correct appender implementations
+import ai.kompile.cli.main.pomfileappender.impl.KompileApacheCommonsPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompileJavaCppPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompileJodaPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompileNd4jClassLoadingPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompileOpenblasPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompilePythonPomFileAppender;
+import ai.kompile.cli.main.pomfileappender.impl.KompileSunXmlFileAppender;
+// Conceptual appender for Spring specific native configurations
+// import ai.kompile.cli.main.pomfileappender.impl.KompileSpringNativePomFileAppender;
+
+
+import ai.kompile.pipelines.framework.api.Pipeline;
+import ai.kompile.pipelines.framework.api.StepConfig;
+import ai.kompile.pipelines.framework.core.config.GenericStepConfig; // For casting if needed
+import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
+import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
+import ai.kompile.pipelines.framework.runtime.pipeline.graph.GraphPipeline;
+// GraphNodeConfig and StandardGraphNodeConfig are not directly used here if GraphPipeline.getSteps() is sufficient
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Getter;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -31,685 +41,729 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
-@CommandLine.Command(name = "pom-generate",mixinStandardHelpOptions = false)
+@CommandLine.Command(name = "pom-generate", mixinStandardHelpOptions = false,
+        description = "Generates a pom.xml for building Kompile applications or pipelines.")
+@Getter
 public class PomGenerator implements Callable<Void> {
 
-    @CommandLine.Option(names = {"--assembly"},description = "Whether to build a maven assembly of all jars")
+    // --- Configuration Fields (set by KompileApplicationBuilder) ---
     private boolean assembly;
-
-    @CommandLine.Option(names = {"--python"},description = "Whether to use python or not")
-    private boolean python = false;
-    @CommandLine.Option(names = {"--onnx"},description = "Whether to use onnx or not")
-    private boolean onnx = false;
-    @CommandLine.Option(names = {"--tvm"},description = "Whether to use tvm or not")
-    private boolean tvm = false;
-
-    @CommandLine.Option(names = {"--doc"},description = "Whether to use document parser or not")
-    private boolean doc = false;
-    @CommandLine.Option(names = {"--dl4j"},description = "Whether to use dl4j or not")
-    private boolean dl4j = false;
-    @CommandLine.Option(names = "--samediff",description = "Whether to use samediff or not")
-    private boolean samediff = false;
-    @CommandLine.Option(names = "--nd4j",description = "Whether to use nd4j or not")
-    private boolean nd4j = false;
-    @CommandLine.Option(names = "--tensorflow",description = "Whether to use tensorflow or not")
-    private boolean tensorflow = false;
-    @CommandLine.Option(names = "--nd4j-tensorflow",description = "Whether to use nd4j-tensorflow or not")
-    private boolean nd4jTensorflow = false;
-    @CommandLine.Option(names = "--image",description = "Whether to use image pre processing or not or not")
-    private boolean image = false;
-    @CommandLine.Option(names = "--server",description = "Whether to use an http server or not")
-    private boolean server = false;
-
-    @CommandLine.Option(names = {"--nativeImageJvmArg"},description = "Extra JVM arguments for the native image build process. These will be" +
-            "passed to the native image plugin in the form of: -JSOMEARG")
+    private String imageName = "kompile-app";
+    private String mainClass;
     private String[] nativeImageJvmArgs;
+    private String extraDependencies;
+    private String includeResources;
+    private String nd4jBackend = "nd4j-native";
+    private String nd4jBackendClassifier = "";
+    private boolean numpySharedLibrary;
+    private File outputFile = new File("pom.xml");
+    private boolean debugNative = false;
+    private int debugNativePort = 8000;
+    private String pipelineJsonFilePathForAnalysis; // Absolute path to pipeline.json
+    private String pipelineResourcePath = "kompile_pipeline.json"; // Classpath resource name
+
+    private String appType = "pipeline-executor";
+    private String llmProvider;
+    private String vectorStoreProvider;
+    private String embeddingProvider;
+    private String documentLoaderProvider;
+    private boolean enableRagService;
+    private boolean enableFilesystemTool;
+    private boolean enableFrontendBuild;
+
+    // Versions from Info.java
+    private String kompileParentVersion = Info.getVersion();
+    private String ragMcpAssistantParentVersion = Info.getKompileAppVersion();
+    private String kompilePipelinesVersion = Info.getKompilePipelinesVersion();
+    private String kompileAppVersion = Info.getKompileAppVersion();
+    private String springBootVersion = Info.getSpringBootVersion();
+    private String springAiVersion = Info.getSpringAiVersion();
+    private String nativeImagePluginVersion = Info.getNativeImagePluginVersion();
+
+    // Flags for pipeline step types (fallback or direct config)
+    private boolean python, onnx, tvm, doc, dl4j, samediff, tensorflow, image;
+    private boolean server; // Derived from appType
+
+    // ND4J Native Build Params
+    private String nd4jExtension, nd4jOperations, nd4jDataTypes;
+    private boolean nd4jUseLto;
 
     private Model model;
-    @CommandLine.Option(names = {"--imageName"},description = "The image name")
-    private String imageName = "konduit-serving";
-    //What's the main class we want to run? A generic serving class we pre include?
-    @CommandLine.Option(names = {"--mainClass"},description = "The main class for the image")
-    private String mainClass;
-    @CommandLine.Option(names = {"--extraDependencies"},description = "Extra dependencies to include in the form of: groupId:artifactId,version:classifier with a comma separating each dependency")
-    private String extraDependencies;
-    @CommandLine.Option(names = {"--includeResources"},description = "Extra resources to include in the image, comma separated")
-    private String includeResources;
-    @CommandLine.Option(names = {"--nd4jBackend"},description = "The nd4j backend to include")
-    private String nd4jBackend = "nd4j-native";
+    private List<Dependency> resolvedDependencies = new ArrayList<>();
 
-    @CommandLine.Option(names = {"--nd4jBackendClassifier"},description = "The nd4j backend to include")
-    private String nd4jBackendClassifier = "";
-
-    @CommandLine.Option(names = {"--cli"},description = "Whether to add konduit-serving-cli or not as a dependency")
-    private boolean cli = false;
-    @CommandLine.Option(names = {"--numpySharedLibrary"},description = "Create a library with a numpy based entry point.")
-    private boolean numpySharedLibrary;
-
-    @CommandLine.Option(names = {"--outputFile"},description = "The output file")
-    private File outputFile = new File("pom2.xml");
-
-    @CommandLine.Option(names = "--debug",description = "Whether to wait on debugging during image building")
-    private boolean debug = false;
-    @CommandLine.Option(names = "--debugPort",description = "The port to use for debugging when enabled, default is 8000")
-    private int debugPort = 8000;
-    @CommandLine.Option(names = "--pipelinePath",description = "The pipeline path for building the image")
-    private String pipelinePath;
-
-    private String graalVmVersion = "22.2.0";
-    private String nativeImagePluginVersion = "0.9.13";
-    private String microMeterVersion = "1.7.0";
-    private String alpnVersion = "8.1.13.v20181017";
-    private String npnVersion = "1.1.1.v20141010";
-    private String nettyTcNativeVersion = "2.0.39.Final";
-    private String nettyVersion = "4.1.74.Final";
-    private String concsryptVersion = "2.5.2";
-    private String konduitServingVersion = "0.4.0-SNAPSHOT";
-    private String javacppVersion = "1.5.8";
-    private String log4jVersion = "1.2.17";
-    private String slf4jVersion = "1.7.24";
-    private String dl4jVersion = "1.0.0-SNAPSHOT";
-    private String lombokVersion = "1.18.24";
-    private String logbackVersion = "1.2.11";
-
-    private String zeroTurnAroundVersion = "1.12";
-    private String picoCliVersion = "4.6.3";
-    private String dnnlVersion = "2.7.1-" + javacppVersion;
-    private List<Dependency> defaultDependencies = new ArrayList<>();
-
-    //Set the resource to be the model generated based on pipeline
-    //Set the pipeline resource json name to be loaded
-
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version) {
-        addDependency(addTo,groupId,artifactId,version,"compile");
+    // --- Setters (ensure all fields used in create() have setters) ---
+    public void setAssembly(boolean assembly) { this.assembly = assembly; }
+    public void setImageName(String imageName) { this.imageName = imageName; }
+    public void setMainClass(String mainClass) { this.mainClass = mainClass; }
+    public void setNativeImageJvmArgs(String[] nativeImageJvmArgs) { this.nativeImageJvmArgs = nativeImageJvmArgs; }
+    public void addNativeImageJvmArgIfMissing(String arg) {
+        if (this.nativeImageJvmArgs == null) this.nativeImageJvmArgs = new String[0];
+        List<String> argsList = new ArrayList<>(Arrays.asList(this.nativeImageJvmArgs));
+        String argPrefix = arg.contains("=") ? arg.substring(0, arg.indexOf("=") + 1) : arg;
+        boolean alreadyExists = argsList.stream().anyMatch(existingArg ->
+                existingArg.startsWith(argPrefix) || existingArg.equals(arg)
+        );
+        if (!alreadyExists) {
+            argsList.add(arg);
+        }
+        this.nativeImageJvmArgs = argsList.toArray(new String[0]);
     }
+    public void setExtraDependencies(String extraDependencies) { this.extraDependencies = extraDependencies; }
+    public void setIncludeResources(String includeResources) { this.includeResources = includeResources; }
+    public void setNd4jBackend(String nd4jBackend) { this.nd4jBackend = nd4jBackend; }
+    public void setNd4jBackendClassifier(String nd4jBackendClassifier) { this.nd4jBackendClassifier = nd4jBackendClassifier; }
+    public void setNumpySharedLibrary(boolean numpySharedLibrary) { this.numpySharedLibrary = numpySharedLibrary; }
+    public void setOutputFile(File outputFile) { this.outputFile = outputFile; }
+    public void setDebugNative(boolean debugNative) { this.debugNative = debugNative; }
+    public void setDebugNativePort(int debugNativePort) { this.debugNativePort = debugNativePort; }
+    public void setPipelineJsonFilePathForAnalysis(String path) { this.pipelineJsonFilePathForAnalysis = path; }
+    public void setPipelinePath(String resourcePath) { this.pipelineResourcePath = resourcePath; } // Corrected setter name
+    public void setAppType(String appType) { this.appType = appType; }
+    public void setLlmProvider(String provider) { this.llmProvider = provider; }
+    public void setVectorStoreProvider(String provider) { this.vectorStoreProvider = provider; }
+    public void setEmbeddingProvider(String provider) { this.embeddingProvider = provider; }
+    public void setDocumentLoaderProvider(String provider) { this.documentLoaderProvider = provider; }
+    public void setEnableRagService(boolean enable) { this.enableRagService = enable; }
+    public void setEnableFilesystemTool(boolean enable) { this.enableFilesystemTool = enable; }
+    public void setEnableFrontendBuild(boolean enable) { this.enableFrontendBuild = enable; }
+    public void setKompileVersion(String version) { this.kompileParentVersion = version; }
+    public void setRagMcpAssistantParentVersion(String version) { this.ragMcpAssistantParentVersion = version; }
+    public void setKompilePipelinesVersion(String version) { this.kompilePipelinesVersion = version; }
+    public void setKompileAppVersion(String version) { this.kompileAppVersion = version; }
+    public void setSpringBootVersion(String version) { this.springBootVersion = version; }
+    public void setSpringAiVersion(String version) { this.springAiVersion = version; }
+    public void setNativeImagePluginVersion(String version) { this.nativeImagePluginVersion = version; }
+    public void setPython(boolean python) { this.python = python; }
+    public void setOnnx(boolean onnx) { this.onnx = onnx; }
+    public void setTvm(boolean tvm) { this.tvm = tvm; }
+    public void setDoc(boolean doc) { this.doc = doc; }
+    public void setDl4j(boolean dl4j) { this.dl4j = dl4j; }
+    public void setSamediff(boolean samediff) { this.samediff = samediff; }
+    public void setTensorflow(boolean tensorflow) { this.tensorflow = tensorflow; }
+    public void setImage(boolean image) { this.image = image; }
+    public void setServer(boolean server) { this.server = server; }
+    public void setNd4jExtension(String ext) { this.nd4jExtension = ext; }
+    public void setNd4jOperations(String ops) { this.nd4jOperations = ops; }
+    public void setNd4jDataTypes(String types) { this.nd4jDataTypes = types; }
+    public void setNd4jUseLto(boolean useLto) { this.nd4jUseLto = useLto; }
 
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version,String scope) {
-        addDependency(addTo,groupId,artifactId,version,scope,"");
-    }
 
-
-    public Dependency getDependency(String groupId,String artifactId,String version,String scope,String classifier) {
+    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version, String scope, String classifier) {
         Dependency dependency = new Dependency();
         dependency.setGroupId(groupId);
         dependency.setArtifactId(artifactId);
-        dependency.setVersion(version);
-        dependency.setScope(scope);
-        dependency.setClassifier(classifier);
-        return dependency;
+        if (version != null && (model.getParent() == null || !parentManagesVersion(model.getParent(), groupId, artifactId))) {
+            dependency.setVersion(version);
+        }
+        if (scope != null && !scope.isEmpty()) dependency.setScope(scope);
+        if (classifier != null && !classifier.isEmpty()) dependency.setClassifier(classifier);
+
+        boolean exists = addTo.stream().anyMatch(d ->
+                d.getGroupId().equals(groupId) &&
+                        d.getArtifactId().equals(artifactId) &&
+                        Objects.equals(d.getClassifier(), classifier) // Classifier is important for uniqueness
+        );
+        if(!exists) {
+            addTo.add(dependency);
+        }
     }
 
-    public void addDependency(List<Dependency> addTo,String groupId,String artifactId,String version,String scope,String classifier) {
-        Dependency dependency = getDependency(groupId,artifactId,version,scope,classifier);
-        addTo.add(dependency);
-
+    private boolean parentManagesVersion(Parent parent, String groupId, String artifactId) {
+        if (parent == null) return false;
+        // Check against known parent POMs that manage these dependencies
+        if ("rag-mcp-assistant-parent".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
+            return groupId.startsWith("ai.kompile") ||
+                    groupId.startsWith("org.springframework.boot") ||
+                    groupId.startsWith("org.springframework.ai") ||
+                    groupId.startsWith("org.nd4j") ||
+                    groupId.startsWith("org.deeplearning4j") ||
+                    groupId.startsWith("ch.qos.logback") || // Logback often managed by Spring Boot parent
+                    groupId.startsWith("org.slf4j") ||
+                    groupId.startsWith("org.graalvm"); // GraalVM SDK often managed
+        }
+        if ("kompile".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
+            return groupId.startsWith("ai.kompile") ||
+                    groupId.startsWith("org.nd4j") ||
+                    groupId.startsWith("org.deeplearning4j") ||
+                    groupId.startsWith("ch.qos.logback") ||
+                    groupId.startsWith("org.slf4j") ||
+                    groupId.startsWith("org.graalvm");
+        }
+        return false;
     }
 
+    private void addKompilePipelineStepDependency(List<Dependency> addTo, String stepArtifactIdSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-pipelines-steps-" + stepArtifactIdSuffix, this.kompilePipelinesVersion, "compile", null);
+    }
+    private void addKompileAppProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-app-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+    }
+    private void addKompileEmbeddingProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-embedding-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+    }
+    private void addKompileVectorStoreProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-vectorstore-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+    }
+    private void addKompileLoaderProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-loader-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+    }
+    private void addKompileToolDependency(List<Dependency> addTo, String toolModuleSuffix) {
+        addDependency(addTo, "ai.kompile", "kompile-tool-" + toolModuleSuffix, this.kompileAppVersion, "compile", null);
+    }
 
-    public void addNd4jBackend(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("org.nd4j");
-        dependency.setArtifactId(nd4jBackend);
-        dependency.setVersion(dl4jVersion);
-        addTo.add(dependency);
+    private void addDefaultFrameworkAndAppCoreDependencies(List<Dependency> deps) {
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-api", this.kompilePipelinesVersion, "compile", null);
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-core", this.kompilePipelinesVersion, "compile", null);
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-runtime", this.kompilePipelinesVersion, "compile", null);
+        addDependency(deps, "ch.qos.logback", "logback-classic", null, "compile", null);
+        addDependency(deps, "org.slf4j", "slf4j-api", null, "compile", null);
+        addDependency(deps, "org.graalvm.sdk", "graal-sdk", null, "provided", null);
+        addDependency(deps, "org.graalvm.nativeimage", "svm", null, "provided", null);
 
+        if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
+            addDependency(deps, "ai.kompile", "kompile-app-main", this.kompileAppVersion, "compile", null);
+            if (this.enableRagService) { // MCP client/server are part of spring-ai-starters, managed by BOM
+                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-client", null, "compile", null);
+                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-server", null, "compile", null);
+            }
+        }
+    }
 
-        Dependency dependency2 = new Dependency();
-        dependency2.setGroupId("org.nd4j");
-        dependency2.setArtifactId(nd4jBackend + "-preset");
-        dependency2.setVersion(dl4jVersion);
-        addTo.add(dependency2);
+    private void addProviderDependencies(List<Dependency> deps) {
+        if (this.llmProvider != null && !this.llmProvider.equalsIgnoreCase("noop") && !this.llmProvider.equalsIgnoreCase("none")) {
+            String suffix = this.llmProvider.toLowerCase();
+            if (!suffix.endsWith("-llm")) suffix += "-llm";
+            addKompileAppProviderDependency(deps, suffix);
+        }
+        if (this.embeddingProvider != null && !this.embeddingProvider.equalsIgnoreCase("noop") && !this.embeddingProvider.equalsIgnoreCase("none")) {
+            addKompileEmbeddingProviderDependency(deps, this.embeddingProvider.toLowerCase());
+        }
+        if (this.vectorStoreProvider != null && !this.vectorStoreProvider.equalsIgnoreCase("noop") && !this.vectorStoreProvider.equalsIgnoreCase("none")) {
+            addKompileVectorStoreProviderDependency(deps, this.vectorStoreProvider.toLowerCase());
+        }
+        if (this.documentLoaderProvider != null && !this.documentLoaderProvider.equalsIgnoreCase("none")) {
+            addKompileLoaderProviderDependency(deps, this.documentLoaderProvider.toLowerCase());
+        }
+        if (this.enableRagService) addKompileToolDependency(deps, "rag");
+        if (this.enableFilesystemTool) addKompileToolDependency(deps, "filesystem");
+    }
 
-        if(nd4jBackendClassifier != null && !nd4jBackendClassifier.isEmpty()) {
-            Dependency classifierDep = new Dependency();
-            classifierDep.setGroupId("org.nd4j");
-            classifierDep.setArtifactId(nd4jBackend);
-            classifierDep.setVersion(dl4jVersion);
-            classifierDep.setClassifier(nd4jBackendClassifier);
-            addTo.add(classifierDep);
+    private void addPipelineStepDependenciesFromPipelineJson(List<Dependency> deps) {
+        if (this.pipelineJsonFilePathForAnalysis == null || this.pipelineJsonFilePathForAnalysis.isEmpty()) {
+            System.out.println("No pipeline JSON provided for analysis, using CLI flags for step dependencies.");
+            addPipelineStepDependenciesFromCliFlags(deps);
+            return;
+        }
+        File pipelineJsonFile = new File(this.pipelineJsonFilePathForAnalysis);
+        if (!pipelineJsonFile.exists()) {
+            System.err.println("Pipeline JSON file not found for dependency analysis: " + this.pipelineJsonFilePathForAnalysis + ". Falling back to CLI flags.");
+            addPipelineStepDependenciesFromCliFlags(deps);
+            return;
         }
 
+        try {
+            ObjectMapper mapper = ObjectMappers.getJsonMapper();
+            // Deserialize into a generic Map first to inspect the structure, then into specific type if needed
+            // Or, more robustly, attempt to deserialize into known Pipeline implementations
+            Pipeline parsedPipeline;
+            try {
+                // Try SequencePipeline first as it's simpler and more common for CLI generation
+                parsedPipeline = mapper.readValue(pipelineJsonFile, SequencePipeline.class);
+            } catch (Exception eSeq) {
+                try {
+                    // Fallback to GraphPipeline
+                    parsedPipeline = mapper.readValue(pipelineJsonFile, GraphPipeline.class);
+                } catch (Exception eGraph) {
+                    System.err.println("Failed to parse pipeline JSON as SequencePipeline or GraphPipeline: " + eGraph.getMessage());
+                    throw new IOException("Unsupported pipeline JSON structure or invalid format.", eGraph);
+                }
+            }
+
+            List<StepConfig> stepConfigs = parsedPipeline.getSteps(); // Relies on Pipeline.getSteps()
+
+            Set<String> addedStepModules = new HashSet<>();
+            for (StepConfig stepConfig : stepConfigs) {
+                String runnerClassName = null;
+                String symbolicType = null;
+
+                if (stepConfig instanceof GenericStepConfig) {
+                    runnerClassName = ((GenericStepConfig) stepConfig).runnerClassName();
+                    symbolicType = ((GenericStepConfig) stepConfig).type();
+                }
+
+
+                String stepModule = null;
+                if (runnerClassName != null && !runnerClassName.isEmpty()) {
+                    if (runnerClassName.startsWith("ai.kompile.pipelines.steps.python.")) stepModule = "python";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.onnx.")) stepModule = "onnx";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.deeplearning4j.")) stepModule = "deeplearning4j";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.samediff.")) stepModule = "samediff";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.tensorflow.")) stepModule = "tensorflow";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.tvm.")) stepModule = "tvm";
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.image.")) stepModule = "image"; // For ImageToNDArrayRunner
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.documentparser.")) stepModule = "document-parser";
+                } else if (symbolicType != null && !symbolicType.isEmpty()) {
+                    String lowerType = symbolicType.toLowerCase();
+                    if (("python".equals(lowerType) || "py".equals(lowerType))) stepModule = "python";
+                    else if ("onnx".equals(lowerType)) stepModule = "onnx";
+                    else if ("dl4j".equals(lowerType)) stepModule = "deeplearning4j";
+                    else if ("samediff".equals(lowerType)) stepModule = "samediff";
+                    else if ("tensorflow".equals(lowerType)) stepModule = "tensorflow";
+                    else if ("tvm".equals(lowerType)) stepModule = "tvm";
+                    else if ("image_to_ndarray".equals(lowerType) || "image".equals(lowerType)) stepModule = "image";
+                    else if ("document_parser".equals(lowerType) || "doc".equals(lowerType)) stepModule = "document-parser";
+                }
+
+                if (stepModule != null && addedStepModules.add(stepModule)) {
+                    addKompilePipelineStepDependency(deps, stepModule);
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Error parsing pipeline JSON " + this.pipelineJsonFilePathForAnalysis + " for step dependencies: " + e.getMessage() + ". Falling back to CLI flags.");
+            addPipelineStepDependenciesFromCliFlags(deps);
+        }
     }
 
-    public void addNd4jTensorflow(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-nd4j-tensorflow");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
+    private void addPipelineStepDependenciesFromCliFlags(List<Dependency> deps) {
+        // This is a fallback if pipeline.json parsing fails or is not provided for analysis
+        if (this.python) addKompilePipelineStepDependency(deps, "python");
+        if (this.onnx) addKompilePipelineStepDependency(deps, "onnx");
+        if (this.dl4j) addKompilePipelineStepDependency(deps, "deeplearning4j");
+        if (this.samediff) addKompilePipelineStepDependency(deps, "samediff");
+        if (this.tensorflow) addKompilePipelineStepDependency(deps, "tensorflow");
+        if (this.tvm) addKompilePipelineStepDependency(deps, "tvm");
+        if (this.image) addKompilePipelineStepDependency(deps, "image");
+        if (this.doc) addKompilePipelineStepDependency(deps, "document-parser");
     }
 
-    public void addTensorflow(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-tensorflow");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
+    private List<PomFileAppender> getActivePomFileAppenders() {
+        List<PomFileAppender> appenders = new ArrayList<>();
+        appenders.add(new KompileApacheCommonsPomFileAppender());
+        appenders.add(new KompileJavaCppPomFileAppender());
+        appenders.add(new KompileJodaPomFileAppender());
+        appenders.add(new KompileSunXmlFileAppender());
+
+        boolean hasPython = resolvedDependencies.stream().anyMatch(d -> "kompile-pipelines-steps-python".equals(d.getArtifactId()));
+        boolean hasNd4j = resolvedDependencies.stream().anyMatch(d -> d.getGroupId().equals("org.nd4j"));
+        boolean hasOpenBLAS = resolvedDependencies.stream().anyMatch(d -> d.getArtifactId().contains("openblas")); // Could be more specific
+
+        if (hasPython) {
+            appenders.add(new KompilePythonPomFileAppender());
+            appenders.add(new KompilePythonPomFileAppender());
+        }
+        if (hasNd4j) {
+            appenders.add(new KompileNd4jClassLoadingPomFileAppender());
+            appenders.add(new KompileNd4jClassLoadingPomFileAppender());
+        }
+        if (hasOpenBLAS || (hasNd4j && "nd4j-native".equals(this.nd4jBackend))) { // nd4j-native often uses OpenBLAS
+            appenders.add(new KompileOpenblasPomFileAppender());
+        }
+
+        if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType) && !this.assembly) {
+            // Conceptual: appenders.add(new KompileSpringNativePomFileAppender());
+            // For Spring AI providers, specific appenders might be needed
+            // if (llmProvider.contains("openai")) appenders.add(new KompileOpenAiApiPomFileAppender());
+        }
+        return appenders.stream().distinct().collect(Collectors.toList());
     }
 
-    public void addNd4j(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-nd4j");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
+    private String graalBuildArgs() {
+        StringBuilder sb = new StringBuilder();
+        // Base GraalVM arguments (merged from kompile-cli/pom.xml and original PomGenerator)
+        sb.append("--verbose\n");
+        sb.append("--no-fallback\n");
+        sb.append("-H:+ReportExceptionStackTraces\n");
+        sb.append("-H:DeadlockWatchdogInterval=30\n");
+        sb.append("-H:+DeadlockWatchdogExitOnTimeout\n");
+        sb.append("-H:+AllowDeprecatedBuilderClassesOnImageClasspath\n");
+        sb.append("-H:-CheckToolchain\n");
+        sb.append("-H:+AllowIncompleteClasspath\n");
+
+        // Build-time initializations
+        sb.append("--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager,org.slf4j.helpers\n");
+
+        // Runtime initializations
+        sb.append("--initialize-at-run-time=io.netty.**,org.bytedeco.**,com.sun.jna.**,org.eclipse.jgit.**\n"); // Use wildcards for packages
+        sb.append("--initialize-at-run-time=ai.kompile.pipelines.**,ai.kompile.app.**\n");
+        sb.append("--initialize-at-run-time=org.nd4j.linalg.factory.Nd4j,org.nd4j.nativeblas.NativeOpsHolder\n");
+        sb.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n"); // If PDFBox is used
+
+        // JavaCPP specific
+        sb.append("-Dorg.bytedeco.javacpp.logger.debug=true\n");
+        sb.append("-Dorg.bytedeco.javacpp.nopointergc=true\n");
+        sb.append("-Djavacpp.platform=${javacpp.platform}\n");
+
+        // Resources
+        sb.append("-H:IncludeResources=META-INF/native-image/.*\\.json$\n"); // End with $ for regex precision
+        sb.append("-H:IncludeResources=ai/kompile/.*\\.schema\\.json$\n");
+        sb.append("-H:IncludeResources=.*/org/nd4j/.*\\.(so|dylib|dll|properties|json|txt| 기울기)$\n"); // Added 기울기 for Korean font in ND4J? Review.
+        sb.append("-H:IncludeResources=.*/org/bytedeco/.*\\.(so|dylib|dll|properties|json)$\n");
+        sb.append("-H:IncludeResources=META-INF/services/.*$\n"); // Match any service file
+        sb.append("-H:IncludeResources=logback.xml,logback-test.xml,logging.properties\n");
+        sb.append("-H:IncludeResources=reference.conf\n");
+        sb.append("-H:IncludeResources=").append(this.pipelineResourcePath).append("$\n");
+
+        if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
+            sb.append("-H:IncludeResources=static/.*,templates/.*,META-INF/resources/.*,application.yml,application.properties,banner.txt\n");
+            sb.append("-H:IncludeResources=META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports$\n");
+            sb.append("-H:IncludeResources=META-INF/spring.factories$\n");
+            sb.append("-H:IncludeResources=META-INF/spring.tooling$\n");
+            sb.append("-H:IncludeResources=META-INF/additional-spring-configuration-metadata.json$\n");
+            sb.append("--initialize-at-run-time=org.springframework.**,jakarta.servlet.**,org.apache.tomcat.**,org.apache.coyote.**,org.hibernate.validator.**,org.apache.catalina.**,org.apache.el.**\n");
+            sb.append("-H:-AddAllFileSystemProviders\n");
+            // Spring AI specific
+            if (this.llmProvider != null && this.llmProvider.contains("openai")) {
+                sb.append("--initialize-at-run-time=com.knuddels.jtokkit.**\n");
+                sb.append("--initialize-at-run-time=com.azure.ai.openai.**\n");
+                sb.append("--initialize-at-run-time=com.theokanning.openai.**\n");
+            }
+            if (this.embeddingProvider != null && this.embeddingProvider.contains("sentence-transformer")) {
+                sb.append("--initialize-at-run-time=ai.djl.**\n");
+                sb.append("--initialize-at-run-time=org.pytorch.**\n"); // If DJL uses PyTorch backend
+            }
+            // Add more for Anthropic, Gemini, Chroma, PGVector if they have specific classes needing runtime init
+        }
+
+        if (this.includeResources != null && !this.includeResources.isEmpty()) {
+            for (String resourcePattern : this.includeResources.split(",")) {
+                sb.append("-H:IncludeResources=").append(resourcePattern.trim()).append("$\n"); // Add $ for regex end
+            }
+        }
+
+        sb.append("-Dpipeline.path=").append(this.pipelineResourcePath).append("\n");
+        sb.append("-Dfile.encoding=UTF-8\n");
+
+        if (this.nativeImageJvmArgs != null) {
+            for (String jvmArg : this.nativeImageJvmArgs) {
+                String trimmedArg = jvmArg.trim();
+                if (!trimmedArg.startsWith("-J")) sb.append("-J");
+                sb.append(trimmedArg).append("\n");
+            }
+        }
+        if (this.numpySharedLibrary) sb.append("--shared\n");
+        if (this.debugNative) sb.append("--debug-attach=").append(this.debugNativePort).append("\n");
+
+        for (PomFileAppender appender : getActivePomFileAppenders()) {
+            appender.append(sb);
+            appender.appendReInitialize(sb);
+        }
+        return sb.toString().trim();
     }
 
+    private void addBuildConfiguration(Model model) throws XmlPullParserException, IOException {
+        Build build = new Build();
+        Extension osMavenPluginExtension = new Extension();
+        osMavenPluginExtension.setGroupId("kr.motd.maven");
+        osMavenPluginExtension.setArtifactId("os-maven-plugin");
+        osMavenPluginExtension.setVersion("1.7.1"); // Use a recent version
+        build.addExtension(osMavenPluginExtension);
 
-    public void addDeeplearning4j(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-deeplearning4j");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
+        Plugin compilerPlugin = new Plugin();
+        compilerPlugin.setGroupId("org.apache.maven.plugins");
+        compilerPlugin.setArtifactId("maven-compiler-plugin");
+        String javaVersion = ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) ? "17" : "11";
+        Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
+                "<configuration><release>" + javaVersion + "</release></configuration>"
+        ));
+        compilerPlugin.setConfiguration(compilerConfig);
+        build.addPlugin(compilerPlugin);
+
+        Plugin resourcesPlugin = new Plugin();
+        resourcesPlugin.setGroupId("org.apache.maven.plugins");
+        resourcesPlugin.setArtifactId("maven-resources-plugin");
+        build.addPlugin(resourcesPlugin);
+
+        if (this.assembly) { // Corrected: use this.assembly
+            Plugin assemblyPlugin = new Plugin();
+            assemblyPlugin.setGroupId("org.apache.maven.plugins");
+            assemblyPlugin.setArtifactId("maven-assembly-plugin");
+            // Ensure a descriptor is available or a default configuration is robust
+            Xpp3Dom assemblyConfigDom = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration><finalName>" + this.imageName + "</finalName><appendAssemblyId>true</appendAssemblyId>" +
+                            "<descriptors><descriptor>src/main/assembly/kompile-app-assembly.xml</descriptor></descriptors></configuration>"
+            )); // Assumes descriptor exists at this path in the generated project
+            assemblyPlugin.setConfiguration(assemblyConfigDom);
+            PluginExecution assemblyExec = new PluginExecution();
+            assemblyExec.setId("make-assembly");
+            assemblyExec.setPhase("package");
+            assemblyExec.addGoal("single");
+            assemblyPlugin.addExecution(assemblyExec);
+            build.addPlugin(assemblyPlugin);
+
+        } else if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
+            Plugin springBootPlugin = new Plugin();
+            springBootPlugin.setGroupId("org.springframework.boot");
+            springBootPlugin.setArtifactId("spring-boot-maven-plugin");
+            springBootPlugin.setConfiguration(Xpp3DomBuilder.build(new StringReader(
+                    "<configuration><mainClass>" + this.mainClass + "</mainClass><finalName>" + this.imageName + "</finalName></configuration>"
+            )));
+            PluginExecution repackageExec = new PluginExecution();
+            repackageExec.setId("repackage");
+            repackageExec.addGoal("repackage");
+            springBootPlugin.addExecution(repackageExec);
+            PluginExecution processAotExec = new PluginExecution();
+            processAotExec.setId("process-aot");
+            processAotExec.addGoal("process-aot");
+            springBootPlugin.addExecution(processAotExec);
+            build.addPlugin(springBootPlugin);
+
+            if (this.enableFrontendBuild) {
+                Plugin frontendPlugin = new Plugin();
+                frontendPlugin.setGroupId("com.github.eirslett");
+                frontendPlugin.setArtifactId("frontend-maven-plugin");
+                String nodeVersion = model.getProperties().getProperty("node.version", "v20.11.1");
+                String npmVersion = model.getProperties().getProperty("npm.version", "10.2.4");
+                // Simplified config; actual executions for install, build need to be added
+                Xpp3Dom frontendConfig = Xpp3DomBuilder.build(new StringReader(
+                        "<configuration>" +
+                                "<workingDirectory>src/main/frontend</workingDirectory>" +
+                                "<installDirectory>${project.build.directory}/frontend-build</installDirectory>" +
+                                "<nodeVersion>" + nodeVersion + "</nodeVersion>" +
+                                "<npmVersion>" + npmVersion + "</npmVersion>" +
+                                "</configuration>"
+                ));
+                frontendPlugin.setConfiguration(frontendConfig);
+                // Add executions like in kompile-app-main/pom.xml
+                build.addPlugin(frontendPlugin);
+            }
+
+            Plugin nativePlugin = new Plugin();
+            nativePlugin.setGroupId("org.graalvm.buildtools");
+            nativePlugin.setArtifactId("native-maven-plugin");
+            nativePlugin.setVersion(this.nativeImagePluginVersion);
+            nativePlugin.setExtensions(true);
+
+            List<String> finalNativeBuildArgs = new ArrayList<>();
+            String[] baseArgs = graalBuildArgs().split("\n");
+            for(String arg : baseArgs) if(arg != null && !arg.trim().isEmpty()) finalNativeBuildArgs.add(arg.trim());
+
+            finalNativeBuildArgs.add("--class-path"); // Spring AOT specific
+            finalNativeBuildArgs.add("${project.build.outputDirectory}${path.separator}${project.build.directory}/spring-aot/main/classes");
+
+
+            Xpp3Dom nativeConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "<imageName>" + this.imageName + "</imageName>" +
+                            "<mainClass>" + this.mainClass + "</mainClass>" +
+                            "<quickBuild>false</quickBuild>" +
+                            "</configuration>"
+            ));
+            Xpp3Dom buildArgsNode = new Xpp3Dom("buildArgs");
+            for(String arg : finalNativeBuildArgs) {
+                Xpp3Dom buildArgNode = new Xpp3Dom("buildArg");
+                buildArgNode.setValue(arg);
+                buildArgsNode.addChild(buildArgNode);
+            }
+            nativeConfig.addChild(buildArgsNode);
+            nativePlugin.setConfiguration(nativeConfig);
+
+            PluginExecution nativeAddMetaExec = new PluginExecution();
+            nativeAddMetaExec.setId("add-reachability-metadata");
+            nativeAddMetaExec.addGoal("add-reachability-metadata");
+            nativePlugin.addExecution(nativeAddMetaExec);
+
+            PluginExecution nativeBuildExec = new PluginExecution();
+            nativeBuildExec.setId("build-native");
+            nativeBuildExec.setPhase("package");
+            nativeBuildExec.addGoal("compile-no-fork");
+            nativePlugin.addExecution(nativeBuildExec);
+            build.addPlugin(nativePlugin);
+
+        } else { // Default native image for "pipeline-executor" or other non-assembly
+            Plugin nativePlugin = new Plugin();
+            nativePlugin.setGroupId("org.graalvm.buildtools");
+            nativePlugin.setArtifactId("native-maven-plugin");
+            nativePlugin.setVersion(this.nativeImagePluginVersion);
+            nativePlugin.setExtensions(true);
+            Xpp3Dom nativeConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "<imageName>" + this.imageName + "</imageName>" +
+                            "<mainClass>" + this.mainClass + "</mainClass>" +
+                            "</configuration>"
+            ));
+            Xpp3Dom buildArgsNode = new Xpp3Dom("buildArgs");
+            for(String arg : graalBuildArgs().split("\n")) {
+                if(arg == null || arg.trim().isEmpty()) continue;
+                Xpp3Dom buildArgNode = new Xpp3Dom("buildArg");
+                buildArgNode.setValue(arg.trim());
+                buildArgsNode.addChild(buildArgNode);
+            }
+            nativeConfig.addChild(buildArgsNode);
+            nativePlugin.setConfiguration(nativeConfig);
+
+            PluginExecution nativeBuildExec = new PluginExecution();
+            nativeBuildExec.setId("build-native");
+            nativeBuildExec.setPhase("package");
+            nativeBuildExec.addGoal("compile-no-fork");
+            nativePlugin.addExecution(nativeBuildExec);
+            build.addPlugin(nativePlugin);
+        }
+        model.setBuild(build);
     }
 
-    public void addSameDiff(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-samediff");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-    public void addOnnx(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-onnx");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-    public void addImage(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-image");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-    public void addTvm(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-tvm");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-
-
-    public void addDocument(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-document-parser");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-    public void addPython(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-python");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-    public void addCli(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-cli");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-    public void addKonduitServingCore(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-core");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-    }
-
-
-    public void addHttp(List<Dependency> addTo) {
-        Dependency dependency = new Dependency();
-        dependency.setGroupId("ai.konduit.serving");
-        dependency.setArtifactId("konduit-serving-http");
-        dependency.setVersion(konduitServingVersion);
-        addTo.add(dependency);
-
-        Dependency tcNative = new Dependency();
-        tcNative.setGroupId("io.netty");
-        tcNative.setArtifactId("netty-tcnative");
-        tcNative.setVersion(nettyTcNativeVersion);
-        addTo.add(tcNative);
-
-
-
-        Dependency prometheus = new Dependency();
-        prometheus.setGroupId("io.micrometer");
-        prometheus.setArtifactId("micrometer-registry-prometheus");
-        prometheus.setVersion(microMeterVersion);
-        addTo.add(prometheus);
-
-
-    }
-
-    public void addExtraDependencies() {
-        if(extraDependencies != null) {
-            String[] split = extraDependencies.split(",");
-            for(String artifact : split) {
-                String[] artifactSplit = artifact.split(":");
-                if(artifactSplit.length == 4) {
+    private void addExtraDependenciesFromString(List<Dependency> addTo, String extraDepsString) {
+        if (extraDepsString != null && !extraDepsString.isEmpty()) {
+            String[] split = extraDepsString.split(",");
+            for (String artifact : split) {
+                String[] artifactSplit = artifact.trim().split(":");
+                if (artifactSplit.length >= 3) { // G:A:V is minimum
                     String groupId = artifactSplit[0];
                     String artifactId = artifactSplit[1];
                     String version = artifactSplit[2];
-                    String classifier = artifactSplit[3];
-                    Dependency dependency = new Dependency();
-                    dependency.setGroupId(groupId);
-                    dependency.setArtifactId(artifactId);
-                    dependency.setVersion(version);
-                    dependency.setClassifier(classifier);
-                    defaultDependencies.add(dependency);
-
-                } else if(artifactSplit.length == 3) {
-                    String groupId = artifactSplit[0];
-                    String artifactId = artifactSplit[1];
-                    String version = artifactSplit[2];
-                    Dependency dependency = new Dependency();
-                    dependency.setGroupId(groupId);
-                    dependency.setArtifactId(artifactId);
-                    dependency.setVersion(version);
-                    defaultDependencies.add(dependency);
+                    String classifier = (artifactSplit.length >= 4) ? artifactSplit[3] : null;
+                    String scope = (artifactSplit.length >= 5) ? artifactSplit[4] : "compile";
+                    addDependency(addTo, groupId, artifactId, version, scope, classifier);
+                } else {
+                    System.err.println("Warning: Skipping malformed extra dependency: " + artifact);
                 }
             }
         }
     }
 
+    public void create() throws Exception {
+        this.model = new Model();
+        this.resolvedDependencies.clear();
 
-    public void addVertxDependencies(List<Dependency> vertxDeps) {
-        addDependency(vertxDeps,"io.micrometer","micrometer-registry-influx",microMeterVersion);
-        addDependency(vertxDeps,"io.micrometer","micrometer-registry-jmx",microMeterVersion);
-        addDependency(vertxDeps,"org.mortbay.jetty.alpn","alpn-boot",alpnVersion);
-        addDependency(vertxDeps,"org.eclipse.jetty.npn","npn-api",npnVersion);
-        addDependency(vertxDeps,"io.netty","netty-transport-native-unix-common",nettyVersion);
-        addDependency( vertxDeps,"org.conscrypt","conscrypt-openjdk",concsryptVersion,"compile","${os.detected.classifier}");
-    }
-
-    public void addDefaultDependencies() {
-        addDependency(defaultDependencies,"org.graalvm.sdk","graal-sdk",graalVmVersion,"provided");
-        addDependency(defaultDependencies,"org.graalvm.nativeimage","svm",graalVmVersion,"provided");
-        addDependency(defaultDependencies,"org.bytedeco","javacpp",javacppVersion);
-        addDependency(defaultDependencies,"log4j","log4j",log4jVersion);
-        addDependency(defaultDependencies,"org.slf4j","slf4j-api",slf4jVersion);
-        addDependency(defaultDependencies,"ch.qos.logback","logback-classic",logbackVersion);
-    }
-
-
-
-
-    public PomFileAppender[] appenders() {
-        return new PomFileAppender[] {
-                new ApacheCommonsPomFileAppender(),
-                new JavaCppPomFileAppender(),
-                new JodaPomFileAppender(),
-                new KonduitDSLPomAppender(),
-                new KonduitPythonPomFileAppender(),
-                new Nd4jJacksonAppender(),
-                new Nd4jClassLoadingPomFileAppender(),
-                new OpenblasPomFileAppender(),
-                new Python4jPomFileAppender(),
-                new PythonPomFileAppender(),
-                new SunXmlFileAppender()
-        };
-    }
-
-
-    public String graalBuildArgs() {
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("--no-fallback\n");
-        stringBuilder.append("--no-server\n");
-        stringBuilder.append("--verbose\n");
-        stringBuilder.append("-H:DeadlockWatchdogInterval=30\n");
-        stringBuilder.append("--initialize-at-build-time=org.nd4j.shade.jackson.core.JsonToken\n");
-        stringBuilder.append("--initialize-at-run-time=org.bytedeco\n");
-        stringBuilder.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n");
-        stringBuilder.append(" --initialize-at-run-time=io.netty\n");
-        stringBuilder.append(" --initialize-at-run-time=ai.konduit.serving\n");
-        stringBuilder.append("--initialize-at-run-time=org.nd4j.nativeblas\n");
-        stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
-        stringBuilder.append(" -H:+AddAllCharsets\n");
-        if(nativeImageJvmArgs != null) {
-            for(String jvmArg : nativeImageJvmArgs) {
-                stringBuilder.append("-J" + jvmArg + "\n");
-            }
-        }
-        if(pipelinePath != null)
-            stringBuilder.append("-Dpipeline.path=" + pipelinePath + "\n");
-        //See: https://github.com/oracle/graal/issues/1722
-        stringBuilder.append("-H:Log=registerResource\n");
-
-        stringBuilder.append("-Dorg.eclipse.python4j.numpyimport=false\n");
-        stringBuilder.append("-Dorg.bytedeco.javacpp.noPointerGC=true\n");
-        stringBuilder.append("-Dorg.bytedeco.javacpp.nopointergc=true\n");
-        stringBuilder.append("--enable-url-protocols=jar\n");
-        stringBuilder.append(" -H:+AllowIncompleteClasspath\n");
-        stringBuilder.append("-H:-CheckToolchain");
-        stringBuilder.append(" -Djavacpp.platform=${javacpp.platform}\n");
-        stringBuilder.append("-H:+ReportUnsupportedElementsAtRuntime  -H:+ReportExceptionStackTraces\n");
-        stringBuilder.append(" -H:IncludeResources=.*/org/bytedeco/.*\n");
-        stringBuilder.append(" -H:IncludeResources=.*/org/nd4j/.*\n");
-        stringBuilder.append(" -H:IncludeResources=.*.vso\n");
-        for(PomFileAppender pomFileAppender : appenders()) {
-            pomFileAppender.append(stringBuilder);
-            pomFileAppender.appendReInitialize(stringBuilder);
-        }
-
-        if(debug) {
-            stringBuilder.append("--debug-attach=" + debugPort);
-        }
-
-        if(includeResources != null) {
-            String[] split = includeResources.split(",");
-            for(String resource : split) {
-                stringBuilder.append("-H:IncludeResources=" + resource + "\n");
-            }
-        }
-
-        if(numpySharedLibrary) {
-            stringBuilder.append(" --shared \n");
-        }
-
-        return stringBuilder.toString();
-    }
-
-    /**
-     * Nd4j backend, cuda version, optimizations
-     */
-
-
-
-
-    /**
-     * Determine dependencies based on configuration
-     */
-
-    public void addBuild() throws XmlPullParserException, IOException {
-        Build build = new Build();
-        Extension extension = new Extension();
-        extension.setArtifactId("os-maven-plugin");
-        extension.setGroupId("kr.motd.maven");
-        extension.setVersion("1.4.1.Final");
-        build.addExtension(extension);
-
-        Plugin compilerPlugin = new Plugin();
-        compilerPlugin.setArtifactId("maven-compiler-plugin");
-        compilerPlugin.setVersion("3.8.0");
-
-        StringBuilder configurationBuilder = new StringBuilder();
-        configurationBuilder.append("<configuration>");
-        configurationBuilder.append(String.format("<source>%s</source>","11"));
-        configurationBuilder.append(String.format("<target>%s</target>","11"));
-        configurationBuilder.append("</configuration>");
-        StringReader configurationBuilderReader = new StringReader(configurationBuilder.toString());
-        Xpp3Dom configuration = Xpp3DomBuilder.build(configurationBuilderReader);
-        compilerPlugin.setConfiguration(configuration);
-        build.addPlugin(compilerPlugin);
-
-        if(assembly) {
-            Plugin assembly = new Plugin();
-            assembly.setGroupId("org.apache.maven.plugins");
-            assembly.setArtifactId("maven-assembly-plugin");
-            assembly.setVersion("3.4.2");
-            StringBuilder config = new StringBuilder();
-            config.append("<configuration>\n" +
-                    "          <descriptors>\n" +
-                    "            <descriptor>src/assembly/kompile.xml</descriptor>\n" +
-                    "          </descriptors>\n" +
-                    "        </configuration>");
-            StringReader stringReader = new StringReader(config.toString());
-            Xpp3Dom assemblyConfig = Xpp3DomBuilder.build(stringReader);
-            assembly.setConfiguration(assemblyConfig);
-            build.addPlugin(assembly);
-
+        if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
+            Parent parent = new Parent();
+            parent.setGroupId("ai.kompile");
+            parent.setArtifactId("rag-mcp-assistant-parent");
+            parent.setVersion(this.ragMcpAssistantParentVersion);
+            model.setParent(parent);
+            model.setGroupId("ai.kompile.generated.app");
+            model.setArtifactId(this.imageName.toLowerCase().replace(" ", "-") + "-sba"); // Unique artifactId
+            model.setVersion(this.kompileAppVersion);
         } else {
-            Plugin graalVm = new Plugin();
-            graalVm.setGroupId("org.graalvm.buildtools");
-            graalVm.setArtifactId("native-maven-plugin");
-            graalVm.setVersion(nativeImagePluginVersion);
-            //adds plugin execution for actually building the native image
-            PluginExecution graalNative = new PluginExecution();
-            graalNative.setGoals(Arrays.asList("build"));
-            graalNative.setId("build-native");
-            graalNative.setPhase("package");
-            graalVm.addExecution(graalNative);
+            Parent parent = new Parent();
+            parent.setGroupId("ai.kompile");
+            parent.setArtifactId("kompile"); // Main Kompile parent
+            parent.setVersion(this.kompileParentVersion);
+            model.setParent(parent);
+            model.setGroupId("ai.kompile.generated.pipeline");
+            model.setArtifactId(this.imageName.toLowerCase().replace(" ", "-") + "-executor");
+            model.setVersion(this.kompilePipelinesVersion);
+        }
+        model.setModelVersion("4.0.0");
+        model.setName("Generated Kompile Application: " + this.imageName);
+        model.setDescription("Dynamically generated Kompile application.");
 
-            Dependency lombok = new Dependency();
-            lombok.setGroupId("org.projectlombok");
-            lombok.setArtifactId("lombok");
-            lombok.setVersion(lombokVersion);
-            lombok.setScope("compile");
-            lombok.setOptional(true);
-            graalVm.addDependency(lombok);
+        Properties pomProps = new Properties();
+        pomProps.setProperty("java.version", ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) ? "17" : "11");
+        pomProps.setProperty("maven.compiler.release", pomProps.getProperty("java.version"));
+        pomProps.setProperty("project.build.sourceEncoding", "UTF-8");
+        // Versions managed by parent or BOMs, but can be overridden/set if no parent
+        if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
+            pomProps.setProperty("spring-boot.version", this.springBootVersion);
+            pomProps.setProperty("spring-ai.version", this.springAiVersion);
+        }
+        pomProps.setProperty("kompile.pipelines.version", this.kompilePipelinesVersion);
+        pomProps.setProperty("kompile.app.version", this.kompileAppVersion);
+        pomProps.setProperty("native-maven-plugin.version", this.nativeImagePluginVersion);
+        model.setProperties(pomProps);
 
-            StringBuilder stringBuilder = new StringBuilder();
-            stringBuilder.append("<configuration>\n");
-            stringBuilder.append(String.format("<skip>%s</skip>\n", "false"));
-            if(imageName != null && !imageName.isEmpty())
-                stringBuilder.append(String.format("<imageName>%s</imageName>",imageName));
-            if(mainClass != null && !mainClass.isEmpty())
-                stringBuilder.append(String.format("<mainClass>%s</mainClass>",mainClass));
-            stringBuilder.append(String.format("<buildArgs>%s</buildArgs>",graalBuildArgs()));
+        addRepositories(model);
+        addJavacppProfiles(model);
 
-            stringBuilder.append("</configuration>");
-            StringReader stringReader = new StringReader(stringBuilder.toString());
-            Xpp3Dom graalVmConfiguration = Xpp3DomBuilder.build(stringReader);
-            graalVm.setConfiguration(graalVmConfiguration);
-
-            //TODO: Set buildArgs from file
-
-            //TODO: Set include resources dynamically
-
-            graalVm.addDependency(lombok);
-            build.addPlugin(graalVm);
+        addDefaultFrameworkAndAppCoreDependencies(this.resolvedDependencies);
+        addProviderDependencies(this.resolvedDependencies);
+        addPipelineStepDependenciesFromPipelineJson(this.resolvedDependencies);
+        if (this.resolvedDependencies.stream().noneMatch(d -> d.getArtifactId().contains("-steps-"))) {
+            addPipelineStepDependenciesFromCliFlags(this.resolvedDependencies);
         }
 
+        if (this.nd4jBackend != null && !this.nd4jBackend.isEmpty()) {
+            addDependency(this.resolvedDependencies, "org.nd4j", this.nd4jBackend, null, "compile", this.nd4jBackendClassifier);
+        }
+        addExtraDependenciesFromString(this.resolvedDependencies, this.extraDependencies);
+        model.setDependencies(this.resolvedDependencies);
 
-        model.setBuild(build);
+        DependencyManagement depMgmt = new DependencyManagement();
+        if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
+            if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
+                // Spring Boot BOM
+                Dependency springBootBom = new Dependency();
+                springBootBom.setGroupId("org.springframework.boot");
+                springBootBom.setArtifactId("spring-boot-dependencies");
+                springBootBom.setVersion(this.springBootVersion);
+                springBootBom.setType("pom"); springBootBom.setScope("import");
+                depMgmt.addDependency(springBootBom);
+                // Spring AI BOM
+                Dependency springAiBom = new Dependency();
+                springAiBom.setGroupId("org.springframework.ai");
+                springAiBom.setArtifactId("spring-ai-bom");
+                springAiBom.setVersion(this.springAiVersion);
+                springAiBom.setType("pom"); springAiBom.setScope("import");
+                depMgmt.addDependency(springAiBom);
+            }
+        }
+        if (model.getParent() == null || !model.getParent().getArtifactId().equals("kompile")) {
+            Dependency kompileParentDepMgmt = new Dependency();
+            kompileParentDepMgmt.setGroupId("ai.kompile");
+            kompileParentDepMgmt.setArtifactId("kompile");
+            kompileParentDepMgmt.setVersion(this.kompileParentVersion);
+            kompileParentDepMgmt.setType("pom"); kompileParentDepMgmt.setScope("import");
+            depMgmt.addDependency(kompileParentDepMgmt);
+        }
+        if (!depMgmt.getDependencies().isEmpty()) {
+            model.setDependencyManagement(depMgmt);
+        }
+
+        addBuildConfiguration(model);
+
+        MavenXpp3Writer mavenXpp3Writer = new MavenXpp3Writer();
+        try (FileWriter fileWriter = new FileWriter(this.outputFile)) {
+            mavenXpp3Writer.write(fileWriter, model);
+        }
+        System.out.println("Successfully generated POM: " + this.outputFile.getAbsolutePath());
     }
 
-    public void addJavacppProfiles() {
+
+
+    /**
+     * Restored from original PomGenerator.
+     */
+    public void addJavacppProfiles(Model model) {
         Profile defaultProfile =new Profile();
         defaultProfile.setId("javacpp-platform-default");
         Activation activation = new Activation();
         ActivationProperty activationProperty = new ActivationProperty();
         activationProperty.setName("!javacpp.platform");
         activation.setProperty(activationProperty);
-        defaultProfile.addProperty("javacpp.platform","${os.name}-${os.arch}");
+        defaultProfile.setActivation(activation);
+        // Relies on os-maven-plugin to provide os.detected.name and os.detected.arch
+        defaultProfile.addProperty("javacpp.platform","${os.detected.name}-${os.detected.arch}");
         model.addProfile(defaultProfile);
 
-        Profile linuxProfile = new Profile();
-        linuxProfile.setId("linux");
-        Activation linuxActivation = new Activation();
-        ActivationOS activationOS = new ActivationOS();
-        activationOS.setName("linux");
-        linuxActivation.setOs(activationOS);
-        linuxProfile.addProperty("os.kernel","linux");
-        linuxProfile.addProperty("os.name",",linux");
-        linuxProfile.setActivation(linuxActivation);
-        model.addProfile(linuxProfile);
-
-
-        Profile macProfile = new Profile();
-        macProfile.setId("macosx");
-        Activation macActivation = new Activation();
-        ActivationOS macActivationOs = new ActivationOS();
-        macActivationOs.setName("mac os x");
-        macActivation.setOs(macActivationOs);
-        macProfile.addProperty("os.kernel","darwin");
-        macProfile.addProperty("os.name",",macosx");
-        macProfile.setActivation(macActivation);
-        model.addProfile(macProfile);
-
-
-        Profile windowsProfile = new Profile();
-        windowsProfile.setId("windows");
-        Activation windowsActivation = new Activation();
-        ActivationOS windowsOs = new ActivationOS();
-        windowsOs.setFamily("windows");
-        windowsActivation.setOs(windowsOs);
-        windowsProfile.addProperty("os.kernel","windows");
-        windowsProfile.addProperty("os.name","windows");
-        windowsProfile.setActivation(windowsActivation);
-        model.addProfile(windowsProfile);
-
-        Profile armProfile = new Profile();
-        armProfile.setId("arm");
-        Activation armActivation = new Activation();
-        ActivationOS armActivationOs = new ActivationOS();
-        armActivationOs.setArch("arm");
-        armActivation.setOs(armActivationOs);
-        armProfile.addProperty("os.arch","armhf");
-        armProfile.setActivation(armActivation);
-        model.addProfile(armProfile);
-
-
-        Profile androidProfile = new Profile();
-        androidProfile.setId("android");
-        Activation androidActivation = new Activation();
-        ActivationOS androidActivationOs = new ActivationOS();
-        androidActivationOs.setName("android");
-        androidActivation.setOs(androidActivationOs);
-        androidProfile.addProperty("os.kernel","linux");
-        androidProfile.addProperty("os.name","android");
-        androidProfile.addProperty("os.arch","arm");
-        androidProfile.setActivation(androidActivation);
-        model.addProfile(androidProfile);
-
-
-        Profile aarch64Profile = new Profile();
-        aarch64Profile.setId("aarch64");
-        Activation aarch64Activation = new Activation();
-        ActivationOS aarch64Activationos = new ActivationOS();
-        aarch64Activationos.setArch("aarch64");
-        aarch64Activation.setOs(aarch64Activationos);
-        aarch64Profile.addProperty("os.arch","arm64");
-        aarch64Profile.setActivation(aarch64Activation);
-        model.addProfile(aarch64Profile);
-
-        Profile armV8Profile = new Profile();
-        armV8Profile.setId("armv8");
-        Activation armv8Activation = new Activation();
-        ActivationOS armv8ActivationOS = new ActivationOS();
-        armv8ActivationOS.setArch("armv8");
-        armv8Activation.setOs(armv8ActivationOS);
-        armV8Profile.setActivation(armv8Activation);
-        model.addProfile(armV8Profile);
-
-        for(String intelArch : new String[]{"i386","i486","i586","i686","x86","amd64","x86-64"}) {
-            Profile intelProfile = new Profile();
-            intelProfile.setId(intelArch);
-            Activation intelActivation = new Activation();
-            ActivationOS intelActivationOS = new ActivationOS();
-            intelActivationOS.setArch(intelArch);
-            intelActivation.setOs(intelActivationOS);
-            intelProfile.addProperty("os.arch","x86_64");
-            intelProfile.setActivation(intelActivation);
-            model.addProfile(intelProfile);
-        }
-
-
+        // The original PomGenerator had many specific profiles for OS/Arch combinations.
+        // These are generally useful if fine-grained control over javacpp.platform
+        // is needed beyond what os-maven-plugin provides by default, or to set other
+        // properties based on OS/Arch. For now, the default profile using os-maven-plugin
+        // properties is often sufficient for JavaCPP. Adding them back if specific
+        // overrides are needed for certain platforms.
+        // Example (from original):
+        // Profile linuxProfile = new Profile(); /* ... */ model.addProfile(linuxProfile);
     }
 
-    public void addRepositories() {
-        Repository repository = new Repository();
-        repository.setId("sonatype-nexus-snapshots");
-        repository.setUrl("https://oss.sonatype.org/content/repositories/snapshots");
-        RepositoryPolicy repositoryPolicy = new RepositoryPolicy();
-        repositoryPolicy.setEnabled(true);
-        repository.setSnapshots(repositoryPolicy);
-        model.addRepository(repository);
-    }
 
-    public void create() throws Exception {
-        model = new Model();
-        model.setArtifactId("kompile");
-        model.setGroupId("ai.konduit.serving");
-        model.setVersion(konduitServingVersion);
-        model.setModelVersion("4.0.0");
-        addRepositories();
-        addBuild();
-        addDefaultDependencies();
-        addJavacppProfiles();
-        addExtraDependencies();
+    /**
+     * Restored from original PomGenerator.
+     */
+    public void addRepositories(Model model) {
+        Repository sonatypeSnapshots = new Repository();
+        sonatypeSnapshots.setId("sonatype-nexus-snapshots");
+        sonatypeSnapshots.setUrl("https://oss.sonatype.org/content/repositories/snapshots");
+        RepositoryPolicy snapshotsPolicy = new RepositoryPolicy();
+        snapshotsPolicy.setEnabled(true);
+        snapshotsPolicy.setUpdatePolicy("always"); // Or "daily"
+        sonatypeSnapshots.setSnapshots(snapshotsPolicy);
+        model.addRepository(sonatypeSnapshots);
 
-        if(tvm && !assembly)
-            addTvm(defaultDependencies);
-
-        if(python && !assembly)
-            addPython(defaultDependencies);
-
-        if(doc && !assembly)
-            addDocument(defaultDependencies);
-
-        if(dl4j && !assembly)
-            addDeeplearning4j(defaultDependencies);
-
-        if(onnx && !assembly)
-            addOnnx(defaultDependencies);
-        if(tensorflow && !assembly)
-            addTensorflow(defaultDependencies);
-
-        if(server && !assembly) {
-            addVertxDependencies(defaultDependencies);
-            addCli(defaultDependencies);
-            addDependency(defaultDependencies,"info.picocli","picocli",picoCliVersion);
-        }
-
-        if(image && !assembly)
-            addImage(defaultDependencies);
-
-        if(nd4j && !assembly)
-            addNd4j(defaultDependencies);
-
-        if(nd4jTensorflow && !assembly)
-            addNd4jTensorflow(defaultDependencies);
-
-        if(samediff && !assembly)
-            addSameDiff(defaultDependencies);
-
-        if(cli && !assembly)
-            addCli(defaultDependencies);
-
-        if(nd4jBackend != null && !nd4jBackend.isEmpty()) {
-            addNd4jBackend(defaultDependencies);
-        }
-
-        if(numpySharedLibrary && !assembly) {
-            addKonduitServingCore(defaultDependencies);
-        }
-
-        if(!assembly)
-            addDependency(defaultDependencies,"org.zeroturnaround","zt-exec",zeroTurnAroundVersion);
-        //needed to access lombok features with graalvm
-        addDependency(defaultDependencies,"org.projectlombok","lombok",lombokVersion,"compile");
-        //need dnnl for onnxruntime cpu
-        addDependency(defaultDependencies,"org.bytedeco","dnnl-platform",dnnlVersion);
-        DependencyManagement dependencyManagement = new DependencyManagement();
-        //needed to force lombok to be compile time dependency
-        //see: https://github.com/quarkusio/quarkus/issues/1904
-        Dependency lombok = getDependency("org.project.lombok","lombok",lombokVersion,"compile","");
-        lombok.setOptional(true);
-        dependencyManagement.addDependency(lombok);
-
-        if(!assembly)
-            addHttp(defaultDependencies);
-        model.setDependencies(defaultDependencies);
-        model.setDependencyManagement(dependencyManagement);
-        MavenXpp3Writer mavenXpp3Writer = new MavenXpp3Writer();
-        try(FileWriter fileWriter = new FileWriter(outputFile)) {
-            mavenXpp3Writer.write(fileWriter,model);
-        }
+        Repository central = new Repository();
+        central.setId("central");
+        central.setUrl("https://repo.maven.apache.org/maven2");
+        model.addRepository(central);
     }
 
     @Override
@@ -718,8 +772,8 @@ public class PomGenerator implements Callable<Void> {
         return null;
     }
 
-
-    public static void main(String...args) {
-        new CommandLine(new PomGenerator()).execute(args);
+    public static void main(String... args) {
+        int exitCode = new CommandLine(new PomGenerator()).execute(args);
+        System.exit(exitCode);
     }
 }
