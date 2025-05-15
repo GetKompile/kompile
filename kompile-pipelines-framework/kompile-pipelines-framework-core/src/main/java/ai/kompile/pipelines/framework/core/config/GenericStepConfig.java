@@ -18,8 +18,10 @@ package ai.kompile.pipelines.framework.core.config;
 
 import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.data.Data;
+import ai.kompile.pipelines.framework.api.data.DataFactory;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Builder;
 import lombok.EqualsAndHashCode;
 // import lombok.Getter; // We will implement getters explicitly to satisfy the interface clearly
 import lombok.NonNull;
@@ -38,6 +40,7 @@ import java.util.Objects;
  */
 @EqualsAndHashCode // Lombok will use runnerClassName and parameters
 @ToString // Lombok will use runnerClassName and parameters
+@Builder
 public class GenericStepConfig implements StepConfig {
     private static final long serialVersionUID = 1L; // From Configuration interface
 
@@ -58,7 +61,7 @@ public class GenericStepConfig implements StepConfig {
         this.runnerClassName = runnerClassName;
         // Ensure parameters is never null after construction.
         // Data.Factory.get().empty() ensures we use the service-loaded Data implementation.
-        this.parameters = (parameters != null) ? parameters : Data.Factory.get().empty();
+        this.parameters = (parameters != null) ? parameters : Data.empty();
     }
 
     /**
@@ -69,7 +72,12 @@ public class GenericStepConfig implements StepConfig {
      * @param runnerClassName The fully qualified class name of the PipelineStepRunner. Must not be null.
      */
     public GenericStepConfig(@NonNull String runnerClassName) {
-        this(runnerClassName, Data.Factory.get().empty());
+        this(runnerClassName, Data.empty());
+    }
+
+    @Override
+    public String type() {
+        return runnerClassName;
     }
 
     /**

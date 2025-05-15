@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,11 +26,24 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  * This interface allows for generic, attribute-based configuration
  * where parameters are stored as key-value pairs within an internal {@link Data} object.
  *
- * It includes a method to identify the {@link PipelineStepRunner} responsible for executing this step.
+ * It includes methods to identify the {@link PipelineStepRunner} responsible for executing this step
+ * and a symbolic type for easier categorization and processing by tools.
  * Implementations of this interface are serializable to/from JSON/YAML.
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.CLASS, include = JsonTypeInfo.As.PROPERTY, property = "@class")
 public interface StepConfig extends Configuration { // Extends Configuration for Serializable marker & type info
+
+    /**
+     * Returns a symbolic type identifier for this step configuration.
+     * This type is a short string (e.g., "PYTHON", "ONNX_RUNTIME", "HTTP_REQUEST")
+     * that categorizes the step's function. It can be used by tools like
+     * PomGenerator to determine dependencies or by UIs to render the step appropriately.
+     * This is distinct from {@link #runnerClassName()} which is the specific implementation.
+     *
+     * @return A non-null, non-empty symbolic type string for the step.
+     */
+    @JsonProperty("type") // Ensures this is part of the serialized form
+    String type();
 
     /**
      * Returns the fully qualified class name of the {@link PipelineStepRunner}
@@ -53,8 +66,7 @@ public interface StepConfig extends Configuration { // Extends Configuration for
      * @throws ClassCastException if the value exists but cannot be cast to T.
      * @see Data#get(String)
      */
-    @JsonIgnore // Individual get/put are convenience for programmatic construction;
-    // parameters are primarily accessed and serialized via getParameters()
+    @JsonIgnore
     <T> T get(String key);
 
     /**
