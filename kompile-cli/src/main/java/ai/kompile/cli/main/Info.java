@@ -1,17 +1,17 @@
 /*
- * Copyright 2025 Kompile Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
  */
 
 package ai.kompile.cli.main;
@@ -47,7 +47,7 @@ public class Info implements Callable<Integer> {
     private static void loadDefaultVersions() {
         // These should match the current project versions if properties file fails
         buildProperties.setProperty("kompile.cli.version", "0.1.0-SNAPSHOT"); // Version of the CLI itself (kompile parent)
-        buildProperties.setProperty("kompile.pipelines.version", "0.1.0-SNAPSHOT"); // Version for kompile-pipelines-* modules
+        buildProperties.setProperty("project.version", "0.1.0-SNAPSHOT"); // Version for kompile-pipelines-* modules
         buildProperties.setProperty("kompile.app.version", "0.0.1-SNAPSHOT"); // Version for kompile-app-* modules (RAG parent)
         buildProperties.setProperty("spring.boot.version", "3.2.5");
         buildProperties.setProperty("spring.ai.version", "1.0.0-M8");
@@ -90,7 +90,7 @@ public class Info implements Callable<Integer> {
      * @return The version string.
      */
     public static String getKompilePipelinesVersion() {
-        return buildProperties.getProperty("kompile.pipelines.version", getVersion());
+        return buildProperties.getProperty("project.version", getVersion());
     }
 
     /**
