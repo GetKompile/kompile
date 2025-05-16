@@ -1,3 +1,19 @@
+/*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
 // Location: kompile-pipelines-framework/kompile-pipeline-steps-parent/kompile-pipelines-steps-samediff/src/main/java/ai/kompile/pipelines/steps/samediff/llm/
 package ai.kompile.pipelines.steps.samediff.llm;
 
@@ -10,10 +26,12 @@ import ai.kompile.pipelines.steps.samediff.nlp.SameDiffLLMTokenizer; // Using th
 import ai.kompile.pipelines.steps.samediff.nlp.SameDiffWordPieceTokenizer; // Concrete SameDiff tokenizer
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.common.primitives.Pair; // Ensure this import is valid in your ND4J version
+import org.nd4j.linalg.indexing.NDArrayIndex;
 
 import java.io.File;
 import java.io.IOException;
@@ -21,6 +39,7 @@ import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
 
     private static final String TOOL_CALL_MARKER_START = "<tool_call_json>";
@@ -48,12 +67,14 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
         this.config = (LLMStepConfig) stepConfig;
 
         if (this.initialized) {
+            log.warn("SameDiffLanguageModelStepRunner for step '{}' is already initialized. Re-initialization attempt ignored.", config.getName());
             return;
         }
 
         try {
             context.profiler().startEvent("SameDiffLanguageModelStepRunner.init:" + config.getName()); // Corrected: context.profiler()
-
+            log.info("Initializing SameDiffLanguageModelStepRunner (Context ID: {}) for step '{}' with model URI: {}",
+                    context.executionId().orElse("N/A"), config.getName(), this.config.getModelUri());
 
             if (this.config.getModelUri() == null || this.config.getModelUri().isEmpty()) {
                 throw new IllegalArgumentException("Model URI must be specified in LLMStepConfig for SameDiff model for step '" + config.getName() + "'.");
@@ -64,6 +85,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 throw new IOException("SameDiff model file not found at: " + modelFile.getAbsolutePath());
             }
             this.sameDiffModel = SameDiff.load(modelFile, true);
+            log.info("Loaded SameDiff model for step '{}' from: {}", config.getName(), this.config.getModelUri());
 
             if (this.config.getTokenizerUri() == null || this.config.getTokenizerUri().isEmpty()) {
                 throw new IllegalArgumentException("Tokenizer URI must be specified in LLMStepConfig for step '" + config.getName() + "'.");
@@ -78,9 +100,12 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             this.tokenizer.initialize(this.config.getTokenizerUri(), this.config.getTokenizerConfig());
 
             this.initialized = true;
+            log.info("SameDiff Language Model Runner for step '{}' and Tokenizer initialized successfully. Context ID: {}",
+                    config.getName(), context.executionId().orElse("N/A"));
 
         } catch (Exception e) {
             this.initialized = false;
+            log.error("Failed to initialize SameDiffLanguageModelStepRunner for step '{}'. Context ID: {}", config.getName(), context.executionId().orElse("N/A"), e);
             throw e;
         } finally {
             context.profiler().stopEvent(); // Corrected: context.profiler()
@@ -99,9 +124,12 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             throw new IllegalStateException("SameDiffLanguageModelStepRunner for step '" + config.getName() + "' is not initialized. Call init() first.");
         }
         context.profiler().startEvent("SameDiffLanguageModelStepRunner.exec:" + config.getName()); // Corrected: context.profiler()
+        log.debug("Executing SameDiffLanguageModelStepRunner for step '{}'. Context ID: {}", config.getName(), context.executionId().orElse("N/A"));
 
         String promptText = input.getString(config.getPromptInputName());
         if (promptText == null) {
+            log.warn("Input Data missing prompt at key: '{}' for step '{}'. Using empty prompt. Context ID: {}",
+                    config.getPromptInputName(), config.getName(), context.executionId().orElse("N/A"));
             promptText = "";
         }
 
@@ -109,7 +137,8 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
         Object convContextObj = input.get(config.getConversationContextName());
         if (convContextObj instanceof List) {
             try {
-                ((List<?>) convContextObj).forEach(item -> conversationHistory.add((String) item));
+                List<String> finalConversationHistory = conversationHistory;
+                ((List<?>) convContextObj).forEach(item -> finalConversationHistory.add((String) item));
             } catch (ClassCastException e) {
                 log.warn("Conversation context (key: '{}') for step '{}' contains non-string elements, reinitializing history. Context ID: {}",
                         config.getConversationContextName(), config.getName(), context.executionId().orElse("N/A"), e);
@@ -117,12 +146,14 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             }
         }
 
-        PipelineToolCallResponse toolResponse = input.getVerifiedObject(config.getToolCallResponseInputName(), PipelineToolCallResponse.class);
+        PipelineToolCallResponse toolResponse = input.get(config.getToolCallResponseInputName());
 
         if (toolResponse != null) {
+            log.info("SameDiff Runner (step '{}'): Received tool response for tool ID '{}', name '{}'. Context ID: {}",
+                    config.getName(), toolResponse.getId(), toolResponse.getName(), context.executionId().orElse("N/A"));
             String formattedToolResponse = String.format("\n<tool_response tool_id=\"%s\" name=\"%s\">\n%s\n</tool_response>",
-                    toolResponse.getToolCallId(), toolResponse.getToolName(),
-                    objectMapper.writeValueAsString(toolResponse.getResponse()));
+                    toolResponse.getId(), toolResponse.getName(),
+                    objectMapper.writeValueAsString(toolResponse.getContent()));
             conversationHistory.add("system_tool_response: " + formattedToolResponse);
         } else {
             if (conversationHistory.isEmpty() || !lastMessageWasUserPrompt(conversationHistory, promptText)) {
@@ -167,13 +198,16 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 INDArray logits = outputMap.get(logitsName);
 
                 if (logits == null || logits.isEmpty()) {
+                    log.warn("SameDiff model (step '{}') produced null or empty logits. Stopping generation.", config.getName());
                     break;
                 }
 
-                INDArray nextTokenLogits = logits.get(Nd4j.laंब(0), Nd4j.laंब(logits.shape()[1] - 1), Nd4j.सभी());
+                INDArray nextTokenLogits = logits.get(NDArrayIndex.point(0), NDArrayIndex.point(logits.shape()[1] - 1), NDArrayIndex.all());
+
                 long nextTokenId = sampleNextToken(nextTokenLogits, temperature, topK);
 
                 if (nextTokenId == eosTokenId) {
+                    log.debug("EOS token encountered for step '{}'. Stopping generation.", config.getName());
                     break;
                 }
                 allGeneratedTokenIdsThisTurn.add(nextTokenId);
@@ -188,9 +222,11 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 PipelineToolCallRequest toolCallRequest = parseToolCall(currentDecodedText);
 
                 if (toolCallRequest != null) {
-                    resultData.put(config.getToolCallRequestOutputName(), toolCallRequest, PipelineToolCallRequest.class);
+                    log.info("SameDiff Runner (step '{}'): LLM requests tool call: ID '{}', Name '{}'. Context ID: {}",
+                            config.getName(), toolCallRequest.getId(), toolCallRequest.getName(), context.executionId().orElse("N/A"));
+                    resultData.put(config.getToolCallRequestOutputName(), toolCallRequest);
                     conversationHistory.add("assistant_partial_tool_call: " + tokenizer.decode(allGeneratedTokenIdsThisTurn.stream().mapToLong(l->l).toArray(), false));
-                    resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory), List.class);
+                    resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
                     context.profiler().stopEvent(); // Corrected: context.profiler()
                     return resultData;
                 }
@@ -198,9 +234,10 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
 
             List<Long> finalGeneratedPortion = allGeneratedTokenIdsThisTurn.subList(promptTokenIds.size(), allGeneratedTokenIdsThisTurn.size());
             String finalTextResponse = tokenizer.decode(finalGeneratedPortion.stream().mapToLong(l->l).toArray(), true).trim();
-            resultData.put(config.getResponseOutputName(), finalTextResponse, String.class);
+            resultData.put(config.getResponseOutputName(), finalTextResponse);
             conversationHistory.add("assistant: " + finalTextResponse);
-            resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory), List.class);
+            resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
+            log.debug("SameDiff LLM (step '{}') generated response. Context ID: {}", config.getName(), context.executionId().orElse("N/A"));
         } finally {
             context.profiler().stopEvent(); // Corrected: context.profiler()
         }
@@ -221,7 +258,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             return Nd4j.argMax(nextTokenLogits, 0).getLong(0);
         }
 
-        INDArray probabilities = Nd4j.softmax(nextTokenLogits.div(temperature), 0);
+        INDArray probabilities = Nd4j.nn().softmax(nextTokenLogits.div(temperature), 0);
 
         int kValue = (topKParam <= 0 || topKParam > probabilities.length()) ? (int) probabilities.length() : topKParam;
         if (kValue == 0 && probabilities.length() > 0) kValue = (int) probabilities.length();
@@ -308,15 +345,20 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             } else if (argsObject instanceof Map) {
                 argumentsMap = (Map<String, Object>) argsObject;
             } else {
+                log.warn("Tool call arguments for step '{}' are not in expected format (Map or JSON string). Found: {}",
+                        config.getName(), argsObject != null ? argsObject.getClass().getName() : "null");
                 return null;
             }
 
             if (toolName != null && argumentsMap != null) {
                 if (config.getToolDefinitions() == null || config.getToolDefinitions().stream().noneMatch(td -> td.getName().equals(toolName))) {
+                    log.warn("LLM (step '{}') attempted to call undefined tool: {}", config.getName(), toolName);
                     return null;
                 }
                 if (config.getToolChoice() == LLMStepConfig.ToolChoiceMode.SPECIFIC_TOOL &&
                         !toolName.equals(config.getSpecificToolNameForCall())) {
+                    log.warn("LLM (step '{}') called tool '{}' but was required to call '{}'. Ignoring.",
+                            config.getName(), toolName, config.getSpecificToolNameForCall());
                     return null;
                 }
 
@@ -330,6 +372,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                         .build();
             }
         } catch (Exception e) {
+            log.error("Failed to deserialize tool call JSON payload for step '{}': '{}'", config.getName(), jsonPayload, e);
         }
         return null;
     }
@@ -338,5 +381,6 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
     public void close() throws Exception {
         sameDiffModel = null;
         initialized = false;
+        log.info("SameDiffLanguageModelStepRunner for step '{}' closed and model set to null.", config != null ? config.getName() : "UNKNOWN");
     }
 }
