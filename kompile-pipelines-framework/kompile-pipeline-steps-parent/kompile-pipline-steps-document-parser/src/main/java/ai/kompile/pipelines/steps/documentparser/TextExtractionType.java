@@ -23,6 +23,8 @@ import java.io.Serializable;
  */
 public enum TextExtractionType implements Serializable {
     PLAIN_TEXT,
+    AUTO,
+    OCR_ONLY,
     LAYOUT_TEXT, // May depend on specific Tika parser capabilities
     HTML,
     TABLES,      // Tika's table extraction can be basic; might need post-processing

@@ -4,6 +4,8 @@ package ai.kompile.pipelines.framework.api.data;
 import ai.kompile.pipelines.framework.api.Configuration;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Builder;
+
 import java.util.Objects;
 
 /**
@@ -11,6 +13,7 @@ import java.util.Objects;
  * This object would typically be part of a list in a {@link Data} object when a pipeline
  * signals its intent to make one or more tool calls.
  */
+@Builder
 public class PipelineToolCallRequest implements Configuration {
     private static final long serialVersionUID = 1L;
 

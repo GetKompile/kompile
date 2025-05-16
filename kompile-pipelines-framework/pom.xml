@@ -39,5 +39,15 @@
         <module>kompile-pipelines-framework-core</module>
         <module>kompile-pipelines-framework-runtime</module>
     </modules>
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-core</artifactId>
+        </dependency>
+    </dependencies>
 
 </project>

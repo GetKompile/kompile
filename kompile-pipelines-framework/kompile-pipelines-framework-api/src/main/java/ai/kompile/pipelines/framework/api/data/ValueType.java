@@ -39,6 +39,7 @@ public enum ValueType implements Serializable {
     NONE,
     POINT,
     BOUNDING_BOX,
+    OBJECT,
     LIST,    // Represents a list of one of the other ValueTypes
     DATA;    // Represents a nested Data object
 
