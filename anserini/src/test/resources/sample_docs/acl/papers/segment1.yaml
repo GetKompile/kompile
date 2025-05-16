@@ -1,0 +1,68 @@
+C00-1003:
+  author:
+  - first: Ion
+    full: Ion Androutsopoulos
+    id: ion-androutsopoulos
+    last: Androutsopoulos
+  - first: Robert
+    full: Robert Dale
+    id: robert-dale
+    last: Dale
+  author_string: Ion Androutsopoulos, Robert Dale
+  bibkey: androutsopoulos-dale-2000-selectional
+  bibtype: inproceedings
+  booktitle: 'COLING 2000 Volume 1: The 18th International Conference on Computational
+    Linguistics'
+  booktitle_html: '<span class="acl-fixed-case">COLING</span> 2000 Volume 1: The 18th
+    International Conference on Computational Linguistics'
+  citation: '[Selectional Restrictions in HPSG](https://aclanthology.org/C00-1003)
+    (Androutsopoulos & Dale, COLING 2000)'
+  citation_acl: 'Ion Androutsopoulos and Robert Dale. 2000. <a href="https://aclanthology.org/C00-1003">Selectional
+    Restrictions in HPSG</a>. In <i>COLING 2000 Volume 1: The 18th International Conference
+    on Computational Linguistics</i>.'
+  events: []
+  language: null
+  paper_id: '3'
+  parent_volume_id: C00-1
+  pdf: https://aclanthology.org/C00-1003.pdf
+  thumbnail: https://aclanthology.org/thumb/C00-1003.jpg
+  title: Selectional Restrictions in HPSG
+  title_html: Selectional Restrictions in <span class="acl-fixed-case">HPSG</span>
+  url: https://aclanthology.org/C00-1003
+  venue:
+  - coling
+  year: '2000'
+C00-1007:
+  author:
+  - first: Srinivas
+    full: Srinivas Bangalore
+    id: srinivas-bangalore
+    last: Bangalore
+  - first: Owen
+    full: Owen Rambow
+    id: owen-rambow
+    last: Rambow
+  author_string: Srinivas Bangalore, Owen Rambow
+  bibkey: bangalore-rambow-2000-exploiting
+  bibtype: inproceedings
+  booktitle: 'COLING 2000 Volume 1: The 18th International Conference on Computational
+    Linguistics'
+  booktitle_html: '<span class="acl-fixed-case">COLING</span> 2000 Volume 1: The 18th
+    International Conference on Computational Linguistics'
+  citation: '[Exploiting a Probabilistic Hierarchical Model for Generation](https://aclanthology.org/C00-1007)
+    (Bangalore & Rambow, COLING 2000)'
+  citation_acl: 'Srinivas Bangalore and Owen Rambow. 2000. <a href="https://aclanthology.org/C00-1007">Exploiting
+    a Probabilistic Hierarchical Model for Generation</a>. In <i>COLING 2000 Volume
+    1: The 18th International Conference on Computational Linguistics</i>.'
+  events: []
+  language: null
+  paper_id: '7'
+  parent_volume_id: C00-1
+  pdf: https://aclanthology.org/C00-1007.pdf
+  thumbnail: https://aclanthology.org/thumb/C00-1007.jpg
+  title: Exploiting a Probabilistic Hierarchical Model for Generation
+  title_html: Exploiting a Probabilistic Hierarchical Model for Generation
+  url: https://aclanthology.org/C00-1007
+  venue:
+  - coling
+  year: '2000'
