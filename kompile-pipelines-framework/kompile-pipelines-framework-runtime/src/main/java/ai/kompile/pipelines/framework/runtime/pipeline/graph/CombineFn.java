@@ -18,7 +18,6 @@ package ai.kompile.pipelines.framework.runtime.pipeline.graph;
 
 import ai.kompile.pipelines.framework.api.data.Data;
 import java.io.Serializable;
-import java.util.Map;
 
 /**
  * Functional interface for implementing the logic of a COMBINE_FN node in a GraphPipeline.
@@ -42,5 +41,5 @@ public interface CombineFn extends Serializable { // Serializable if CombineFn i
      * @return A single {@link Data} object resulting from the combination.
      * @throws Exception if an error occurs during the combination logic.
      */
-    Data combine(Map<String, Data> inputs, Data contextParameters) throws Exception;
+    Data combine(Data inputs, Data contextParameters) throws Exception;
 }

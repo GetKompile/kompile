@@ -20,14 +20,11 @@ import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
 @CommandLine.Command(name = "build",subcommands = {
-        GenerateImageAndSDK.class,
-        GenerateServingBinary.class,
         NativeImageBuilder.class,
         PomGenerator.class,
         PipelineCommandGenerator.class,
         CloneBuildComponents.class,
-        GenerateDl4jBuild.class,
-        GenerateNd4jBackend.class
+        GenerateDl4jBuild.class
 }, mixinStandardHelpOptions = false,
         description = "Configuration namespace for commands related to building native image binaries and SDKs")
 public class BuildMain implements Callable<Integer> {
