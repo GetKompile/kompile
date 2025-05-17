@@ -19,7 +19,7 @@ package io.anserini.encoder.samediff.sparse;
 import java.io.IOException;
 import java.net.URISyntaxException;
 
-public class SpladePlusPlusSelfDistilSameDiffEncoder extends io.anserini.encoder.samediff.SpladePlusPlusSameDiffEncoder {
+public class SpladePlusPlusSelfDistilSameDiffEncoder extends SpladePlusPlusSameDiffEncoder {
     // IMPORTANT: Update URLs to point to your converted SameDiff models (.sd files)
     public static final String DEFAULT_MODEL_NAME = "splade-pp-sd-optimized.sd";
     public static final String DEFAULT_MODEL_URL = "YOUR_MODEL_REPO_URL/splade-pp-sd-optimized.sd"; // Replace

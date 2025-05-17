@@ -1,4 +1,20 @@
 /*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
+/*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,9 +32,8 @@
 
 package io.anserini.search;
 
-import ai.onnxruntime.OrtException;
 import io.anserini.analysis.AnalyzerUtils;
-import io.anserini.encoder.sparse.SparseEncoder;
+import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.index.Constants;
 import io.anserini.index.IndexReaderUtils;
 import io.anserini.rerank.RerankerCascade;
@@ -76,7 +91,7 @@ public class SimpleImpactSearcher implements Closeable {
   protected RerankerCascade cascade;
   protected IndexSearcher searcher = null;
   protected boolean backwardsCompatibilityLucene8;
-  private SparseEncoder queryEncoder = null;
+  private SameDiffEncoder queryEncoder = null;
   protected boolean useRM3;
   protected boolean useRocchio;
 
@@ -157,7 +172,7 @@ public class SimpleImpactSearcher implements Closeable {
   public void set_onnx_query_encoder(String encoder) {
     if (emptyEncoder()) {
       try {
-        this.queryEncoder = (SparseEncoder) Class
+        this.queryEncoder = (SameDiffEncoder) Class
             .forName(String.format("io.anserini.encoder.sparse.%sEncoder", encoder))
             .getConstructor().newInstance();
       } catch (Exception e) {
@@ -431,7 +446,7 @@ public class SimpleImpactSearcher implements Closeable {
       executor.execute(() -> {
         try {
           results.put(qid, search(query, k));
-        } catch (IOException | OrtException e) {
+        } catch (IOException  e) {
           throw new CompletionException(e);
         }
       });
@@ -490,7 +505,7 @@ public class SimpleImpactSearcher implements Closeable {
       executor.execute(() -> {
         try {
           results.put(qid, search(query, k));
-        } catch (IOException | OrtException e) {
+        } catch (IOException  e) {
           throw new CompletionException(e);
         }
       });
@@ -522,17 +537,16 @@ public class SimpleImpactSearcher implements Closeable {
    * Encodes the query using the onnx encoder
    * 
    * @param queryString query string
-   * @throws OrtException if errors encountered during encoding
    * @return encoded query
    */
-  public Map<String, Integer> encode_with_onnx(String queryString) throws OrtException {
+  public Map<String, Integer> encode_with_onnx(String queryString)  {
     // if no query encoder, assume its encoded query split by whitespace
     if (this.queryEncoder == null){
       List<String> queryTokens = AnalyzerUtils.analyze(analyzer, queryString);
       return queryTokens.stream().collect(Collectors.toMap(e->e, (a)->1, Integer::sum));
     }
 
-    return this.queryEncoder.encode(queryString);
+    return (Map<String, Integer>) this.queryEncoder.encode(queryString);
   }
 
   /**
@@ -559,9 +573,9 @@ public class SimpleImpactSearcher implements Closeable {
    * @param encoded_q query
    * @return array of search results
    * @throws IOException if error encountered during search
-   * @throws OrtException if error encountered during search
+   * @throws  if error encountered during search
    */
-  public ScoredDoc[] search(Map<String, Integer> encoded_q) throws IOException, OrtException {
+  public ScoredDoc[] search(Map<String, Integer> encoded_q) throws IOException {
     return search(encoded_q, 10);
   }
 
@@ -571,9 +585,8 @@ public class SimpleImpactSearcher implements Closeable {
    * @param q raw string query
    * @return array of search results
    * @throws IOException if error encountered during search
-   * @throws OrtException if error encountered during search
    */
-  public ScoredDoc[] search(String q) throws IOException, OrtException {
+  public ScoredDoc[] search(String q) throws IOException {
     return search(q, 10);
   }
 
@@ -584,9 +597,8 @@ public class SimpleImpactSearcher implements Closeable {
    * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
-   * @throws OrtException if error encountered during search
    */
-  public ScoredDoc[] search(Map<String, Integer> encoded_q, int k) throws IOException, OrtException {
+  public ScoredDoc[] search(Map<String, Integer> encoded_q, int k) throws IOException {
     Map<String, Float> float_encoded_q = intToFloat(encoded_q);
     Query query = generator.buildQuery(Constants.CONTENTS, float_encoded_q);
     String encodedQuery = encode_with_onnx(encoded_q);
@@ -600,9 +612,8 @@ public class SimpleImpactSearcher implements Closeable {
    * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
-   * @throws OrtException if error encountered during search
    */
-  public ScoredDoc[] search(String q, int k) throws IOException, OrtException {
+  public ScoredDoc[] search(String q, int k) throws IOException {
     // make encoded query from raw query
     Map<String, Integer> encoded_q = encode_with_onnx(q);
     String encodedQuery = encode_with_onnx(encoded_q);
@@ -611,7 +622,7 @@ public class SimpleImpactSearcher implements Closeable {
   }
 
   // internal implementation
-  protected ScoredDoc[] _search(Query query, String encodedQuery, int k) throws IOException, OrtException {
+  protected ScoredDoc[] _search(Query query, String encodedQuery, int k) throws IOException {
     // Create an IndexSearch only once. Note that the object is thread safe.
     if (searcher == null) {
       searcher = new IndexSearcher(reader);

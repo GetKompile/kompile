@@ -16,7 +16,6 @@
 
 package io.anserini.encoder.samediff.sparse;
 
-import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertVocabulary;
 import org.jetbrains.annotations.NotNull;
@@ -34,7 +33,7 @@ import java.util.*;
  * SameDiff version of the UniCoil Encoder.
  * Assumes the SameDiff model graph mirrors the ONNX version's logic for producing token weights.
  */
-public class UniCoilSameDiffEncoder extends SameDiffEncoder<Map<String, Float>> {
+public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
 
     public static final String DEFAULT_MODEL_NAME = "unicoil.sd"; // Hypothetical .sd model name
     public static final String DEFAULT_MODEL_URL = "YOUR_MODEL_REPO_URL/unicoil.sd"; // Replace
@@ -66,7 +65,7 @@ public class UniCoilSameDiffEncoder extends SameDiffEncoder<Map<String, Float>> 
     }
 
     @Override
-    public Map<String, Float> encode(@NotNull String query) {
+    public Map<String, Integer> encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);

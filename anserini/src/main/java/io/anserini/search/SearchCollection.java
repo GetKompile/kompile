@@ -1,4 +1,20 @@
 /*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
+/*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,7 +42,8 @@ import io.anserini.analysis.DefaultEnglishAnalyzer;
 import io.anserini.analysis.HuggingFaceTokenizerAnalyzer;
 import io.anserini.analysis.TweetAnalyzer;
 import io.anserini.collection.DocumentCollection;
-import io.anserini.encoder.sparse.SparseEncoder;
+import io.anserini.encoder.samediff.SameDiffEncoder;
+import io.anserini.encoder.samediff.sparse.SameDiffSparseEncoder;
 import io.anserini.index.Constants;
 import io.anserini.index.generator.TweetGenerator;
 import io.anserini.index.generator.WashingtonPostGenerator;
@@ -809,7 +826,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     final private TaggedSimilarity taggedSimilarity;
     final private RerankerCascade cascade;
     final private String outputPath;
-    final private SparseEncoder queryEncoder;
+    final private SameDiffEncoder queryEncoder;
 
     private SearcherThread(IndexReader reader,
                            SortedMap<T, Map<String, String>> topics,
@@ -828,7 +845,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
       // Initialize query encoder if specified
       if (args.encoder != null) {
         try {
-          this.queryEncoder = (SparseEncoder) Class
+          this.queryEncoder = (SameDiffEncoder) Class
               .forName(String.format("io.anserini.encoder.sparse.%sEncoder", args.encoder))
               .getConstructor().newInstance();
         } catch (Exception e) {
@@ -868,7 +885,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
             }
 
             if (queryEncoder != null) {
-              queryString = new StringBuilder(SparseEncoder.flatten(queryEncoder.encode(queryString.toString())));
+              queryString = new StringBuilder(SameDiffSparseEncoder.flatten(queryEncoder.encode(queryString.toString())));
             }
 
             ScoredDocs queryQrels = null;
