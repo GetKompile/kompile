@@ -16,7 +16,6 @@
 
 package io.anserini.encoder.samediff;
 
-// import io.anserini.encoder.Encoder;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.linalg.api.buffer.DataType;
@@ -35,7 +34,6 @@ import java.util.Map;
  * A generic dense encoder using SameDiff, assuming BERT-like input and CLS token embedding output.
  * Subclasses can override post-processing if needed.
  */
-// public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> implements Encoder {
 public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
     // Default tensor names, can be overridden by constructor if specific model differs.
@@ -78,7 +76,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
 
     @Override
-    public Map<String, Integer> encode(@NotNull String query) {
+    public float[] encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);

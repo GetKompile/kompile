@@ -32,7 +32,6 @@
 
 package io.anserini.search;
 
-import ai.onnxruntime.OrtException;
 import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.index.Constants;
 import io.anserini.search.query.VectorQueryGenerator;
