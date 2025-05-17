@@ -51,12 +51,14 @@ import org.apache.lucene.store.FSDirectory;
 import org.kohsuke.args4j.Option;
 
 import javax.annotation.Nullable;
-import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -65,18 +67,12 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class HnswDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> implements AutoCloseable {
-  // These are the default tie-breaking rules for documents that end up with the same score with respect to a query.
-  // For most collections, docids are strings, and we break ties by lexicographic sort order.
+public class HnswDenseSearcher<K extends Comparable<K>> extends BaseDenseSearcher<K> implements AutoCloseable {
   public static final Sort BREAK_SCORE_TIES_BY_DOCID =
-      new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
+          new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
 
   private static final Logger LOG = LogManager.getLogger(HnswDenseSearcher.class);
 
-  /**
-   * This class holds arguments for configuring the HNSW searcher. Note that, explicitly, there are no arguments that
-   * define queries and outputs, since this class is meant to be called interactively.
-   */
   public static class Args extends BaseSearchArgs {
     @Option(name = "-generator", metaVar = "[class]", usage = "QueryGenerator to use.")
     public String queryGenerator = "VectorQueryGenerator";
@@ -90,92 +86,117 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> 
 
   private final IndexReader reader;
   private final VectorQueryGenerator generator;
-  private final SameDiffEncoder encoder;
+  private final SameDiffEncoder<float[]> encoder;
+  private final Args searchArgsHnsw;
 
   public HnswDenseSearcher(Args args) {
     super(args);
+    this.searchArgsHnsw = args;
 
-    // We might not be able to successfully create a reader for a variety of reasons, anything from path doesn't exist
-    // to corrupt index. Gather all possible exceptions together as an unchecked exception to make initialization and
-    // error reporting clearer.
     Path indexPath = Path.of(args.index);
     PrebuiltIndexHandler indexHandler = new PrebuiltIndexHandler(args.index);
     if (!Files.exists(indexPath)) {
-      // it doesn't exist locally, we try to download it from remote
       try {
         indexHandler.initialize();
         indexHandler.download();
         indexPath = Path.of(indexHandler.decompressIndex());
       } catch (IOException e) {
-        throw new RuntimeException("MD5 checksum does not match!");
+        throw new RuntimeException("MD5 checksum does not match or download failed!", e);
       } catch (Exception e) {
-        throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index));
+        throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index or could not be downloaded.", args.index), e);
       }
-    } else {
-      // if it exists locally, we use it
-      indexPath = Paths.get(args.index);
     }
 
     try {
       this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
     } catch (IOException e) {
-      throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index));
+      throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index), e);
     }
 
     setIndexSearcher(new IndexSearcher(this.reader));
 
     try {
       this.generator = (VectorQueryGenerator) Class
-          .forName(String.format("io.anserini.search.query.%s", args.queryGenerator))
-          .getConstructor().newInstance();
+              .forName(String.format("io.anserini.search.query.%s", args.queryGenerator))
+              .getConstructor().newInstance();
     } catch (Exception e) {
-      throw new IllegalArgumentException(String.format("Unable to load QueryGenerator \"%s\".", args.queryGenerator));
+      throw new IllegalArgumentException(String.format("Unable to load QueryGenerator \"%s\".", args.queryGenerator), e);
     }
 
     if (args.encoder != null) {
       try {
-        // If Encoder is part of the name, strip ".Encoder" suffix to normalize the name
-        // This supports both implementations based on a large amount of older code: we can use both.
         String encoderName = args.encoder.endsWith("Encoder") ?
-            args.encoder.substring(0, args.encoder.length() - "Encoder".length()) :
-            args.encoder;
-
-        encoder = (SameDiffEncoder) Class
-            .forName(String.format("io.anserini.encoder.dense.%sEncoder", encoderName))
-            .getConstructor().newInstance();
+                args.encoder.substring(0, args.encoder.length() - "Encoder".length()) :
+                args.encoder;
+        @SuppressWarnings("unchecked")
+        SameDiffEncoder<float[]> tempEncoder = (SameDiffEncoder<float[]>) Class
+                .forName(String.format("io.anserini.encoder.samediff.%sEncoder", encoderName))
+                .getConstructor().newInstance();
+        this.encoder = tempEncoder;
       } catch (Exception e) {
-        throw new IllegalArgumentException(String.format("Unable to load Encoder \"%s\".", args.encoder));
+        throw new IllegalArgumentException(String.format("Unable to load Encoder \"%s\". Ensure it's a SameDiffEncoder<float[]> type.", args.encoder), e);
       }
     } else {
-      encoder = null;
+      this.encoder = null;
     }
   }
 
+  @Override
+  protected ScoredDoc[] searchVector(@Nullable K qid, float[] queryVector, int k) throws IOException {
+    KnnFloatVectorQuery vectorQuery = new KnnFloatVectorQuery(Constants.VECTOR, queryVector, this.searchArgsHnsw.efSearch);
+    TopDocs topDocs = getIndexSearcher().search(vectorQuery, k, BREAK_SCORE_TIES_BY_DOCID, true);
+    return super.processLuceneTopDocs(qid, topDocs);
+  }
+
+  @Override
+  protected ScoredDoc[] searchString(@Nullable K qid, String queryString, int k) throws IOException {
+    if (encoder != null) {
+      float[] queryVector = encoder.encode(queryString);
+      if (queryVector == null) {
+        LOG.warn("Query encoding returned null for query: {}", queryString);
+        return new ScoredDoc[0];
+      }
+      return searchVector(qid, queryVector, k);
+    }
+    KnnFloatVectorQuery vectorQuery = generator.buildQuery(Constants.VECTOR, queryString, this.searchArgsHnsw.efSearch);
+    TopDocs topDocs = getIndexSearcher().search(vectorQuery, k, BREAK_SCORE_TIES_BY_DOCID, true);
+    return super.processLuceneTopDocs(qid, topDocs);
+  }
+
+  // Public convenience methods for direct calls without qid
+  public ScoredDoc[] search(float[] query, int k) throws IOException {
+    return searchVector(null, query, k);
+  }
+
+  public ScoredDoc[] search(String query, int k) throws IOException {
+    return searchString(null, query, k);
+  }
+
   /**
-   * Searches the collection in batch using multiple threads.
-   *
-   * @param queries list of queries
-   * @param qids list of unique query ids
-   * @param k number of hits
-   * @param threads number of threads
-   * @return a map of query id to search results
+   * Batch search with string queries. Renamed to avoid erasure clashes.
    */
-  public SortedMap<K, ScoredDoc[]> batch_search(List<String> queries, List<K> qids, int k, int threads) {
+  public SortedMap<K, ScoredDoc[]> batch_search_strings(List<String> queries, List<K> qids, int k, int threads) {
     final SortedMap<K, ScoredDoc[]> results = new ConcurrentSkipListMap<>();
     final AtomicInteger cnt = new AtomicInteger();
     final long start = System.nanoTime();
 
+    if (qids.size() != queries.size()) {
+      throw new IllegalArgumentException("qids and queries lists must have the same size.");
+    }
+
     try(ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads)) {
-      assert qids.size() == queries.size();
       for (int i = 0; i < qids.size(); i++) {
         K qid = qids.get(i);
         String queryString = queries.get(i);
 
-        // This is the per-query execution, in parallel.
         executor.execute(() -> {
           try {
-            results.put(qid, search(qid, queryString, k));
+            results.put(qid, searchString(qid, queryString, k));
           } catch (IOException e) {
+            LOG.error("IOException during batch search for qid: " + qid, e);
+            throw new CompletionException(e);
+          } catch (Exception e) {
+            LOG.error("Unexpected exception during batch search for qid: " + qid, e);
             throw new CompletionException(e);
           }
 
@@ -185,87 +206,34 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> 
           }
         });
       }
-
       executor.shutdown();
-
       try {
-        // Wait for existing tasks to terminate.
         while (!executor.awaitTermination(1, TimeUnit.MINUTES));
       } catch (InterruptedException ie) {
-        // (Re-)Cancel if current thread also interrupted.
         executor.shutdownNow();
-        // Preserve interrupt status.
         Thread.currentThread().interrupt();
       }
     }
     final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
-
     LOG.info("{} queries processed in {}{}", queries.size(),
-        DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"),
-        String.format(" = ~%.2f q/s", queries.size() / (durationMillis / 1000.0)));
-
+            DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"),
+            String.format(" = ~%.2f q/s", queries.size() / (durationMillis / 1000.0)));
     return results;
   }
 
   /**
-   * Searches the collection with a query vector.
-   *
-   * @param query query vector
-   * @param k number of hits
-   * @return array of search results
-   * @throws IOException if error encountered during search
+   * Batch search with pre-encoded float vector queries.
+   * This method uses the generic batch_search from BaseSearcher.
    */
-  public ScoredDoc[] search(float[] query, int k) throws IOException {
-    return search(null, query, k);
-  }
-
-  /**
-   * Searches the collection with a query vector.
-   *
-   * @param qid query id
-   * @param query query vector
-   * @param k number of hits
-   * @return array of search results
-   * @throws IOException if error encountered during search
-   */
-  public ScoredDoc[] search(@Nullable K qid, float[] query, int k) throws IOException {
-    KnnFloatVectorQuery vectorQuery = new KnnFloatVectorQuery(Constants.VECTOR, query, ((Args) args).efSearch);
-    TopDocs topDocs = getIndexSearcher().search(vectorQuery, k, BREAK_SCORE_TIES_BY_DOCID, true);
-
-    return super.processLuceneTopDocs(qid, topDocs);
-  }
-
-  /**
-   * Searches the collection with a string query that will be encoded by the underlying encoder.
-   *
-   * @param query query
-   * @param k number of hits
-   * @return array of search results
-   * @throws IOException if error encountered during search
-   */
-  public ScoredDoc[] search(String query, int k) throws IOException {
-    return search(null, query, k);
-  }
-
-  /**
-   * Searches the collection with a string query that will be encoded by the underlying encoder.
-   *
-   * @param qid query id
-   * @param query query
-   * @param k number of hits
-   * @return array of search results
-   * @throws IOException if error encountered during search
-   */
-  public ScoredDoc[] search(@Nullable K qid, String query, int k) throws IOException {
-    if (encoder != null) {
-        return search(qid, encoder.encode(query), k);
-
+  public SortedMap<K, ScoredDoc[]> batch_search_vectors(List<float[]> queryVectors, List<K> qids, int k, int threads) {
+    if (qids.size() != queryVectors.size()) {
+      throw new IllegalArgumentException("qids and queryVectors lists must have the same size.");
     }
-
-    KnnFloatVectorQuery vectorQuery = generator.buildQuery(Constants.VECTOR, query, ((Args) args).efSearch);
-    TopDocs topDocs = getIndexSearcher().search(vectorQuery, k, BREAK_SCORE_TIES_BY_DOCID, true);
-
-    return super.processLuceneTopDocs(qid, topDocs);
+    Map<K, Object> objectQueryMap = new HashMap<>();
+    for (int i = 0; i < qids.size(); i++) {
+      objectQueryMap.put(qids.get(i), queryVectors.get(i));
+    }
+    return super.batch_search(objectQueryMap, k, threads);
   }
 
   @Override

@@ -14,7 +14,6 @@
  *  * limitations under the License.
  */
 
-// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/search/SearchCollection.java
 /*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
@@ -106,6 +105,7 @@ import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
 import org.kohsuke.args4j.ParserProperties;
 import org.kohsuke.args4j.spi.StringArrayOptionHandler;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
@@ -121,6 +121,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -144,6 +145,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
 
   private static final Logger LOG = LogManager.getLogger(SearchCollection.class);
 
+  // Args class remains unchanged from what was provided in the error log context
   public static class Args extends BaseSearchArgs {
     @Option(name = "-options", usage = "Print information about options.")
     public Boolean options = false;
@@ -172,7 +174,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     public Map<String, Float> fieldsMap = new HashMap<>();
 
     @Option(name = "-parallelism", metaVar = "[int]", usage = "Number of threads to use for each individual parameter configuration.")
-    public int parallelism = 1; // Default to 1, actual search threads per query set by -threads
+    public int parallelism = 1;
 
     @Option(name = "-language", usage = "Analyzer Language (e.g., en, es, zh, ar). Default is 'en'.")
     public String language = "en";
@@ -231,7 +233,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-format", metaVar = "[output format]", usage = "Output format, default \"trec\", alternative \"msmarco\".")
     public String format = "trec";
 
-    // SameDiff Encoder Options
     @Option(name = "-encoder", usage = "Query encoder short name (e.g., Bge, SpladePlusPlusSelfDistil) or Fully Qualified Class Name.")
     public String encoder = null;
     @Option(name = "-encoderModelName", usage = "Name of the encoder model (for caching if downloaded, or to identify a local model).")
@@ -246,7 +247,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     public String encoderVocabPath = null;
     @Option(name = "-encoderVocabUrl", usage = "URL to download the encoder vocabulary. Used if path not set and for caching.")
     public String encoderVocabUrl = null;
-    // Tokenizer settings for encoders, if they need to be overridden from encoder defaults
     @Option(name = "-encoderMaxSeqLength", usage = "Maximum sequence length for encoder tokenizer. Defaults to encoder's internal default if not set or <= 0.")
     public int encoderMaxSeqLength = -1;
     @Option(name = "-encoderDoLowerCase", usage = "Whether encoder tokenizer should lowercase and strip accents. Defaults to encoder's internal default if not set.")
@@ -254,8 +254,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-encoderAddSpecialTokens", usage = "Whether encoder tokenizer should add special tokens. Defaults to encoder's internal default if not set.")
     public Boolean encoderAddSpecialTokens = null;
 
-
-    // Ranking model options
     @Option(name = "-impact", forbids = {"-bm25", "-bm25.accurate", "-qld", "-qljm", "-inl2", "-spl", "-f2exp", "-f2log"}, usage = "Use ImpactSimilarity (sum of TF).")
     public boolean impact = false;
     @Option(name = "-bm25", forbids = {"-impact", "-bm25.accurate", "-qld", "-qljm", "-inl2", "-spl", "-f2exp", "-f2log"}, usage = "Use BM25Similarity.")
@@ -291,7 +289,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-f2log.s", metaVar = "[value]", usage = "F2Log s parameter.")
     public String[] f2log_s = new String[]{"0.5"};
 
-    // SDM options
     @Option(name = "-sdm", usage = "Use Sequential Dependence Model for query generation.")
     public boolean sdm = false;
     @Option(name = "-sdm.tw", metaVar = "[value]", usage = "SDM term weight.")
@@ -301,7 +298,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-sdm.uw", metaVar = "[value]", usage = "SDM unordered window weight.")
     public float sdm_uw = 0.05f;
 
-    // RM3 options
     @Option(name = "-rm3", usage = "Use RM3 query expansion model.")
     public boolean rm3 = false;
     @Option(name = "-rm3.fbTerms", handler = StringArrayOptionHandler.class, usage = "RM3: number of expansion terms.")
@@ -315,7 +311,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-rm3.noTermFilter", usage = "RM3: disable English term filter for expansion terms.")
     public boolean rm3_noTermFilter = false;
 
-    // Rocchio options
     @Option(name = "-rocchio", usage = "Use Rocchio query expansion model.")
     public boolean rocchio = false;
     @Option(name = "-rocchio.topFbTerms", handler = StringArrayOptionHandler.class, usage = "Rocchio: number of relevant expansion terms.")
@@ -337,7 +332,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-rocchio.outputQuery", usage = "Rocchio: print original and expanded queries.")
     public boolean rocchio_outputQuery = false;
 
-    // BM25PRF options
     @Option(name = "-bm25prf", usage = "Use BM25PRF query expansion model.")
     public boolean bm25prf = false;
     @Option(name = "-bm25prf.fbTerms", handler = StringArrayOptionHandler.class, usage = "BM25PRF: number of expansion terms.")
@@ -353,7 +347,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-bm25prf.outputQuery", usage = "BM25PRF: print original and expanded queries.")
     public boolean bm25prf_outputQuery = false;
 
-    // Axiom Reranker options
     @Option(name = "-axiom", usage = "Use Axiomatic reranking model.")
     public boolean axiom = false;
     @Option(name = "-axiom.outputQuery", usage = "Axiom: print original and expanded queries.")
@@ -375,7 +368,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @Option(name = "-axiom.index", usage = "Axiom: path to external index for generating reranking document pool (if different from main index).")
     public String axiom_index = null;
 
-
     public Args impact() { this.impact = true; this.bm25 = false; this.bm25Accurate = false; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
     public Args bm25() { this.impact = false; this.bm25 = true; this.bm25Accurate = false; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
     public Args bm25Accurate() { this.impact = false; this.bm25 = false; this.bm25Accurate = true; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
@@ -388,66 +380,112 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     public Args searchTweets() { this.searchTweets = true; return this; }
   }
 
-  private final class Searcher<T extends Comparable<T>> extends BaseSearcher<T> {
+  // Corrected: Inner Searcher extends BaseSearcher<T, String> as it primarily handles string queries
+  private final class Searcher<T extends Comparable<T>> extends BaseSearcher<T, String> {
     private final QueryGenerator generator;
     private final SdmQueryGenerator sdmQueryGenerator;
-    private final Args args; // Outer class Args
+    private final Args outerArgs; // Store a reference to the outer class's Args
 
-    public Searcher(IndexSearcher searcher, TaggedSimilarity taggedSimilarity, BaseSearchArgs baseArgs) {
-      super(baseArgs); // Pass the BaseSearchArgs to super
-      this.args = (Args) baseArgs; // Cast to inner class Args for specific fields
-      setIndexSearcher(searcher);
+    // Constructor takes an IndexReader to create its own IndexSearcher
+    public Searcher(IndexReader reader, TaggedSimilarity taggedSimilarity, Args outerArgs) {
+      super(outerArgs, new IndexSearcher(reader)); // Pass args and a new IndexSearcher to BaseSearcher
+      this.outerArgs = outerArgs; // Store outer Args
+      // getIndexSearcher() is now inherited from BaseSearcher and should be initialized by its constructor
       getIndexSearcher().setSimilarity(taggedSimilarity.getSimilarity());
-      this.sdmQueryGenerator = new SdmQueryGenerator(this.args.sdm_tw, this.args.sdm_ow, this.args.sdm_uw);
+      this.sdmQueryGenerator = new SdmQueryGenerator(this.outerArgs.sdm_tw, this.outerArgs.sdm_ow, this.outerArgs.sdm_uw);
       try {
-        generator = (QueryGenerator) Class.forName("io.anserini.search.query." + this.args.queryGenerator)
+        this.generator = (QueryGenerator) Class.forName("io.anserini.search.query." + this.outerArgs.queryGenerator)
                 .getConstructor().newInstance();
       } catch (Exception e) {
-        throw new IllegalArgumentException("Unable to load QueryGenerator: " + this.args.queryGenerator);
+        throw new IllegalArgumentException("Unable to load QueryGenerator: " + this.outerArgs.queryGenerator);
       }
     }
 
+    // This method now correctly overrides/implements the abstract search method from BaseSearcher<T, String>
+    @Override
+    public ScoredDoc[] search(@Nullable T qid, String queryString, int k) throws IOException {
+      // This is the primary search logic for a single query.
+      // The 'k' parameter here might differ from outerArgs.hits if called from batch_search with a different k.
+      // We need to decide which 'hits' value to use for the TopDocs search.
+      // For now, let's assume 'k' from the parameter is the intended number of hits for this specific search call.
+
+      Query query;
+      if (outerArgs.sdm) {
+        query = sdmQueryGenerator.buildQuery(Constants.CONTENTS, analyzer, queryString);
+      } else {
+        query = outerArgs.fields.length == 0 ? generator.buildQuery(Constants.CONTENTS, analyzer, queryString) :
+                generator.buildQuery(outerArgs.fieldsMap, analyzer, queryString);
+      }
+
+      TopDocs rs;
+      // The number of hits requested for this specific search call is 'k'.
+      // Rerank cutoff logic might need to be adjusted if 'k' is different from outerArgs.hits/rerankcutoff
+      int numHitsForSearch = (isRerank && outerArgs.rf_qrels == null && outerArgs.rerankcutoff > 0) ? Math.min(k, outerArgs.rerankcutoff) : k;
+
+      if (outerArgs.arbitraryScoreTieBreak) {
+        rs = getIndexSearcher().search(query, numHitsForSearch);
+      } else {
+        rs = getIndexSearcher().search(query, numHitsForSearch, BREAK_SCORE_TIES_BY_DOCID, true);
+      }
+
+      List<String> queryTokens = AnalyzerUtils.analyze(analyzer, queryString);
+      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, query, null, queryString, queryTokens, null, outerArgs);
+
+      // The reranking cascade should operate on the results of this specific search call.
+      ScoredDocs scoredDocs = ScoredDocs.fromTopDocs(rs, getIndexSearcher());
+      ScoredDocs rerankedDocs = cascade.run(scoredDocs, context); // Use the main SearchCollection's cascade
+
+      // processScoredDocs is a method of BaseSearcher, call it via super or directly if not overridden
+      return processScoredDocs(qid, rerankedDocs, SearchCollection.this.args.outputRerankerRequests != null);
+    }
+
+
+    // Specific search methods previously defined, ensure they use getIndexSearcher()
     public ScoredDocs search(T qid, String queryString,
-                             RerankerCascade cascade,
+                             RerankerCascade cascadeToUse, // Pass the specific cascade
                              ScoredDocs queryQrels,
                              boolean hasRelDocs) throws IOException {
       Query query;
-      if (args.sdm) {
+      if (outerArgs.sdm) {
         query = sdmQueryGenerator.buildQuery(Constants.CONTENTS, analyzer, queryString);
       } else {
-        query = args.fields.length == 0 ? generator.buildQuery(Constants.CONTENTS, analyzer, queryString) :
-                generator.buildQuery(args.fieldsMap, analyzer, queryString);
+        query = outerArgs.fields.length == 0 ? generator.buildQuery(Constants.CONTENTS, analyzer, queryString) :
+                generator.buildQuery(outerArgs.fieldsMap, analyzer, queryString);
       }
 
       TopDocs rs = new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), new ScoreDoc[]{});
-      if (!isRerank || (args.rerankcutoff > 0 && args.rf_qrels == null) || (args.rf_qrels != null && !hasRelDocs)) {
-        if (args.arbitraryScoreTieBreak) {
-          rs = getIndexSearcher().search(query, (isRerank && args.rf_qrels == null) ? args.rerankcutoff : args.hits);
+      int hitsToFetch = (isRerank && outerArgs.rf_qrels == null && outerArgs.rerankcutoff > 0) ? outerArgs.rerankcutoff : outerArgs.hits;
+
+      if (!isRerank || (outerArgs.rerankcutoff > 0 && outerArgs.rf_qrels == null) || (outerArgs.rf_qrels != null && !hasRelDocs)) {
+        if (outerArgs.arbitraryScoreTieBreak) {
+          rs = getIndexSearcher().search(query, hitsToFetch);
         } else {
-          rs = getIndexSearcher().search(query, (isRerank && args.rf_qrels == null) ? args.rerankcutoff : args.hits, BREAK_SCORE_TIES_BY_DOCID, true);
+          rs = getIndexSearcher().search(query, hitsToFetch, BREAK_SCORE_TIES_BY_DOCID, true);
         }
       }
 
       List<String> queryTokens = AnalyzerUtils.analyze(analyzer, queryString);
-      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, query, null, queryString, queryTokens, null, args);
+      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, query, null, queryString, queryTokens, null, outerArgs);
       ScoredDocs scoredFbDocs;
-      if (isRerank && args.rf_qrels != null) {
+      if (isRerank && outerArgs.rf_qrels != null) {
         if (hasRelDocs) {
           scoredFbDocs = queryQrels;
         } else {
           LOG.info("No relevant documents for " + qid.toString());
           scoredFbDocs = ScoredDocs.fromTopDocs(rs, getIndexSearcher());
-          cascade = new RerankerCascade(); // Reset cascade to only adjust ties
-          cascade.add(new ScoreTiesAdjusterReranker());
+          // If no rel docs for RF, use a basic cascade for tie-breaking
+          RerankerCascade basicCascade = new RerankerCascade();
+          basicCascade.add(new ScoreTiesAdjusterReranker());
+          return basicCascade.run(scoredFbDocs, context);
         }
       } else {
         scoredFbDocs = ScoredDocs.fromTopDocs(rs, getIndexSearcher());
       }
-      return cascade.run(scoredFbDocs, context);
+      return cascadeToUse.run(scoredFbDocs, context);
     }
 
-    public ScoredDocs searchBackgroundLinking(T qid, String docid, RerankerCascade cascade) throws IOException {
-      List<String> terms = BackgroundLinkingTopicReader.extractTerms(reader, docid, args.backgroundLinkingK, analyzer);
+    public ScoredDocs searchBackgroundLinking(T qid, String docidForQuery, RerankerCascade cascadeToUse) throws IOException {
+      List<String> terms = BackgroundLinkingTopicReader.extractTerms(SearchCollection.this.reader, docidForQuery, outerArgs.backgroundLinkingK, analyzer);
       Query docQuery;
       try {
         docQuery = new StandardQueryParser().parse(StringUtils.join(terms, " "), Constants.CONTENTS);
@@ -461,33 +499,35 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
       builder.add(filter, BooleanClause.Occur.MUST_NOT);
       builder.add(docQuery, BooleanClause.Occur.MUST);
       Query query = builder.build();
+
+      int hitsToFetch = (isRerank && outerArgs.rf_qrels == null && outerArgs.rerankcutoff > 0) ? outerArgs.rerankcutoff : outerArgs.hits;
       TopDocs rs;
-      if (args.arbitraryScoreTieBreak) {
-        rs = getIndexSearcher().search(query, (isRerank && args.rf_qrels == null) ? args.rerankcutoff : args.hits);
+      if (outerArgs.arbitraryScoreTieBreak) {
+        rs = getIndexSearcher().search(query, hitsToFetch);
       } else {
-        rs = getIndexSearcher().search(query, (isRerank && args.rf_qrels == null) ? args.rerankcutoff :
-                args.hits, BREAK_SCORE_TIES_BY_DOCID, true);
+        rs = getIndexSearcher().search(query, hitsToFetch, BREAK_SCORE_TIES_BY_DOCID, true);
       }
-      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, query, docid,
-              StringUtils.join(", ", terms), terms, null, args);
-      ScoredDocs docs = cascade.run(ScoredDocs.fromTopDocs(rs, getIndexSearcher()), context);
-      return new NewsBackgroundLinkingReranker(analyzer, collectionClass).rerank(docs, context);
+      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, query, docidForQuery,
+              StringUtils.join(", ", terms), terms, null, outerArgs);
+      ScoredDocs docs = cascadeToUse.run(ScoredDocs.fromTopDocs(rs, getIndexSearcher()), context);
+      // Ensure collectionClass is available in the outer SearchCollection scope
+      return new NewsBackgroundLinkingReranker(analyzer, SearchCollection.this.collectionClass).rerank(docs, context);
     }
 
     public ScoredDocs searchTweets(T qid, String queryString, long t,
-                                   RerankerCascade cascade,
+                                   RerankerCascade cascadeToUse,
                                    ScoredDocs queryQrels,
                                    boolean hasRelDocs) throws IOException {
       Query keywordQuery;
-      if (args.sdm) {
-        keywordQuery = new SdmQueryGenerator(args.sdm_tw, args.sdm_ow, args.sdm_uw).buildQuery(Constants.CONTENTS, analyzer, queryString);
+      if (outerArgs.sdm) {
+        keywordQuery = new SdmQueryGenerator(outerArgs.sdm_tw, outerArgs.sdm_ow, outerArgs.sdm_uw).buildQuery(Constants.CONTENTS, analyzer, queryString);
       } else {
         try {
-          QueryGenerator currentQueryGenerator = (QueryGenerator) Class.forName("io.anserini.search.query." + args.queryGenerator)
+          QueryGenerator currentQueryGenerator = (QueryGenerator) Class.forName("io.anserini.search.query." + outerArgs.queryGenerator)
                   .getConstructor().newInstance();
           keywordQuery = currentQueryGenerator.buildQuery(Constants.CONTENTS, analyzer, queryString);
         } catch (Exception e) {
-          throw new IllegalArgumentException("Unable to load QueryGenerator: " + args.queryGenerator, e);
+          throw new IllegalArgumentException("Unable to load QueryGenerator: " + outerArgs.queryGenerator, e);
         }
       }
       List<String> queryTokens = AnalyzerUtils.analyze(analyzer, queryString);
@@ -496,121 +536,115 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
       builder.add(filter, BooleanClause.Occur.FILTER);
       builder.add(keywordQuery, BooleanClause.Occur.MUST);
       Query compositeQuery = builder.build();
+
+      int hitsToFetch = (isRerank && outerArgs.rf_qrels == null && outerArgs.rerankcutoff > 0) ? outerArgs.rerankcutoff : outerArgs.hits;
       TopDocs rs = new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), new ScoreDoc[]{});
-      if (!isRerank || (args.rerankcutoff > 0 && args.rf_qrels == null) || (args.rf_qrels != null && !hasRelDocs)) {
-        if (args.arbitraryScoreTieBreak) {
-          rs = getIndexSearcher().search(compositeQuery, (isRerank && args.rf_qrels == null) ? args.rerankcutoff : args.hits);
+
+      if (!isRerank || (outerArgs.rerankcutoff > 0 && outerArgs.rf_qrels == null) || (outerArgs.rf_qrels != null && !hasRelDocs)) {
+        if (outerArgs.arbitraryScoreTieBreak) {
+          rs = getIndexSearcher().search(compositeQuery, hitsToFetch);
         } else {
-          rs = getIndexSearcher().search(compositeQuery, (isRerank && args.rf_qrels == null) ? args.rerankcutoff : args.hits,
-                  BREAK_SCORE_TIES_BY_TWEETID, true);
+          rs = getIndexSearcher().search(compositeQuery, hitsToFetch, BREAK_SCORE_TIES_BY_TWEETID, true);
         }
       }
-      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, keywordQuery, null, queryString, queryTokens, filter, args);
+      RerankerContext<T> context = new RerankerContext<>(getIndexSearcher(), qid, keywordQuery, null, queryString, queryTokens, filter, outerArgs);
       ScoredDocs scoredFbDocs;
-      if (isRerank && args.rf_qrels != null) {
+      if (isRerank && outerArgs.rf_qrels != null) {
         if (hasRelDocs) {
           scoredFbDocs = queryQrels;
         } else {
           scoredFbDocs = ScoredDocs.fromTopDocs(rs, getIndexSearcher());
-          cascade = new RerankerCascade(); // Reset cascade
-          cascade.add(new ScoreTiesAdjusterReranker());
+          RerankerCascade basicCascade = new RerankerCascade(); // Reset cascade
+          basicCascade.add(new ScoreTiesAdjusterReranker());
+          return basicCascade.run(scoredFbDocs, context);
         }
       } else {
         scoredFbDocs = ScoredDocs.fromTopDocs(rs, getIndexSearcher());
       }
-      return cascade.run(scoredFbDocs, context);
+      return cascadeToUse.run(scoredFbDocs, context);
     }
   }
 
   private final class SearcherThread<T extends Comparable<T>> extends Thread {
-    final private Searcher<T> searcher;
+    final private IndexReader reader; // Pass IndexReader
     final private SortedMap<T, Map<String, String>> topics;
     final private TaggedSimilarity taggedSimilarity;
     final private RerankerCascade cascade;
     final private String outputPath;
-    private SameDiffEncoder queryEncoder; // Can be dense (float[]) or sparse (Map<String, Float>)
+    private SameDiffEncoder<?> queryEncoder; // Use wildcard for generic encoder type
 
     @SuppressWarnings("unchecked")
-    private SameDiffEncoder initializeEncoder(Args args) throws Exception {
+    private SameDiffEncoder<?> initializeEncoder(Args args) throws Exception {
       String encoderName = args.encoder;
+      if (encoderName == null || encoderName.trim().isEmpty()) {
+        return null;
+      }
       LOG.info("Attempting to initialize query encoder: {}", encoderName);
 
       boolean doLowerCase = args.encoderDoLowerCase != null ? args.encoderDoLowerCase : true;
-      int maxSeqLen = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512;
+      int maxSeqLen = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512; // Default or use specific?
       boolean addSpecial = args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : true;
 
-      // Common parameters for most encoders that take them all
       String modelName = args.encoderModelName;
       String modelUrl = args.encoderModelUrl;
       String vocabName = args.encoderVocabName;
       String vocabUrl = args.encoderVocabUrl;
+      String modelPath = args.encoderModelPath;
+      String vocabPath = args.encoderVocabPath;
 
+      // Simplified logic for known encoders, assuming they handle their own defaults if some args are null
       if (encoderName.equalsIgnoreCase("Bge")) {
         return new BgeSameDiffEncoder(
-                modelName != null ? modelName : BgeSameDiffEncoder.DEFAULT_MODEL_NAME,
-                modelUrl != null ? modelUrl : BgeSameDiffEncoder.DEFAULT_MODEL_URL,
-                vocabName != null ? vocabName : BgeSameDiffEncoder.DEFAULT_VOCAB_NAME,
-                vocabUrl != null ? vocabUrl : BgeSameDiffEncoder.DEFAULT_VOCAB_URL,
-                args.encoderModelPath, args.encoderVocabPath,
+                modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
                 args.encoderDoLowerCase != null ? args.encoderDoLowerCase : BgeSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS,
                 args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : BgeSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH,
                 args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : BgeSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS);
       } else if (encoderName.equalsIgnoreCase("CosDprDistil")) {
         return new CosDprDistilSameDiffEncoder(
-                modelName != null ? modelName : CosDprDistilSameDiffEncoder.DEFAULT_MODEL_NAME,
-                modelUrl != null ? modelUrl : CosDprDistilSameDiffEncoder.DEFAULT_MODEL_URL,
-                vocabName != null ? vocabName : CosDprDistilSameDiffEncoder.DEFAULT_VOCAB_NAME,
-                vocabUrl != null ? vocabUrl : CosDprDistilSameDiffEncoder.DEFAULT_VOCAB_URL,
-                args.encoderModelPath, args.encoderVocabPath,
+                modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
                 args.encoderDoLowerCase != null ? args.encoderDoLowerCase : CosDprDistilSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS,
                 args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : CosDprDistilSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH,
                 args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : CosDprDistilSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS);
       } else if (encoderName.equalsIgnoreCase("SpladePlusPlusSelfDistil")) {
         return new SpladePlusPlusSelfDistilSameDiffEncoder(
-                modelName != null ? modelName : SpladePlusPlusSelfDistilSameDiffEncoder.DEFAULT_MODEL_NAME_SELF_DISTIL,
-                modelUrl != null ? modelUrl : SpladePlusPlusSelfDistilSameDiffEncoder.DEFAULT_MODEL_URL_SELF_DISTIL,
-                vocabName != null ? vocabName : SpladePlusPlusSelfDistilSameDiffEncoder.DEFAULT_VOCAB_NAME_SELF_DISTIL,
-                vocabUrl != null ? vocabUrl : SpladePlusPlusSelfDistilSameDiffEncoder.DEFAULT_VOCAB_URL_SELF_DISTIL,
-                args.encoderModelPath, args.encoderVocabPath,
+                modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
                 doLowerCase, maxSeqLen, addSpecial,
                 SpladePlusPlusSameDiffEncoder.DEFAULT_WEIGHT_RANGE, SpladePlusPlusSameDiffEncoder.DEFAULT_QUANT_RANGE);
       } else if (encoderName.equalsIgnoreCase("SpladePlusPlusEnsembleDistil")) {
         return new SpladePlusPlusEnsembleDistilSameDiffEncoder(
-                modelName != null ? modelName : SpladePlusPlusEnsembleDistilSameDiffEncoder.DEFAULT_MODEL_NAME_ENSEMBLE_DISTIL,
-                modelUrl != null ? modelUrl : SpladePlusPlusEnsembleDistilSameDiffEncoder.DEFAULT_MODEL_URL_ENSEMBLE_DISTIL,
-                vocabName != null ? vocabName : SpladePlusPlusEnsembleDistilSameDiffEncoder.DEFAULT_VOCAB_NAME_ENSEMBLE_DISTIL,
-                vocabUrl != null ? vocabUrl : SpladePlusPlusEnsembleDistilSameDiffEncoder.DEFAULT_VOCAB_URL_ENSEMBLE_DISTIL,
-                args.encoderModelPath, args.encoderVocabPath,
+                modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
                 doLowerCase, maxSeqLen, addSpecial,
                 SpladePlusPlusSameDiffEncoder.DEFAULT_WEIGHT_RANGE, SpladePlusPlusSameDiffEncoder.DEFAULT_QUANT_RANGE);
       } else if (encoderName.equalsIgnoreCase("UniCoil")) {
         return new UniCoilSameDiffEncoder(
-                modelName != null ? modelName : UniCoilSameDiffEncoder.DEFAULT_MODEL_NAME,
-                modelUrl != null ? modelUrl : UniCoilSameDiffEncoder.DEFAULT_MODEL_URL,
-                vocabName != null ? vocabName : UniCoilSameDiffEncoder.DEFAULT_VOCAB_NAME,
-                vocabUrl != null ? vocabUrl : UniCoilSameDiffEncoder.DEFAULT_VOCAB_URL,
-                args.encoderModelPath, args.encoderVocabPath,
+                modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
                 args.encoderDoLowerCase != null ? args.encoderDoLowerCase : UniCoilSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS,
                 args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : UniCoilSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH,
                 args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : UniCoilSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS,
                 UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE, UniCoilSameDiffEncoder.DEFAULT_QUANT_RANGE);
       } else {
-        if (encoderName.contains(".")) { // Assume FQN
+        // Attempt FQN loading with more specific constructor first
+        if (encoderName.contains(".")) {
           LOG.info("Attempting to load encoder as FQN: {}", encoderName);
           Class<?> encoderClazz = Class.forName(encoderName);
-          // Try to find a constructor that matches the full signature first
           try {
-            Constructor<?> constructor = encoderClazz.getConstructor(String.class, String.class, String.class, String.class, String.class, String.class, boolean.class, int.class, boolean.class);
-            return (SameDiffEncoder) constructor.newInstance(
-                    args.encoderModelName, args.encoderModelUrl,
-                    args.encoderVocabName, args.encoderVocabUrl,
-                    args.encoderModelPath, args.encoderVocabPath,
-                    doLowerCase, maxSeqLen, addSpecial);
+            // Try constructor for sparse encoders that take quantization params
+            if (SameDiffSparseEncoder.class.isAssignableFrom(encoderClazz)) {
+              Constructor<?> constructor = encoderClazz.getConstructor(String.class, String.class, String.class, String.class, String.class, String.class, boolean.class, int.class, boolean.class, int.class, int.class);
+              return (SameDiffEncoder<?>) constructor.newInstance(
+                      modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
+                      doLowerCase, maxSeqLen, addSpecial,
+                      SameDiffSparseEncoder.DEFAULT_WEIGHT_RANGE, SameDiffSparseEncoder.DEFAULT_QUANT_RANGE); // Use defaults for quant if not specified
+            } else { // Assume dense encoder constructor
+              Constructor<?> constructor = encoderClazz.getConstructor(String.class, String.class, String.class, String.class, String.class, String.class, boolean.class, int.class, boolean.class);
+              return (SameDiffEncoder<?>) constructor.newInstance(
+                      modelName, modelUrl, vocabName, vocabUrl, modelPath, vocabPath,
+                      doLowerCase, maxSeqLen, addSpecial);
+            }
           } catch (NoSuchMethodException e) {
-            // Fallback: Try constructor with only modelPath and vocabPath
-            LOG.warn("Full constructor not found for FQN encoder {}. Trying (modelPath, vocabPath) constructor.", encoderName);
+            LOG.warn("Specific constructor not found for FQN encoder {}. Trying (modelPath, vocabPath) constructor.", encoderName);
             Constructor<?> constructor = encoderClazz.getConstructor(String.class, String.class);
-            return (SameDiffEncoder) constructor.newInstance(args.encoderModelPath, args.encoderVocabPath);
+            return (SameDiffEncoder<?>) constructor.newInstance(modelPath, vocabPath);
           }
         }
         LOG.error("Unknown short name or FQN constructor mismatch for encoder: {}", encoderName);
@@ -623,12 +657,11 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                            TaggedSimilarity taggedSimilarity,
                            RerankerCascade cascade,
                            String outputPath) {
+      this.reader = reader; // Store reader
       this.topics = topics;
       this.taggedSimilarity = taggedSimilarity;
       this.cascade = cascade;
       this.outputPath = outputPath;
-      // Pass `SearchCollection.this.args` which is the outer class's Args instance
-      this.searcher = new Searcher<>(new IndexSearcher(reader), taggedSimilarity, SearchCollection.this.args);
       setName(outputPath);
 
       if (SearchCollection.this.args.encoder != null && !SearchCollection.this.args.encoder.isEmpty()) {
@@ -637,7 +670,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
           LOG.info("Successfully initialized query encoder in SearcherThread: {}", SearchCollection.this.args.encoder);
         } catch (Exception e) {
           LOG.error("Error initializing query encoder in SearcherThread for '{}': {}", SearchCollection.this.args.encoder, e.getMessage(), e);
-          // Close the encoder if partially initialized and an error occurs
           if (this.queryEncoder != null) {
             try { this.queryEncoder.close(); } catch (Exception ce) { LOG.error("Error closing encoder during error handling", ce); }
           }
@@ -652,15 +684,20 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     @SuppressWarnings("unchecked")
     public void run() {
       final String desc = String.format("ranker: %s, reranker: %s", taggedSimilarity.getTag(), cascade.getTag());
-      // Uses threads argument from the outer SearchCollection.Args
       ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(SearchCollection.this.args.threads);
       ConcurrentSkipListMap<T, ScoredDoc[]> results = new ConcurrentSkipListMap<>();
       AtomicInteger cnt = new AtomicInteger();
       final long start = System.nanoTime();
 
+      // Create one Searcher instance per thread to ensure thread safety with IndexSearcher
+      final ThreadLocal<Searcher<T>> threadLocalSearcher =
+              ThreadLocal.withInitial(() -> new Searcher<>(this.reader, this.taggedSimilarity, SearchCollection.this.args));
+
+
       for (Map.Entry<T, Map<String, String>> entry : topics.entrySet()) {
         T qid = entry.getKey();
         executor.execute(() -> {
+          Searcher<T> searcherForThread = threadLocalSearcher.get(); // Get thread-local searcher
           try {
             StringBuilder queryStringBuilder = new StringBuilder();
             if (SearchCollection.this.args.topicField.contains("+")) {
@@ -679,10 +716,9 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 Map<String, Float> floatWeights = (Map<String, Float>) encodedOutput;
                 Map<String, Integer> intWeights = ((SameDiffSparseEncoder) queryEncoder).quantizeToIntegerWeights(floatWeights);
                 processedQueryString = SameDiffSparseEncoder.flatten(intWeights);
-                LOG.trace("Original Query: '{}', Sparse Encoded Query: '{}'", originalQueryString, processedQueryString);
-              } else {
-                LOG.trace("Dense encoder specified, SearchCollection uses original text query: '{}'", originalQueryString);
               }
+              // For dense encoders, processedQueryString remains originalQueryString,
+              // actual encoding happens inside the Searcher's search methods if applicable
             }
 
             ScoredDocs queryQrels = null;
@@ -697,17 +733,19 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
 
             ScoredDocs docs;
             if (SearchCollection.this.args.searchTweets) {
-              docs = searcher.searchTweets(qid, processedQueryString, Long.parseLong(entry.getValue().get("time")), cascade, queryQrels, hasRelDocs);
+              docs = searcherForThread.searchTweets(qid, processedQueryString, Long.parseLong(entry.getValue().get("time")), cascade, queryQrels, hasRelDocs);
             } else if (SearchCollection.this.args.backgroundLinking) {
-              docs = searcher.searchBackgroundLinking(qid, processedQueryString, cascade);
+              docs = searcherForThread.searchBackgroundLinking(qid, processedQueryString, cascade);
             } else {
-              docs = searcher.search(qid, processedQueryString, cascade, queryQrels, hasRelDocs);
+              // Use the Searcher<T> instance to call its specific search method
+              docs = searcherForThread.search(qid, processedQueryString, SearchCollection.this.args.hits, cascade, queryQrels, hasRelDocs);
             }
 
+            // Use processScoredDocs from the Searcher<T> instance, which inherits from BaseSearcher
             if (SearchCollection.this.args.outputRerankerRequests != null) {
-              results.put(qid, searcher.processScoredDocs(qid, docs, true));
+              results.put(qid, searcherForThread.processScoredDocs(qid, docs, true));
             } else {
-              results.put(qid, searcher.processScoredDocs(qid, docs, false));
+              results.put(qid, searcherForThread.processScoredDocs(qid, docs, false));
             }
 
             int n = cnt.incrementAndGet();
@@ -737,7 +775,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
               String.format(" = ~%.2f q/s", topics.size() / (durationMillis / 1000.0)));
 
       try(RunOutputWriter<T> out = new RunOutputWriter<>(outputPath, SearchCollection.this.args.format, SearchCollection.this.args.runtag, SearchCollection.this.args.outputRerankerRequests)) {
-        // Logic for MSMARCO specific output order...
         boolean isMSMARCOv1_passage = topics.firstKey().equals(2) &&
                 topics.get(2).get("title").equals("Androgen receptor define") &&
                 topics.keySet().size() == 6980;
@@ -749,7 +786,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
           try(InputStream inputStream = isMSMARCOv1_passage ?
                   Files.newInputStream(TopicReader.getTopicPath(Path.of(Topics.MSMARCO_PASSAGE_DEV_SUBSET.path)), StandardOpenOption.READ):
                   Files.newInputStream(TopicReader.getTopicPath(Path.of(Topics.MSMARCO_DOC_DEV.path)), StandardOpenOption.READ) ) {
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(inputStream)); // Renamed variable
+            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(inputStream));
             String line;
             while ((line = bufferedReader.readLine()) != null) {
               line = line.trim();
@@ -815,8 +852,8 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     LOG.info("============ Initializing Searcher ============");
     LOG.info("Index: " + indexPath);
     this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
-    LOG.info("Threads per run: " + args.threads); // This is threads for individual queries within a run
-    LOG.info("Parallelism for different settings: " + args.parallelism); // This is for parallelizing different param combinations
+    LOG.info("Threads per run: " + args.threads);
+    LOG.info("Parallelism for different settings: " + args.parallelism);
     LOG.info("Fields: " + Arrays.toString(args.fields));
     if (args.fields.length != 0) {
       try {
@@ -828,7 +865,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         throw new IllegalArgumentException("Error parsing -fields parameter: " + Arrays.toString(args.fields), e);
       }
     }
-    // ... (other args logging)
     LOG.info("Hits: " + args.hits);
     LOG.info("Encoder: " + (args.encoder == null ? "None" : args.encoder));
     if (args.encoder != null) {
@@ -858,10 +894,10 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
       loadQrels(args.rf_qrels);
     }
 
-    if (!reader.toString().contains("lucene.version=9")) {
+    if (this.reader != null && !reader.toString().contains("lucene.version=9")) {
       LOG.warn("Detected Lucene 8 index. Disabling consistent tie-breaking and Axiom deterministic mode for compatibility.");
       args.arbitraryScoreTieBreak = true;
-      args.axiom_deterministic = false; // Axiom deterministic requires docvalues, which might have issues
+      args.axiom_deterministic = false;
     }
 
     topics = new TreeMap<>();
@@ -901,62 +937,62 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
   }
 
   private List<TaggedSimilarity> constructSimilarities() {
-    List<TaggedSimilarity> similarities = new ArrayList<>();
+    List<TaggedSimilarity> similaritiesList = new ArrayList<>(); // Renamed local var
     if (args.impact) {
-      similarities.add(new TaggedSimilarity(new ImpactSimilarity(), "impact()"));
+      similaritiesList.add(new TaggedSimilarity(new ImpactSimilarity(), "impact()"));
     } else if (args.bm25) {
       for (String k1 : args.bm25_k1) {
         for (String b : args.bm25_b) {
-          similarities.add(new TaggedSimilarity(new BM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)),
+          similaritiesList.add(new TaggedSimilarity(new BM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)),
                   String.format("bm25(k1=%s,b=%s)", k1, b)));
         }
       }
     } else if (args.bm25Accurate) {
       for (String k1 : args.bm25_k1) {
         for (String b : args.bm25_b) {
-          similarities.add(new TaggedSimilarity(new AccurateBM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)),
+          similaritiesList.add(new TaggedSimilarity(new AccurateBM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)),
                   String.format("bm25accurate(k1=%s,b=%s)", k1, b)));
         }
       }
     } else if (args.qld) {
       for (String mu : args.qld_mu) {
-        similarities.add(new TaggedSimilarity(new LMDirichletSimilarity(Float.parseFloat(mu)),
+        similaritiesList.add(new TaggedSimilarity(new LMDirichletSimilarity(Float.parseFloat(mu)),
                 String.format("qld(mu=%s)", mu)));
       }
     } else if (args.qljm) {
       for (String lambda : args.qljm_lambda) {
-        similarities.add(new TaggedSimilarity(new LMJelinekMercerSimilarity(Float.parseFloat(lambda)),
+        similaritiesList.add(new TaggedSimilarity(new LMJelinekMercerSimilarity(Float.parseFloat(lambda)),
                 String.format("qljm(lambda=%s)", lambda)));
       }
     } else if (args.inl2) {
       for (String c : args.inl2_c) {
-        similarities.add(new TaggedSimilarity(
+        similaritiesList.add(new TaggedSimilarity(
                 new DFRSimilarity(new BasicModelIn(), new AfterEffectL(), new NormalizationH2(Float.parseFloat(c))),
                 String.format("inl2(c=%s)", c)));
       }
     } else if (args.spl) {
       for (String c : args.spl_c) {
-        similarities.add(new TaggedSimilarity(
+        similaritiesList.add(new TaggedSimilarity(
                 new IBSimilarity(new DistributionSPL(), new LambdaDF(), new NormalizationH2(Float.parseFloat(c))),
                 String.format("spl(c=%s)", c)));
       }
     } else if (args.f2exp) {
       for (String s : args.f2exp_s) {
-        similarities.add(new TaggedSimilarity(new AxiomaticF2EXP(Float.parseFloat(s)), String.format("f2exp(s=%s)", s)));
+        similaritiesList.add(new TaggedSimilarity(new AxiomaticF2EXP(Float.parseFloat(s)), String.format("f2exp(s=%s)", s)));
       }
     } else if (args.f2log) {
       for (String s : args.f2log_s) {
-        similarities.add(new TaggedSimilarity(new AxiomaticF2LOG(Float.parseFloat(s)), String.format("f2log(s=%s)", s)));
+        similaritiesList.add(new TaggedSimilarity(new AxiomaticF2LOG(Float.parseFloat(s)), String.format("f2log(s=%s)", s)));
       }
     } else {
       LOG.warn("No explicit ranking model specified with flags like -bm25, -qld, etc. Defaulting to BM25(k1=0.9, b=0.4).");
-      similarities.add(new TaggedSimilarity(new BM25Similarity(0.9f, 0.4f), "bm25(k1=0.9,b=0.4)"));
+      similaritiesList.add(new TaggedSimilarity(new BM25Similarity(0.9f, 0.4f), "bm25(k1=0.9,b=0.4)"));
     }
-    return similarities;
+    return similaritiesList;
   }
 
   private List<RerankerCascade> constructRerankers() throws IOException {
-    List<RerankerCascade> cascades = new ArrayList<>();
+    List<RerankerCascade> cascadesList = new ArrayList<>(); // Renamed local var
     if (args.rm3) {
       for (String fbTerms : args.rm3_fbTerms) {
         for (String fbDocs : args.rm3_fbDocs) {
@@ -968,7 +1004,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
             cascade.add(new Rm3Reranker(analyzer, collectionClass, Constants.CONTENTS, Integer.parseInt(fbTerms),
                     Integer.parseInt(fbDocs), Float.parseFloat(originalQueryWeight), args.rm3_outputQuery, !args.rm3_noTermFilter));
             cascade.add(new ScoreTiesAdjusterReranker());
-            cascades.add(cascade);
+            cascadesList.add(cascade);
           }
         }
       }
@@ -982,30 +1018,74 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                         String.format("axRf(seed=%s,n=%s,beta=%s,top=%s)", seed, n, beta, top) :
                         String.format("ax(seed=%s,r=%s,n=%s,beta=%s,top=%s)", seed, r, n, beta, top);
                 RerankerCascade cascade = new RerankerCascade(tag);
-                cascade.add(new AxiomReranker<K>(analyzer, collectionClass, args.index, args.axiom_index, Constants.CONTENTS,
+                // Pass the main reader for the AxiomReranker
+                cascade.add(new AxiomReranker<>(this.analyzer, this.collectionClass,
+                        args.index, // main index path
+                        args.axiom_index == null ? this.reader : DirectoryReader.open(FSDirectory.open(Paths.get(args.axiom_index))), // axiom index reader
+                        Constants.CONTENTS,
                         args.axiom_deterministic, Integer.parseInt(seed), Integer.parseInt(r),
                         Integer.parseInt(n), Float.parseFloat(beta), Integer.parseInt(top),
                         args.axiom_docids, args.axiom_outputQuery, args.searchTweets));
                 cascade.add(new ScoreTiesAdjusterReranker());
-                cascades.add(cascade);
+                cascadesList.add(cascade);
               }
             }
           }
         }
       }
     } else if (args.bm25prf) {
-      // ... BM25PRF logic as before
+      for (String fbTerms : args.bm25prf_fbTerms) {
+        for (String fbDocs : args.bm25prf_fbDocs) {
+          for (String k1 : args.bm25prf_k1) {
+            for (String b : args.bm25prf_b) {
+              for (String newTermWeight : args.bm25prf_newTermWeight) {
+                String tag = String.format("bm25prf(fbTerms=%s,fbDocs=%s,k1=%s,b=%s,newTermWeight=%s)",
+                        fbTerms, fbDocs, k1, b, newTermWeight);
+                RerankerCascade cascade = new RerankerCascade(tag);
+                cascade.add(new BM25PrfReranker(analyzer, Constants.CONTENTS,
+                        Integer.parseInt(fbTerms), Integer.parseInt(fbDocs),
+                        Float.parseFloat(k1), Float.parseFloat(b), Float.parseFloat(newTermWeight),
+                        args.bm25prf_outputQuery));
+                cascade.add(new ScoreTiesAdjusterReranker());
+                cascadesList.add(cascade);
+              }
+            }
+          }
+        }
+      }
     } else if (args.rocchio) {
-      // ... Rocchio logic as before
+      for (String topFbTerms : args.rocchio_topFbTerms) {
+        for (String topFbDocs : args.rocchio_topFbDocs) {
+          for (String bottomFbTerms : args.rocchio_bottomFbTerms) {
+            for (String bottomFbDocs : args.rocchio_bottomFbDocs) {
+              for (String alpha : args.rocchio_alpha) {
+                for (String beta : args.rocchio_beta) {
+                  for (String gamma : args.rocchio_gamma) {
+                    String tag = String.format("rocchio(topFbTerms=%s,topFbDocs=%s,bottomFbTerms=%s,bottomFbDocs=%s,alpha=%s,beta=%s,gamma=%s,useNegative=%s)",
+                            topFbTerms, topFbDocs, bottomFbTerms, bottomFbDocs, alpha, beta, gamma, args.rocchio_useNegative);
+                    RerankerCascade cascade = new RerankerCascade(tag);
+                    cascade.add(new RocchioReranker(analyzer, collectionClass, Constants.CONTENTS,
+                            Integer.parseInt(topFbTerms), Integer.parseInt(topFbDocs),
+                            Integer.parseInt(bottomFbTerms), Integer.parseInt(bottomFbDocs),
+                            Float.parseFloat(alpha), Float.parseFloat(beta), Float.parseFloat(gamma),
+                            args.rocchio_outputQuery, args.rocchio_useNegative));
+                    cascade.add(new ScoreTiesAdjusterReranker());
+                    cascadesList.add(cascade);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
-    // If no rerankers were added, add a default one for score tie adjustment.
-    if (cascades.isEmpty()) {
+    if (cascadesList.isEmpty()) {
       RerankerCascade cascade = new RerankerCascade();
       cascade.add(new ScoreTiesAdjusterReranker());
-      cascades.add(cascade);
+      cascadesList.add(cascade);
     }
-    return cascades;
+    return cascadesList;
   }
 
   private void loadQrels(String rf_qrels_path) throws IOException {
@@ -1019,8 +1099,8 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     this.queriesWithRel = new HashSet<>();
     try (InputStream fin = Files.newInputStream(rfQrelsFilePath, StandardOpenOption.READ);
          BufferedInputStream in = new BufferedInputStream(fin);
-         BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(in))) { // Renamed variable
-      for (String line : IOUtils.readLines(bufferedReader)) { // Use renamed variable
+         BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(in))) {
+      for (String line : IOUtils.readLines(bufferedReader)) {
         String[] cols = line.split("\\s+");
         String qid = cols[0];
         String fbDocid = cols[2];
@@ -1047,20 +1127,16 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         LOG.info("Using WhitespaceAnalyzer for pre-tokenized input.");
         return new WhitespaceAnalyzer();
       } else if (AnalyzerMap.analyzerMap.containsKey(args.language)) {
-        // Corrected logic: AnalyzerMap stores class names (Strings).
         String analyzerClassName = AnalyzerMap.analyzerMap.get(args.language);
         LOG.info("Using language-specific analyzer for '{}': {}", args.language, analyzerClassName);
-        // Instantiate the analyzer using reflection. Assumes a no-arg constructor.
-        // For analyzers needing specific configurations (like DefaultEnglishAnalyzer),
-        // they should ideally not be in AnalyzerMap or AnalyzerMap should store factory methods/lambdas.
         return (Analyzer) Class.forName(analyzerClassName).getDeclaredConstructor().newInstance();
       } else if ("en".equalsIgnoreCase(args.language)) {
         LOG.info("Using DefaultEnglishAnalyzer: stemmer={}, keepStopwords={}, stopwordsFile={}",
                 args.stemmer, args.keepStopwords, args.stopwords);
         return DefaultEnglishAnalyzer.fromArguments(args.stemmer, args.keepStopwords, args.stopwords);
       } else {
-        LOG.warn("Unsupported language '{}' or language not in AnalyzerMap. Defaulting to DefaultEnglishAnalyzer (Porter stemmer, no stopwords kept by default unless specified).", args.language);
-        return DefaultEnglishAnalyzer.newDefaultInstance(); // Porter, default stopwords list from Lucene
+        LOG.warn("Unsupported language '{}' or language not in AnalyzerMap. Defaulting to DefaultEnglishAnalyzer.", args.language);
+        return DefaultEnglishAnalyzer.newDefaultInstance();
       }
     } catch (Exception e) {
       LOG.error("Error getting analyzer for language '{}'. Defaulting to DefaultEnglishAnalyzer.", args.language, e);
@@ -1072,13 +1148,12 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
   public void run() {
     LOG.info("============ Launching Search Threads ============");
     LOG.info("Runtag: " + args.runtag);
-    // This executor is for running different parameter combinations in parallel
     final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(args.parallelism);
 
     for (TaggedSimilarity taggedSimilarity : similarities) {
       for (RerankerCascade cascade : cascades) {
         final String outputPath;
-        if (similarities.size() == 1 && cascades.size() == 1 && args.parallelism == 1) { // Only use direct output if single config
+        if (similarities.size() == 1 && cascades.size() == 1 && args.parallelism == 1) {
           outputPath = args.output;
         } else {
           outputPath = String.format("%s_%s_%s", args.output, taggedSimilarity.getTag(), cascade.getTag());
@@ -1088,8 +1163,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
           LOG.info("Run already exists, skipping: " + outputPath);
           continue;
         }
-        // Each SearcherThread will handle its own set of queries using args.threads
-        executor.execute(new SearcherThread<>(reader, topics, taggedSimilarity, cascade, outputPath));
+        executor.execute(new SearcherThread<>(this.reader, topics, taggedSimilarity, cascade, outputPath));
       }
     }
     executor.shutdown();
