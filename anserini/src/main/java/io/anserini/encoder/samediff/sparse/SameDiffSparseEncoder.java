@@ -14,10 +14,12 @@
  *  * limitations under the License.
  */
 
+// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/encoder/samediff/sparse/SameDiffSparseEncoder.java
 package io.anserini.encoder.samediff.sparse;
 
 import io.anserini.encoder.samediff.SameDiffEncoder;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -29,47 +31,29 @@ import java.util.Map;
 /**
  * Abstract base class for SameDiff-based sparse encoders.
  * The main {@link #encode(String)} method is implemented by subclasses to return a map of term float weights.
- * This class provides utility methods for quantization and flattening, similar to the original ONNX SparseEncoder.
+ * This class provides utility methods for quantization and flattening.
  */
 public abstract class SameDiffSparseEncoder extends SameDiffEncoder<Map<String, Float>> {
 
-    protected  int weightRange; // For quantization, e.g., 5 for UniCOIL
-    protected  int quantRange;  // For quantization, e.g., 256 for UniCOIL
+    protected final int weightRange; // For quantization, e.g., 5 for UniCOIL
+    protected final int quantRange;  // For quantization, e.g., 256 for UniCOIL
 
-    /**
-     * Constructor for SameDiffSparseEncoder.
-     *
-     * @param modelName                  Filename of the SameDiff model.
-     * @param modelUrl                   URL to download the SameDiff model.
-     * @param vocabName                  Filename of the vocabulary.
-     * @param vocabUrl                   URL to download the vocabulary.
-     * @param inputTensorNamesForModel   List of input tensor names for the SameDiff model.
-     * @param outputTensorNamesFromModel List of output tensor names from the SameDiff model.
-     * @param doLowerCaseAndStripAccents Whether to lowercase text and strip accents during tokenization.
-     * @param maxSequenceLength          Maximum sequence length for tokenization.
-     * @param addSpecialTokens           Whether to add [CLS] and [SEP] tokens.
-     * @param weightRange                The range of the weights for quantization.
-     * @param quantRange                 The quantization range (e.g., 256 for 8-bit like quantization).
-     * @throws IOException        If model or vocab loading fails.
-     * @throws URISyntaxException If URLs are malformed.
-     */
-    public SameDiffSparseEncoder(@NotNull String modelName, @NotNull String modelUrl,
-                                 @NotNull String vocabName, @NotNull String vocabUrl,
+    public SameDiffSparseEncoder(@NotNull String modelName, @Nullable String modelUrl,
+                                 @NotNull String vocabName, @Nullable String vocabUrl,
+                                 @Nullable String providedModelPath, @Nullable String providedVocabPath,
                                  @NotNull List<String> inputTensorNamesForModel,
                                  @NotNull List<String> outputTensorNamesFromModel,
                                  boolean doLowerCaseAndStripAccents, int maxSequenceLength, boolean addSpecialTokens,
-                                 int weightRange, int quantRange)
+                                 int weightRange, int quantRange) // quantization params
             throws IOException, URISyntaxException {
         super(modelName, modelUrl, vocabName, vocabUrl,
+                providedModelPath, providedVocabPath,
                 inputTensorNamesForModel, outputTensorNamesFromModel,
                 doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
         this.weightRange = weightRange;
         this.quantRange = quantRange;
     }
 
-    public SameDiffSparseEncoder(String modelName, String modelUrl, String vocabName, String vocabUrl, List<String> inputIdsTensorName, List<String> outputIdxTensorName, boolean doLowercaseAndStripAccents, int maxSequenceLength, boolean addSpecialTokens) throws IOException, URISyntaxException {
-            super(modelName, modelUrl, vocabName, vocabUrl, inputIdsTensorName, outputIdxTensorName, doLowercaseAndStripAccents, maxSequenceLength, addSpecialTokens);
-    }
 
     /**
      * Quantizes float token weights to integer weights.
@@ -136,6 +120,6 @@ public abstract class SameDiffSparseEncoder extends SameDiffEncoder<Map<String, 
      * Returns null or empty map if encoding fails.
      */
     @Override
-    public abstract Map<String, Integer> encode(@NotNull String query);
+    public abstract Map<String, Float> encode(@NotNull String query);
 
 }
