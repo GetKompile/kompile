@@ -14,7 +14,6 @@
  *  * limitations under the License.
  */
 
-// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/encoder/samediff/sparse/SameDiffSparseEncoder.java
 package io.anserini.encoder.samediff.sparse;
 
 import io.anserini.encoder.samediff.SameDiffEncoder;
@@ -119,7 +118,7 @@ public abstract class SameDiffSparseEncoder extends SameDiffEncoder<Map<String, 
      * @return A map where keys are tokens (String) and values are their computed float weights.
      * Returns null or empty map if encoding fails.
      */
-    @Override
+    @Override // This should now be correct
     public abstract Map<String, Float> encode(@NotNull String query);
 
 }

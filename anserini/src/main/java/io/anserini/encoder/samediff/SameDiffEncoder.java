@@ -14,7 +14,6 @@
  *  * limitations under the License.
  */
 
-// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/encoder/samediff/SameDiffEncoder.java
 package io.anserini.encoder.samediff;
 
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
@@ -33,7 +32,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-import java.util.Map;
+// Removed unused import java.util.Map; as it's not directly used here anymore.
 
 public abstract class SameDiffEncoder<T> implements AutoCloseable {
     private static final Logger LOG = LogManager.getLogger(SameDiffEncoder.class);
@@ -139,7 +138,7 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
      * @param text The text to encode.
      * @return The encoded representation, type T (e.g., float[] for dense, Map<String, Float> for sparse).
      */
-    public abstract float[] encode(@NotNull String text);
+    public abstract T encode(@NotNull String text); // MODIFIED HERE
 
     @Override
     public void close() {
@@ -148,6 +147,9 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
             // but nullifying helps GC and indicates it's no longer usable.
             LOG.debug("Closing SameDiffEncoder, nullifying model: {}", modelName);
         }
+        // It's good practice to also ensure resources within components are released if possible.
+        // For example, if tokenizerPreProcessor held significant resources, it might have a close() too.
         this.sameDiffModel = null;
+        this.tokenizerPreProcessor = null; // Or tokenizerPreProcessor.close() if available
     }
 }

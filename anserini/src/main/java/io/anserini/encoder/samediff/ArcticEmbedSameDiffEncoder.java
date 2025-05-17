@@ -16,53 +16,99 @@
 
 package io.anserini.encoder.samediff;
 
-// import io.anserini.encoder.Encoder;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
-
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-// public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> implements Encoder {
 public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
+    private static final Logger LOG = LogManager.getLogger(ArcticEmbedSameDiffEncoder.class);
 
     public static final String DEFAULT_MODEL_NAME = "nenglish-arctic-embed-l.sd";
-    public static final String DEFAULT_MODEL_URL = "YOUR_MODEL_REPO_URL/nenglish-arctic-embed-l.sd"; // Replace
+    // IMPORTANT: Replace with actual URL if this model is to be downloadable
+    public static final String DEFAULT_MODEL_URL = "https://PLACEHOLDER_MODEL_URL/nenglish-arctic-embed-l.sd";
     public static final String DEFAULT_VOCAB_NAME = "arctic-embed-l-vocab.txt"; // Or its actual vocab name
-    // Find the actual vocab URL, this is a placeholder from a similar model family
-    public static final String DEFAULT_VOCAB_URL = "https://huggingface.co/sentence-transformers/bert-base-nli-mean-tokens/resolve/main/vocab.txt";
-
+    // IMPORTANT: Replace with actual URL if this vocab is to be downloadable
+    public static final String DEFAULT_VOCAB_URL = "https://PLACEHOLDER_VOCAB_URL/arctic-embed-l-vocab.txt";
 
     public static final String INPUT_IDS_TENSOR_NAME = "input_ids";
     public static final String ATTENTION_MASK_TENSOR_NAME = "attention_mask";
-    public static final String TOKEN_TYPE_IDS_TENSOR_NAME = "token_type_ids";
-    public static final String OUTPUT_EMBEDDING_TENSOR_NAME = "last_hidden_state"; // Common default
+    public static final String TOKEN_TYPE_IDS_TENSOR_NAME = "token_type_ids"; // Or "segment_ids" if model expects that
+    public static final String OUTPUT_EMBEDDING_TENSOR_NAME = "last_hidden_state"; // Common default for hidden states
 
-    public static final int MAX_SEQUENCE_LENGTH = 256; // Typical for Arctic, but verify
-    public static final boolean DO_LOWERCASE_AND_STRIP_ACCENTS = true;
-    public static final boolean ADD_SPECIAL_TOKENS = true;
+    // Default tokenizer settings, verify these against the specific Arctic model requirements
+    public static final boolean DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
+    public static final int DEFAULT_MAX_SEQUENCE_LENGTH = 256;
+    public static final boolean DEFAULT_ADD_SPECIAL_TOKENS = true;
 
+    /**
+     * Default constructor, uses default model/vocab names and URLs.
+     * @throws IOException If model or vocab loading fails.
+     * @throws URISyntaxException If URLs are malformed.
+     */
     public ArcticEmbedSameDiffEncoder() throws IOException, URISyntaxException {
-        super(DEFAULT_MODEL_NAME, DEFAULT_MODEL_URL,
-                DEFAULT_VOCAB_NAME, DEFAULT_VOCAB_URL,
+        this(null, null); // Use default model/vocab paths which will trigger download if URLs are valid
+    }
+
+    /**
+     * Constructor allowing specification of local model and vocabulary paths.
+     *
+     * @param modelPath Local path to the SameDiff model. If null, uses default URL.
+     * @param vocabPath Local path to the vocabulary. If null, uses default URL.
+     * @throws IOException        If model or vocab loading fails.
+     * @throws URISyntaxException If URLs are malformed.
+     */
+    public ArcticEmbedSameDiffEncoder(@Nullable String modelPath, @Nullable String vocabPath) throws IOException, URISyntaxException {
+        this(DEFAULT_MODEL_NAME, modelPath == null ? DEFAULT_MODEL_URL : null,
+                DEFAULT_VOCAB_NAME, vocabPath == null ? DEFAULT_VOCAB_URL : null,
+                modelPath, vocabPath,
+                DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS,
+                DEFAULT_MAX_SEQUENCE_LENGTH,
+                DEFAULT_ADD_SPECIAL_TOKENS);
+    }
+
+    /**
+     * Full constructor allowing override of all parameters including model/vocab details and tokenizer settings.
+     *
+     * @param modelName                  Filename of the SameDiff model.
+     * @param modelUrl                   URL to download the SameDiff model (can be null if providedModelPath is set).
+     * @param vocabName                  Filename of the vocabulary.
+     * @param vocabUrl                   URL to download the vocabulary (can be null if providedVocabPath is set).
+     * @param providedModelPath          Local path to the SameDiff model.
+     * @param providedVocabPath          Local path to the vocabulary.
+     * @param doLowerCaseAndStripAccents Whether to lowercase text and strip accents.
+     * @param maxSequenceLength          Maximum sequence length for tokenization.
+     * @param addSpecialTokens           Whether to add [CLS] and [SEP] tokens.
+     * @throws IOException        If model or vocab loading fails.
+     * @throws URISyntaxException If URLs are malformed.
+     */
+    public ArcticEmbedSameDiffEncoder(@NotNull String modelName, @Nullable String modelUrl,
+                                      @NotNull String vocabName, @Nullable String vocabUrl,
+                                      @Nullable String providedModelPath, @Nullable String providedVocabPath,
+                                      boolean doLowerCaseAndStripAccents, int maxSequenceLength, boolean addSpecialTokens)
+            throws IOException, URISyntaxException {
+        super(modelName, modelUrl, vocabName, vocabUrl,
+                providedModelPath, providedVocabPath,
                 List.of(INPUT_IDS_TENSOR_NAME, ATTENTION_MASK_TENSOR_NAME, TOKEN_TYPE_IDS_TENSOR_NAME),
                 Collections.singletonList(OUTPUT_EMBEDDING_TENSOR_NAME),
-                DO_LOWERCASE_AND_STRIP_ACCENTS,
-                MAX_SEQUENCE_LENGTH,
-                ADD_SPECIAL_TOKENS);
+                doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
     }
 
     @Override
-    public Map<String, Integer> encode(@NotNull String query) {
+    public float[] encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);
@@ -70,12 +116,13 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
         INDArray tokenTypeIdsArr = Nd4j.create(new long[][]{encoding.tokenTypeIds}).castTo(DataType.INT64);
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
+        // Assumes inputTensorNamesForModel was set in the constructor in the order: ids, mask, type_ids
         placeholderMap.put(this.inputTensorNamesForModel.get(0), inputIdsArr);
-        if (this.inputTensorNamesForModel.size() > 1 && this.inputTensorNamesForModel.contains(ATTENTION_MASK_TENSOR_NAME)) {
-            placeholderMap.put(ATTENTION_MASK_TENSOR_NAME, attentionMaskArr);
+        if (this.inputTensorNamesForModel.size() > 1) {
+            placeholderMap.put(this.inputTensorNamesForModel.get(1), attentionMaskArr);
         }
-        if (this.inputTensorNamesForModel.size() > 2 && this.inputTensorNamesForModel.contains(TOKEN_TYPE_IDS_TENSOR_NAME)) {
-            placeholderMap.put(TOKEN_TYPE_IDS_TENSOR_NAME, tokenTypeIdsArr);
+        if (this.inputTensorNamesForModel.size() > 2) {
+            placeholderMap.put(this.inputTensorNamesForModel.get(2), tokenTypeIdsArr);
         }
 
         try {
@@ -83,20 +130,24 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
             INDArray hiddenStates = outputMap.get(this.outputTensorNamesFromModel.get(0)); // e.g. last_hidden_state
 
             if (hiddenStates == null) {
+                LOG.error("Output tensor '{}' not found in SameDiff model output for query: {}", this.outputTensorNamesFromModel.get(0), query);
                 return null;
             }
 
             // Arctic and many sentence-transformers use mean pooling of last hidden state,
             // masked by attention_mask.
             if (hiddenStates.rank() != 3 || hiddenStates.shape()[0] != 1) { // Expect [1, seq_len, hidden_dim]
-                // System.err.println("Unexpected hiddenStates tensor rank or batch size: " + hiddenStates.rank());
+                LOG.warn("Unexpected hiddenStates tensor rank or batch size: {}. Expected [1, seq_len, hidden_dim], got {}.",
+                        hiddenStates.rank(), Arrays.toString(hiddenStates.shape()));
                 return null;
             }
 
             // Expand attention_mask to be broadcastable with hiddenStates for masking
             // hiddenStates: [1, seq_len, hidden_dim]
             // attentionMaskArr: [1, seq_len] -> expand to [1, seq_len, 1]
-            INDArray expandedAttentionMask = attentionMaskArr.reshape(1, MAX_SEQUENCE_LENGTH, 1).castTo(hiddenStates.dataType());
+            // Use the actual sequence length from the attention mask for reshaping.
+            long currentSequenceLength = attentionMaskArr.shape()[1];
+            INDArray expandedAttentionMask = attentionMaskArr.reshape(1, currentSequenceLength, 1).castTo(hiddenStates.dataType());
 
             // Mask hidden states
             INDArray maskedHiddenStates = hiddenStates.mul(expandedAttentionMask);
@@ -106,7 +157,7 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             // Sum attention mask to get count of actual tokens
             INDArray sumAttentionMask = expandedAttentionMask.sum(true, 1); // sum along axis 1 -> [1, 1, 1]
-            sumAttentionMask = Transforms.max(sumAttentionMask, 1e-9); // Avoid division by zero, ensure it's at least a small number
+            sumAttentionMask = Transforms.max(sumAttentionMask, Nd4j.scalar(sumAttentionMask.dataType(), 1e-9)); // Avoid division by zero
 
             // Mean pooling
             INDArray meanPooled = sumHiddenStates.divi(sumAttentionMask); // [1,1,hidden_dim]
@@ -115,17 +166,15 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             // L2 Normalize
             INDArray norm = finalEmbedding.norm2(true, 1);
-            if(norm.isScalar() && norm.getDouble(0) == 0.0) {
-                norm = Nd4j.scalar(finalEmbedding.dataType(), 1e-12);
-            } else if (!norm.isScalar()) {
-                norm.addi(1e-12);
-            }
+            INDArray epsilon = Nd4j.scalar(finalEmbedding.dataType(), 1e-12);
+            norm = norm.add(epsilon); // Add epsilon to prevent division by zero
+
             INDArray normalizedEmbedding = finalEmbedding.divi(norm);
 
             return normalizedEmbedding.toFloatVector();
 
         } catch (Exception e) {
-            // throw new RuntimeException("Error during SameDiff encoding for query: " + query, e);
+            LOG.error("Error during SameDiff Arctic encoding for query: " + query, e);
             return null;
         }
     }

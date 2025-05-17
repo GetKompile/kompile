@@ -33,7 +33,7 @@
 package io.anserini.search;
 
 import io.anserini.analysis.AnalyzerUtils;
-import io.anserini.encoder.samediff.SameDiffEncoder;
+import io.anserini.encoder.samediff.sparse.SameDiffSparseEncoder; // Use the specific sparse encoder base
 import io.anserini.index.Constants;
 import io.anserini.index.IndexReaderUtils;
 import io.anserini.rerank.RerankerCascade;
@@ -57,6 +57,7 @@ import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
+import org.jetbrains.annotations.Nullable; // Ensure this is imported
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -76,26 +77,28 @@ import java.util.stream.Collectors;
 
 
 /**
- * Class that exposes basic search functionality, designed specifically to provide the bridge between Java and Python
- * via pyjnius. Note that methods are named according to Python conventions (e.g., snake case instead of camel case).
+ * Class that exposes basic search functionality for impact-ordered indexes,
+ * designed to provide the bridge between Java and Python via pyjnius.
+ * Methods are named according to Python conventions (e.g., snake case).
  */
 public class SimpleImpactSearcher implements Closeable {
   private static final Sort BREAK_SCORE_TIES_BY_DOCID =
-      new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
+          new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
   private static final Logger LOG = LogManager.getLogger(SimpleImpactSearcher.class);
 
   protected IndexReader reader;
   protected Similarity similarity;
-  protected BagOfWordsQueryGenerator generator;
+  protected BagOfWordsQueryGenerator generator; // Uses float weights for impact scores
   protected Analyzer analyzer;
   protected RerankerCascade cascade;
   protected IndexSearcher searcher = null;
   protected boolean backwardsCompatibilityLucene8;
-  private SameDiffEncoder queryEncoder = null;
+  protected SameDiffSparseEncoder queryImpactEncoder = null;
   protected boolean useRM3;
   protected boolean useRocchio;
 
   protected SimpleImpactSearcher() {
+    // For subclassing
   }
 
   /**
@@ -105,42 +108,40 @@ public class SimpleImpactSearcher implements Closeable {
    * @throws IOException if errors encountered during initialization
    */
   public SimpleImpactSearcher(String indexDir) throws IOException {
-    this(indexDir, new WhitespaceAnalyzer());
+    this(indexDir, new WhitespaceAnalyzer(), null);
   }
 
   /**
    * Creates a {@code SimpleImpactSearcher}.
    *
-   * @param indexDir index directory
-   * @param queryEncoder query encoder
+   * @param indexDir     index directory
+   * @param queryEncoder instance of SameDiffSparseEncoder to use for query term weighting
    * @throws IOException if errors encountered during initialization
    */
-  public SimpleImpactSearcher(String indexDir, String queryEncoder) throws IOException {
-    this(indexDir, new WhitespaceAnalyzer());
-    this.set_onnx_query_encoder(queryEncoder);
+  public SimpleImpactSearcher(String indexDir, SameDiffSparseEncoder queryEncoder) throws IOException {
+    this(indexDir, new WhitespaceAnalyzer(), queryEncoder);
   }
 
   /**
    * Creates a {@code SimpleImpactSearcher}.
    *
    * @param indexDir index directory
-   * @param queryEncoder query encoder
-   * @param analyzer Analyzer
-   * @throws IOException if errors encountered during initialization
-   */
-  public SimpleImpactSearcher(String indexDir, String queryEncoder, Analyzer analyzer) throws IOException {
-    this(indexDir, analyzer);
-    this.set_onnx_query_encoder(queryEncoder);
-  }
-
-  /**
-   * Creates a {@code SimpleImpactSearcher}.
-   *
-   * @param indexDir index directory
-   * @param analyzer Analyzer
+   * @param analyzer Analyzer for default query processing if no encoder is set
    * @throws IOException if errors encountered during initialization
    */
   public SimpleImpactSearcher(String indexDir, Analyzer analyzer) throws IOException {
+    this(indexDir, analyzer, null);
+  }
+
+  /**
+   * Creates a {@code SimpleImpactSearcher}.
+   *
+   * @param indexDir     index directory
+   * @param analyzer     Analyzer to use if no query encoder is provided or for RM3/Rocchio
+   * @param queryEncoder instance of SameDiffSparseEncoder to use for query term weighting
+   * @throws IOException if errors encountered during initialization
+   */
+  public SimpleImpactSearcher(String indexDir, Analyzer analyzer, @Nullable SameDiffSparseEncoder queryEncoder) throws IOException {
     Path indexPath = Paths.get(indexDir);
 
     if (!Files.exists(indexPath) || !Files.isDirectory(indexPath) || !Files.isReadable(indexPath)) {
@@ -148,16 +149,11 @@ public class SimpleImpactSearcher implements Closeable {
     }
 
     this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
-
-    // Fix for index compatibility issue between Lucene 8 and 9: https://github.com/castorini/anserini/issues/1952
-    // If we detect an older index version, we turn off consistent tie-breaking, which avoids accessing docvalues,
-    // which is the source of the incompatibility.
     this.backwardsCompatibilityLucene8 = !reader.toString().contains("lucene.version=9");
-
-    // Default to using ImpactSimilarity.
-    this.similarity = new ImpactSimilarity();
+    this.similarity = new ImpactSimilarity(); // Default for impact searchers
     this.analyzer = analyzer;
-    this.generator = new BagOfWordsQueryGenerator();
+    this.generator = new BagOfWordsQueryGenerator(); // Uses float weights
+    this.queryImpactEncoder = queryEncoder;
     this.useRM3 = false;
     this.useRocchio = false;
     cascade = new RerankerCascade();
@@ -165,28 +161,25 @@ public class SimpleImpactSearcher implements Closeable {
   }
 
   /**
-   * Sets the query encoder
-   * 
-   * @param encoder the query encoder
+   * Sets the query impact encoder. This encoder is responsible for converting a raw query string
+   * into a map of term weights ({@code Map<String, Float>}).
+   *
+   * @param encoder the {@link SameDiffSparseEncoder} instance to use.
    */
-  public void set_onnx_query_encoder(String encoder) {
-    if (emptyEncoder()) {
+  public void set_query_encoder(SameDiffSparseEncoder encoder) {
+    if (this.queryImpactEncoder != null && this.queryImpactEncoder != encoder) {
+      LOG.warn("Overwriting existing query impact encoder.");
       try {
-        this.queryEncoder = (SameDiffEncoder) Class
-            .forName(String.format("io.anserini.encoder.sparse.%sEncoder", encoder))
-            .getConstructor().newInstance();
+        this.queryImpactEncoder.close();
       } catch (Exception e) {
-        throw new RuntimeException(e);
+        LOG.warn("Error closing previous query impact encoder: ", e);
       }
-    }  
-  }
-
-  private boolean emptyEncoder(){
-    return this.queryEncoder == null;
+    }
+    this.queryImpactEncoder = encoder;
   }
 
   /**
-   * Sets the analyzer used.
+   * Sets the analyzer.
    *
    * @param analyzer analyzer to use
    */
@@ -194,88 +187,41 @@ public class SimpleImpactSearcher implements Closeable {
     this.analyzer = analyzer;
   }
 
-  /**
-   * Returns the analyzer used.
-   *
-   * @return analyzed used
-   */
-  public Analyzer get_analyzer(){
+  public Analyzer get_analyzer() {
     return this.analyzer;
   }
 
-  /**
-   * Determines if RM3 query expansion is enabled.
-   *
-   * @return true if RM query expansion is enabled; false otherwise.
-   */
   public boolean use_rm3() {
     return useRM3;
   }
 
-  /**
-   * Disables RM3 query expansion.
-   */
   public void unset_rm3() {
     this.useRM3 = false;
     cascade = new RerankerCascade();
     cascade.add(new ScoreTiesAdjusterReranker());
   }
 
-  /**
-   * Enables RM3 query expansion with default parameters.
-   */
-  @SuppressWarnings("unused")
   public void set_rm3() {
     SearchCollection.Args defaults = new SearchCollection.Args();
     set_rm3(Integer.parseInt(defaults.rm3_fbTerms[0]), Integer.parseInt(defaults.rm3_fbDocs[0]),
-        Float.parseFloat(defaults.rm3_originalQueryWeight[0]));
+            Float.parseFloat(defaults.rm3_originalQueryWeight[0]));
   }
 
-  /**
-   * Enables RM3 query expansion with default parameters.
-   *
-   * @param collectionClass class for on-the-fly document parsing if index does not contain docvectors
-   */
-  @SuppressWarnings("unused")
   public void set_rm3(String collectionClass) {
     SearchCollection.Args defaults = new SearchCollection.Args();
     set_rm3(collectionClass, Integer.parseInt(defaults.rm3_fbTerms[0]), Integer.parseInt(defaults.rm3_fbDocs[0]),
-        Float.parseFloat(defaults.rm3_originalQueryWeight[0]));
+            Float.parseFloat(defaults.rm3_originalQueryWeight[0]));
   }
 
-  /**
-   * Enables RM3 query expansion with specified parameters.
-   *
-   * @param fbTerms number of expansion terms
-   * @param fbDocs number of expansion documents
-   * @param originalQueryWeight weight to assign to the original query
-   */
   public void set_rm3(int fbTerms, int fbDocs, float originalQueryWeight) {
     set_rm3(null, fbTerms, fbDocs, originalQueryWeight, false, true);
   }
 
-  /**
-   * Enables RM3 query expansion with specified parameters.
-   *
-   * @param collectionClass class for on-the-fly document parsing if index does not contain docvectors
-   * @param fbTerms number of expansion terms
-   * @param fbDocs number of expansion documents
-   * @param originalQueryWeight weight to assign to the original query
-   */
   public void set_rm3(String collectionClass, int fbTerms, int fbDocs, float originalQueryWeight) {
     set_rm3(collectionClass, fbTerms, fbDocs, originalQueryWeight, false, true);
   }
 
-  /**
-   * Enables RM3 query expansion with specified parameters.
-   *
-   * @param collectionClass class for on-the-fly document parsing if index does not contain docvectors
-   * @param fbTerms number of expansion terms
-   * @param fbDocs number of expansion documents
-   * @param originalQueryWeight weight to assign to the original query
-   * @param outputQuery flag to print original and expanded queries
-   * @param filterTerms whether to filter terms to be English only
-   */
+  @SuppressWarnings("rawtypes")
   public void set_rm3(String collectionClass, int fbTerms, int fbDocs, float originalQueryWeight, boolean outputQuery, boolean filterTerms) {
     Class clazz = null;
     try {
@@ -283,72 +229,43 @@ public class SimpleImpactSearcher implements Closeable {
         clazz = Class.forName("io.anserini.collection." + collectionClass);
       }
     } catch (ClassNotFoundException e) {
-      LOG.error("collectionClass: " + collectionClass + " not found!");
+      LOG.error("collectionClass: {} not found!", collectionClass);
     }
 
     useRM3 = true;
     cascade = new RerankerCascade("rm3");
     cascade.add(new Rm3Reranker(this.analyzer, clazz, Constants.CONTENTS,
-        fbTerms, fbDocs, originalQueryWeight, outputQuery, filterTerms));
+            fbTerms, fbDocs, originalQueryWeight, outputQuery, filterTerms));
     cascade.add(new ScoreTiesAdjusterReranker());
   }
 
-  /**
-   * Determines if Rocchio query expansion is enabled.
-   *
-   * @return true if Rocchio query expansion is enabled; false otherwise.
-   */
   public boolean use_rocchio() {
     return useRocchio;
   }
 
-  /**
-   * Disables Rocchio query expansion.
-   */
   public void unset_rocchio() {
     this.useRocchio = false;
     cascade = new RerankerCascade();
     cascade.add(new ScoreTiesAdjusterReranker());
   }
 
-  /**
-   * Enables Rocchio query expansion with default parameters.
-   */
   public void set_rocchio() {
     SearchCollection.Args defaults = new SearchCollection.Args();
     set_rocchio(null, Integer.parseInt(defaults.rocchio_topFbTerms[0]), Integer.parseInt(defaults.rocchio_topFbDocs[0]),
-        Integer.parseInt(defaults.rocchio_bottomFbTerms[0]), Integer.parseInt(defaults.rocchio_bottomFbDocs[0]),
-        Float.parseFloat(defaults.rocchio_alpha[0]), Float.parseFloat(defaults.rocchio_beta[0]),
-        Float.parseFloat(defaults.rocchio_gamma[0]), false, false);
+            Integer.parseInt(defaults.rocchio_bottomFbTerms[0]), Integer.parseInt(defaults.rocchio_bottomFbDocs[0]),
+            Float.parseFloat(defaults.rocchio_alpha[0]), Float.parseFloat(defaults.rocchio_beta[0]),
+            Float.parseFloat(defaults.rocchio_gamma[0]), false, false);
   }
 
-  /**
-   * Enables Rocchio query expansion with default parameters.
-   *
-   * @param collectionClass class for on-the-fly document parsing if index does not contain docvectors
-   */
   public void set_rocchio(String collectionClass) {
     SearchCollection.Args defaults = new SearchCollection.Args();
     set_rocchio(collectionClass, Integer.parseInt(defaults.rocchio_topFbTerms[0]), Integer.parseInt(defaults.rocchio_topFbDocs[0]),
-        Integer.parseInt(defaults.rocchio_bottomFbTerms[0]), Integer.parseInt(defaults.rocchio_bottomFbDocs[0]),
-        Float.parseFloat(defaults.rocchio_alpha[0]), Float.parseFloat(defaults.rocchio_beta[0]),
-        Float.parseFloat(defaults.rocchio_gamma[0]), false, false);
+            Integer.parseInt(defaults.rocchio_bottomFbTerms[0]), Integer.parseInt(defaults.rocchio_bottomFbDocs[0]),
+            Float.parseFloat(defaults.rocchio_alpha[0]), Float.parseFloat(defaults.rocchio_beta[0]),
+            Float.parseFloat(defaults.rocchio_gamma[0]), false, false);
   }
 
-  /**
-   * Enables Rocchio query expansion with specified parameters.
-   *
-   * @param collectionClass class for on-the-fly document parsing if index does not contain docvectors
-   * @param topFbTerms number of relevant expansion terms
-   * @param topFbDocs number of relevant expansion documents
-   * @param bottomFbTerms number of nonrelevant expansion terms
-   * @param bottomFbDocs number of nonrelevant expansion documents
-   * @param alpha weight to assign to the original query
-   * @param beta weight to assign to the relevant document vectors
-   * @param gamma weight to assign to the nonrelevant document vectors
-   * @param outputQuery flag to print original and expanded queries
-   * @param useNegative flag to use negative feedback
-   */
+  @SuppressWarnings("rawtypes")
   public void set_rocchio(String collectionClass, int topFbTerms, int topFbDocs, int bottomFbTerms, int bottomFbDocs, float alpha, float beta, float gamma, boolean outputQuery, boolean useNegative) {
     Class clazz = null;
     try {
@@ -356,231 +273,95 @@ public class SimpleImpactSearcher implements Closeable {
         clazz = Class.forName("io.anserini.collection." + collectionClass);
       }
     } catch (ClassNotFoundException e) {
-      LOG.error("collectionClass: " + collectionClass + " not found!");
+      LOG.error("collectionClass: {} not found!", collectionClass);
     }
 
     useRocchio = true;
     cascade = new RerankerCascade("rocchio");
     cascade.add(new RocchioReranker(this.analyzer, clazz, Constants.CONTENTS,
-        topFbTerms, topFbDocs, bottomFbTerms, bottomFbDocs, alpha, beta, gamma, outputQuery, useNegative));
+            topFbTerms, topFbDocs, bottomFbTerms, bottomFbDocs, alpha, beta, gamma, outputQuery, useNegative));
     cascade.add(new ScoreTiesAdjusterReranker());
   }
 
-  /**
-   * Returns the {@link Similarity} (i.e., scoring function) currently being used.
-   *
-   * @return the {@link Similarity} currently being used
-   */
   public Similarity get_similarity() {
     return similarity;
   }
 
-  /**
-   * Returns the number of documents in the index.
-   *
-   * @return the number of documents in the index
-   */
+  public void set_similarity(Similarity similarity) {
+    this.similarity = similarity;
+    if (this.searcher != null) {
+      this.searcher.setSimilarity(similarity); // Update existing searcher instance
+    }
+  }
+
   public int get_total_num_docs() {
-    // Create an IndexSearch only once. Note that the object is thread safe.
     if (searcher == null) {
       searcher = new IndexSearcher(reader);
       searcher.setSimilarity(similarity);
     }
-
     return searcher.getIndexReader().maxDoc();
   }
 
-  /**
-   * helper function to change Map<String, Int> to Map<String, Float>
-   *
-   * @param input map to be transformed
-   * @return transformed map
-   */
-  private Map<String, Float> intToFloat(Map<String,Integer> input) {
-    Map<String, Float> transformed = new HashMap<>();
-    for (Map.Entry<String, Integer> entry : input.entrySet()) {
-      transformed.put(entry.getKey(), entry.getValue().floatValue()); 
-    }
-    return transformed;
-  }
-
-  /**
-   * Closes this searcher.
-   */
   @Override
   public void close() {
     try {
       reader.close();
+      if (this.queryImpactEncoder != null) {
+        // Assuming SameDiffSparseEncoder implements AutoCloseable, which SameDiffEncoder does
+        this.queryImpactEncoder.close();
+      }
     } catch (Exception e) {
-      // Eat any exceptions.
+      LOG.warn("Exception while closing SimpleImpactSearcher: ", e);
     }
   }
 
   /**
-   * Searches in batch using multiple threads.
+   * Encodes a raw query string into a map of term weights.
+   * If a queryImpactEncoder is set, it's used. Otherwise, falls back to
+   * basic analysis with uniform term weights.
    *
-   * @param encoded_queries list of queries
-   * @param qids    list of unique query ids
-   * @param k       number of hits
-   * @param threads number of threads
-   * @return a map of query id to search results
+   * @param queryString The raw query string.
+   * @return A map of terms to their float weights.
    */
-  public Map<String, ScoredDoc[]> batch_search(List<Map<String, Integer>> encoded_queries,
-                                               List<String> qids,
-                                               int k,
-                                               int threads) {
-    // Create the IndexSearcher here, if needed. We do it here because if we leave the creation to the search
-    // method, we might end up with a race condition as multiple threads try to concurrently create the IndexSearcher.
-    if (searcher == null) {
-      searcher = new IndexSearcher(reader);
-      searcher.setSimilarity(similarity);
-    }
-
-    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
-    ConcurrentHashMap<String, ScoredDoc[]> results = new ConcurrentHashMap<>();
-
-    int queryCnt = encoded_queries.size();
-    for (int q = 0; q < queryCnt; ++q) {
-      Map<String, Integer> query = encoded_queries.get(q);
-      String qid = qids.get(q);
-      executor.execute(() -> {
-        try {
-          results.put(qid, search(query, k));
-        } catch (IOException  e) {
-          throw new CompletionException(e);
-        }
-      });
-    }
-
-    executor.shutdown();
-
-    try {
-      // Wait for existing tasks to terminate
-      while (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
-        // Opportunity to perform status logging, but no-op here because logging interferes with Python tqdm
-      }
-    } catch (InterruptedException ie) {
-      // (Re-)Cancel if current thread also interrupted
-      executor.shutdownNow();
-      // Preserve interrupt status
-      Thread.currentThread().interrupt();
-    }
-
-    if (queryCnt != executor.getCompletedTaskCount()) {
-      throw new RuntimeException("queryCount = " + queryCnt +
-          " is not equal to completedTaskCount =  " + executor.getCompletedTaskCount());
-    }
-
-    return results;
-  }
-
-  /**
-   * Searches in batch using multiple threads.
-   *
-   * @param queries list of String queries
-   * @param qids    list of unique query ids
-   * @param k       number of hits
-   * @param threads number of threads
-   * @return a map of query id to search results
-   */
-  @SuppressWarnings("unused")
-  public Map<String, ScoredDoc[]> batch_search_queries(List<String> queries,
-                                                       List<String> qids,
-                                                       int k,
-                                                       int threads) {
-    // Create the IndexSearcher here, if needed. We do it here because if we leave the creation to the search
-    // method, we might end up with a race condition as multiple threads try to concurrently create the IndexSearcher.
-    if (searcher == null) {
-      searcher = new IndexSearcher(reader);
-      searcher.setSimilarity(similarity);
-    }
-
-    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
-    ConcurrentHashMap<String, ScoredDoc[]> results = new ConcurrentHashMap<>();
-
-    int queryCnt = queries.size();
-    for (int q = 0; q < queryCnt; ++q) {
-      String query = queries.get(q);
-      String qid = qids.get(q);
-      executor.execute(() -> {
-        try {
-          results.put(qid, search(query, k));
-        } catch (IOException  e) {
-          throw new CompletionException(e);
-        }
-      });
-    }
-
-    executor.shutdown();
-
-    try {
-      // Wait for existing tasks to terminate
-      while (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
-        // Opportunity to perform status logging, but no-op here because logging interferes with Python tqdm
-      }
-    } catch (InterruptedException ie) {
-      // (Re-)Cancel if current thread also interrupted
-      executor.shutdownNow();
-      // Preserve interrupt status
-      Thread.currentThread().interrupt();
-    }
-
-    if (queryCnt != executor.getCompletedTaskCount()) {
-      throw new RuntimeException("queryCount = " + queryCnt +
-          " is not equal to completedTaskCount =  " + executor.getCompletedTaskCount());
-    }
-
-    return results;
-  }
-
-  /**
-   * Encodes the query using the onnx encoder
-   * 
-   * @param queryString query string
-   * @return encoded query
-   */
-  public Map<String, Integer> encode_with_onnx(String queryString)  {
-    // if no query encoder, assume its encoded query split by whitespace
-    if (this.queryEncoder == null){
+  protected Map<String, Float> encode_query_to_weights(String queryString) {
+    if (this.queryImpactEncoder != null) {
+      // SameDiffSparseEncoder returns Map<String, Float>
+      return this.queryImpactEncoder.encode(queryString);
+    } else {
+      LOG.warn("No query impact encoder set. Using basic bag-of-words tokenization with uniform weights via analyzer: {}",
+              analyzer.getClass().getSimpleName());
       List<String> queryTokens = AnalyzerUtils.analyze(analyzer, queryString);
-      return queryTokens.stream().collect(Collectors.toMap(e->e, (a)->1, Integer::sum));
+      // Return as Map<String, Float> with uniform weights (1.0f)
+      return queryTokens.stream().collect(Collectors.toMap(token -> token, token -> 1.0f, Float::sum, HashMap::new));
     }
-
-    return (Map<String, Integer>) this.queryEncoder.encode(queryString);
   }
 
   /**
-   * Encodes the weight map using the onnx encoder
-   * 
-   * @param queryWeight query weight map
-   * @return encoded query
+   * Helper to convert integer-weighted map to float-weighted map.
    */
-  public String encode_with_onnx(Map<String, Integer> queryWeight) {
-    List<String> encodedQuery = new ArrayList<>();
-    for (Map.Entry<String, Integer> entry : queryWeight.entrySet()) {
-      String token = entry.getKey();
-      Integer tokenWeight = entry.getValue();
-      for (int i = 0; i < tokenWeight; ++i) {
-        encodedQuery.add(token);
-      }
+  private Map<String, Float> intMapToFloatMap(Map<String, Integer> inputMap) {
+    if (inputMap == null) {
+      return new HashMap<>();
     }
-    return String.join(" ", encodedQuery);
+    return inputMap.entrySet().stream()
+            .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().floatValue()));
   }
 
   /**
-   * Searches the collection, returning 10 hits by default.
+   * Searches the collection with a raw string query, returning k hits.
    *
-   * @param encoded_q query
+   * @param q raw string query
+   * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
-   * @throws  if error encountered during search
    */
-  public ScoredDoc[] search(Map<String, Integer> encoded_q) throws IOException {
-    return search(encoded_q, 10);
+  public ScoredDoc[] search(String q, int k) throws IOException {
+    Map<String, Float> weightedQueryTerms = encode_query_to_weights(q);
+    return search_with_float_weights(weightedQueryTerms, k, q); // Pass original query for context
   }
 
   /**
-   * Searches the collection, returning 10 hits by default.
+   * Searches the collection with a raw string query, returning 10 hits by default.
    *
    * @param q raw string query
    * @return array of search results
@@ -591,158 +372,263 @@ public class SimpleImpactSearcher implements Closeable {
   }
 
   /**
-   * Searches the collection.
+   * Searches the collection with pre-computed integer term weights.
    *
-   * @param encoded_q query
+   * @param queryTermWeights map of query terms to their integer weights
    * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
    */
-  public ScoredDoc[] search(Map<String, Integer> encoded_q, int k) throws IOException {
-    Map<String, Float> float_encoded_q = intToFloat(encoded_q);
-    Query query = generator.buildQuery(Constants.CONTENTS, float_encoded_q);
-    String encodedQuery = encode_with_onnx(encoded_q);
-    return _search(query, encodedQuery, k);
+  public ScoredDoc[] search_with_integer_weights(Map<String, Integer> queryTermWeights, int k) throws IOException {
+    Map<String, Float> floatWeightedQueryTerms = intMapToFloatMap(queryTermWeights);
+    String contextQueryString = queryTermWeights.keySet().stream().collect(Collectors.joining(" "));
+    return search_with_float_weights(floatWeightedQueryTerms, k, contextQueryString);
   }
 
   /**
-   * Searches the collection.
-   *
-   * @param q string query
-   * @param k number of hits
+   * Searches the collection with pre-computed integer term weights, returning 10 hits by default.
+   * @param queryTermWeights map of query terms to their integer weights
    * @return array of search results
    * @throws IOException if error encountered during search
    */
-  public ScoredDoc[] search(String q, int k) throws IOException {
-    // make encoded query from raw query
-    Map<String, Integer> encoded_q = encode_with_onnx(q);
-    String encodedQuery = encode_with_onnx(encoded_q);
-    Query query = generator.buildQuery(Constants.CONTENTS, analyzer, encodedQuery);
-    return _search(query, encodedQuery, k);
+  public ScoredDoc[] search_with_integer_weights(Map<String, Integer> queryTermWeights) throws IOException {
+    return search_with_integer_weights(queryTermWeights, 10);
   }
 
-  // internal implementation
-  protected ScoredDoc[] _search(Query query, String encodedQuery, int k) throws IOException {
-    // Create an IndexSearch only once. Note that the object is thread safe.
+  /**
+   * Searches the collection with pre-computed float term weights.
+   *
+   * @param queryTermWeights map of query terms to their float weights
+   * @param k number of hits
+   * @param originalQueryString original query string, used for reranking context (can be null if not available)
+   * @return array of search results
+   * @throws IOException if error encountered during search
+   */
+  public ScoredDoc[] search_with_float_weights(Map<String, Float> queryTermWeights, int k, @Nullable String originalQueryString) throws IOException {
+    Query luceneQuery = generator.buildQuery(Constants.CONTENTS, queryTermWeights);
+
+    List<String> queryTokensForContext;
+    String queryStringForContext;
+
+    if (originalQueryString != null && !originalQueryString.isEmpty()) {
+      queryStringForContext = originalQueryString;
+      queryTokensForContext = AnalyzerUtils.analyze(analyzer, originalQueryString);
+    } else {
+      // If original query string is not available, reconstruct from weighted terms for context
+      queryStringForContext = queryTermWeights.keySet().stream().collect(Collectors.joining(" "));
+      queryTokensForContext = new ArrayList<>(queryTermWeights.keySet());
+    }
+
+    return _search(luceneQuery, queryStringForContext, queryTokensForContext, k);
+  }
+
+  /**
+   * Searches the collection with pre-computed float term weights, returning 10 hits by default.
+   * The original query string for context will be reconstructed from the terms.
+   *
+   * @param queryTermWeights map of query terms to their float weights
+   * @return array of search results
+   * @throws IOException if error encountered during search
+   */
+  public ScoredDoc[] search_with_float_weights(Map<String, Float> queryTermWeights) throws IOException {
+    String contextQueryString = queryTermWeights.keySet().stream().collect(Collectors.joining(" "));
+    return search_with_float_weights(queryTermWeights, 10, contextQueryString);
+  }
+
+
+  // Internal search logic
+  protected ScoredDoc[] _search(Query query, String queryStringForContext, List<String> queryTokensForContext, int k) throws IOException {
     if (searcher == null) {
       searcher = new IndexSearcher(reader);
       searcher.setSimilarity(similarity);
     }
 
     SearchCollection.Args searchArgs = new SearchCollection.Args();
-    searchArgs.arbitraryScoreTieBreak = this.backwardsCompatibilityLucene8;
     searchArgs.hits = k;
-
-    // encoded query can be tokenized using whitespace analyzer
-    List<String> queryTokens = AnalyzerUtils.analyze(analyzer, encodedQuery);
+    searchArgs.arbitraryScoreTieBreak = this.backwardsCompatibilityLucene8;
 
     TopDocs rs;
-    RerankerContext context;
     if (this.backwardsCompatibilityLucene8) {
       rs = searcher.search(query, k);
     } else {
       rs = searcher.search(query, k, BREAK_SCORE_TIES_BY_DOCID, true);
     }
-    context = new RerankerContext<>(searcher, null, query, null,
-        encodedQuery, queryTokens, null, searchArgs);
+
+    RerankerContext<String> context = new RerankerContext<>(
+            searcher, null, query, null,
+            queryStringForContext, queryTokensForContext, null, searchArgs
+    );
 
     ScoredDocs hits = cascade.run(ScoredDocs.fromTopDocs(rs, searcher), context);
 
     ScoredDoc[] results = new ScoredDoc[hits.lucene_docids.length];
     for (int i = 0; i < hits.lucene_docids.length; i++) {
-      Document doc = hits.lucene_documents[i];
-      String docid = doc.getField(Constants.ID).stringValue();
-      results[i] = new ScoredDoc(docid, hits.lucene_docids[i], hits.scores[i], doc);
+      Document luceneDoc = hits.lucene_documents[i];
+      String docid = luceneDoc.getField(Constants.ID).stringValue();
+      results[i] = new ScoredDoc(docid, hits.lucene_docids[i], hits.scores[i], luceneDoc);
     }
-
     return results;
   }
 
   /**
-   * Fetches the Lucene {@link Document} based on an internal Lucene docid.
-   *
-   * @param lucene_docid internal Lucene docid
-   * @return corresponding Lucene {@link Document}
+   * Batch search with raw query strings.
    */
+  public Map<String, ScoredDoc[]> batch_search(List<String> queries_str, List<String> qids, int k, int threads) {
+    if (searcher == null) {
+      searcher = new IndexSearcher(reader);
+      searcher.setSimilarity(similarity);
+    }
+
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
+    ConcurrentHashMap<String, ScoredDoc[]> results = new ConcurrentHashMap<>();
+
+    for (int i = 0; i < queries_str.size(); i++) {
+      final String queryString = queries_str.get(i);
+      final String qid = qids.get(i);
+      executor.execute(() -> {
+        try {
+          results.put(qid, search(queryString, k));
+        } catch (IOException e) {
+          throw new CompletionException(e);
+        }
+      });
+    }
+    executor.shutdown();
+    try {
+      while (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
+        // loop until all tasks complete
+      }
+    } catch (InterruptedException e) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+    if (queries_str.size() != executor.getCompletedTaskCount()) {
+      LOG.error(String.format("Query count (%d) does not match completed task count (%d). Some queries may have failed.",
+              queries_str.size(), executor.getCompletedTaskCount()));
+    }
+    return results;
+  }
+
+  /**
+   * Batch search with pre-computed integer-weighted queries.
+   */
+  public Map<String, ScoredDoc[]> batch_search_integer_weights(List<Map<String, Integer>> weighted_queries,
+                                                               List<String> qids, int k, int threads) {
+    if (searcher == null) {
+      searcher = new IndexSearcher(reader);
+      searcher.setSimilarity(similarity);
+    }
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
+    ConcurrentHashMap<String, ScoredDoc[]> results = new ConcurrentHashMap<>();
+
+    for (int i = 0; i < weighted_queries.size(); i++) {
+      final Map<String, Integer> queryMap = weighted_queries.get(i);
+      final String qid = qids.get(i);
+      executor.execute(() -> {
+        try {
+          results.put(qid, search_with_integer_weights(queryMap, k));
+        } catch (IOException e) {
+          throw new CompletionException(e);
+        }
+      });
+    }
+    executor.shutdown();
+    try {
+      while (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
+        // loop
+      }
+    } catch (InterruptedException e) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+    if (weighted_queries.size() != executor.getCompletedTaskCount()) {
+      LOG.error(String.format("Query count (%d) does not match completed task count (%d). Some queries may have failed.",
+              weighted_queries.size(), executor.getCompletedTaskCount()));
+    }
+    return results;
+  }
+
+  /**
+   * Batch search with pre-computed float-weighted queries.
+   */
+  public Map<String, ScoredDoc[]> batch_search_float_weights(List<Map<String, Float>> weighted_queries,
+                                                             List<String> qids, int k, int threads) {
+    if (searcher == null) {
+      searcher = new IndexSearcher(reader);
+      searcher.setSimilarity(similarity);
+    }
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
+    ConcurrentHashMap<String, ScoredDoc[]> results = new ConcurrentHashMap<>();
+
+    for (int i = 0; i < weighted_queries.size(); i++) {
+      final Map<String, Float> queryMap = weighted_queries.get(i);
+      final String qid = qids.get(i);
+      // If original query strings are not available for context, reconstruct from terms
+      final String originalQueryContext = queryMap.keySet().stream().collect(Collectors.joining(" "));
+      executor.execute(() -> {
+        try {
+          results.put(qid, search_with_float_weights(queryMap, k, originalQueryContext));
+        } catch (IOException e) {
+          throw new CompletionException(e);
+        }
+      });
+    }
+    executor.shutdown();
+    try {
+      while (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
+        // loop
+      }
+    } catch (InterruptedException e) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+    if (weighted_queries.size() != executor.getCompletedTaskCount()) {
+      LOG.error(String.format("Query count (%d) does not match completed task count (%d). Some queries may have failed.",
+              weighted_queries.size(), executor.getCompletedTaskCount()));
+    }
+    return results;
+  }
+
   public Document doc(int lucene_docid) {
     try {
       return reader.storedFields().document(lucene_docid);
     } catch (Exception e) {
-      // Eat any exceptions and just return null.
+      LOG.warn("Error fetching document for lucene_docid {}: {}", lucene_docid, e.getMessage());
       return null;
     }
   }
 
-  /**
-   * Returns the Lucene {@link Document} based on a collection docid.
-   *
-   * @param docid collection docid
-   * @return corresponding Lucene {@link Document}
-   */
   public Document doc(String docid) {
     return IndexReaderUtils.document(reader, docid);
   }
 
-  /**
-   * Fetches the Lucene {@link Document} based on some field other than its unique collection docid.
-   * For example, scientific articles might have DOIs.
-   *
-   * @param field field
-   * @param id    unique id
-   * @return corresponding Lucene {@link Document} based on the value of a specific field
-   */
   public Document doc_by_field(String field, String id) {
     return IndexReaderUtils.documentByField(reader, field, id);
   }
 
-  /**
-   * Returns the "contents" field of a document based on an internal Lucene docid.
-   *
-   * @param lucene_docid internal Lucene docid
-   * @return the "contents" field the document
-   */
   public String doc_contents(int lucene_docid) {
     try {
       return reader.storedFields().document(lucene_docid).get(Constants.CONTENTS);
     } catch (Exception e) {
-      // Eat any exceptions and just return null.
+      LOG.warn("Error fetching contents for lucene_docid {}: {}", lucene_docid, e.getMessage());
       return null;
     }
   }
 
-  /**
-   * Returns the "contents" field of a document based on a collection docid.
-   *
-   * @param docid collection docid
-   * @return the "contents" field the document
-   */
   public String doc_contents(String docid) {
     return IndexReaderUtils.documentContents(reader, docid);
   }
 
-  /**
-   * Returns the "raw" field of a document based on an internal Lucene docid.
-   *
-   * @param lucene_docid internal Lucene docid
-   * @return the "raw" field the document
-   */
   public String doc_raw(int lucene_docid) {
     try {
       return reader.storedFields().document(lucene_docid).get(Constants.RAW);
     } catch (Exception e) {
-      // Eat any exceptions and just return null.
+      LOG.warn("Error fetching raw field for lucene_docid {}: {}", lucene_docid, e.getMessage());
       return null;
     }
   }
 
-  /**
-   * Returns the "raw" field of a document based on a collection docid.
-   *
-   * @param docid collection docid
-   * @return the "raw" field the document
-   */
   public String doc_raw(String docid) {
     return IndexReaderUtils.documentRaw(reader, docid);
   }
 }
-  

@@ -14,18 +14,17 @@
  *  * limitations under the License.
  */
 
-// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/encoder/samediff/CosDprDistilSameDiffEncoder.java
 package io.anserini.encoder.samediff;
 
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.indexing.NDArrayIndex;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -39,14 +38,15 @@ public class CosDprDistilSameDiffEncoder extends SameDiffEncoder<float[]> {
     private static final Logger LOG = LogManager.getLogger(CosDprDistilSameDiffEncoder.class);
 
     public static final String DEFAULT_MODEL_NAME = "cos-dpr-distil.sd";
-    public static final String DEFAULT_MODEL_URL = "https://PLACEHOLDER_URL/cos-dpr-distil.sd"; // Replace with actual URL
+    // IMPORTANT: Replace with actual URL if this model is to be downloadable
+    public static final String DEFAULT_MODEL_URL = "https://PLACEHOLDER_MODEL_URL/cos-dpr-distil.sd";
     public static final String DEFAULT_VOCAB_NAME = "cos-dpr-distil-vocab.txt";
     public static final String DEFAULT_VOCAB_URL = "https://huggingface.co/sentence-transformers/cos-dpr-distil/resolve/main/vocab.txt";
 
     public static final String INPUT_IDS_TENSOR_NAME = "input_ids";
     public static final String ATTENTION_MASK_TENSOR_NAME = "attention_mask";
-    public static final String TOKEN_TYPE_IDS_TENSOR_NAME = "token_type_ids";
-    public static final String OUTPUT_EMBEDDING_TENSOR_NAME = "last_hidden_state";
+    public static final String TOKEN_TYPE_IDS_TENSOR_NAME = "token_type_ids"; // Or "segment_ids" if model expects that
+    public static final String OUTPUT_EMBEDDING_TENSOR_NAME = "last_hidden_state"; // Common default for hidden states
 
     // Default tokenizer settings for this specific encoder
     public static final boolean DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
@@ -104,23 +104,25 @@ public class CosDprDistilSameDiffEncoder extends SameDiffEncoder<float[]> {
             if (embeddingTensor.rank() == 3 && embeddingTensor.shape()[0] == 1 && embeddingTensor.shape()[1] > 0) {
                 finalEmbedding = embeddingTensor.get(NDArrayIndex.point(0), NDArrayIndex.point(0), NDArrayIndex.all());
             } else if (embeddingTensor.rank() == 2 && embeddingTensor.shape()[0] == 1) {
+                // If already [1, hidden_dim], use as is.
                 finalEmbedding = embeddingTensor;
             } else {
-                LOG.warn("Unexpected embedding tensor shape: {}", Arrays.toString(embeddingTensor.shape()));
+                LOG.warn("Unexpected embedding tensor shape: {}. Expected [1, seq_len, hidden_dim] or [1, hidden_dim], got {}.",
+                        Arrays.toString(embeddingTensor.shape()), Arrays.toString(embeddingTensor.shape()));
                 return null;
             }
-            finalEmbedding = finalEmbedding.reshape(1, -1);
+            finalEmbedding = finalEmbedding.reshape(1, -1); // Ensure [1, hidden_dim]
 
             INDArray norm = finalEmbedding.norm2(true, 1);
             INDArray epsilon = Nd4j.scalar(finalEmbedding.dataType(), 1e-12);
-            norm = norm.add(epsilon);
+            norm = norm.add(epsilon); // Add epsilon to prevent division by zero
             INDArray normalizedEmbedding = finalEmbedding.divi(norm);
 
             return normalizedEmbedding.toFloatVector();
 
         } catch (Exception e) {
             LOG.error("Error during SameDiff CosDPR encoding for query: " + query, e);
-            throw new RuntimeException("Error during SameDiff encoding for query: " + query, e);
+            return null; // Changed from throw RuntimeException to return null for consistency
         }
     }
 }
