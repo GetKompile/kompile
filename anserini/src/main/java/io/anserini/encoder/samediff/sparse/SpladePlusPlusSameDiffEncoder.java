@@ -14,14 +14,18 @@
  *  * limitations under the License.
  */
 
+// File: getkompile/kompile/kompile-ag_new_kompile_cli/anserini/src/main/java/io/anserini/encoder/samediff/sparse/SpladePlusPlusSameDiffEncoder.java
 package io.anserini.encoder.samediff.sparse;
 
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
-import io.anserini.encoder.samediff.tokenizer.SamediffBertVocabulary; // For CLS, SEP, PAD constants
+import io.anserini.encoder.samediff.tokenizer.SamediffBertVocabulary;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -32,48 +36,43 @@ import java.util.List;
 import java.util.Map;
 
 public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffSparseEncoder {
+    private static final Logger LOG = LogManager.getLogger(SpladePlusPlusSameDiffEncoder.class);
 
-    // Common tensor names based on original SpladePlusPlusEncoder ONNX version
-    // These MUST match your converted SameDiff model's output tensor names
     public static final String INPUT_IDS_TENSOR_NAME = "input_ids";
     public static final String ATTENTION_MASK_TENSOR_NAME = "attention_mask";
     public static final String TOKEN_TYPE_IDS_TENSOR_NAME = "token_type_ids";
+    public static final String OUTPUT_IDX_TENSOR_NAME = "output_idx";
+    public static final String OUTPUT_WEIGHTS_TENSOR_NAME = "output_weights";
 
-    // Option 1: If SameDiff model outputs final indices and weights directly (like ONNX version)
-    public static final String OUTPUT_IDX_TENSOR_NAME = "output_idx";     // Tensor of vocabulary indices
-    public static final String OUTPUT_WEIGHTS_TENSOR_NAME = "output_weights"; // Tensor of corresponding weights
-
-    // Option 2: If SameDiff model outputs logits over vocabulary per token (more common for BERT backbone)
-    // public static final String OUTPUT_LOGITS_TENSOR_NAME = "logits"; // e.g., shape [1, vocab_size] after pooling
-
-    public static final int MAX_SEQUENCE_LENGTH = 512; // Default from original
-    public static final boolean DO_LOWERCASE_AND_STRIP_ACCENTS = true;
-    public static final boolean ADD_SPECIAL_TOKENS = true;
+    // Default tokenizer settings, can be overridden by specific SPLADE variants or CLI args
+    public static final boolean DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
+    public static final int DEFAULT_MAX_SEQUENCE_LENGTH = 512;
+    public static final boolean DEFAULT_ADD_SPECIAL_TOKENS = true;
+    public static final int DEFAULT_WEIGHT_RANGE = 10; // Example, may need tuning
+    public static final int DEFAULT_QUANT_RANGE = 256;  // Example, may need tuning
 
 
-    protected final SamediffBertVocabulary anseriniVocabulary; // Needed to map IDs to Tokens
+    protected final SamediffBertVocabulary anseriniVocabulary;
 
-    protected SpladePlusPlusSameDiffEncoder(@NotNull String modelName, @NotNull String modelUrl,
-                                            @NotNull String vocabName, @NotNull String vocabUrl)
+    protected SpladePlusPlusSameDiffEncoder(
+            @NotNull String modelName, @Nullable String modelUrl,
+            @NotNull String vocabName, @Nullable String vocabUrl,
+            @Nullable String providedModelPath, @Nullable String providedVocabPath,
+            boolean doLowerCaseAndStripAccents, int maxSequenceLength, boolean addSpecialTokens,
+            int weightRange, int quantRange)
             throws IOException, URISyntaxException {
-        super(modelName, modelUrl,
-                vocabName, vocabUrl, // This vocab is used for tokenizing input query
+        super(modelName, modelUrl, vocabName, vocabUrl,
+                providedModelPath, providedVocabPath,
                 List.of(INPUT_IDS_TENSOR_NAME, ATTENTION_MASK_TENSOR_NAME, TOKEN_TYPE_IDS_TENSOR_NAME),
-                // Define outputs based on how your SameDiff SPLADE model is structured.
-                // If it outputs indices and weights directly (like the ONNX version):
                 List.of(OUTPUT_IDX_TENSOR_NAME, OUTPUT_WEIGHTS_TENSOR_NAME),
-                // If it outputs full logits (more typical before top-k selection in SPLADE):
-                // Collections.singletonList(OUTPUT_LOGITS_TENSOR_NAME),
-                DO_LOWERCASE_AND_STRIP_ACCENTS,
-                MAX_SEQUENCE_LENGTH,
-                ADD_SPECIAL_TOKENS);
-        // Store a reference to the vocabulary used by the tokenizer preprocessor
+                doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens,
+                weightRange, quantRange);
         this.anseriniVocabulary = this.tokenizerPreProcessor.getVocabulary();
     }
 
 
     @Override
-    public Map<String, Integer> encode(@NotNull String query) {
+    public Map<String, Float> encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);
@@ -81,49 +80,45 @@ public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffSparseEncode
         INDArray tokenTypeIdsArr = Nd4j.create(new long[][]{encoding.tokenTypeIds}).castTo(DataType.INT64);
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
-        placeholderMap.put(INPUT_IDS_TENSOR_NAME, inputIdsArr);
-        placeholderMap.put(ATTENTION_MASK_TENSOR_NAME, attentionMaskArr);
-        placeholderMap.put(TOKEN_TYPE_IDS_TENSOR_NAME, tokenTypeIdsArr);
+        placeholderMap.put(this.inputTensorNamesForModel.get(0), inputIdsArr);
+        placeholderMap.put(this.inputTensorNamesForModel.get(1), attentionMaskArr);
+        placeholderMap.put(this.inputTensorNamesForModel.get(2), tokenTypeIdsArr);
 
         try {
-            // Assuming outputTensorNamesFromModel was set to [OUTPUT_IDX_TENSOR_NAME, OUTPUT_WEIGHTS_TENSOR_NAME] in constructor
             Map<String, INDArray> outputMap = this.sameDiffModel.output(placeholderMap, this.outputTensorNamesFromModel);
 
             INDArray indexesTensor = outputMap.get(OUTPUT_IDX_TENSOR_NAME);
             INDArray weightsTensor = outputMap.get(OUTPUT_WEIGHTS_TENSOR_NAME);
 
             if (indexesTensor == null || weightsTensor == null) {
+                LOG.warn("Output tensors for SPLADE++ (indices or weights) are null for query: {}", query);
                 return Collections.emptyMap();
             }
 
-            // Assuming indexesTensor and weightsTensor are 1D arrays of the same length
             long[] indexes = indexesTensor.toLongVector();
             float[] weights = weightsTensor.toFloatVector();
 
+            if (indexes.length != weights.length) {
+                LOG.error("Mismatch between length of index tensor ({}) and weight tensor ({}) for query: {}",
+                        indexes.length, weights.length, query);
+                return Collections.emptyMap();
+            }
+
             Map<String, Float> tokenFloatWeights = new LinkedHashMap<>();
             for (int i = 0; i < indexes.length; i++) {
-                // Skip special tokens by their ID (CLS=101, SEP=102, PAD=0 in many BERT vocabs)
-                // This relies on the vocabulary used by the SPLADE model itself (during its training/conversion)
-                // which might be different or have different IDs than our query tokenizer's vocab if not careful.
-                // For SPLADE, the `indexes` are IDs from its *own* vocabulary.
-                if (indexes[i] == this.anseriniVocabulary.getTokenId(SamediffBertVocabulary.CLS_TOKEN) ||
-                        indexes[i] == this.anseriniVocabulary.getTokenId(SamediffBertVocabulary.SEP_TOKEN) ||
-                        indexes[i] == this.anseriniVocabulary.getTokenId(SamediffBertVocabulary.PAD_TOKEN)) {
+                String token = this.anseriniVocabulary.getToken((int) indexes[i]);
+                if (token.equals(SamediffBertVocabulary.CLS_TOKEN) ||
+                        token.equals(SamediffBertVocabulary.SEP_TOKEN) ||
+                        token.equals(SamediffBertVocabulary.PAD_TOKEN)) {
                     continue;
                 }
-                // It's crucial that anseriniVocabulary correctly maps these output indices.
-                tokenFloatWeights.put(this.anseriniVocabulary.getToken((int)indexes[i]), weights[i]);
+                tokenFloatWeights.merge(token, weights[i], Float::sum);
             }
             return tokenFloatWeights;
 
         } catch (Exception e) {
-            // throw new RuntimeException("Error during SPLADE SameDiff encoding for query: " + query, e);
+            LOG.error("Error during SPLADE SameDiff encoding for query: " + query, e);
             return Collections.emptyMap();
         }
     }
-    // Helper method in SamediffBertTokenizerPreProcessor to expose vocabulary
-    // Add this to SamediffBertTokenizerPreProcessor.java:
-    // public SamediffBertVocabulary getVocabulary() { return this.vocabulary; }
-    // public SamediffBertWordPieceTokenizer getWordPieceTokenizer() {return this.wordPieceTokenizer; }
-
 }
