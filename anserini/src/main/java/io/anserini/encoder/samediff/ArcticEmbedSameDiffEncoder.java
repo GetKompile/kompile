@@ -27,7 +27,6 @@ import org.nd4j.linalg.ops.transforms.Transforms;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -63,7 +62,7 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
     }
 
     @Override
-    public float[] encode(@NotNull String query) {
+    public Map<String, Integer> encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);

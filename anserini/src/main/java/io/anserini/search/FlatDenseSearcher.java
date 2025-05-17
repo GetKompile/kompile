@@ -1,4 +1,20 @@
 /*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
+/*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +33,7 @@
 package io.anserini.search;
 
 import ai.onnxruntime.OrtException;
-import io.anserini.encoder.dense.DenseEncoder;
+import io.anserini.encoder.samediff.SameDiffEncoder;
 import io.anserini.index.Constants;
 import io.anserini.search.query.VectorQueryGenerator;
 import io.anserini.util.PrebuiltIndexHandler;
@@ -72,7 +88,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> 
 
   private final IndexReader reader;
   private final VectorQueryGenerator generator;
-  private final DenseEncoder encoder;
+  private final SameDiffEncoder encoder;
   // Dummy, but needed for KnnFloatVectorQuery
   private final int DUMMY_EF_SEARCH = 1000;
 
@@ -124,7 +140,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> 
             args.encoder.substring(0, args.encoder.length() - "Encoder".length()) :
             args.encoder;
 
-        encoder = (DenseEncoder) Class
+        encoder = (SameDiffEncoder) Class
             .forName(String.format("io.anserini.encoder.dense.%sEncoder", encoderName))
             .getConstructor().newInstance();
       } catch (Exception e) {
@@ -242,11 +258,8 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> 
    */
   public ScoredDoc[] search(@Nullable K qid, String query, int k) throws IOException {
     if (encoder != null) {
-      try {
         return search(qid, encoder.encode(query), k);
-      } catch (OrtException e) {
-        throw new RuntimeException("Error encoding query.");
-      }
+
     }
 
     KnnFloatVectorQuery vectorQuery = generator.buildQuery(Constants.VECTOR, query, DUMMY_EF_SEARCH);

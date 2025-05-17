@@ -28,6 +28,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 public abstract class SameDiffEncoder<T> implements AutoCloseable {
     private static final String CACHE_DIR_BASE = System.getProperty("user.home");
@@ -83,7 +84,7 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
         return cacheDir.getPath();
     }
 
-    public abstract T encode(@NotNull String query);
+    public abstract Map<String, Integer> encode(@NotNull String query);
 
     @Override
     public void close() {

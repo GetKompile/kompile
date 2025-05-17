@@ -14,7 +14,7 @@
  *  * limitations under the License.
  */
 
-package io.anserini.encoder.samediff;
+package io.anserini.encoder.samediff.sparse;
 
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertVocabulary; // For CLS, SEP, PAD constants
@@ -22,18 +22,16 @@ import org.jetbrains.annotations.NotNull;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.linalg.ops.transforms.Transforms; // For ReLU
 
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffEncoder<Map<String, Float>> {
+public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffSparseEncoder {
 
     // Common tensor names based on original SpladePlusPlusEncoder ONNX version
     // These MUST match your converted SameDiff model's output tensor names
@@ -75,7 +73,7 @@ public abstract class SpladePlusPlusSameDiffEncoder extends SameDiffEncoder<Map<
 
 
     @Override
-    public Map<String, Float> encode(@NotNull String query) {
+    public Map<String, Integer> encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
         INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);

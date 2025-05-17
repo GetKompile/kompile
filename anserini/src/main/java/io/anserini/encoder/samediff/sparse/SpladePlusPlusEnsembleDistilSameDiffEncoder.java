@@ -14,12 +14,12 @@
  *  * limitations under the License.
  */
 
-package io.anserini.encoder.samediff;
+package io.anserini.encoder.samediff.sparse;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
 
-public class SpladePlusPlusEnsembleDistilSameDiffEncoder extends io.anserini.encoder.samediff.SpladePlusPlusSameDiffEncoder {
+public class SpladePlusPlusEnsembleDistilSameDiffEncoder extends SpladePlusPlusSameDiffEncoder {
     // IMPORTANT: Update URLs to point to your converted SameDiff models (.sd files)
     public static final String DEFAULT_MODEL_NAME = "splade-pp-ed-optimized.sd";
     public static final String DEFAULT_MODEL_URL = "YOUR_MODEL_REPO_URL/splade-pp-ed-optimized.sd"; // Replace
