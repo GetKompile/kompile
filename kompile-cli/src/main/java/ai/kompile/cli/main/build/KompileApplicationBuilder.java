@@ -34,6 +34,7 @@ import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 // The Picocli command will need to know these keys.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Getter;
 import org.apache.commons.io.FileUtils;
 import org.apache.maven.model.Model; // For storing the generated POM model
 import org.apache.maven.shared.invoker.*;
@@ -59,6 +60,8 @@ import java.util.stream.Collectors;
  * Orchestrates the build of a Kompile application (pipeline executor, webapp, etc.)
  * by dynamically generating a Maven project and invoking Maven to build it.
  */
+
+@Getter
 public class KompileApplicationBuilder {
 
     // Runner FQCN Property Keys
@@ -79,8 +82,8 @@ public class KompileApplicationBuilder {
 
 
     private String imageNormalization;
-    private String outputImageName = "kompile-app";
-    private String outputDirectory = ".";
+    public String outputImageName = "kompile-app";
+    public String outputDirectory = ".";
     private String finalArtifactNameOverride;
     private String ragMcpAssistantParentVersion;
 
@@ -902,6 +905,11 @@ public class KompileApplicationBuilder {
         }
         this.tempFilesAndDirsToClean.clear();
         System.out.println("Temporary build files cleaned up.");
+    }
+
+    public KompileApplicationBuilder ragMcpAssistantParentVersion(String effectiveAppVersion) {
+        this.ragMcpAssistantParentVersion = effectiveAppVersion;
+        return this;
     }
 
 
