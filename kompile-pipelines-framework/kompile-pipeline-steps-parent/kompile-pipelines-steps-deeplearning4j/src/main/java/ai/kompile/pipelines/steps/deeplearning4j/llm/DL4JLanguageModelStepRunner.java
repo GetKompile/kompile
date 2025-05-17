@@ -33,6 +33,7 @@ import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.common.primitives.Pair;
+import org.nd4j.linalg.indexing.NDArrayIndex;
 
 import java.io.File;
 import java.io.IOException;
@@ -149,7 +150,8 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
         Object convContextObj = input.get(config.getConversationContextName());
         if (convContextObj instanceof List) {
             try {
-                ((List<?>) convContextObj).forEach(item -> conversationHistory.add((String) item));
+                List<String> finalConversationHistory = conversationHistory;
+                ((List<?>) convContextObj).forEach(item -> finalConversationHistory.add((String) item));
             } catch (ClassCastException e) {
                 log.warn("Conversation context (key: '{}') for step '{}' contains non-string elements, reinitializing history. Context ID: {}",
                         config.getConversationContextName(), config.getName(), context.executionId().orElse("N/A"), e);
@@ -157,14 +159,14 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
             }
         }
 
-        PipelineToolCallResponse toolResponse = input.getVerifiedObject(config.getToolCallResponseInputName(), PipelineToolCallResponse.class);
+        PipelineToolCallResponse toolResponse = input.get(config.getToolCallResponseInputName());
 
         if (toolResponse != null) {
             log.info("DL4J Runner (step '{}'): Received tool response for tool ID '{}', name '{}'. Context ID: {}",
-                    config.getName(), toolResponse.getToolCallId(), toolResponse.getToolName(), context.executionId().orElse("N/A"));
+                    config.getName(), toolResponse.getId(), toolResponse.getName(), context.executionId().orElse("N/A"));
             String formattedToolResponse = String.format("\n<tool_response tool_id=\"%s\" name=\"%s\">\n%s\n</tool_response>",
-                    toolResponse.getToolCallId(), toolResponse.getToolName(),
-                    objectMapper.writeValueAsString(toolResponse.getResponse()));
+                    toolResponse.getId(), toolResponse.getName(),
+                    objectMapper.writeValueAsString(toolResponse.getContent()));
             conversationHistory.add("system_tool_response: " + formattedToolResponse);
         } else {
             if (conversationHistory.isEmpty() || !lastMessageWasUserPrompt(conversationHistory, promptText)) {
@@ -197,17 +199,17 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
             for (int i = 0; i < maxNewTokens; i++) {
                 INDArray logits;
                 Map<String, INDArray> placeholderMap = new HashMap<>();
-
+                List<INDArray> inputs = new ArrayList<>();
                 if (computationGraphModel != null) {
-                    placeholderMap.put(computationGraphModel.getConfiguration().getInputNames().get(0), currentSequenceIds);
-                    if (attentionMask != null && computationGraphModel.getConfiguration().getInputNames().size() > 1) {
-                        placeholderMap.put(computationGraphModel.getConfiguration().getInputNames().get(1), attentionMask);
+                    inputs.add(currentSequenceIds);
+                    if (attentionMask != null && computationGraphModel.getConfiguration().getNetworkInputs().size() > 1) {
+                        inputs.add(attentionMask);
                     }
                     if (i == 0 && toolResponse == null) {
                         computationGraphModel.rnnClearPreviousState();
                     }
-                    Map<String, INDArray> cgOutputMap = computationGraphModel.feedForward(placeholderMap, false);
-                    logits = cgOutputMap.get(computationGraphModel.getConfiguration().getOutputNames().get(0));
+                    Map<String, INDArray> cgOutputMap = computationGraphModel.feedForward(inputs.toArray(new INDArray[2]),false);
+                    logits = cgOutputMap.get(computationGraphModel.getConfiguration().getNetworkOutputs().get(0));
                 } else if (sameDiffModel != null) {
                     String inputIdsName = (String) config.getGenerationParameters().getOrDefault("inputIdsPlaceholderName", DEFAULT_SAMEDIFF_INPUT_IDS_PLACEHOLDER);
                     String attentionMaskName = (String) config.getGenerationParameters().getOrDefault("attentionMaskPlaceholderName", DEFAULT_SAMEDIFF_ATTENTION_MASK_PLACEHOLDER);
@@ -223,7 +225,7 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
                     throw new IllegalStateException("No DL4J model loaded for step '" + config.getName() + "'.");
                 }
 
-                INDArray nextTokenLogits = logits.get(Nd4j.laंब(0), Nd4j.laंब(logits.shape()[1] - 1), Nd4j.सभी());
+                INDArray nextTokenLogits = logits.get(NDArrayIndex.point(0), NDArrayIndex.point(logits.shape()[1] - 1), NDArrayIndex.all());
                 long nextTokenId = sampleNextToken(nextTokenLogits, temperature, topK);
 
                 if (nextTokenId == eosTokenId) break;
@@ -239,9 +241,9 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
                 PipelineToolCallRequest toolCallRequest = parseToolCall(currentDecodedText);
 
                 if (toolCallRequest != null) {
-                    resultData.put(config.getToolCallRequestOutputName(), toolCallRequest, PipelineToolCallRequest.class);
+                    resultData.put(config.getToolCallRequestOutputName(), toolCallRequest);
                     conversationHistory.add("assistant_partial_tool_call: " + tokenizer.decode(allGeneratedTokenIdsThisTurn.stream().mapToLong(l->l).toArray(), false));
-                    resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory), List.class);
+                    resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
                     context.profiler().stopEvent(); // Corrected
                     return resultData;
                 }
@@ -249,9 +251,9 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
 
             List<Long> finalGeneratedPortion = allGeneratedTokenIdsThisTurn.subList(promptTokenIds.size(), allGeneratedTokenIdsThisTurn.size());
             String finalTextResponse = tokenizer.decode(finalGeneratedPortion.stream().mapToLong(l->l).toArray(), true).trim();
-            resultData.put(config.getResponseOutputName(), finalTextResponse, String.class);
+            resultData.put(config.getResponseOutputName(), finalTextResponse);
             conversationHistory.add("assistant: " + finalTextResponse);
-            resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory), List.class);
+            resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
             log.debug("DL4J LLM (step '{}') generated response. Context ID: {}", config.getName(), context.executionId().orElse("N/A"));
         } finally {
             context.profiler().stopEvent(); // Corrected
@@ -272,7 +274,7 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
         if (temperature <= 0.0f || topKParam == 1) {
             return Nd4j.argMax(nextTokenLogits, 0).getLong(0);
         }
-        INDArray probabilities = Nd4j.softmax(nextTokenLogits.div(temperature), 0);
+        INDArray probabilities = Nd4j.nn().softmax(nextTokenLogits.div(temperature), 0);
         int kValue = (topKParam <= 0 || topKParam > probabilities.length()) ? (int) probabilities.length() : topKParam;
         if (kValue == 0 && probabilities.length() > 0) kValue = (int) probabilities.length();
         else if (kValue == 0) return tokenizer.getUnkTokenId();

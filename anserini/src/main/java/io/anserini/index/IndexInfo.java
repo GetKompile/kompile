@@ -1,4 +1,20 @@
 /*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
+/*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,10 +32,11 @@
 
 package io.anserini.index;
 
-import io.anserini.encoder.sparse.SpladePlusPlusEnsembleDistilEncoder;
-import io.anserini.encoder.dense.ArcticEmbedLEncoder;
+
+import io.anserini.encoder.samediff.ArcticEmbedSameDiffEncoder;
+import io.anserini.encoder.samediff.BgeSameDiffEncoder;
+import io.anserini.encoder.samediff.sparse.SpladePlusPlusEnsembleDistilSameDiffEncoder;
 import io.anserini.search.query.VectorQueryGenerator;
-import io.anserini.encoder.dense.BgeBaseEn15Encoder;
 import io.anserini.search.query.InvertedDenseVectorQueryGenerator;
 
 public enum IndexInfo {
@@ -62,7 +79,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.msmarco-v1-passage.splade-pp-ed.20230524.a59610.tar.gz" },
       "2c008fc36131e27966a72292932358e6",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v1-passage"),
 
@@ -104,7 +121,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.msmarco-v1-passage.bge-base-en-v1.5.20240117.53514b.tar.gz" },
       "00a577f689d90f95e6c5611438b0af3d",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       "msmarco-v1-passage"),
 
@@ -118,7 +135,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v1-passage.bge-base-en-v1.5.20240117.53514b.tar.gz" },
       "7830712459cf124c96fd058bb0a405b7",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+          BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       "msmarco-v1-passage"),
 
@@ -231,7 +248,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard00.arctic-embed-l.20250114.4884f5.tar.gz" },
       "aab3f8e9aa0563bd0f875584784a0845",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+      ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -245,7 +262,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard01.arctic-embed-l.20250114.4884f5.tar.gz" },
       "34ea30fe72c2bc1795ae83e71b191547",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+      ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -259,7 +276,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard02.arctic-embed-l.20250114.4884f5.tar.gz" },
       "b6271d6db65119977491675f74f466d5",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -273,7 +290,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard03.arctic-embed-l.20250114.4884f5.tar.gz" },
       "a9cd644eb6037f67d2e9c06a8f60928d",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -287,7 +304,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard04.arctic-embed-l.20250114.4884f5.tar.gz" },
       "07b7e451e0525d01c1f1f2b1c42b1bd5",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -301,7 +318,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard05.arctic-embed-l.20250114.4884f5.tar.gz" },
       "2573dce175788981be2f266ebb33c96d",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -315,7 +332,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard06.arctic-embed-l.20250114.4884f5.tar.gz" },
       "a644aea445a8b78cc9e99d2ce111ff11",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -329,7 +346,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard07.arctic-embed-l.20250114.4884f5.tar.gz" },
       "402d37deccb44b5fc105049889e8aaea",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -343,7 +360,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard08.arctic-embed-l.20250114.4884f5.tar.gz" },
       "89ebcd027f7297b26a1edc8ae5726527",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -357,7 +374,7 @@ public enum IndexInfo {
           "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw-int8.msmarco-v2.1-doc-segmented-shard09.arctic-embed-l.20250114.4884f5.tar.gz" },
       "5e580bb7eb9ee2bb6bfa492b3430c17d",
       IndexType.DENSE_HNSW,
-      ArcticEmbedLEncoder.class.getSimpleName(),
+          ArcticEmbedSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "msmarco-v2.1-doc-segmented"),
 
@@ -1127,7 +1144,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-trec-covid.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "e808ff9d4a1f45de9f0bc292900302b4",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-trec-covid"),
 
@@ -1140,7 +1157,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-bioasq.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "fc661b2c2fa59e24f37c6dfa6de8e682",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-bioasq"),
 
@@ -1153,7 +1170,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-nfcorpus.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "7d6e66cca9d2db8bb7caa3bdf330cdd8",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-nfcorpus"),
 
@@ -1166,7 +1183,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-nq.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "a785d6636df60c861829507c3d806ee6",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-nq"),
 
@@ -1179,7 +1196,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-hotpotqa.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "b280ed3f7b12034c0cc4b302f92801b9",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-hotpotqa"),
 
@@ -1192,7 +1209,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-fiqa.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "ea53103c695c0da6cea5b1c8353371b0",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-fiqa"),
 
@@ -1205,7 +1222,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-signal1m.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "0b46d71c97eabe9ca424f3ab9b2ddc64",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+          SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-signal1m"),
 
@@ -1218,7 +1235,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-trec-news.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "ef4fb032b632b80355db46549f08a026",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-trec-news"),
 
@@ -1231,7 +1248,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-robust04.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "c1a6fd094bb9e34e69e10040d9b0ad2a",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-robust04"),
 
@@ -1244,7 +1261,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-arguana.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "c2725b375ca53ff031ee8b4ba8501eb6",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-arguana"),
 
@@ -1257,7 +1274,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-webis-touche2020.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "1abec77feeb741edfb3c9b7565b42964",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-webis-touche2020"),
 
@@ -1270,7 +1287,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-android.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "0b6b36417df9095e9ed32e4127bdd2fd",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-android"),
 
@@ -1283,7 +1300,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-english.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "f2a5f68523117638f957bcc353c956c1",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-english"),
 
@@ -1296,7 +1313,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-gaming.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "804851ed2ca5c38464f28263fb664615",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-gaming"),
 
@@ -1309,7 +1326,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-gis.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "ee53ba7f26e678f39c3db8997785169a",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-gis"),
 
@@ -1322,7 +1339,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-mathematica.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "c3dd33ddfd364a0665450691963f9036",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-mathematica"),
 
@@ -1335,7 +1352,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-physics.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "155a130b556072ec0b84788417361228",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-physics"),
 
@@ -1348,7 +1365,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-programmers.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "f0923dd88b7d4f050d54ff6f6efcc7f5",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-programmers"),
 
@@ -1361,7 +1378,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-stats.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "78e62040ed6d44e232e9381e96a56cc7",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-stats"),
 
@@ -1374,7 +1391,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-tex.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "402088c62cbffeba3d710fec408226ed",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-tex"),
 
@@ -1387,7 +1404,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-unix.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "66e884e446ff183e07973c65ccf32625",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-unix"),
 
@@ -1400,7 +1417,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-webmasters.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "17be129cbe65b4e4e64a181f95a56972",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-webmasters"),
 
@@ -1413,7 +1430,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-cqadupstack-wordpress.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "f20bacfe92f21bc75360a9978278e690",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-cqadupstack-wordpress"),
 
@@ -1426,7 +1443,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-quora.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "ce6dbaacf3b7b0e8282020565d324ea5",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-quora"),
 
@@ -1439,7 +1456,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-dbpedia-entity.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "fc9ac8329b6e2c054290791e68e0a0e4",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-dbpedia-entity"),
 
@@ -1452,7 +1469,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-scidocs.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "3285b17da7cd88d2e6e62a3bfc465039",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-scidocs"),
 
@@ -1465,7 +1482,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-fever.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "22e67800879422840f20c7d0008795a9",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-fever"),
 
@@ -1478,7 +1495,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-climate-fever.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "bd5f3c804874ca18f99590037873a1bc",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-climate-fever"),
 
@@ -1491,7 +1508,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-inverted.beir-v1.0.0-scifact.splade-pp-ed.20231124.a66f86f.tar.gz" },
       "3abe52209fcd04f411da438a37254e3a",
       IndexType.SPLADE_PP_ED,
-      SpladePlusPlusEnsembleDistilEncoder.class.getSimpleName(),
+      SpladePlusPlusEnsembleDistilSameDiffEncoder.class.getSimpleName(),
       InvertedDenseVectorQueryGenerator.class.getSimpleName(),
       "beir-v1.0.0-scifact.flat"),
 
@@ -1505,7 +1522,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-trec-covid.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "2c8cba8525f8ec6920dbb4f0b4a2e0a6",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1518,7 +1535,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-bioasq.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "2f4cde27ef5ec3be1193e06854fdaae6",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1531,7 +1548,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-nfcorpus.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "d0aa34bf35b59466e7064c424dd82e2c",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1544,7 +1561,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-nq.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "b0bbd85821c734125ffbc0f7ea8f75ae",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1557,7 +1574,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-hotpotqa.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "83129157f2138a2240b69f8f5404e579",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1570,7 +1587,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-fiqa.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "f2e3191b9d047b88b4692ec3ac87acd0",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1583,7 +1600,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-signal1m.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "86a5dc12806c5e2f5f1e7cf646ef9004",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1596,7 +1613,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-trec-news.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "fcb8fae8c46c76931bde0ad51ecb86f8",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1609,7 +1626,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-robust04.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "1b975602bf6b87e0a5815a254eb6e945",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1622,7 +1639,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-arguana.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "468129157636526a3e96bc9427d62808",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1635,7 +1652,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-webis-touche2020.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "4639db80366f755bb552ce4c736c4aea",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1648,7 +1665,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-android.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "f7e1f2e737756a84b0273794dcb1038f",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1661,7 +1678,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-english.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "fcdb3fc633b2ca027111536ba422aaed",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1674,7 +1691,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-gaming.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "d59b216b3df6eb1b724e2f20ceb14407",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1687,7 +1704,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-gis.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "1dd42a28e388b30f42ede02565d445ca",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1700,7 +1717,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-mathematica.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "cda37cb1893409c67908cf3aab1467fe",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1713,7 +1730,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-physics.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "82f71e086930c7d8c5fe423173b9bc2e",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1726,7 +1743,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-programmers.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "a7a8e17dcef7b40fde2492436aab1458",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1739,7 +1756,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-stats.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "7a304fa64332256976bed5049392605b",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1752,7 +1769,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-tex.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "bc5b41b294528611982615c0fcb7ebc7",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1765,7 +1782,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-unix.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "e42e7b6f46239211f9e9a3ed521d30eb",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1778,7 +1795,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-webmasters.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "21987ab658ba062397095226eb62aaf1",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1791,7 +1808,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-cqadupstack-wordpress.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "4e80be8087e8f282c42c2b57e377bb65",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1804,7 +1821,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-quora.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "064d785db557b011649d5f8b07237eb4",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1817,7 +1834,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-dbpedia-entity.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "323d47f84a54894ba5e6ca215999a533",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1830,7 +1847,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-scidocs.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "50668564faa9723160b1dba37afbf6d9",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1843,7 +1860,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-fever.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "33f67e73786a41b454bf88ac2a7c21c7",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1856,7 +1873,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-climate-fever.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "412337f9f8182e8ec6417bc3cd48288f",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1869,7 +1886,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-hnsw.beir-v1.0.0-scifact.bge-base-en-v1.5.20240223.43c9ec.tar.gz" },
       "6de5a41a301575933fa9932f9ecb404d",
       IndexType.DENSE_HNSW,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1883,7 +1900,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-trec-covid.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "516748bfd1923a999a56160e93b8daae",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1896,7 +1913,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-bioasq.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "b470cc88cdf338a7325f14eb05bf784d",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1909,7 +1926,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-nfcorpus.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "9c1d92c88faccc72d0e869439cd28ad5",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1922,7 +1939,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-nq.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "ad668f12f998052ec22b91f808e301e6",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1935,7 +1952,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-hotpotqa.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "43422329006eea8648ac2928589a0512",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1948,7 +1965,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-fiqa.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "1b727263a0195430dbc20a3cc412f819",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1961,7 +1978,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-signal1m.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "7e3967b5e0326a3e4063fde12ccfd9d0",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1974,7 +1991,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-trec-news.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "3da92ed6d976cd02333dd9078c0220ae",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -1987,7 +2004,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-robust04.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "7750b4abbc60fe821c5948a81296f1d0",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2000,7 +2017,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-arguana.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "ac0f12b71080c92ab752983a0684686e",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2013,7 +2030,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-webis-touche2020.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "d9572d89c85eccbc781d552699fa2e92",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2026,7 +2043,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-android.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "354f39e9e4cf11eb2f2b99409f672995",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2039,7 +2056,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-english.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "36f72965dcaf9e2dee697152bb38b6d9",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2052,7 +2069,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-gaming.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "36c47d9387134e88321fa1d4e8f1503e",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2065,7 +2082,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-gis.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "74e85b1e2847e13343e3b90b4a28a96e",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2078,7 +2095,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-mathematica.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "e720e0a7351574161570a77908094e73",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2091,7 +2108,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-physics.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "026a07c3c331fe7be2a8441b124c9f4f",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2104,7 +2121,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-programmers.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "4cb595ae05660973d0b381f1791f0c50",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2117,7 +2134,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-stats.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "7f0cc4b9036c3d92f82ac86beeb1767e",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2130,7 +2147,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-tex.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "7770dfcb197d6a37492c634e5f17beb5",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2143,7 +2160,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-unix.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "52f04d06f1d6d8ecdb2b0496ebd99ab8",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2156,7 +2173,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-webmasters.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "7bac4a98b9d3dc95f979bac8beedd648",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2169,7 +2186,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-cqadupstack-wordpress.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "5a9802e2fc1eeb06a83723172f19b709",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2182,7 +2199,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-quora.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "21dfce18ce9e4351af900c343556c9e2",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2195,7 +2212,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-dbpedia-entity.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "4158d064d8bb61ed361cea98e6187248",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2208,7 +2225,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-scidocs.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "db316cf58c1f8e44aa0c62d7dcd71ec1",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2221,7 +2238,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-fever.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "e53c73a00737cf069360dc66fdc193f8",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2234,7 +2251,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-climate-fever.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "bdf55c67f0abba5060fead09ef972d29",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       ""),
 
@@ -2247,7 +2264,7 @@ public enum IndexInfo {
       new String[] { "https://rgw.cs.uwaterloo.ca/pyserini/indexes/lucene/lucene-flat.beir-v1.0.0-scifact.bge-base-en-v1.5.20240618.6cf601.tar.gz" },
       "556abd7e9fcffbf06057ce3111cf4cc5",
       IndexType.DENSE_FLAT,
-      BgeBaseEn15Encoder.class.getSimpleName(),
+      BgeSameDiffEncoder.class.getSimpleName(),
       VectorQueryGenerator.class.getSimpleName(),
       "");
 

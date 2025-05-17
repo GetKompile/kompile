@@ -139,7 +139,7 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
      * @param text The text to encode.
      * @return The encoded representation, type T (e.g., float[] for dense, Map<String, Float> for sparse).
      */
-    public abstract T encode(@NotNull String text);
+    public abstract float[] encode(@NotNull String text);
 
     @Override
     public void close() {
