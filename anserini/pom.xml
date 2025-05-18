@@ -328,6 +328,13 @@
   </build>
 
   <dependencies>
+
+    <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>samediff-import-onnx</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>org.apache.lucene</groupId>
       <artifactId>lucene-core</artifactId>

@@ -1,17 +1,17 @@
 /*
- *  Copyright 2025 Kompile Inc.
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  * http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright 2025 Kompile Inc.
+ * *
+ * * Licensed under the Apache License, Version 2.0 (the "License");
+ * * you may not use this file except in compliance with the License.
+ * * You may obtain a copy of the License at
+ * *
+ * * http://www.apache.org/licenses/LICENSE-2.0
+ * *
+ * * Unless required by applicable law or agreed to in writing, software
+ * * distributed under the License is distributed on an "AS IS" BASIS,
+ * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * * See the License for the specific language governing permissions and
+ * * limitations under the License.
  */
 
 package io.anserini.encoder.samediff;
@@ -24,6 +24,7 @@ import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.samediff.frameworkimport.onnx.OnnxFrameworkImporter; // Added import
 
 import java.io.File;
 import java.io.IOException;
@@ -32,15 +33,15 @@ import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
-// Removed unused import java.util.Map; as it's not directly used here anymore.
+import java.util.Map;
 
 public abstract class SameDiffEncoder<T> implements AutoCloseable {
     private static final Logger LOG = LogManager.getLogger(SameDiffEncoder.class);
     private static final String CACHE_DIR_BASE = System.getProperty("user.home");
     private static final String CACHE_DIR = Path.of(CACHE_DIR_BASE, ".cache", "anserini", "samediff_encoders").toString();
 
-    protected final String modelName;
-    protected final String modelUrl;
+    protected final String modelName; // Will now refer to .onnx model names
+    protected final String modelUrl;  // Will now refer to .onnx model URLs
     protected final String vocabName;
     protected final String vocabUrl;
 
@@ -57,8 +58,8 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
                            @NotNull List<String> outputTensorNamesFromModel,
                            boolean doLowerCaseAndStripAccents, int maxSequenceLength, boolean addSpecialTokens)
             throws IOException, URISyntaxException {
-        this.modelName = modelName;
-        this.modelUrl = modelUrl;
+        this.modelName = modelName; // Should be an .onnx model name
+        this.modelUrl = modelUrl;   // Should be an .onnx model URL
         this.vocabName = vocabName;
         this.vocabUrl = vocabUrl;
         this.inputTensorNamesForModel = inputTensorNamesForModel;
@@ -81,26 +82,38 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
         SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
         this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
 
-        Path modelPath;
+        Path onnxModelPath;
         if (providedModelPath != null && !providedModelPath.isEmpty()) {
-            modelPath = Paths.get(providedModelPath);
-            LOG.info("Loading SameDiff model from provided path: {}", modelPath);
-            if (!modelPath.toFile().exists()){
-                throw new IOException("Provided model path does not exist: " + providedModelPath);
+            onnxModelPath = Paths.get(providedModelPath);
+            LOG.info("Loading ONNX model from provided path: {}", onnxModelPath);
+            if (!onnxModelPath.toFile().exists()){
+                throw new IOException("Provided ONNX model path does not exist: " + providedModelPath);
             }
-        } else if (modelUrl != null && !modelUrl.isEmpty()) {
-            LOG.info("Downloading SameDiff model {} from URL: {}", modelName, modelUrl);
-            modelPath = downloadFile(modelName, modelUrl);
+        } else if (this.modelUrl != null && !this.modelUrl.isEmpty()) {
+            LOG.info("Downloading ONNX model {} from URL: {}", this.modelName, this.modelUrl);
+            onnxModelPath = downloadFile(this.modelName, this.modelUrl); // Downloads .onnx file
         } else {
-            throw new IllegalArgumentException("Either model path or model URL must be provided.");
+            throw new IllegalArgumentException("Either ONNX model path or ONNX model URL must be provided.");
         }
 
         try {
-            this.sameDiffModel = SameDiff.load(modelPath.toFile(), true);
-            LOG.info("Successfully loaded SameDiff model from: {}", modelPath);
+            OnnxFrameworkImporter importer = new OnnxFrameworkImporter();
+            // The suggestDynamicVariables parameter can be useful for inspecting imported graph names.
+            // For production, you might pre-determine the input/output names.
+            // importer.suggestDynamicVariables(onnxModelPath.toFile().getAbsolutePath()) can provide input/output names
+            // The runImport method can take a map of dataTypeMap for inputs.
+            // For now, we assume default import behavior.
+            // The outputTensorNamesFromModel passed to this constructor will be used in subclasses
+            // to fetch the outputs from the SameDiff graph. Ensure they are valid.
+            this.sameDiffModel = importer.runImport(onnxModelPath.toFile().getAbsolutePath(), true, (Map<String,String>) null);
+
+            if (this.sameDiffModel == null) {
+                throw new IOException("Failed to import ONNX model to SameDiff from " + onnxModelPath + ". Importer returned null.");
+            }
+            LOG.info("Successfully imported ONNX model to SameDiff from: {}", onnxModelPath);
         } catch (Exception e) {
-            LOG.error("Failed to load SameDiff model from " + modelPath, e);
-            throw new IOException("Failed to load SameDiff model from " + modelPath + ": " + e.getMessage(), e);
+            LOG.error("Failed to import ONNX model to SameDiff from " + onnxModelPath, e);
+            throw new IOException("Failed to import ONNX model to SameDiff from " + onnxModelPath + ": " + e.getMessage(), e);
         }
     }
 
@@ -138,18 +151,16 @@ public abstract class SameDiffEncoder<T> implements AutoCloseable {
      * @param text The text to encode.
      * @return The encoded representation, type T (e.g., float[] for dense, Map<String, Float> for sparse).
      */
-    public abstract T encode(@NotNull String text); // MODIFIED HERE
+    public abstract T encode(@NotNull String text);
 
     @Override
     public void close() {
         if (this.sameDiffModel != null) {
-            // No explicit close method in SameDiff for the model itself,
-            // but nullifying helps GC and indicates it's no longer usable.
-            LOG.debug("Closing SameDiffEncoder, nullifying model: {}", modelName);
+            // No explicit close method for the SameDiff graph itself that needs to be called here.
+            // Resources are managed internally or by ND4J's lifecycle.
+            LOG.debug("Closing SameDiffEncoder, nullifying model reference: {}", modelName);
         }
-        // It's good practice to also ensure resources within components are released if possible.
-        // For example, if tokenizerPreProcessor held significant resources, it might have a close() too.
         this.sameDiffModel = null;
-        this.tokenizerPreProcessor = null; // Or tokenizerPreProcessor.close() if available
+        this.tokenizerPreProcessor = null; // If tokenizerPreProcessor had closable resources, call close here.
     }
 }
