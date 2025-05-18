@@ -1,4 +1,20 @@
 /*
+ *  Copyright 2025 Kompile Inc.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the "License");
+ *  * you may not use this file except in compliance with the License.
+ *  * You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software
+ *  * distributed under the License is distributed on an "AS IS" BASIS,
+ *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  * See the License for the specific language governing permissions and
+ *  * limitations under the License.
+ */
+
+/*
  * Anserini: A Lucene toolkit for reproducible information retrieval research
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,6 +54,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -48,11 +65,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.anserini.index.IndexInvertedDenseVectors.FW;
 
-public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K> implements AutoCloseable {
+public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher<K, String> implements AutoCloseable {
   // These are the default tie-breaking rules for documents that end up with the same score with respect to a query.
   // For most collections, docids are strings, and we break ties by lexicographic sort order.
   public static final Sort BREAK_SCORE_TIES_BY_DOCID =
-      new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
+          new Sort(SortField.FIELD_SCORE, new SortField(Constants.ID, SortField.Type.STRING_VAL));
 
   private static final Logger LOG = LogManager.getLogger(InvertedDenseSearcher.class);
 
@@ -87,7 +104,7 @@ public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher
   private final InvertedDenseVectorQueryGenerator generator;
 
   public InvertedDenseSearcher(Args args) {
-    super(args);
+    super(args); // Call BaseSearcher constructor
 
     // We might not be able to successfully create a reader for a variety of reasons, anything from path doesn't exist
     // to corrupt index. Gather all possible exceptions together as an unchecked exception to make initialization and
@@ -98,7 +115,7 @@ public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher
       throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index));
     }
 
-    setIndexSearcher(new IndexSearcher(this.reader));
+    setIndexSearcher(new IndexSearcher(this.reader)); // Initialize IndexSearcher via BaseSearcher's method
     if (args.encoding.equalsIgnoreCase(FW)) {
       getIndexSearcher().setSimilarity(new ClassicSimilarity());
     }
@@ -109,63 +126,20 @@ public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher
   /**
    * Searches the collection in batch using multiple threads.
    *
-   * @param queries list of queries
-   * @param qids list of unique query ids
+   * @param queries map of query id to query string
    * @param k number of hits
    * @param threads number of threads
    * @return a map of query id to search results
    */
-  public SortedMap<K, ScoredDoc[]> batch_search(List<String> queries, List<K> qids, int k, int threads) {
-    final SortedMap<K, ScoredDoc[]> results = new ConcurrentSkipListMap<>();
-    final AtomicInteger cnt = new AtomicInteger();
-    final long start = System.nanoTime();
-
-    try(ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads)) {
-      assert qids.size() == queries.size();
-      for (int i = 0; i < qids.size(); i++) {
-        K qid = qids.get(i);
-        String queryString = queries.get(i);
-
-        // This is the per-query execution, in parallel.
-        executor.execute(() -> {
-          try {
-            results.put(qid, search(qid, queryString, k));
-          } catch (IOException e) {
-            throw new CompletionException(e);
-          }
-
-          int n = cnt.incrementAndGet();
-          if (n % 100 == 0) {
-            LOG.info(String.format("%d queries processed", n));
-          }
-        });
-      }
-
-      executor.shutdown();
-
-      try {
-        // Wait for existing tasks to terminate.
-        while (!executor.awaitTermination(1, TimeUnit.MINUTES));
-      } catch (InterruptedException ie) {
-        // (Re-)Cancel if current thread also interrupted.
-        executor.shutdownNow();
-        // Preserve interrupt status.
-        Thread.currentThread().interrupt();
-      }
-    }
-    final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
-
-    LOG.info("{} queries processed in {}{}", queries.size(),
-        DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"),
-        String.format(" = ~%.2f q/s", queries.size() / (durationMillis / 1000.0)));
-
-    return results;
+  public SortedMap<K, ScoredDoc[]> batch_search(Map<K, String> queries, int k, int threads) {
+    // This now directly calls the inherited batch_search from BaseSearcher<K, String>
+    return super.batch_search(queries, k, threads);
   }
 
   /**
    * Searches the collection with a query.
    *
-   * @param query query
+   * @param query query string
    * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
@@ -175,18 +149,19 @@ public class InvertedDenseSearcher<K extends Comparable<K>> extends BaseSearcher
   }
 
   /**
-   * Searches the collection with a query.
+   * Searches the collection with a query. This method implements the abstract search method from BaseSearcher.
    *
    * @param qid query id
-   * @param query query
+   * @param query query string
    * @param k number of hits
    * @return array of search results
    * @throws IOException if error encountered during search
    */
+  @Override
   public ScoredDoc[] search(@Nullable K qid, String query, int k) throws IOException {
     TopDocs topDocs = getIndexSearcher().search(generator.buildQuery(query), k, BREAK_SCORE_TIES_BY_DOCID, true);
-
-    return super.processLuceneTopDocs(qid, topDocs);
+    // Call the inherited processLuceneTopDocs from BaseSearcher
+    return processLuceneTopDocs(qid, topDocs, true);
   }
 
   @Override
