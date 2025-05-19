@@ -100,8 +100,7 @@ public abstract class BaseSearcher<K extends Comparable<K>, Q> {
     }
 
     List<Map.Entry<K, Q>> queryEntries = new ArrayList<>(queries.entrySet());
-
-    try (ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads)) {
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
       for (Map.Entry<K, Q> entry : queryEntries) {
         final K qid = entry.getKey();
         final Q queryContent = entry.getValue();
@@ -135,7 +134,7 @@ public abstract class BaseSearcher<K extends Comparable<K>, Q> {
         executor.shutdownNow();
         Thread.currentThread().interrupt();
       }
-    }
+
     final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
 
     LOG.info("{} queries processed in {}{}", queryEntries.size(),

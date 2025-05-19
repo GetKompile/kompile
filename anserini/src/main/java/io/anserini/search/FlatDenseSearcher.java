@@ -180,7 +180,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
       throw new IllegalArgumentException("qids and queries lists must have the same size.");
     }
 
-    try(ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads)) {
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
       for (int i = 0; i < qids.size(); i++) {
         K qid = qids.get(i);
         String queryString = queries.get(i);
@@ -208,7 +208,7 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
         executor.shutdownNow();
         Thread.currentThread().interrupt();
       }
-    }
+
     final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
     LOG.info("{} queries processed in {}{}", queries.size(),
             DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"),

@@ -34,14 +34,21 @@ public class OpenBlasInstaller implements Callable<Integer> {
             description = "The architecture to download for. Valid values: arm32,arm64",required = true)
 
     private String architecture;
-    @CommandLine.Option(names = {"--javaCppOpenBlasVersion"},
-            description = "The openblas version to use. Usually should not change. Value: 0.3.19-1.5.7",required = false)
 
+    // Note: This installs OpenBLAS 0.3.19 linked against JavaCPP preset 1.5.7.
+    // The main Kompile project (kompile/pom.xml) uses JavaCPP version 1.5.11 (as of parent POM).
+    // For applications built via KompileApplicationBuilder, ND4J's own native dependencies (including OpenBLAS)
+    // should be resolved correctly via Maven for the target platform and the project's JavaCPP version.
+    // This installer might be for specific offline scenarios or for users wanting to force this particular OpenBLAS version.
+    // Ensure this version is compatible if overriding Maven's transitive dependencies for ND4J.
+    @CommandLine.Option(names = {"--javaCppOpenBlasVersion"},
+            description = "The openblas version to use (format: openblasVersion-javaCppPresetVersion). Default: 0.3.19-1.5.7",required = false)
     private String javaCppOpenBlasVersion = "0.3.19-1.5.7";
+
     @CommandLine.Option(names = {"--forceDownload"},
             description = "Whether to force redownload or not.",required = false)
-
     private boolean forceDownload;
+
     @Override
     public Integer call() throws Exception {
         OpenBlasEmbeddedDownloader openBlasEmbeddedDownloader = new OpenBlasEmbeddedDownloader(os,architecture,javaCppOpenBlasVersion,forceDownload);
