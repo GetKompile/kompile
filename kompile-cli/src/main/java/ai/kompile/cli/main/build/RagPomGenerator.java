@@ -423,12 +423,7 @@ public class RagPomGenerator implements Callable<Void> {
         nativeBuildExecution.setPhase("package"); // This ensures AOT processing and compilation have occurred
         nativeMavenPlugin.addExecution(nativeBuildExecution);
 
-        // Optional: Native tests execution
-        // PluginExecution nativeTestExecution = new PluginExecution();
-        // nativeTestExecution.setId("test-native");
-        // nativeTestExecution.addGoal("test");
-        // nativeTestExecution.setPhase("test");
-        // nativeMavenPlugin.addExecution(nativeTestExecution);
+
 
         nativeBuild.addPlugin(nativeMavenPlugin);
         nativeProfile.setBuild(nativeBuild);
