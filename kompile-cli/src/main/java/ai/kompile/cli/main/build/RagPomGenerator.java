@@ -48,14 +48,14 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--instanceVersion"}, description = "Version for the generated RAG instance", defaultValue = "0.1.0-SNAPSHOT")
     private String instanceVersion;
 
-    @CommandLine.Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.1.0-SNAPSHOT")
+    @CommandLine.Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile modules", defaultValue = "0.1.0-SNAPSHOT")
     private String ragMcpVersion;
 
     // --- RAG Module Selection Flags ---
-    @CommandLine.Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module (typically always true)", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
     private boolean includeAppCore;
 
-    @CommandLine.Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module (typically always true)", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
 
     @CommandLine.Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module")
@@ -88,10 +88,10 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module")
     private boolean includeVectorstorePgvector = false;
 
-    @CommandLine.Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module (typically always true)", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module", defaultValue = "true", negatable = true)
     private boolean includeToolFilesystem;
 
-    @CommandLine.Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module (typically always true)", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
     private boolean includeToolRag;
 
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image")
@@ -101,30 +101,46 @@ public class RagPomGenerator implements Callable<Void> {
     private Model model;
     private List<Dependency> defaultDependencies = new ArrayList<>();
 
+    private static final String DEFAULT_SPRING_BOOT_VERSION = "3.2.5";
+    private static final String DEFAULT_SPRING_AI_VERSION = "1.0.0-M8";
+    private static final String DEFAULT_LOMBOK_VERSION = "1.18.38";
+    private static final String DEFAULT_JACKSON_VERSION = "2.15.3";
+    private static final String DEFAULT_GUAVA_VERSION = "32.1.3-jre";
 
-    // Helper method to create a dependency
-    private Dependency getDependency(String groupId, String artifactId, String version, String scope, String classifier) {
+    private static final String DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION = "3.13.0";
+    private static final String DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION = "3.3.1";
+    private static final String DEFAULT_MAVEN_JAR_PLUGIN_VERSION = "3.3.0";
+    private static final String DEFAULT_FRONTEND_MAVEN_PLUGIN_VERSION = "1.15.0";
+    private static final String DEFAULT_NODE_VERSION = "v20.11.1";
+    private static final String DEFAULT_NPM_VERSION = "10.2.4";
+    private static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.1"; // Or your desired GraalVM plugin version
+
+
+    private Dependency createDependencyInternal(String groupId, String artifactId, String versionProperty, String scope, String classifier, boolean optional) {
         Dependency dependency = new Dependency();
         dependency.setGroupId(groupId);
         dependency.setArtifactId(artifactId);
-        if (version != null && !version.isEmpty()) {
-            dependency.setVersion(version);
-        }
+        dependency.setVersion(versionProperty);
         if (scope != null && !scope.isEmpty()) {
             dependency.setScope(scope);
         }
         if (classifier != null && !classifier.isEmpty()) {
             dependency.setClassifier(classifier);
         }
+        if (optional) {
+            dependency.setOptional(true);
+        }
         return dependency;
     }
 
-    // Helper method to add a dependency
-    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version, String scope, String classifier) {
-        addTo.add(getDependency(groupId, artifactId, version, scope, classifier));
+    // Main helper to add a dependency
+    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String versionProperty, String scope, String classifier, boolean optional) {
+        addTo.add(createDependencyInternal(groupId, artifactId, versionProperty, scope, classifier, optional));
     }
-    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version) {
-        addDependency(addTo, groupId, artifactId, version, "compile", null);
+
+    // Convenience for compile scope, non-optional
+    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String versionProperty) {
+        addDependency(addTo, groupId, artifactId, versionProperty, "compile", null, false);
     }
 
 
@@ -135,29 +151,36 @@ public class RagPomGenerator implements Callable<Void> {
         model.setGroupId(instanceGroupId);
         model.setArtifactId(instanceArtifactId);
         model.setVersion(instanceVersion);
-        model.setPackaging("jar"); // This instance will be a runnable JAR
+        model.setPackaging("jar");
 
-
-
-        // Set Properties (inherited or overridden)
         Properties props = new Properties();
-        props.setProperty("java.version", "17"); // As per parent
-        props.setProperty("start-class", "ai.kompile.app.MainApplication"); // As per kompile-app-main
+        props.setProperty("java.version", "17");
+        props.setProperty("start-class", "ai.kompile.app.MainApplication");
+
+        props.setProperty("kompile.project.version", this.ragMcpVersion);
+        props.setProperty("spring-boot.version", DEFAULT_SPRING_BOOT_VERSION);
+        props.setProperty("spring-ai.version", DEFAULT_SPRING_AI_VERSION);
+        props.setProperty("lombok.version", DEFAULT_LOMBOK_VERSION);
+        props.setProperty("jackson.version", DEFAULT_JACKSON_VERSION);
+        props.setProperty("guava.version", DEFAULT_GUAVA_VERSION);
+
+        props.setProperty("maven-compiler-plugin.version", DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION);
+        props.setProperty("maven-resources-plugin.version", DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION);
+        props.setProperty("maven-jar-plugin.version", DEFAULT_MAVEN_JAR_PLUGIN_VERSION);
+        props.setProperty("frontend-maven-plugin.version", DEFAULT_FRONTEND_MAVEN_PLUGIN_VERSION);
+        props.setProperty("node.version", DEFAULT_NODE_VERSION);
+        props.setProperty("npm.version", DEFAULT_NPM_VERSION);
+
         if (buildNative) {
             props.setProperty("native.image.name", instanceArtifactId + "-native");
+            props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         }
         model.setProperties(props);
 
-        // Define Dependencies based on flags
         addApplicationDependencies();
-
-        // Define Build section
         addApplicationBuild();
-
-        // Add Spring Milestones repository for Spring AI
         addSpringRepositories();
 
-        // Write the POM file
         MavenXpp3Writer mavenXpp3Writer = new MavenXpp3Writer();
         try (FileWriter fileWriter = new FileWriter(outputFile)) {
             mavenXpp3Writer.write(fileWriter, model);
@@ -167,50 +190,42 @@ public class RagPomGenerator implements Callable<Void> {
     }
 
     private void addApplicationDependencies() {
-        // Spring Boot Starters (versions managed by spring-boot-dependencies in parent)
-        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-web", null);
-        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter", null);
+        defaultDependencies.clear(); // Ensure it's a fresh list for each generation
 
-        // Spring AI MCP Starters (versions managed by spring-ai-bom in parent)
-        addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", null);
-        addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", null);
+        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-web", "${spring-boot.version}");
+        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter", "${spring-boot.version}");
 
-        // Kompile RAG Modules (versions managed by parent: rag-mcp-assistant-parent)
-        if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", null);
-        if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", null);
-        if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", null);
-        if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", null);
-        if (includeAnserini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anserini", null);
+        addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", "${spring-ai.version}");
+        addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", "${spring-ai.version}");
 
-        if (includeLlmOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-app-openai-llm", null);
-        if (includeLlmAnthropic) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anthropic-llm", null);
-        if (includeLlmGemini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-gemini-llm", null);
+        if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
+        if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
+        if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", "${kompile.project.version}");
+        if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", "${kompile.project.version}");
+        if (includeAnserini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anserini", "${kompile.project.version}");
 
-        if (includeEmbeddingOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-openai", null);
-        if (includeEmbeddingSentenceTransformer) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-sentence-transformer", null);
+        if (includeLlmOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-app-openai-llm", "${kompile.project.version}");
+        if (includeLlmAnthropic) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anthropic-llm", "${kompile.project.version}");
+        if (includeLlmGemini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-gemini-llm", "${kompile.project.version}");
 
-        if (includeVectorstoreChroma) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-chroma", null);
-        if (includeVectorstorePgvector) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", null);
+        if (includeEmbeddingOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-openai", "${kompile.project.version}");
+        if (includeEmbeddingSentenceTransformer) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-sentence-transformer", "${kompile.project.version}");
 
-        if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", null);
-        if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", null);
+        if (includeVectorstoreChroma) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-chroma", "${kompile.project.version}");
+        if (includeVectorstorePgvector) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
 
+        if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
+        if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
 
-        // Lombok (version managed by parent)
-        Dependency lombokDep = getDependency("org.projectlombok", "lombok", null, "provided", null);
-        lombokDep.setOptional(true);
-        defaultDependencies.add(lombokDep);
+        addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
+        addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}");
+        addDependency(defaultDependencies, "com.google.guava", "guava", "${guava.version}");
 
-        // Jackson Databind (version managed by spring-boot-dependencies)
-        addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", null);
-
-        // Spring Boot Test (version managed, scope test)
-        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-test", null, "test", null);
-
-        if (buildNative) {
-            // JUnit Platform Launcher for native tests
-            addDependency(defaultDependencies, "org.junit.platform", "junit-platform-launcher", null, "test", null);
-        }
+        // Removed test dependencies as per instruction
+        // addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-test", "${spring-boot.version}", "test", null, false);
+        // if (buildNative) {
+        //     addDependency(defaultDependencies, "org.junit.platform", "junit-platform-launcher", "${spring-boot.version}", "test", null, false); // Version managed by Spring Boot BOM
+        // }
 
         model.setDependencies(defaultDependencies);
     }
@@ -219,35 +234,58 @@ public class RagPomGenerator implements Callable<Void> {
     private void addApplicationBuild() throws XmlPullParserException, IOException {
         Build build = new Build();
 
-        // maven-compiler-plugin (configuration inherited from parent)
         Plugin compilerPlugin = new Plugin();
         compilerPlugin.setGroupId("org.apache.maven.plugins");
         compilerPlugin.setArtifactId("maven-compiler-plugin");
+        compilerPlugin.setVersion("${maven-compiler-plugin.version}");
+        Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
+                "<configuration>" +
+                        "  <release>${java.version}</release>" +
+                        "  <annotationProcessorPaths>" +
+                        "    <path>" +
+                        "      <groupId>org.projectlombok</groupId>" +
+                        "      <artifactId>lombok</artifactId>" +
+                        "      <version>${lombok.version}</version>" +
+                        "    </path>" +
+                        // Add other annotation processors if needed, e.g., Spring Configuration Processor
+                        "    <path>" +
+                        "      <groupId>org.springframework.boot</groupId>" +
+                        "      <artifactId>spring-boot-configuration-processor</artifactId>" +
+                        "      <version>${spring-boot.version}</version>" +
+                        "    </path>" +
+                        "  </annotationProcessorPaths>" +
+                        "</configuration>"
+        ));
+        compilerPlugin.setConfiguration(compilerConfig);
         build.addPlugin(compilerPlugin);
 
-        // maven-resources-plugin (configuration adapted from kompile-app-main)
         Plugin resourcesPlugin = new Plugin();
         resourcesPlugin.setGroupId("org.apache.maven.plugins");
         resourcesPlugin.setArtifactId("maven-resources-plugin");
+        resourcesPlugin.setVersion("${maven-resources-plugin.version}");
 
-        // Default execution for src/main/resources
         PluginExecution defaultResourcesExecution = new PluginExecution();
         defaultResourcesExecution.setId("default-resources");
         defaultResourcesExecution.addGoal("resources");
+        // Note: The <directory>src/main/resources</directory> assumes such a directory exists in the generated project.
+        // If it doesn't, this execution might not do anything or could be removed if not needed for a basic generated project.
         Xpp3Dom defaultResConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration>" +
                         "  <outputDirectory>${project.build.outputDirectory}</outputDirectory>" +
                         "  <resources>" +
                         "    <resource>" +
-                        "      <directory>src/main/resources</directory>" + // Path relative to the root of cloned rag-mcp project
+                        "      <directory>src/main/resources</directory>" + // This path is relative to the generated project
                         "      <filtering>false</filtering>" +
+                        "      <includes><include>**/*</include></includes>" + // Explicitly include all files
                         "    </resource>" +
                         "  </resources>" +
                         "</configuration>"));
         defaultResourcesExecution.setConfiguration(defaultResConfig);
         resourcesPlugin.addExecution(defaultResourcesExecution);
 
-        // Execution to copy frontend to target/classes/static
+        // Parameterize these paths using system properties set by BuildRagApp
+        String ragMcpSourceContextDir = System.getProperty("rag.mcp.source.context.dir", "."); // Default to current dir if not set
+
         PluginExecution copyFrontendToTargetExecution = new PluginExecution();
         copyFrontendToTargetExecution.setId("copy-angular-to-target-classes");
         copyFrontendToTargetExecution.addGoal("copy-resources");
@@ -257,13 +295,7 @@ public class RagPomGenerator implements Callable<Void> {
                         "  <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>" +
                         "  <resources>" +
                         "    <resource>" +
-                        // IMPORTANT: This path needs to be correct relative to where this generated POM will be executed.
-                        // If this POM is at the root of the cloned 'rag-mcp-assistant-parent',
-                        // and 'kompile-app-main' contains the frontend, the path would be:
-                        // 'kompile-app-main/src/main/frontend/dist/rag-frontend/browser'
-                        // Adjust if the frontend is elsewhere or if this POM is placed inside 'kompile-app-main'.
-                        // Assuming the generated POM is at the root of the cloned multi-module project:
-                        "      <directory>kompile-app-main/src/main/frontend/dist/rag-frontend/browser</directory>" +
+                        "      <directory>" + ragMcpSourceContextDir + "/kompile-app-main/src/main/frontend/dist/rag-frontend/browser</directory>" +
                         "      <filtering>false</filtering>" +
                         "    </resource>" +
                         "  </resources>" +
@@ -271,21 +303,17 @@ public class RagPomGenerator implements Callable<Void> {
         copyFrontendToTargetExecution.setConfiguration(frontendToTargetConfig);
         resourcesPlugin.addExecution(copyFrontendToTargetExecution);
 
-        // Execution to copy frontend to kompile-app-main/src/main/resources/static
         PluginExecution copyFrontendToSrcExecution = new PluginExecution();
-        copyFrontendToSrcExecution.setId("copy-angular-to-src-main-resources"); // Should be app-main's src
+        copyFrontendToSrcExecution.setId("copy-angular-to-src-main-resources");
         copyFrontendToSrcExecution.addGoal("copy-resources");
         copyFrontendToSrcExecution.setPhase("process-resources");
         Xpp3Dom frontendToSrcConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration>" +
-                        // This output directory is tricky if the generated pom is at the root.
-                        // It assumes it's writing into the source tree of one of its modules.
-                        // This is generally okay for local builds but might need adjustment for CI.
-                        "  <outputDirectory>kompile-app-main/src/main/resources/static</outputDirectory>" +
+                        "  <outputDirectory>" + ragMcpSourceContextDir + "/kompile-app-main/src/main/resources/static</outputDirectory>" +
                         "  <overwrite>true</overwrite>" +
                         "  <resources>" +
                         "    <resource>" +
-                        "      <directory>kompile-app-main/src/main/frontend/dist/rag-frontend/browser</directory>" +
+                        "      <directory>" + ragMcpSourceContextDir + "/kompile-app-main/src/main/frontend/dist/rag-frontend/browser</directory>" +
                         "      <filtering>false</filtering>" +
                         "    </resource>" +
                         "  </resources>" +
@@ -295,27 +323,27 @@ public class RagPomGenerator implements Callable<Void> {
         build.addPlugin(resourcesPlugin);
 
 
-        // maven-jar-plugin (from kompile-app-main)
         Plugin jarPlugin = new Plugin();
         jarPlugin.setGroupId("org.apache.maven.plugins");
         jarPlugin.setArtifactId("maven-jar-plugin");
+        jarPlugin.setVersion("${maven-jar-plugin.version}");
         Xpp3Dom jarConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration>" +
                         "  <archive>" +
                         "    <manifest>" +
                         "      <mainClass>${start-class}</mainClass>" +
                         "      <addClasspath>true</addClasspath>" +
-                        "      <classpathPrefix>BOOT-INF/lib/</classpathPrefix>" + // Important for Spring Boot
+                        "      <classpathPrefix>BOOT-INF/lib/</classpathPrefix>" +
                         "    </manifest>" +
                         "  </archive>" +
                         "</configuration>"));
         jarPlugin.setConfiguration(jarConfig);
         build.addPlugin(jarPlugin);
 
-        // spring-boot-maven-plugin (from kompile-app-main, version from parent)
         Plugin springBootPlugin = new Plugin();
         springBootPlugin.setGroupId("org.springframework.boot");
         springBootPlugin.setArtifactId("spring-boot-maven-plugin");
+        springBootPlugin.setVersion("${spring-boot.version}");
         Xpp3Dom springBootConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration>" +
                         "  <mainClass>${start-class}</mainClass>" +
@@ -341,30 +369,24 @@ public class RagPomGenerator implements Callable<Void> {
         build.addPlugin(springBootPlugin);
 
 
-        // frontend-maven-plugin (from kompile-app-main, version from parent)
-        // This plugin builds the frontend. It assumes the frontend source is in 'kompile-app-main/src/main/frontend'
-        // relative to where this generated POM is executed.
         Plugin frontendPlugin = new Plugin();
         frontendPlugin.setGroupId("com.github.eirslett");
         frontendPlugin.setArtifactId("frontend-maven-plugin");
+        frontendPlugin.setVersion("${frontend-maven-plugin.version}");
         Xpp3Dom frontendConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration>" +
-                        // This path is relative to the generated POM's location.
-                        // If the POM is at the root of rag-mcp-assistant-parent,
-                        // and the frontend is in kompile-app-main, this path is correct.
-                        "  <workingDirectory>kompile-app-main/src/main/frontend</workingDirectory>" +
-                        "  <installDirectory>${project.build.directory}/frontend-build</installDirectory>" + // Temporary install dir for node/npm
+                        "  <workingDirectory>" + ragMcpSourceContextDir + "/kompile-app-main/src/main/frontend</workingDirectory>" +
+                        "  <installDirectory>${project.build.directory}/frontend-build</installDirectory>" +
                         "</configuration>"));
         frontendPlugin.setConfiguration(frontendConfig);
 
-        // Executions for frontend plugin
         PluginExecution feInstallNode = new PluginExecution();
         feInstallNode.setId("install node and npm");
         feInstallNode.addGoal("install-node-and-npm");
         feInstallNode.setPhase("initialize");
         feInstallNode.setConfiguration(Xpp3DomBuilder.build(new StringReader(
                 "<configuration><nodeVersion>${node.version}</nodeVersion><npmVersion>${npm.version}</npmVersion></configuration>"
-        ))); // node.version and npm.version from parent
+        )));
 
         PluginExecution feNpmInstall = new PluginExecution();
         feNpmInstall.setId("npm install");
@@ -391,20 +413,20 @@ public class RagPomGenerator implements Callable<Void> {
             Plugin nativePlugin = new Plugin();
             nativePlugin.setGroupId("org.graalvm.buildtools");
             nativePlugin.setArtifactId("native-maven-plugin");
-            nativePlugin.setExtensions(true); // As per kompile-app-main
+            nativePlugin.setVersion("${native-maven-plugin.version}");
+            nativePlugin.setExtensions(true);
 
             Xpp3Dom nativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
                             "  <imageName>${native.image.name}</imageName>" +
                             "  <mainClass>${start-class}</mainClass>" +
-                            "  <quickBuild>false</quickBuild>" + // Can be made configurable
+                            "  <quickBuild>false</quickBuild>" +
                             "  <buildArgs>" +
                             "    <buildArg>--verbose</buildArg>" +
                             "    <buildArg>-H:+ReportExceptionStackTraces</buildArg>" +
                             "    <buildArg>--no-fallback</buildArg>" +
-                            // Classpath for AOT processing:
                             "    <buildArg>--class-path</buildArg>" +
-                            "    <buildArg>${project.build.outputDirectory}:${project.build.directory}/spring-aot/main/classes</buildArg>" +
+                            "    <buildArg>${project.build.outputDirectory}${path.separator}${project.build.directory}/spring-aot/main/classes</buildArg>" +
                             "  </buildArgs>" +
                             "</configuration>"));
             nativePlugin.setConfiguration(nativeConfig);
@@ -413,13 +435,13 @@ public class RagPomGenerator implements Callable<Void> {
             nativeAddMeta.setId("add-reachability-metadata");
             nativeAddMeta.addGoal("add-reachability-metadata");
 
-            PluginExecution nativeBuild = new PluginExecution();
-            nativeBuild.setId("build-native");
-            nativeBuild.addGoal("compile-no-fork"); // Or "build"
-            nativeBuild.setPhase("package");
+            PluginExecution nativeBuildExecution = new PluginExecution(); // Renamed to avoid conflict
+            nativeBuildExecution.setId("build-native");
+            nativeBuildExecution.addGoal("compile-no-fork");
+            nativeBuildExecution.setPhase("package");
 
             nativePlugin.addExecution(nativeAddMeta);
-            nativePlugin.addExecution(nativeBuild);
+            nativePlugin.addExecution(nativeBuildExecution);
             build.addPlugin(nativePlugin);
         }
 
@@ -432,38 +454,22 @@ public class RagPomGenerator implements Callable<Void> {
         springMilestones.setId("spring-milestones");
         springMilestones.setName("Spring Milestones");
         springMilestones.setUrl("https://repo.spring.io/milestone");
-        RepositoryPolicy snapshotsPolicy = new RepositoryPolicy();
-        snapshotsPolicy.setEnabled(false); // Milestones are not typically snapshots
-        springMilestones.setSnapshots(snapshotsPolicy);
+        RepositoryPolicy snapshotsPolicyMilestones = new RepositoryPolicy();
+        snapshotsPolicyMilestones.setEnabled(false);
+        springMilestones.setSnapshots(snapshotsPolicyMilestones);
         model.addRepository(springMilestones);
 
-        // Spring Releases (often not needed if artifacts are on Central, but good for completeness)
         Repository springReleases = new Repository();
         springReleases.setId("spring-releases");
         springReleases.setName("Spring Releases");
         springReleases.setUrl("https://repo.spring.io/release");
-        RepositoryPolicy releasesPolicy = new RepositoryPolicy();
-        releasesPolicy.setEnabled(false);
-        springReleases.setSnapshots(releasesPolicy); // Snapshots usually false for a release repo
+        RepositoryPolicy snapshotsPolicyReleases = new RepositoryPolicy();
+        snapshotsPolicyReleases.setEnabled(false);
+        springReleases.setSnapshots(snapshotsPolicyReleases);
         model.addRepository(springReleases);
     }
 
     public static void main(String... args) {
-        // Example usage:
-        // new CommandLine(new RagPomGenerator()).execute(
-        //    "--instanceArtifactId=my-custom-rag",
-        //    "--includeLlmOpenai=true",
-        //    "--includeVectorstoreChroma=true",
-        //    "--outputFile=my-custom-rag-pom.xml"
-        // );
-        // For native build:
-        // new CommandLine(new RagPomGenerator()).execute(
-        //    "--instanceArtifactId=my-native-rag",
-        //    "--includeLlmOpenai=true",
-        //    "--includeVectorstoreChroma=true",
-        //    "--buildNative=true",
-        //    "--outputFile=my-native-rag-pom.xml"
-        // );
         new CommandLine(new RagPomGenerator()).execute(args);
     }
 }
