@@ -13,11 +13,12 @@
  *  * See the License for the specific language governing permissions and
  *  * limitations under the License.
  */
+
+// getkompile/kompile/kompile-ag_new_kompile_cli/kompile-cli/src/main/java/ai/kompile/cli/main/build/PomGenerator.java
 package ai.kompile.cli.main.build;
 
 import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.pomfileappender.PomFileAppender;
-// Assuming these are the renamed and correct appender implementations
 import ai.kompile.cli.main.pomfileappender.impl.KompileApacheCommonsPomFileAppender;
 import ai.kompile.cli.main.pomfileappender.impl.KompileJavaCppPomFileAppender;
 import ai.kompile.cli.main.pomfileappender.impl.KompileJodaPomFileAppender;
@@ -25,17 +26,13 @@ import ai.kompile.cli.main.pomfileappender.impl.KompileNd4jClassLoadingPomFileAp
 import ai.kompile.cli.main.pomfileappender.impl.KompileOpenblasPomFileAppender;
 import ai.kompile.cli.main.pomfileappender.impl.KompilePythonPomFileAppender;
 import ai.kompile.cli.main.pomfileappender.impl.KompileSunXmlFileAppender;
-// Conceptual appender for Spring specific native configurations
-// import ai.kompile.cli.main.pomfileappender.impl.KompileSpringNativePomFileAppender;
-
 
 import ai.kompile.pipelines.framework.api.Pipeline;
 import ai.kompile.pipelines.framework.api.StepConfig;
-import ai.kompile.pipelines.framework.core.config.GenericStepConfig; // For casting if needed
+import ai.kompile.pipelines.framework.core.config.GenericStepConfig;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import ai.kompile.pipelines.framework.runtime.pipeline.SequencePipeline;
 import ai.kompile.pipelines.framework.runtime.pipeline.graph.GraphPipeline;
-// GraphNodeConfig and StandardGraphNodeConfig are not directly used here if GraphPipeline.getSteps() is sufficient
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
@@ -72,8 +69,8 @@ public class PomGenerator implements Callable<Void> {
     private File outputFile = new File("pom.xml");
     private boolean debugNative = false;
     private int debugNativePort = 8000;
-    private String pipelineJsonFilePathForAnalysis; // Absolute path to pipeline.json
-    private String pipelineResourcePath = "kompile_pipeline.json"; // Classpath resource name
+    private String pipelineJsonFilePathForAnalysis;
+    private String pipelineResourcePath = "kompile_pipeline.json";
 
     private String appType = "pipeline-executor";
     private String llmProvider;
@@ -130,7 +127,7 @@ public class PomGenerator implements Callable<Void> {
     public void setDebugNative(boolean debugNative) { this.debugNative = debugNative; }
     public void setDebugNativePort(int debugNativePort) { this.debugNativePort = debugNativePort; }
     public void setPipelineJsonFilePathForAnalysis(String path) { this.pipelineJsonFilePathForAnalysis = path; }
-    public void setPipelinePath(String resourcePath) { this.pipelineResourcePath = resourcePath; } // Corrected setter name
+    public void setPipelinePath(String resourcePath) { this.pipelineResourcePath = resourcePath; }
     public void setAppType(String appType) { this.appType = appType; }
     public void setLlmProvider(String provider) { this.llmProvider = provider; }
     public void setVectorStoreProvider(String provider) { this.vectorStoreProvider = provider; }
@@ -160,8 +157,7 @@ public class PomGenerator implements Callable<Void> {
     public void setNd4jDataTypes(String types) { this.nd4jDataTypes = types; }
     public void setNd4jUseLto(boolean useLto) { this.nd4jUseLto = useLto; }
 
-
-    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version, String scope, String classifier) {
+    private void addDependency(List<Dependency> addTo, String groupId, String artifactId, String version, String scope, String classifier, boolean optional) {
         Dependency dependency = new Dependency();
         dependency.setGroupId(groupId);
         dependency.setArtifactId(artifactId);
@@ -170,11 +166,14 @@ public class PomGenerator implements Callable<Void> {
         }
         if (scope != null && !scope.isEmpty()) dependency.setScope(scope);
         if (classifier != null && !classifier.isEmpty()) dependency.setClassifier(classifier);
+        if (optional) {
+            dependency.setOptional(true);
+        }
 
         boolean exists = addTo.stream().anyMatch(d ->
                 d.getGroupId().equals(groupId) &&
                         d.getArtifactId().equals(artifactId) &&
-                        Objects.equals(d.getClassifier(), classifier) // Classifier is important for uniqueness
+                        Objects.equals(d.getClassifier(), classifier)
         );
         if(!exists) {
             addTo.add(dependency);
@@ -183,16 +182,15 @@ public class PomGenerator implements Callable<Void> {
 
     private boolean parentManagesVersion(Parent parent, String groupId, String artifactId) {
         if (parent == null) return false;
-        // Check against known parent POMs that manage these dependencies
         if ("rag-mcp-assistant-parent".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
             return groupId.startsWith("ai.kompile") ||
                     groupId.startsWith("org.springframework.boot") ||
                     groupId.startsWith("org.springframework.ai") ||
                     groupId.startsWith("org.nd4j") ||
                     groupId.startsWith("org.deeplearning4j") ||
-                    groupId.startsWith("ch.qos.logback") || // Logback often managed by Spring Boot parent
+                    groupId.startsWith("ch.qos.logback") ||
                     groupId.startsWith("org.slf4j") ||
-                    groupId.startsWith("org.graalvm"); // GraalVM SDK often managed
+                    groupId.startsWith("org.graalvm");
         }
         if ("kompile".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
             return groupId.startsWith("ai.kompile") ||
@@ -206,38 +204,38 @@ public class PomGenerator implements Callable<Void> {
     }
 
     private void addKompilePipelineStepDependency(List<Dependency> addTo, String stepArtifactIdSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-pipelines-steps-" + stepArtifactIdSuffix, this.kompilePipelinesVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-pipelines-steps-" + stepArtifactIdSuffix, this.kompilePipelinesVersion, "compile", null, false);
     }
     private void addKompileAppProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-app-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-app-" + providerModuleSuffix, this.kompileAppVersion, "compile", null, false);
     }
     private void addKompileEmbeddingProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-embedding-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-embedding-" + providerModuleSuffix, this.kompileAppVersion, "compile", null, false);
     }
     private void addKompileVectorStoreProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-vectorstore-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-vectorstore-" + providerModuleSuffix, this.kompileAppVersion, "compile", null, false);
     }
     private void addKompileLoaderProviderDependency(List<Dependency> addTo, String providerModuleSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-loader-" + providerModuleSuffix, this.kompileAppVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-loader-" + providerModuleSuffix, this.kompileAppVersion, "compile", null, false);
     }
     private void addKompileToolDependency(List<Dependency> addTo, String toolModuleSuffix) {
-        addDependency(addTo, "ai.kompile", "kompile-tool-" + toolModuleSuffix, this.kompileAppVersion, "compile", null);
+        addDependency(addTo, "ai.kompile", "kompile-tool-" + toolModuleSuffix, this.kompileAppVersion, "compile", null, false);
     }
 
     private void addDefaultFrameworkAndAppCoreDependencies(List<Dependency> deps) {
-        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-api", this.kompilePipelinesVersion, "compile", null);
-        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-core", this.kompilePipelinesVersion, "compile", null);
-        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-runtime", this.kompilePipelinesVersion, "compile", null);
-        addDependency(deps, "ch.qos.logback", "logback-classic", null, "compile", null);
-        addDependency(deps, "org.slf4j", "slf4j-api", null, "compile", null);
-        addDependency(deps, "org.graalvm.sdk", "graal-sdk", null, "provided", null);
-        addDependency(deps, "org.graalvm.nativeimage", "svm", null, "provided", null);
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-api", this.kompilePipelinesVersion, "compile", null, false);
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-core", this.kompilePipelinesVersion, "compile", null, false);
+        addDependency(deps, "ai.kompile", "kompile-pipelines-framework-runtime", this.kompilePipelinesVersion, "compile", null, false);
+        addDependency(deps, "ch.qos.logback", "logback-classic", null, "compile", null, false);
+        addDependency(deps, "org.slf4j", "slf4j-api", null, "compile", null, false);
+        addDependency(deps, "org.graalvm.sdk", "graal-sdk", null, "provided", null, false);
+        addDependency(deps, "org.graalvm.nativeimage", "svm", null, "provided", null, false);
 
         if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
-            addDependency(deps, "ai.kompile", "kompile-app-main", this.kompileAppVersion, "compile", null);
-            if (this.enableRagService) { // MCP client/server are part of spring-ai-starters, managed by BOM
-                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-client", null, "compile", null);
-                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-server", null, "compile", null);
+            addDependency(deps, "ai.kompile", "kompile-app-main", this.kompileAppVersion, "compile", null, false);
+            if (this.enableRagService) {
+                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-client", null, "compile", null, false);
+                addDependency(deps, "org.springframework.ai", "spring-ai-starter-mcp-server", null, "compile", null, false);
             }
         }
     }
@@ -276,15 +274,11 @@ public class PomGenerator implements Callable<Void> {
 
         try {
             ObjectMapper mapper = ObjectMappers.getJsonMapper();
-            // Deserialize into a generic Map first to inspect the structure, then into specific type if needed
-            // Or, more robustly, attempt to deserialize into known Pipeline implementations
             Pipeline parsedPipeline;
             try {
-                // Try SequencePipeline first as it's simpler and more common for CLI generation
                 parsedPipeline = mapper.readValue(pipelineJsonFile, SequencePipeline.class);
             } catch (Exception eSeq) {
                 try {
-                    // Fallback to GraphPipeline
                     parsedPipeline = mapper.readValue(pipelineJsonFile, GraphPipeline.class);
                 } catch (Exception eGraph) {
                     System.err.println("Failed to parse pipeline JSON as SequencePipeline or GraphPipeline: " + eGraph.getMessage());
@@ -292,7 +286,7 @@ public class PomGenerator implements Callable<Void> {
                 }
             }
 
-            List<StepConfig> stepConfigs = parsedPipeline.getSteps(); // Relies on Pipeline.getSteps()
+            List<StepConfig> stepConfigs = parsedPipeline.getSteps();
 
             Set<String> addedStepModules = new HashSet<>();
             for (StepConfig stepConfig : stepConfigs) {
@@ -304,7 +298,6 @@ public class PomGenerator implements Callable<Void> {
                     symbolicType = ((GenericStepConfig) stepConfig).type();
                 }
 
-
                 String stepModule = null;
                 if (runnerClassName != null && !runnerClassName.isEmpty()) {
                     if (runnerClassName.startsWith("ai.kompile.pipelines.steps.python.")) stepModule = "python";
@@ -313,7 +306,7 @@ public class PomGenerator implements Callable<Void> {
                     else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.samediff.")) stepModule = "samediff";
                     else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.tensorflow.")) stepModule = "tensorflow";
                     else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.tvm.")) stepModule = "tvm";
-                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.image.")) stepModule = "image"; // For ImageToNDArrayRunner
+                    else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.image.")) stepModule = "image";
                     else if (runnerClassName.startsWith("ai.kompile.pipelines.steps.documentparser.")) stepModule = "document-parser";
                 } else if (symbolicType != null && !symbolicType.isEmpty()) {
                     String lowerType = symbolicType.toLowerCase();
@@ -338,7 +331,6 @@ public class PomGenerator implements Callable<Void> {
     }
 
     private void addPipelineStepDependenciesFromCliFlags(List<Dependency> deps) {
-        // This is a fallback if pipeline.json parsing fails or is not provided for analysis
         if (this.python) addKompilePipelineStepDependency(deps, "python");
         if (this.onnx) addKompilePipelineStepDependency(deps, "onnx");
         if (this.dl4j) addKompilePipelineStepDependency(deps, "deeplearning4j");
@@ -358,31 +350,22 @@ public class PomGenerator implements Callable<Void> {
 
         boolean hasPython = resolvedDependencies.stream().anyMatch(d -> "kompile-pipelines-steps-python".equals(d.getArtifactId()));
         boolean hasNd4j = resolvedDependencies.stream().anyMatch(d -> d.getGroupId().equals("org.nd4j"));
-        boolean hasOpenBLAS = resolvedDependencies.stream().anyMatch(d -> d.getArtifactId().contains("openblas")); // Could be more specific
+        boolean hasOpenBLAS = resolvedDependencies.stream().anyMatch(d -> d.getArtifactId().contains("openblas"));
 
         if (hasPython) {
-            appenders.add(new KompilePythonPomFileAppender());
             appenders.add(new KompilePythonPomFileAppender());
         }
         if (hasNd4j) {
             appenders.add(new KompileNd4jClassLoadingPomFileAppender());
-            appenders.add(new KompileNd4jClassLoadingPomFileAppender());
         }
-        if (hasOpenBLAS || (hasNd4j && "nd4j-native".equals(this.nd4jBackend))) { // nd4j-native often uses OpenBLAS
+        if (hasOpenBLAS || (hasNd4j && "nd4j-native".equals(this.nd4jBackend))) {
             appenders.add(new KompileOpenblasPomFileAppender());
-        }
-
-        if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType) && !this.assembly) {
-            // Conceptual: appenders.add(new KompileSpringNativePomFileAppender());
-            // For Spring AI providers, specific appenders might be needed
-            // if (llmProvider.contains("openai")) appenders.add(new KompileOpenAiApiPomFileAppender());
         }
         return appenders.stream().distinct().collect(Collectors.toList());
     }
 
     private String graalBuildArgs() {
         StringBuilder sb = new StringBuilder();
-        // Base GraalVM arguments (merged from kompile-cli/pom.xml and original PomGenerator)
         sb.append("--verbose\n");
         sb.append("--no-fallback\n");
         sb.append("-H:+ReportExceptionStackTraces\n");
@@ -392,26 +375,22 @@ public class PomGenerator implements Callable<Void> {
         sb.append("-H:-CheckToolchain\n");
         sb.append("-H:+AllowIncompleteClasspath\n");
 
-        // Build-time initializations
         sb.append("--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager,org.slf4j.helpers\n");
 
-        // Runtime initializations
-        sb.append("--initialize-at-run-time=io.netty.**,org.bytedeco.**,com.sun.jna.**,org.eclipse.jgit.**\n"); // Use wildcards for packages
+        sb.append("--initialize-at-run-time=io.netty.**,org.bytedeco.**,com.sun.jna.**,org.eclipse.jgit.**\n");
         sb.append("--initialize-at-run-time=ai.kompile.pipelines.**,ai.kompile.app.**\n");
         sb.append("--initialize-at-run-time=org.nd4j.linalg.factory.Nd4j,org.nd4j.nativeblas.NativeOpsHolder\n");
-        sb.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n"); // If PDFBox is used
+        sb.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n");
 
-        // JavaCPP specific
         sb.append("-Dorg.bytedeco.javacpp.logger.debug=true\n");
         sb.append("-Dorg.bytedeco.javacpp.nopointergc=true\n");
         sb.append("-Djavacpp.platform=${javacpp.platform}\n");
 
-        // Resources
-        sb.append("-H:IncludeResources=META-INF/native-image/.*\\.json$\n"); // End with $ for regex precision
+        sb.append("-H:IncludeResources=META-INF/native-image/.*\\.json$\n");
         sb.append("-H:IncludeResources=ai/kompile/.*\\.schema\\.json$\n");
-        sb.append("-H:IncludeResources=.*/org/nd4j/.*\\.(so|dylib|dll|properties|json|txt| 기울기)$\n"); // Added 기울기 for Korean font in ND4J? Review.
+        sb.append("-H:IncludeResources=.*/org/nd4j/.*\\.(so|dylib|dll|properties|json|txt| 기울기)$\n");
         sb.append("-H:IncludeResources=.*/org/bytedeco/.*\\.(so|dylib|dll|properties|json)$\n");
-        sb.append("-H:IncludeResources=META-INF/services/.*$\n"); // Match any service file
+        sb.append("-H:IncludeResources=META-INF/services/.*$\n");
         sb.append("-H:IncludeResources=logback.xml,logback-test.xml,logging.properties\n");
         sb.append("-H:IncludeResources=reference.conf\n");
         sb.append("-H:IncludeResources=").append(this.pipelineResourcePath).append("$\n");
@@ -424,7 +403,6 @@ public class PomGenerator implements Callable<Void> {
             sb.append("-H:IncludeResources=META-INF/additional-spring-configuration-metadata.json$\n");
             sb.append("--initialize-at-run-time=org.springframework.**,jakarta.servlet.**,org.apache.tomcat.**,org.apache.coyote.**,org.hibernate.validator.**,org.apache.catalina.**,org.apache.el.**\n");
             sb.append("-H:-AddAllFileSystemProviders\n");
-            // Spring AI specific
             if (this.llmProvider != null && this.llmProvider.contains("openai")) {
                 sb.append("--initialize-at-run-time=com.knuddels.jtokkit.**\n");
                 sb.append("--initialize-at-run-time=com.azure.ai.openai.**\n");
@@ -432,14 +410,13 @@ public class PomGenerator implements Callable<Void> {
             }
             if (this.embeddingProvider != null && this.embeddingProvider.contains("sentence-transformer")) {
                 sb.append("--initialize-at-run-time=ai.djl.**\n");
-                sb.append("--initialize-at-run-time=org.pytorch.**\n"); // If DJL uses PyTorch backend
+                sb.append("--initialize-at-run-time=org.pytorch.**\n");
             }
-            // Add more for Anthropic, Gemini, Chroma, PGVector if they have specific classes needing runtime init
         }
 
         if (this.includeResources != null && !this.includeResources.isEmpty()) {
             for (String resourcePattern : this.includeResources.split(",")) {
-                sb.append("-H:IncludeResources=").append(resourcePattern.trim()).append("$\n"); // Add $ for regex end
+                sb.append("-H:IncludeResources=").append(resourcePattern.trim()).append("$\n");
             }
         }
 
@@ -468,13 +445,14 @@ public class PomGenerator implements Callable<Void> {
         Extension osMavenPluginExtension = new Extension();
         osMavenPluginExtension.setGroupId("kr.motd.maven");
         osMavenPluginExtension.setArtifactId("os-maven-plugin");
-        osMavenPluginExtension.setVersion("1.7.1"); // Use a recent version
+        osMavenPluginExtension.setVersion("${os-maven-plugin.version}");
         build.addExtension(osMavenPluginExtension);
 
         Plugin compilerPlugin = new Plugin();
         compilerPlugin.setGroupId("org.apache.maven.plugins");
         compilerPlugin.setArtifactId("maven-compiler-plugin");
-        String javaVersion = ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) ? "17" : "11";
+        compilerPlugin.setVersion("${maven-compiler-plugin.version}");
+        String javaVersion = model.getProperties().getProperty("java.version");
         Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
                 "<configuration><release>" + javaVersion + "</release></configuration>"
         ));
@@ -484,17 +462,18 @@ public class PomGenerator implements Callable<Void> {
         Plugin resourcesPlugin = new Plugin();
         resourcesPlugin.setGroupId("org.apache.maven.plugins");
         resourcesPlugin.setArtifactId("maven-resources-plugin");
+        resourcesPlugin.setVersion("${maven-resources-plugin.version}");
         build.addPlugin(resourcesPlugin);
 
-        if (this.assembly) { // Corrected: use this.assembly
+        if (this.assembly) {
             Plugin assemblyPlugin = new Plugin();
             assemblyPlugin.setGroupId("org.apache.maven.plugins");
             assemblyPlugin.setArtifactId("maven-assembly-plugin");
-            // Ensure a descriptor is available or a default configuration is robust
+            assemblyPlugin.setVersion("${maven-assembly-plugin.version}");
             Xpp3Dom assemblyConfigDom = Xpp3DomBuilder.build(new StringReader(
                     "<configuration><finalName>" + this.imageName + "</finalName><appendAssemblyId>true</appendAssemblyId>" +
                             "<descriptors><descriptor>src/main/assembly/kompile-app-assembly.xml</descriptor></descriptors></configuration>"
-            )); // Assumes descriptor exists at this path in the generated project
+            ));
             assemblyPlugin.setConfiguration(assemblyConfigDom);
             PluginExecution assemblyExec = new PluginExecution();
             assemblyExec.setId("make-assembly");
@@ -507,6 +486,7 @@ public class PomGenerator implements Callable<Void> {
             Plugin springBootPlugin = new Plugin();
             springBootPlugin.setGroupId("org.springframework.boot");
             springBootPlugin.setArtifactId("spring-boot-maven-plugin");
+            springBootPlugin.setVersion("${spring-boot-maven-plugin.version}");
             springBootPlugin.setConfiguration(Xpp3DomBuilder.build(new StringReader(
                     "<configuration><mainClass>" + this.mainClass + "</mainClass><finalName>" + this.imageName + "</finalName></configuration>"
             )));
@@ -524,9 +504,9 @@ public class PomGenerator implements Callable<Void> {
                 Plugin frontendPlugin = new Plugin();
                 frontendPlugin.setGroupId("com.github.eirslett");
                 frontendPlugin.setArtifactId("frontend-maven-plugin");
+                frontendPlugin.setVersion("${frontend-maven-plugin.version}");
                 String nodeVersion = model.getProperties().getProperty("node.version", "v20.11.1");
                 String npmVersion = model.getProperties().getProperty("npm.version", "10.2.4");
-                // Simplified config; actual executions for install, build need to be added
                 Xpp3Dom frontendConfig = Xpp3DomBuilder.build(new StringReader(
                         "<configuration>" +
                                 "<workingDirectory>src/main/frontend</workingDirectory>" +
@@ -536,23 +516,21 @@ public class PomGenerator implements Callable<Void> {
                                 "</configuration>"
                 ));
                 frontendPlugin.setConfiguration(frontendConfig);
-                // Add executions like in kompile-app-main/pom.xml
                 build.addPlugin(frontendPlugin);
             }
 
             Plugin nativePlugin = new Plugin();
             nativePlugin.setGroupId("org.graalvm.buildtools");
             nativePlugin.setArtifactId("native-maven-plugin");
-            nativePlugin.setVersion(this.nativeImagePluginVersion);
+            nativePlugin.setVersion("${native-maven-plugin.version}");
             nativePlugin.setExtensions(true);
 
             List<String> finalNativeBuildArgs = new ArrayList<>();
             String[] baseArgs = graalBuildArgs().split("\n");
             for(String arg : baseArgs) if(arg != null && !arg.trim().isEmpty()) finalNativeBuildArgs.add(arg.trim());
 
-            finalNativeBuildArgs.add("--class-path"); // Spring AOT specific
+            finalNativeBuildArgs.add("--class-path");
             finalNativeBuildArgs.add("${project.build.outputDirectory}${path.separator}${project.build.directory}/spring-aot/main/classes");
-
 
             Xpp3Dom nativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
@@ -582,11 +560,11 @@ public class PomGenerator implements Callable<Void> {
             nativePlugin.addExecution(nativeBuildExec);
             build.addPlugin(nativePlugin);
 
-        } else { // Default native image for "pipeline-executor" or other non-assembly
+        } else {
             Plugin nativePlugin = new Plugin();
             nativePlugin.setGroupId("org.graalvm.buildtools");
             nativePlugin.setArtifactId("native-maven-plugin");
-            nativePlugin.setVersion(this.nativeImagePluginVersion);
+            nativePlugin.setVersion("${native-maven-plugin.version}");
             nativePlugin.setExtensions(true);
             Xpp3Dom nativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
@@ -619,13 +597,13 @@ public class PomGenerator implements Callable<Void> {
             String[] split = extraDepsString.split(",");
             for (String artifact : split) {
                 String[] artifactSplit = artifact.trim().split(":");
-                if (artifactSplit.length >= 3) { // G:A:V is minimum
+                if (artifactSplit.length >= 3) {
                     String groupId = artifactSplit[0];
                     String artifactId = artifactSplit[1];
                     String version = artifactSplit[2];
                     String classifier = (artifactSplit.length >= 4) ? artifactSplit[3] : null;
                     String scope = (artifactSplit.length >= 5) ? artifactSplit[4] : "compile";
-                    addDependency(addTo, groupId, artifactId, version, scope, classifier);
+                    addDependency(addTo, groupId, artifactId, version, scope, classifier, false);
                 } else {
                     System.err.println("Warning: Skipping malformed extra dependency: " + artifact);
                 }
@@ -644,12 +622,12 @@ public class PomGenerator implements Callable<Void> {
             parent.setVersion(this.ragMcpAssistantParentVersion);
             model.setParent(parent);
             model.setGroupId("ai.kompile.generated.app");
-            model.setArtifactId(this.imageName.toLowerCase().replace(" ", "-") + "-sba"); // Unique artifactId
+            model.setArtifactId(this.imageName.toLowerCase().replace(" ", "-") + "-sba");
             model.setVersion(this.kompileAppVersion);
         } else {
             Parent parent = new Parent();
             parent.setGroupId("ai.kompile");
-            parent.setArtifactId("kompile"); // Main Kompile parent
+            parent.setArtifactId("kompile");
             parent.setVersion(this.kompileParentVersion);
             model.setParent(parent);
             model.setGroupId("ai.kompile.generated.pipeline");
@@ -664,14 +642,26 @@ public class PomGenerator implements Callable<Void> {
         pomProps.setProperty("java.version", ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) ? "17" : "11");
         pomProps.setProperty("maven.compiler.release", pomProps.getProperty("java.version"));
         pomProps.setProperty("project.build.sourceEncoding", "UTF-8");
-        // Versions managed by parent or BOMs, but can be overridden/set if no parent
+
         if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
             pomProps.setProperty("spring-boot.version", this.springBootVersion);
             pomProps.setProperty("spring-ai.version", this.springAiVersion);
         }
         pomProps.setProperty("project.version", this.kompilePipelinesVersion);
         pomProps.setProperty("kompile.app.version", this.kompileAppVersion);
+
+        // Add properties for standard Maven plugin versions
+        pomProps.setProperty("maven-compiler-plugin.version", Info.getMavenCompilerPluginVersion());
+        pomProps.setProperty("maven-resources-plugin.version", Info.getMavenResourcesPluginVersion());
+        pomProps.setProperty("maven-assembly-plugin.version", Info.getMavenAssemblyPluginVersion());
         pomProps.setProperty("native-maven-plugin.version", this.nativeImagePluginVersion);
+        pomProps.setProperty("spring-boot-maven-plugin.version", this.springBootVersion);
+        if (this.enableFrontendBuild) {
+            pomProps.setProperty("frontend-maven-plugin.version", Info.getFrontendMavenPluginVersion());
+            // node.version and npm.version will be defaulted in addBuildConfiguration if not set here
+        }
+        pomProps.setProperty("os-maven-plugin.version", Info.getOsMavenPluginVersion());
+
         model.setProperties(pomProps);
 
         addRepositories(model);
@@ -685,7 +675,7 @@ public class PomGenerator implements Callable<Void> {
         }
 
         if (this.nd4jBackend != null && !this.nd4jBackend.isEmpty()) {
-            addDependency(this.resolvedDependencies, "org.nd4j", this.nd4jBackend, null, "compile", this.nd4jBackendClassifier);
+            addDependency(this.resolvedDependencies, "org.nd4j", this.nd4jBackend, null, "compile", this.nd4jBackendClassifier, false);
         }
         addExtraDependenciesFromString(this.resolvedDependencies, this.extraDependencies);
         model.setDependencies(this.resolvedDependencies);
@@ -693,14 +683,12 @@ public class PomGenerator implements Callable<Void> {
         DependencyManagement depMgmt = new DependencyManagement();
         if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
             if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
-                // Spring Boot BOM
                 Dependency springBootBom = new Dependency();
                 springBootBom.setGroupId("org.springframework.boot");
                 springBootBom.setArtifactId("spring-boot-dependencies");
                 springBootBom.setVersion(this.springBootVersion);
                 springBootBom.setType("pom"); springBootBom.setScope("import");
                 depMgmt.addDependency(springBootBom);
-                // Spring AI BOM
                 Dependency springAiBom = new Dependency();
                 springAiBom.setGroupId("org.springframework.ai");
                 springAiBom.setArtifactId("spring-ai-bom");
@@ -730,11 +718,6 @@ public class PomGenerator implements Callable<Void> {
         System.out.println("Successfully generated POM: " + this.outputFile.getAbsolutePath());
     }
 
-
-
-    /**
-     * Restored from original PomGenerator.
-     */
     public void addJavacppProfiles(Model model) {
         Profile defaultProfile =new Profile();
         defaultProfile.setId("javacpp-platform-default");
@@ -743,31 +726,17 @@ public class PomGenerator implements Callable<Void> {
         activationProperty.setName("!javacpp.platform");
         activation.setProperty(activationProperty);
         defaultProfile.setActivation(activation);
-        // Relies on os-maven-plugin to provide os.detected.name and os.detected.arch
         defaultProfile.addProperty("javacpp.platform","${os.detected.name}-${os.detected.arch}");
         model.addProfile(defaultProfile);
-
-        // The original PomGenerator had many specific profiles for OS/Arch combinations.
-        // These are generally useful if fine-grained control over javacpp.platform
-        // is needed beyond what os-maven-plugin provides by default, or to set other
-        // properties based on OS/Arch. For now, the default profile using os-maven-plugin
-        // properties is often sufficient for JavaCPP. Adding them back if specific
-        // overrides are needed for certain platforms.
-        // Example (from original):
-        // Profile linuxProfile = new Profile(); /* ... */ model.addProfile(linuxProfile);
     }
 
-
-    /**
-     * Restored from original PomGenerator.
-     */
     public void addRepositories(Model model) {
         Repository sonatypeSnapshots = new Repository();
         sonatypeSnapshots.setId("sonatype-nexus-snapshots");
         sonatypeSnapshots.setUrl("https://oss.sonatype.org/content/repositories/snapshots");
         RepositoryPolicy snapshotsPolicy = new RepositoryPolicy();
         snapshotsPolicy.setEnabled(true);
-        snapshotsPolicy.setUpdatePolicy("always"); // Or "daily"
+        snapshotsPolicy.setUpdatePolicy("always");
         sonatypeSnapshots.setSnapshots(snapshotsPolicy);
         model.addRepository(sonatypeSnapshots);
 
