@@ -20,16 +20,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>ai.kompile</groupId>
-  <artifactId>rag-mcp-assistant-parent</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
-  <packaging>pom</packaging>
-
   <parent>
     <groupId>ai.kompile</groupId>
-    <artifactId>kompile</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <artifactId>kompile</artifactId> <version>0.1.0-SNAPSHOT</version>
   </parent>
+
+  <artifactId>rag-mcp-assistant-parent</artifactId> <packaging>pom</packaging>
 
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
@@ -45,9 +41,10 @@
     <anserini.version>0.24.0</anserini.version>
     <log4j2.version>2.21.1</log4j2.version>
     <jsoup.version>1.17.2</jsoup.version>
+    <jackson.version>2.15.3</jackson.version>
     <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
-    <lombok.version>1.18.38</lombok.version>
-
+    <lombok.version>1.18.30</lombok.version>
+    <picocli.version>4.7.6</picocli.version>
     <frontend-maven-plugin.version>1.15.0</frontend-maven-plugin.version>
     <node.version>v20.11.1</node.version>
     <npm.version>10.2.4</npm.version>
@@ -58,7 +55,7 @@
     <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
     <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
     <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
-    <native-maven-plugin.version>0.10.6</native-maven-plugin.version>
+    <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
   </properties>
 
   <modules>
@@ -71,6 +68,7 @@
     <module>kompile-app-anthropic-llm</module>
     <module>kompile-app-gemini-llm</module>
     <module>kompile-embedding-openai</module>
+    <module>kompile-embedding-samediff</module>
     <module>kompile-embedding-sentence-transformer</module>
     <module>kompile-vectorstore-chroma</module>
     <module>kompile-vectorstore-pgvector</module>
@@ -78,7 +76,6 @@
     <module>kompile-tool-rag</module>
     <module>kompile-app-main</module>
     <module>kompile-pipelines-app-llm</module>
-    <module>kompile-embedding-samediff</module>
   </modules>
 
   <dependencyManagement>
@@ -106,14 +103,57 @@
       </dependency>
 
       <dependency>
-        <groupId>io.anserini</groupId>
-        <artifactId>anserini</artifactId>
-        <version>${anserini.version}</version>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.module</groupId>
+        <artifactId>jackson-module-kotlin</artifactId>
+        <version>${jackson.version}</version>
+        <optional>true</optional>
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.module</groupId>
         <artifactId>jackson-module-jsonSchema</artifactId>
         <version>${jackson.module.jsonschema.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli-spring-boot-starter</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli-codegen</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.anserini</groupId>
+        <artifactId>anserini</artifactId>
+        <version>${anserini.version}</version>
       </dependency>
       <dependency>
         <groupId>org.jsoup</groupId>
@@ -134,6 +174,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-main</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-app-loaders-orchestrator</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -147,7 +192,8 @@
         <artifactId>kompile-loader-pdf</artifactId>
         <version>${project.version}</version>
       </dependency>
-      <dependency><groupId>ai.kompile</groupId>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-app-anserini</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -169,6 +215,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-embedding-openai</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-embedding-samediff</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -196,6 +247,51 @@
         <artifactId>kompile-tool-rag</artifactId>
         <version>${project.version}</version>
       </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-app-llm</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-framework-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-framework-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-framework-runtime</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-python-adapter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-steps-python</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-steps-samediff</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-steps-deeplearning4j</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipelines-steps-onnx</artifactId>
+        <version>${project.version}</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -218,6 +314,10 @@
           <version>${maven-compiler-plugin.version}</version>
           <configuration>
             <release>${java.version}</release>
+            <encoding>${project.build.sourceEncoding}</encoding>
+            <compilerArgs>
+              <arg>-Xlint:all,-serial,-processing</arg>
+            </compilerArgs>
           </configuration>
         </plugin>
         <plugin>
@@ -253,5 +353,4 @@
       </plugins>
     </pluginManagement>
   </build>
-
 </project>
