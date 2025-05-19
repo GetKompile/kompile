@@ -30,33 +30,7 @@
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
 
-  <properties>
-    <maven.compiler.release>17</maven.compiler.release>
-    <java.version>17</java.version>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-    <spring-boot.version>3.2.5</spring-boot.version>
-    <spring-ai.version>1.0.0-M8</spring-ai.version>
-    <anserini.version>0.24.0</anserini.version>
-    <log4j2.version>2.21.1</log4j2.version>
-    <jsoup.version>1.17.2</jsoup.version>
-    <jackson.version>2.15.3</jackson.version>
-    <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
-    <lombok.version>1.18.30</lombok.version>
-    <picocli.version>4.7.6</picocli.version>
-    <frontend-maven-plugin.version>1.15.0</frontend-maven-plugin.version>
-    <node.version>v20.11.1</node.version>
-    <npm.version>10.2.4</npm.version>
-
-    <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
-    <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
-    <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
-    <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
-    <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
-    <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
-    <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
-  </properties>
 
   <modules>
     <module>kompile-app-core</module>
