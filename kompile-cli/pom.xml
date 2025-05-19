@@ -152,20 +152,8 @@
             <artifactId>nd4j-common</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-pipelines-framework-runtime</artifactId>
-        </dependency>
+
+
         <dependency>
             <groupId>com.github.oshi</groupId>
             <artifactId>oshi-core</artifactId>
@@ -228,9 +216,6 @@
                                 <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
                                 <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
                                 <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg> </buildArgs>
-                            <agent>
-                                <enabled>true</enabled>
-                            </agent>
                         </configuration>
                     </plugin>
                 </plugins>
