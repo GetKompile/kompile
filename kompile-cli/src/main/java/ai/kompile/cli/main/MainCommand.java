@@ -16,72 +16,61 @@
 
 package ai.kompile.cli.main;
 
-// Existing imports from your MainCommand.java (ensure these map to actual files you have)
-// For classes like Info, BuildMain etc., I'm using the names as they appear in your pom.xml/uploaded files.
 import ai.kompile.cli.main.build.BuildMain;
+import ai.kompile.cli.main.build.BuildRagApp;
+import ai.kompile.cli.main.build.KompileApplicationBuilder;
+import ai.kompile.cli.main.build.simplified.BuildHostedLlmRagApp;
+import ai.kompile.cli.main.build.simplified.BuildSameDiffApp;
 import ai.kompile.cli.main.config.ConfigMain;
-import ai.kompile.cli.main.exec.ExecMain;
-import ai.kompile.cli.main.helpers.HelperEntry;
 import ai.kompile.cli.main.install.InstallMain;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
-// import ai.kompile.cli.main.util.EnvironmentUtils; // Removed direct static .init() call
-import ai.kompile.cli.plugin.api.CliCommandRegistrar; // New import for plugin API
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
-import picocli.CommandLine.Command;
 
-import java.util.ServiceLoader; // New import
+import java.io.File;
 import java.util.concurrent.Callable;
 
-
-@Command(name = "kompile",
+@CommandLine.Command(name = "kompile",
         subcommands = {
-                InstallMain.class,    // Assuming this class exists in this package structure
+                Info.class,
+                Bootstrap.class,
                 ConfigMain.class,
-                ExecMain.class,
-                Info.class,           // Assuming this class exists
-                BuildMain.class,      // Assuming this class exists
-                HelperEntry.class,    // Assuming this class exists
-                UnInstallMain.class,  // Assuming this class exists
-                CommandLine.HelpCommand.class
+                BuildMain.class,
+                KompileApplicationBuilder.BuildKompileAppCommand.class,
+                BuildRagApp.class,
+                BuildHostedLlmRagApp.class,
+                BuildSameDiffApp.class,
+                InstallMain.class,
+                UnInstallMain.class
         },
         mixinStandardHelpOptions = true,
-        versionProvider = VersionProvider.class, // Using the new VersionProvider
-        description = "Kompile CLI for managing and executing AI pipelines.")
+        versionProvider = VersionProvider.class,
+        usageHelpAutoWidth = true,
+        description = "Kompile CLI: Streamline AI/ML Application Development and Deployment")
 public class MainCommand implements Callable<Integer> {
+    private static final Logger log = LoggerFactory.getLogger(MainCommand.class);
 
-    static {
-        // The direct call to EnvironmentUtils.init() was removed as the provided
-        // EnvironmentUtils.java does not contain a static init() method.
-        // If any static initialization is needed at CLI startup, it should be placed here
-        // or called from a dedicated bootstrap mechanism if EnvironmentUtils requires it.
 
-        // Attempt to load the StaticLoggerBinder to trigger SLF4J initialization.
-        // Class.forName(StaticLoggerBinder.class.getName());
+    public MainCommand() {
     }
 
 
     @Override
     public Integer call() throws Exception {
-        System.setProperty("picocli.ansi", "true");
-        new CommandLine(this).usage(System.out);
+        File kompileDir = Info.homeDirectory();
+        if(!kompileDir.exists()) {
+            System.err.println("Kompile directory not initialized. Please run 'kompile bootstrap' first.");
+            return 1;
+        }
+        System.err.println("No command specified. Showing help:\n");
+        new CommandLine(new MainCommand()).usage(System.err);
         return 0;
     }
 
-    public static void main(String[] args) {
-        System.setProperty("picocli.ansi", "true");
-        CommandLine cmd = new CommandLine(new MainCommand());
 
-        ServiceLoader<CliCommandRegistrar> registrars = ServiceLoader.load(CliCommandRegistrar.class);
-        for (CliCommandRegistrar registrar : registrars) {
-            try {
-                registrar.registerCommands(cmd);
-            } catch (Exception e) {
-                System.err.println("Error registering commands from plugin " + registrar.getClass().getName() + ": " + e.getMessage());
-                // e.printStackTrace(); // Uncomment for debugging plugin loading issues
-            }
-        }
 
-        int exitCode = cmd.execute(args);
-        System.exit(exitCode);
+    public static void main(String...args) {
+        new CommandLine(new MainCommand()).execute(args);
     }
 }

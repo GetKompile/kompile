@@ -184,36 +184,36 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
       throw new IllegalArgumentException("qids and queries lists must have the same size.");
     }
 
-    try(ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads)) {
-      for (int i = 0; i < qids.size(); i++) {
-        K qid = qids.get(i);
-        String queryString = queries.get(i);
+    ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(threads);
+    for (int i = 0; i < qids.size(); i++) {
+      K qid = qids.get(i);
+      String queryString = queries.get(i);
 
-        executor.execute(() -> {
-          try {
-            results.put(qid, searchString(qid, queryString, k));
-          } catch (IOException e) {
-            LOG.error("IOException during batch search for qid: " + qid, e);
-            throw new CompletionException(e);
-          } catch (Exception e) {
-            LOG.error("Unexpected exception during batch search for qid: " + qid, e);
-            throw new CompletionException(e);
-          }
+      executor.execute(() -> {
+        try {
+          results.put(qid, searchString(qid, queryString, k));
+        } catch (IOException e) {
+          LOG.error("IOException during batch search for qid: " + qid, e);
+          throw new CompletionException(e);
+        } catch (Exception e) {
+          LOG.error("Unexpected exception during batch search for qid: " + qid, e);
+          throw new CompletionException(e);
+        }
 
-          int n = cnt.incrementAndGet();
-          if (n % 100 == 0) {
-            LOG.info("{} queries processed", n);
-          }
-        });
-      }
-      executor.shutdown();
-      try {
-        while (!executor.awaitTermination(1, TimeUnit.MINUTES));
-      } catch (InterruptedException ie) {
-        executor.shutdownNow();
-        Thread.currentThread().interrupt();
-      }
+        int n = cnt.incrementAndGet();
+        if (n % 100 == 0) {
+          LOG.info("{} queries processed", n);
+        }
+      });
     }
+    executor.shutdown();
+    try {
+      while (!executor.awaitTermination(1, TimeUnit.MINUTES));
+    } catch (InterruptedException ie) {
+      executor.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
+
     final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
     LOG.info("{} queries processed in {}{}", queries.size(),
             DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"),

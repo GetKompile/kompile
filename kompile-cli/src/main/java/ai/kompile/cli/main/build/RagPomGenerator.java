@@ -137,12 +137,7 @@ public class RagPomGenerator implements Callable<Void> {
         model.setVersion(instanceVersion);
         model.setPackaging("jar"); // This instance will be a runnable JAR
 
-        // Set Parent (rag-mcp-assistant-parent)
-        Parent parent = new Parent();
-        parent.setGroupId("ai.kompile");
-        parent.setArtifactId("rag-mcp-assistant-parent");
-        parent.setVersion(ragMcpVersion);
-        model.setParent(parent);
+
 
         // Set Properties (inherited or overridden)
         Properties props = new Properties();

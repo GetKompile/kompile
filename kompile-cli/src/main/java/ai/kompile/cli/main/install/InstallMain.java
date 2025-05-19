@@ -17,7 +17,6 @@
 package ai.kompile.cli.main.install;
 
 import ai.kompile.cli.main.Info;
-import ai.kompile.cli.main.build.InstallPreRequisites;
 import org.apache.commons.io.FileUtils;
 import picocli.CommandLine;
 
@@ -32,15 +31,9 @@ import java.util.concurrent.Callable;
         InstallPython.class,
         InstallMaven.class,
         InstallAll.class,
-        InstallSDK.class,
-        InstallKompileComponents.class,
         NativeToolsCompilation.class,
-        PropertyBasedInstaller.class,
         ListPropertyPrograms.class,
         OpenBlasInstaller.class,
-        InstallPreRequisites.class,
-        ProgramIndex.class,
-        RefreshIndexPrograms.class,
         InstallHeaders.class,
         InstallPythonWrappers.class
 })
@@ -70,15 +63,17 @@ public class InstallMain implements Callable<Integer> {
             URL remoteUrl = URI.create(url).toURL();
             long size = getFileSize(remoteUrl);
             if(size < 0) {
-                return null;
+                System.err.println("Warning: Could not determine file size for " + url + ". Progress bar may not be accurate.");
             }
             try(InputStream is = new ProgressInputStream(new BufferedInputStream(URI.create(url).toURL().openStream()),size)) {
                 FileUtils.copyInputStreamToFile(is,destFile);
 
             } catch (MalformedURLException e) {
-                e.printStackTrace();
+                System.err.println("Error: Malformed URL " + url);
+                throw e;
             } catch (IOException e) {
-                e.printStackTrace();
+                System.err.println("Error: I/O exception while downloading " + url + " to " + filePath);
+                throw e;
             }
         }
 
@@ -112,6 +107,7 @@ public class InstallMain implements Callable<Integer> {
             return conn.getContentLength();
         }
         catch (IOException e) {
+            System.err.println("Warning: Could not get file size for URL " + url + " : " + e.getMessage());
             return -1;
         } finally {
             if(conn instanceof HttpURLConnection) {
