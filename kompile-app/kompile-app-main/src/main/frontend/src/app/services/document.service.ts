@@ -15,10 +15,17 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
-import { AddUrlRequest, FileUploadResponse, SimpleMessageResponse } from '../models/api-models';
+import {
+  AddUrlRequest,
+  FileUploadResponse,
+  SimpleMessageResponse,
+  LoaderInfo,
+  BatchProcessRequest,  // Ensure this is defined in api-models.ts
+  BatchProcessResponse  // Ensure this is defined in api-models.ts
+} from '../models/api-models';
 import { BaseService } from './base.service';
 
 @Injectable({
@@ -40,11 +47,17 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  uploadFile(file: File): Observable<FileUploadResponse> {
+  getAvailableLoaders(): Observable<LoaderInfo[]> {
+    return this.http.get<LoaderInfo[]>(`${this.backendUrl}/documents/loaders`)
+      .pipe(catchError(this.handleError));
+  }
+
+  uploadFile(file: File, loaderName?: string): Observable<FileUploadResponse> {
     const formData: FormData = new FormData();
     formData.append('file', file, file.name);
-
-    // Note: HttpClient sets Content-Type automatically for FormData
+    if (loaderName) {
+      formData.append('loader', loaderName);
+    }
     return this.http.post<FileUploadResponse>(`${this.backendUrl}/documents/upload`, formData)
       .pipe(catchError(this.handleError));
   }
@@ -54,20 +67,21 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  processBatch(request: BatchProcessRequest): Observable<BatchProcessResponse> {
+    return this.http.post<BatchProcessResponse>(`${this.backendUrl}/documents/process-batch`, request)
+      .pipe(catchError(this.handleError));
+  }
+
   private handleError(error: HttpErrorResponse) {
-    // ... (same as in RagService or a shared error handler)
     let errorMessage = 'Unknown error!';
     if (error.error instanceof ErrorEvent) {
       errorMessage = `Error: ${error.error.message}`;
     } else {
-      errorMessage = `Error Code: ${error.status}\nMessage: ${error.message}`;
-      if (error.error && error.error.error) {
-        errorMessage += `\nDetails: ${error.error.error}`;
-      } else if (error.error && typeof error.error === 'string') {
-        errorMessage += `\nDetails: ${error.error}`;
-      }
+      errorMessage = `Error Code: ${error.status}\nMessage: ${error.message || (error.error && (error.error.error || JSON.stringify(error.error))) || 'Server error'}`;
     }
     console.error(errorMessage);
+    // It's generally better to return an Observable that emits an error
+    // for the component to handle, rather than just a new Error object.
     return throwError(() => new Error(errorMessage));
   }
 }

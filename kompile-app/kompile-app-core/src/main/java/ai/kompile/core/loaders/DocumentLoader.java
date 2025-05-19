@@ -26,6 +26,12 @@ import java.util.List;
 public interface DocumentLoader {
 
     /**
+     * Gets a user-friendly name for this loader.
+     * @return The name of the loader.
+     */
+    String getName();
+
+    /**
      * Checks if this loader can handle the given source descriptor.
      *
      * @param sourceDescriptor The descriptor of the document source.

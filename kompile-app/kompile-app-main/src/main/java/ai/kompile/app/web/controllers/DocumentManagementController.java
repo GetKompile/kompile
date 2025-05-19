@@ -16,12 +16,10 @@
 
 package ai.kompile.app.web.controllers;
 
-// Corrected import for AppDocumentSourceProperties
+import ai.kompile.core.loaders.DocumentLoader;
+import ai.kompile.core.loaders.DocumentLoadingService; // Import DocumentLoadingService
+import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
-// IndexerService is not directly used to trigger indexing in this version of the controller.
-// It informs the user to use the IndexerController.
-// If direct re-indexing was desired here, IndexerService would be injected and used.
-// import ai.kompile.core.indexers.IndexerService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,29 +52,33 @@ public class DocumentManagementController {
     private static final Logger logger = LoggerFactory.getLogger(DocumentManagementController.class);
 
     private final Path uploadsPath;
-    private final AppDocumentSourceProperties sourceProperties; // For listing configured sources & getting uploadsPath
+    private final AppDocumentSourceProperties sourceProperties;
     private final RestTemplate restTemplate;
-    // private final IndexerService indexerService; // Optional: if you want this controller to trigger indexing
+    private final List<DocumentLoader> documentLoaders;
+    private final DocumentLoadingService documentLoadingService; // Inject DocumentLoadingService
 
     @Autowired
     public DocumentManagementController(
             AppDocumentSourceProperties appDocumentSourceProperties,
-            RestTemplate restTemplate
-            /* IndexerService indexerService */ // Uncomment if you want to trigger indexing from here
+            RestTemplate restTemplate,
+            List<DocumentLoader> documentLoaders,
+            DocumentLoadingService documentLoadingService // Autowire DocumentLoadingService
     ) {
         this.sourceProperties = appDocumentSourceProperties;
         this.restTemplate = restTemplate;
-        // this.indexerService = indexerService;
+        this.documentLoaders = documentLoaders;
+        this.documentLoadingService = documentLoadingService; // Store it
 
         if (appDocumentSourceProperties.getUploadsPath() == null ||
                 appDocumentSourceProperties.getUploadsPath().trim().isEmpty()) {
             logger.error("CRITICAL: 'app.document.uploads-path' is not configured in application.properties. Document upload/add URL functionality will be impaired.");
-            this.uploadsPath = Paths.get("./error_uploads_path_not_configured"); // Fallback
+            this.uploadsPath = Paths.get("./error_uploads_path_not_configured");
         } else {
             this.uploadsPath = Paths.get(appDocumentSourceProperties.getUploadsPath()).toAbsolutePath();
         }
     }
 
+    // ... (PostConstruct, AddUrlRequest, LoaderInfo remain the same) ...
     @PostConstruct
     private void initializeUploadsDirectory() {
         try {
@@ -92,15 +94,64 @@ public class DocumentManagementController {
             }
         } catch (IOException e) {
             logger.error("FATAL: Could not create or access uploads directory at {}: {}", this.uploadsPath, e.getMessage(), e);
-            // In a real app, you might want to throw a RuntimeException here to prevent startup
-            // if this functionality is absolutely critical.
         }
     }
 
-    public record AddUrlRequest(String url, String fileName) {}
+    public record AddUrlRequest(String url, String fileName, String loader) {}
+    public record LoaderInfo(String name, String className) {}
 
+    // For batch processing request
+    public record BatchProcessRequest(List<DocumentLoadingService.BatchLoadRequestItem> items, String defaultLoaderName) {}
+
+
+    @GetMapping("/loaders")
+    public ResponseEntity<List<LoaderInfo>> listAvailableLoaders() {
+        if (documentLoaders == null || documentLoaders.isEmpty()) {
+            logger.warn("No DocumentLoader beans found. listAvailableLoaders will return an empty list.");
+            return ResponseEntity.ok(Collections.emptyList());
+        }
+        List<LoaderInfo> loaderInfos = documentLoaders.stream()
+                .map(loader -> new LoaderInfo(loader.getName(), loader.getClass().getName()))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(loaderInfos);
+    }
+
+    @PostMapping("/process-batch")
+    public ResponseEntity<?> handleProcessBatch(@RequestBody BatchProcessRequest request) {
+        if (request == null || request.items() == null || request.items().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Batch request items cannot be empty."));
+        }
+        logger.info("Received batch processing request for {} items with default loader '{}'", request.items().size(), request.defaultLoaderName());
+        try {
+            Map<String, Object> results = documentLoadingService.loadDocumentsBatch(request.items(), request.defaultLoaderName());
+            // The result from loadDocumentsBatch already contains either List<Document> or error string per item.
+            // For now, we return a summary. A more detailed response structure might be needed.
+            long successCount = results.values().stream().filter(v -> v instanceof List).count();
+            long errorCount = results.size() - successCount;
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Batch processing completed.",
+                    "successful_items", successCount,
+                    "failed_items", errorCount,
+                    "details", results // Consider whether to return full document content or just summaries
+            ));
+        } catch (Exception e) {
+            logger.error("Error during batch processing: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed during batch processing: " + e.getMessage()));
+        }
+    }
+
+
+    // ... (handleFileUpload, handleAddUrl, listConfiguredSources, listUploadedFiles remain mostly the same,
+    // ensure they use the updated AddUrlRequest and handle loaderName for upload if applicable) ...
     @PostMapping("/upload")
-    public ResponseEntity<?> handleFileUpload(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> handleFileUpload(@RequestParam("file") MultipartFile file,
+                                              @RequestParam(name = "loader", required = false) String loaderName) {
+        // ... (existing implementation for upload) ...
+        // The selectedLoader part in the response is good.
+        // Current implementation just saves the file. The batch processing endpoint will handle actual loading.
+        // If direct processing on upload is desired (outside of batch), this would need more changes.
         if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server. Cannot save file."));
@@ -111,10 +162,9 @@ public class DocumentManagementController {
 
         String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
         String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
-        if (sanitizedFileName.isEmpty()) { // Handle cases where sanitization results in empty name
+        if (sanitizedFileName.isEmpty()) {
             sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0,8);
         }
-
 
         try {
             Path destinationFile = this.uploadsPath.resolve(sanitizedFileName).normalize();
@@ -129,22 +179,38 @@ public class DocumentManagementController {
             }
             logger.info("File uploaded successfully to: {}", destinationFile);
 
+            if (loaderName != null && !loaderName.isEmpty()) {
+                logger.info("Uploaded file '{}' was associated with loader: {}", sanitizedFileName, loaderName);
+                // If you need to immediately process with the specified loader, you would call documentLoadingService here.
+                // For example:
+                // DocumentSourceDescriptor descriptor = new DocumentSourceDescriptor(DocumentSourceDescriptor.SourceType.FILE, destinationFile.toString(), sanitizedFileName);
+                // List<org.springframework.ai.document.Document> loadedDocs = documentLoadingService.loadDocumentsFromSource(descriptor, loaderName);
+                // logger.info("Directly processed {} docs from uploaded file {} with loader {}", loadedDocs.size(), sanitizedFileName, loaderName);
+                // Then decide what to do with loadedDocs (e.g., add to index, return info)
+            }
+
+
             return ResponseEntity.ok(Map.of(
                     "message", "File '" + sanitizedFileName + "' uploaded successfully.",
                     "details", "The file is now in the directory: " + this.uploadsPath +
-                            ". Trigger a re-index via POST /api/indexer/rebuild-all-sources to include it in the search.",
-                    "fileName", sanitizedFileName
+                            (loaderName != null && !loaderName.isEmpty() ? ". Associated with loader: " + loaderName + "." : "") +
+                            " Trigger a re-index or use batch processing to include it.",
+                    "fileName", sanitizedFileName,
+                    "selectedLoader", loaderName != null ? loaderName : "Default (auto-detect)"
             ));
 
-        } catch (IOException e) {
-            logger.error("Failed to store uploaded file {}: {}", sanitizedFileName, e.getMessage(), e);
+        } catch (Exception e) { // Catching generic Exception because loadDocumentsFromSource can throw it
+            logger.error("Failed to store or process uploaded file {}: {}", sanitizedFileName, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to store uploaded file: " + e.getMessage()));
+                    .body(Map.of("error", "Failed to store or process uploaded file: " + e.getMessage()));
         }
     }
 
     @PostMapping("/add-url")
     public ResponseEntity<?> handleAddUrl(@RequestBody AddUrlRequest request) {
+        // ... (existing implementation for add-url) ...
+        // Similar to upload, if direct processing is needed after download, add logic here.
+        // The selectedLoader part in the response is good.
         if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server. Cannot save URL content."));
@@ -155,17 +221,17 @@ public class DocumentManagementController {
 
         String urlString = request.url();
         String outputFileName = request.fileName();
+        String loaderName = request.loader();
 
         try {
-            URI uri = new URI(urlString); // Validates URL syntax
+            URI uri = new URI(urlString);
             if (outputFileName == null || outputFileName.trim().isEmpty()) {
                 Path urlPath = Paths.get(uri.getPath());
                 String nameFromUrl = (urlPath.getFileName() != null) ? urlPath.getFileName().toString() : "";
                 if (nameFromUrl.isEmpty() || nameFromUrl.equals("/") || nameFromUrl.equals("\\")) {
                     nameFromUrl = "webpage_" + UUID.randomUUID().toString().substring(0, 8);
                 }
-                // Attempt to retain or add a common extension if not present
-                if (!nameFromUrl.matches(".*\\.[a-zA-Z0-9]{1,5}$")) { // Basic extension check
+                if (!nameFromUrl.matches(".*\\.[a-zA-Z0-9]{1,5}$")) {
                     outputFileName = nameFromUrl + ".html";
                 } else {
                     outputFileName = nameFromUrl;
@@ -176,7 +242,6 @@ public class DocumentManagementController {
             if (outputFileName.isEmpty()) {
                 outputFileName = "url_doc_" + UUID.randomUUID().toString().substring(0,8) + ".html";
             }
-
 
             Path destinationFile = this.uploadsPath.resolve(outputFileName).normalize();
             if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
@@ -193,35 +258,40 @@ public class DocumentManagementController {
             Files.writeString(destinationFile, content, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
             logger.info("Content from URL {} saved successfully to: {}", urlString, destinationFile);
 
+            if (loaderName != null && !loaderName.isEmpty()) {
+                logger.info("URL content '{}' was associated with loader: {}", outputFileName, loaderName);
+                // If direct processing:
+                // DocumentSourceDescriptor descriptor = new DocumentSourceDescriptor(DocumentSourceDescriptor.SourceType.FILE, destinationFile.toString(), outputFileName);
+                // List<org.springframework.ai.document.Document> loadedDocs = documentLoadingService.loadDocumentsFromSource(descriptor, loaderName);
+                // logger.info("Directly processed {} docs from URL file {} with loader {}", loadedDocs.size(), outputFileName, loaderName);
+            }
+
             return ResponseEntity.ok(Map.of(
                     "message", "Content from URL '" + urlString + "' saved successfully as '" + outputFileName + "'.",
                     "details", "The file is now in the directory: " + this.uploadsPath +
-                            ". Trigger a re-index via POST /api/indexer/rebuild-all-sources to include it in the search.",
-                    "fileName", outputFileName
+                            (loaderName != null && !loaderName.isEmpty() ? ". Associated with loader: " + loaderName + "." : "") +
+                            " Trigger a re-index or use batch processing to include it.",
+                    "fileName", outputFileName,
+                    "selectedLoader", loaderName != null ? loaderName : "Default (auto-detect)"
             ));
 
-        } catch (URISyntaxException e) {
-            logger.error("Invalid URL syntax: {}", urlString, e);
-            return ResponseEntity.badRequest().body(Map.of("error", "Invalid URL syntax: " + e.getMessage()));
-        } catch (RestClientException e) {
-            logger.error("Failed to fetch content from URL {}: {}", urlString, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .body(Map.of("error", "Failed to fetch content from URL: " + e.getMessage()));
-        } catch (IOException e) {
-            logger.error("Failed to save content from URL {} to file: {}", urlString, e.getMessage(), e);
+        } catch (Exception e) { // Catch generic Exception
+            logger.error("Error processing URL {}: {}", urlString, e.getMessage(), e);
+            String errorType = e.getClass().getSimpleName();
+            if (e instanceof URISyntaxException) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Invalid URL syntax: " + e.getMessage()));
+            } else if (e instanceof RestClientException) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(Map.of("error", "Failed to fetch content from URL: " + e.getMessage()));
+            }
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to save content from URL: " + e.getMessage()));
-        } catch (Exception e) {
-            logger.error("Unexpected error while processing URL {}: {}", urlString, e.getMessage(), e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to process URL: " + e.getMessage()));
+                    .body(Map.of("error", "Failed to process URL (" + errorType + "): " + e.getMessage()));
         }
     }
 
     @GetMapping("/sources")
     public ResponseEntity<List<String>> listConfiguredSources() {
         List<String> sources = sourceProperties.getSources();
-        // Provide a more informative message if sources are not configured
         if (sources == null || sources.isEmpty()) {
             return ResponseEntity.ok(Collections.singletonList("No primary document sources configured in 'app.document.sources'. Uploaded files will be processed if uploads path is configured and included."));
         }
@@ -237,7 +307,8 @@ public class DocumentManagementController {
         try {
             if (!Files.exists(uploadsPath) || !Files.isDirectory(uploadsPath)) {
                 logger.info("Uploads directory does not exist or is not a directory: {}", uploadsPath);
-                return ResponseEntity.ok(Map.of("message", "Uploads directory does not exist or is not yet created.", "path_configured", uploadsPath.toString(), "files", Collections.emptyList()));
+                // Return the configured path even if it doesn't exist, for user info
+                return ResponseEntity.ok(Map.of("uploaded_files_location", uploadsPath.toString(), "files", Collections.emptyList()));
             }
             List<String> fileNames;
             try (Stream<Path> walk = Files.list(uploadsPath)) {
