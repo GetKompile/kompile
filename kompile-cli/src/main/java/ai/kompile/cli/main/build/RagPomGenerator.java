@@ -99,9 +99,9 @@ public class RagPomGenerator implements Callable<Void> {
     private static final String DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION = "3.13.0";
     private static final String DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION = "3.3.1";
     private static final String DEFAULT_MAVEN_JAR_PLUGIN_VERSION = "3.3.0";
-    private static final String DEFAULT_MAVEN_SHADE_PLUGIN_VERSION = "3.5.2";
-    private static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.1";
+    private static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.1"; // Current version used
     private static final String DEFAULT_MAVEN_SUREFIRE_PLUGIN_VERSION = "3.2.5";
+    private static final String DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION = "3.6.0";
 
 
     private Dependency createDependencyInternal(String groupId, String artifactId, String versionProperty, String scope, String classifier, boolean optional) {
@@ -129,6 +129,12 @@ public class RagPomGenerator implements Callable<Void> {
         addDependency(addTo, groupId, artifactId, versionProperty, "compile", null, false);
     }
 
+    private void addBuildArg(Xpp3Dom buildArgsDom, String arg) {
+        Xpp3Dom buildArgElement = new Xpp3Dom("buildArg");
+        buildArgElement.setValue(arg);
+        buildArgsDom.addChild(buildArgElement);
+    }
+
 
     @Override
     public Void call() throws Exception {
@@ -153,11 +159,11 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("maven-compiler-plugin.version", DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION);
         props.setProperty("maven-resources-plugin.version", DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION);
         props.setProperty("maven-jar-plugin.version", DEFAULT_MAVEN_JAR_PLUGIN_VERSION);
-        props.setProperty("maven-shade-plugin.version", DEFAULT_MAVEN_SHADE_PLUGIN_VERSION);
         props.setProperty("maven-surefire-plugin.version", DEFAULT_MAVEN_SUREFIRE_PLUGIN_VERSION);
 
         if (this.buildNative) {
             props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
+            props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
             props.setProperty("native.image.name", instanceArtifactId + "-native");
         }
         model.setProperties(props);
@@ -178,8 +184,7 @@ public class RagPomGenerator implements Callable<Void> {
                 System.out.println("Native profile was included in the generated POM.");
             } else if (this.buildNative) {
                 System.out.println("WARNING: Native profile was intended but NOT found in the generated POM model.");
-            }
-            else {
+            } else {
                 System.out.println("Native profile was NOT included in the generated POM (buildNative flag was false).");
             }
         }
@@ -223,130 +228,214 @@ public class RagPomGenerator implements Callable<Void> {
         model.setDependencies(defaultDependencies);
     }
 
-    private void addApplicationBuild() throws XmlPullParserException, IOException {
+    private void addApplicationBuild() {
         if (model.getBuild() == null) {
             model.setBuild(new Build());
         }
         Build build = model.getBuild();
 
-        Plugin compilerPlugin = new Plugin();
-        compilerPlugin.setGroupId("org.apache.maven.plugins");
-        compilerPlugin.setArtifactId("maven-compiler-plugin");
-        compilerPlugin.setVersion("${maven-compiler-plugin.version}");
-        Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
-                "<configuration>" +
-                        "  <release>${java.version}</release>" +
-                        "  <annotationProcessorPaths>" +
-                        "    <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>${lombok.version}</version></path>" +
-                        "    <path><groupId>org.springframework.boot</groupId><artifactId>spring-boot-configuration-processor</artifactId><version>${spring-boot.version}</version></path>" +
-                        "  </annotationProcessorPaths>" +
-                        "</configuration>"
-        ));
-        compilerPlugin.setConfiguration(compilerConfig);
-        build.addPlugin(compilerPlugin);
+        try {
+            Plugin compilerPlugin = new Plugin();
+            compilerPlugin.setGroupId("org.apache.maven.plugins");
+            compilerPlugin.setArtifactId("maven-compiler-plugin");
+            compilerPlugin.setVersion("${maven-compiler-plugin.version}");
+            Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "  <release>${java.version}</release>" +
+                            "  <annotationProcessorPaths>" +
+                            "    <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>${lombok.version}</version></path>" +
+                            "    <path><groupId>org.springframework.boot</groupId><artifactId>spring-boot-configuration-processor</artifactId><version>${spring-boot.version}</version></path>" +
+                            "  </annotationProcessorPaths>" +
+                            "</configuration>"
+            ));
+            compilerPlugin.setConfiguration(compilerConfig);
+            build.addPlugin(compilerPlugin);
 
-        Plugin resourcesPlugin = new Plugin();
-        resourcesPlugin.setGroupId("org.apache.maven.plugins");
-        resourcesPlugin.setArtifactId("maven-resources-plugin");
-        resourcesPlugin.setVersion("${maven-resources-plugin.version}");
-        PluginExecution defaultResourcesExecution = new PluginExecution();
-        defaultResourcesExecution.setId("default-resources");
-        defaultResourcesExecution.addGoal("resources");
-        Xpp3Dom defaultResConfig = Xpp3DomBuilder.build(new StringReader(
-                "<configuration>" +
-                        "  <outputDirectory>${project.build.outputDirectory}</outputDirectory>" +
-                        "  <resources><resource><directory>src/main/resources</directory><filtering>false</filtering><includes><include>**/*</include></includes></resource></resources>" +
-                        "</configuration>"));
-        defaultResourcesExecution.setConfiguration(defaultResConfig);
-        resourcesPlugin.addExecution(defaultResourcesExecution);
-        build.addPlugin(resourcesPlugin);
+            Plugin resourcesPlugin = new Plugin();
+            resourcesPlugin.setGroupId("org.apache.maven.plugins");
+            resourcesPlugin.setArtifactId("maven-resources-plugin");
+            resourcesPlugin.setVersion("${maven-resources-plugin.version}");
+            PluginExecution defaultResourcesExecution = new PluginExecution();
+            defaultResourcesExecution.setId("default-resources");
+            defaultResourcesExecution.addGoal("resources");
+            Xpp3Dom defaultResConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "  <outputDirectory>${project.build.outputDirectory}</outputDirectory>" +
+                            "  <resources><resource><directory>src/main/resources</directory><filtering>false</filtering><includes><include>**/*</include></includes></resource></resources>" +
+                            "</configuration>"));
+            defaultResourcesExecution.setConfiguration(defaultResConfig);
+            resourcesPlugin.addExecution(defaultResourcesExecution);
+            build.addPlugin(resourcesPlugin);
 
-        Plugin surefirePlugin = new Plugin();
-        surefirePlugin.setGroupId("org.apache.maven.plugins");
-        surefirePlugin.setArtifactId("maven-surefire-plugin");
-        surefirePlugin.setVersion("${maven-surefire-plugin.version}");
-        surefirePlugin.setConfiguration(Xpp3DomBuilder.build(new StringReader("<configuration><skipTests>${skipTests}</skipTests></configuration>")));
-        build.addPlugin(surefirePlugin);
+            Plugin surefirePlugin = new Plugin();
+            surefirePlugin.setGroupId("org.apache.maven.plugins");
+            surefirePlugin.setArtifactId("maven-surefire-plugin");
+            surefirePlugin.setVersion("${maven-surefire-plugin.version}");
+            surefirePlugin.setConfiguration(Xpp3DomBuilder.build(new StringReader("<configuration><skipTests>${skipTests}</skipTests></configuration>")));
+            build.addPlugin(surefirePlugin);
 
-        Plugin jarPlugin = new Plugin();
-        jarPlugin.setGroupId("org.apache.maven.plugins");
-        jarPlugin.setArtifactId("maven-jar-plugin");
-        jarPlugin.setVersion("${maven-jar-plugin.version}");
-        Xpp3Dom jarConfig = Xpp3DomBuilder.build(new StringReader(
-                "<configuration>" +
-                        "  <archive><manifest><mainClass>${start-class}</mainClass><addClasspath>true</addClasspath><classpathPrefix>BOOT-INF/lib/</classpathPrefix></manifest></archive>" +
-                        "</configuration>"));
-        jarPlugin.setConfiguration(jarConfig);
-        build.addPlugin(jarPlugin);
+            Plugin jarPlugin = new Plugin();
+            jarPlugin.setGroupId("org.apache.maven.plugins");
+            jarPlugin.setArtifactId("maven-jar-plugin");
+            jarPlugin.setVersion("${maven-jar-plugin.version}");
+            Xpp3Dom jarConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "  <archive><manifest><mainClass>${start-class}</mainClass><addClasspath>true</addClasspath><classpathPrefix>BOOT-INF/lib/</classpathPrefix></manifest></archive>" +
+                            "</configuration>"));
+            jarPlugin.setConfiguration(jarConfig);
+            build.addPlugin(jarPlugin);
 
-        Plugin springBootPlugin = new Plugin();
-        springBootPlugin.setGroupId("org.springframework.boot");
-        springBootPlugin.setArtifactId("spring-boot-maven-plugin");
-        springBootPlugin.setVersion("${spring-boot.version}");
-        Xpp3Dom springBootMainConfig = Xpp3DomBuilder.build(new StringReader(
-                "<configuration>" +
-                        "  <mainClass>${start-class}</mainClass>" +
-                        "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
-                        "</configuration>"));
-        springBootPlugin.setConfiguration(springBootMainConfig);
+            Plugin springBootPlugin = new Plugin();
+            springBootPlugin.setGroupId("org.springframework.boot");
+            springBootPlugin.setArtifactId("spring-boot-maven-plugin");
+            springBootPlugin.setVersion("${spring-boot.version}");
+            Xpp3Dom springBootMainConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "  <mainClass>${start-class}</mainClass>" +
+                            "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
+                            "</configuration>"));
+            springBootPlugin.setConfiguration(springBootMainConfig);
 
-        PluginExecution springBootRepackage = new PluginExecution();
-        springBootRepackage.setId("repackage");
-        springBootRepackage.addGoal("repackage");
-        springBootPlugin.addExecution(springBootRepackage);
-        build.addPlugin(springBootPlugin);
+            PluginExecution springBootRepackage = new PluginExecution();
+            springBootRepackage.setId("repackage");
+            springBootRepackage.addGoal("repackage");
+            springBootPlugin.addExecution(springBootRepackage);
+            build.addPlugin(springBootPlugin);
+
+        } catch (XmlPullParserException | IOException e) {
+            throw new RuntimeException("Error configuring build plugins", e);
+        }
     }
 
-    private void addNativeProfile() throws XmlPullParserException, IOException {
+    private void addNativeProfile() {
         Profile nativeProfile = new Profile();
         nativeProfile.setId("native");
 
         Build nativeBuild = new Build();
 
+        // Add spring-boot:process-aot execution
+        Plugin springBootPluginAot = new Plugin();
+        springBootPluginAot.setGroupId("org.springframework.boot");
+        springBootPluginAot.setArtifactId("spring-boot-maven-plugin");
+        springBootPluginAot.setVersion("${spring-boot.version}");
+
+        PluginExecution processAotExecution = new PluginExecution();
+        processAotExecution.setId("process-aot");
+        processAotExecution.addGoal("process-aot");
+        // process-aot typically runs in the process-sources or process-classes phase.
+        // Default binding should be fine if spring-boot-starter-parent is not used,
+        // as it hooks into the lifecycle.
+        springBootPluginAot.addExecution(processAotExecution);
+        nativeBuild.addPlugin(springBootPluginAot);
+
+        // Add build-helper-maven-plugin to add AOT generated sources to compilation
+        Plugin buildHelperPlugin = new Plugin();
+        buildHelperPlugin.setGroupId("org.codehaus.mojo");
+        buildHelperPlugin.setArtifactId("build-helper-maven-plugin");
+        buildHelperPlugin.setVersion("${build-helper-maven-plugin.version}");
+        PluginExecution addAotSourcesExecution = new PluginExecution();
+        addAotSourcesExecution.setId("add-generated-sources");
+        addAotSourcesExecution.addGoal("add-source");
+        addAotSourcesExecution.setPhase("generate-sources"); // Run before compile
+        try {
+            Xpp3Dom addAotSourcesConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration><sources><source>${project.build.directory}/spring-aot/main/sources</source></sources></configuration>"
+            ));
+            addAotSourcesExecution.setConfiguration(addAotSourcesConfig);
+        } catch (XmlPullParserException | IOException e) {
+            throw new RuntimeException("Error configuring build-helper-maven-plugin for AOT sources", e);
+        }
+        buildHelperPlugin.addExecution(addAotSourcesExecution);
+
+        // Also add AOT generated resources
+        PluginExecution addAotResourcesExecution = new PluginExecution();
+        addAotResourcesExecution.setId("add-generated-resources");
+        addAotResourcesExecution.addGoal("add-resource");
+        addAotResourcesExecution.setPhase("generate-resources"); // Run before process-resources
+        try {
+            Xpp3Dom addAotResourcesConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration><resources><resource><directory>${project.build.directory}/spring-aot/main/resources</directory></resource></resources></configuration>"
+            ));
+            addAotResourcesExecution.setConfiguration(addAotResourcesConfig);
+        } catch (XmlPullParserException | IOException e) {
+            throw new RuntimeException("Error configuring build-helper-maven-plugin for AOT resources", e);
+        }
+        buildHelperPlugin.addExecution(addAotResourcesExecution);
+        nativeBuild.addPlugin(buildHelperPlugin);
+
+
+        // Configure native-maven-plugin
         Plugin nativeMavenPlugin = new Plugin();
         nativeMavenPlugin.setGroupId("org.graalvm.buildtools");
         nativeMavenPlugin.setArtifactId("native-maven-plugin");
         nativeMavenPlugin.setVersion("${native-maven-plugin.version}");
         nativeMavenPlugin.setExtensions(true);
 
-        // Add the user-requested -H:-AddAllFileSystemProviders flag.
-        // Remove manual --class-path argument to let native-maven-plugin handle classpath.
-        Xpp3Dom nativePluginConfig = Xpp3DomBuilder.build(new StringReader(
-                "<configuration>" +
-                        "  <imageName>${native.image.name}</imageName>" +
-                        "  <mainClass>${start-class}</mainClass>" +
-                        "  <metadataRepository><enabled>true</enabled></metadataRepository>" +
-                        "  <quickBuild>false</quickBuild>" +
-                        "  <buildArgs>" +
-                        "    <buildArg>--verbose</buildArg>" +
-                        "    <buildArg>-H:+ReportExceptionStackTraces</buildArg>" +
-                        "    <buildArg>--no-fallback</buildArg>" +
-                        "    <buildArg>--enable-url-protocols=http,https</buildArg>" +
-                        "    <buildArg>-Dspring.native.remove-unused-autoconfig=true</buildArg>" +
-                        "    <buildArg>-H:-AddAllFileSystemProviders</buildArg>" + // User requested this
-                        // Consider adding other necessary --add-exports or --initialize-at-build-time if identified
-                        // from successful kompile-app-main builds, but avoid generic ones without specific need.
-                        "  </buildArgs>" +
-                        "</configuration>"
-        ));
-        nativeMavenPlugin.setConfiguration(nativePluginConfig);
+        Xpp3Dom nativePluginConfig = new Xpp3Dom("configuration");
+        Xpp3Dom imageNameElement = new Xpp3Dom("imageName");
+        imageNameElement.setValue("${native.image.name}");
+        nativePluginConfig.addChild(imageNameElement);
 
-        PluginExecution nativeBuildExecution = new PluginExecution();
-        nativeBuildExecution.setId("build-native");
-        nativeBuildExecution.addGoal("compile-no-fork");
-        nativeBuildExecution.setPhase("package");
-        nativeMavenPlugin.addExecution(nativeBuildExecution);
+        Xpp3Dom mainClassElement = new Xpp3Dom("mainClass");
+        mainClassElement.setValue("${start-class}");
+        nativePluginConfig.addChild(mainClassElement);
+
+        Xpp3Dom metadataRepoElement = new Xpp3Dom("metadataRepository");
+        Xpp3Dom metadataEnabledElement = new Xpp3Dom("enabled");
+        metadataEnabledElement.setValue("true");
+        metadataRepoElement.addChild(metadataEnabledElement);
+        nativePluginConfig.addChild(metadataRepoElement);
+
+        Xpp3Dom quickBuildElement = new Xpp3Dom("quickBuild");
+        quickBuildElement.setValue("false");
+        nativePluginConfig.addChild(quickBuildElement);
+
+        // Rebuild buildArgs based on the adapted kompile-cli configuration
+        Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
+        addBuildArg(buildArgsDom, "-J-Xmx16g");
+        addBuildArg(buildArgsDom, "--verbose");
+        addBuildArg(buildArgsDom, "--no-fallback");
+        addBuildArg(buildArgsDom, "--allow-incomplete-classpath");
+        addBuildArg(buildArgsDom, "-H:+ReportExceptionStackTraces");
+        addBuildArg(buildArgsDom, "-Dspring.native.remove-unused-autoconfig=true");
+        addBuildArg(buildArgsDom, "-H:-AddAllFileSystemProviders");
+        addBuildArg(buildArgsDom, "--enable-url-protocols=http,https");
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager,org.slf4j.helpers.Util,org.slf4j.helpers.NormalizedParameters,org.slf4j.helpers.MessageFormatter");
+        addBuildArg(buildArgsDom, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/native-image/.*\\.json");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/services/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/.*\\.schema\\.json");
+        // Deadlock watchdog args - can be uncommented if needed
+        // addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
+        // addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
+
+        nativePluginConfig.addChild(buildArgsDom);
+        nativeMavenPlugin.setConfiguration(nativePluginConfig);
 
         PluginExecution nativeAddMeta = new PluginExecution();
         nativeAddMeta.setId("add-reachability-metadata");
         nativeAddMeta.addGoal("add-reachability-metadata");
         nativeMavenPlugin.addExecution(nativeAddMeta);
 
+        PluginExecution nativeBuildExecution = new PluginExecution();
+        nativeBuildExecution.setId("build-native");
+        nativeBuildExecution.addGoal("compile-no-fork");
+        nativeBuildExecution.setPhase("package"); // This ensures AOT processing and compilation have occurred
+        nativeMavenPlugin.addExecution(nativeBuildExecution);
+
+        // Optional: Native tests execution
+        // PluginExecution nativeTestExecution = new PluginExecution();
+        // nativeTestExecution.setId("test-native");
+        // nativeTestExecution.addGoal("test");
+        // nativeTestExecution.setPhase("test");
+        // nativeMavenPlugin.addExecution(nativeTestExecution);
+
         nativeBuild.addPlugin(nativeMavenPlugin);
         nativeProfile.setBuild(nativeBuild);
 
         model.addProfile(nativeProfile);
     }
+
 
     private void addSpringRepositories() {
         Repository springMilestones = new Repository();
