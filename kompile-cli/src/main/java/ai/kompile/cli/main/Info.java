@@ -14,6 +14,7 @@
  *  * limitations under the License.
  */
 
+// getkompile/kompile/kompile-ag_new_kompile_cli/kompile-cli/src/main/java/ai/kompile/cli/main/Info.java
 package ai.kompile.cli.main;
 
 import ai.kompile.cli.main.util.OSResolver;
@@ -52,6 +53,13 @@ public class Info implements Callable<Integer> {
         buildProperties.setProperty("spring.boot.version", "3.2.5");
         buildProperties.setProperty("spring.ai.version", "1.0.0-M8");
         buildProperties.setProperty("native.image.plugin.version", "0.10.6");
+
+        // Default versions for common Maven plugins
+        buildProperties.setProperty("maven.compiler.plugin.version", "3.13.0");
+        buildProperties.setProperty("maven.resources.plugin.version", "3.3.1");
+        buildProperties.setProperty("maven.assembly.plugin.version", "3.7.1");
+        buildProperties.setProperty("frontend.maven.plugin.version", "1.15.0");
+        buildProperties.setProperty("os.maven.plugin.version", "1.7.1");
     }
 
     public Info() {
@@ -125,6 +133,46 @@ public class Info implements Callable<Integer> {
         return buildProperties.getProperty("native.image.plugin.version", "0.10.6");
     }
 
+    /**
+     * Gets the Maven Compiler Plugin version.
+     * @return The version string.
+     */
+    public static String getMavenCompilerPluginVersion() {
+        return buildProperties.getProperty("maven.compiler.plugin.version", "3.13.0");
+    }
+
+    /**
+     * Gets the Maven Resources Plugin version.
+     * @return The version string.
+     */
+    public static String getMavenResourcesPluginVersion() {
+        return buildProperties.getProperty("maven.resources.plugin.version", "3.3.1");
+    }
+
+    /**
+     * Gets the Maven Assembly Plugin version.
+     * @return The version string.
+     */
+    public static String getMavenAssemblyPluginVersion() {
+        return buildProperties.getProperty("maven.assembly.plugin.version", "3.7.1");
+    }
+
+    /**
+     * Gets the Frontend Maven Plugin version.
+     * @return The version string.
+     */
+    public static String getFrontendMavenPluginVersion() {
+        return buildProperties.getProperty("frontend.maven.plugin.version", "1.15.0");
+    }
+
+    /**
+     * Gets the OS Maven Plugin version.
+     * @return The version string.
+     */
+    public static String getOsMavenPluginVersion() {
+        return buildProperties.getProperty("os.maven.plugin.version", "1.7.1");
+    }
+
 
     @Override
     public Integer call() throws Exception {
@@ -135,6 +183,12 @@ public class Info implements Callable<Integer> {
         stringBuilder.append("  Spring Boot Version (for apps): ").append(getSpringBootVersion()).append("\n");
         stringBuilder.append("  Spring AI Version (for apps): ").append(getSpringAiVersion()).append("\n");
         stringBuilder.append("  Native Image Plugin Version (for apps): ").append(getNativeImagePluginVersion()).append("\n");
+        stringBuilder.append("Common Maven Plugin Versions:\n");
+        stringBuilder.append("  Maven Compiler Plugin: ").append(getMavenCompilerPluginVersion()).append("\n");
+        stringBuilder.append("  Maven Resources Plugin: ").append(getMavenResourcesPluginVersion()).append("\n");
+        stringBuilder.append("  Maven Assembly Plugin: ").append(getMavenAssemblyPluginVersion()).append("\n");
+        stringBuilder.append("  Frontend Maven Plugin: ").append(getFrontendMavenPluginVersion()).append("\n");
+        stringBuilder.append("  OS Maven Plugin: ").append(getOsMavenPluginVersion()).append("\n");
         stringBuilder.append("Kompile Home Directory: ").append(homeDirectory().getAbsolutePath()).append(" (exists: ").append(homeDirectory().exists()).append(")\n");
         stringBuilder.append("  GraalVM Installed: ").append(graalvmDirectory().exists()).append(" (at ").append(graalvmDirectory().getAbsolutePath()).append(")\n");
         stringBuilder.append("  Maven Installed: ").append(mavenDirectory().exists()).append(" (at ").append(mavenDirectory().getAbsolutePath()).append(")\n");
