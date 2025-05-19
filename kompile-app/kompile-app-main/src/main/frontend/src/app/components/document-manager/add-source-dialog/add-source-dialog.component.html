@@ -1,0 +1,78 @@
+<!--
+  ~ * Copyright 2025 Kompile Inc.
+  ~  *
+  ~  * Licensed under the Apache License, Version 2.0 (the "License");
+  ~  * you may not use this file except in compliance with the License.
+  ~  * You may obtain a copy of the License at
+  ~  *
+  ~  * http://www.apache.org/licenses/LICENSE-2.0
+  ~  *
+  ~  * Unless required by applicable law or agreed to in writing, software
+  ~  * distributed under the License is distributed on an "AS IS" BASIS,
+  ~  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  * See the License for the specific language governing permissions and
+  ~  * limitations under the License.
+  -->
+
+<div mat-dialog-title class="dialog-header">
+  <span>Add New Document Source</span>
+  <button mat-icon-button (click)="onCancelDialog()" [disabled]="isSubmitting" class="close-button" matTooltip="Close dialog">
+    <mat-icon>close</mat-icon>
+  </button>
+</div>
+
+<mat-progress-bar mode="indeterminate" *ngIf="isSubmitting" class="dialog-progress-bar"></mat-progress-bar>
+
+<mat-dialog-content [formGroup]="addSourceForm" class="add-source-dialog-content">
+  <mat-form-field appearance="outline" class="full-width-field">
+    <mat-label>Processing Loader (Optional)</mat-label>
+    <mat-select formControlName="loaderSelect" [disabled]="isSubmitting">
+      <mat-option value="">Default (System will auto-detect)</mat-option>
+      <mat-option *ngFor="let loader of availableLoaders" [value]="loader.name">
+        {{ loader.name }}
+      </mat-option>
+    </mat-select>
+  </mat-form-field>
+
+  <mat-radio-group formControlName="sourceType" aria-label="Select source type" class="source-type-radio-group" [disabled]="isSubmitting">
+    <mat-radio-button value="file" class="source-type-radio-button">Upload File</mat-radio-button>
+    <mat-radio-button value="url" class="source-type-radio-button">Add from URL</mat-radio-button>
+  </mat-radio-group>
+
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'file'" class="form-section file-upload-section">
+    <h4>Select File to Upload</h4>
+    <input type="file" (change)="onFileSelectedChange($event)" #fileUploadElement id="dialogInternalFileInput" class="file-input-field" [disabled]="isSubmitting">
+    <div *ngIf="selectedFile" class="selected-file-info">
+      <mat-icon>attach_file</mat-icon>
+      Selected: <strong>{{ selectedFile.name }}</strong> ({{ (selectedFile.size / 1024).toFixed(2) }} KB)
+    </div>
+    <mat-error *ngIf="fileErrorMessage && !selectedFile" class="file-error-message">{{ fileErrorMessage }}</mat-error>
+  </div>
+
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'url'" class="form-section">
+    <h4>Enter URL Details</h4>
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Document URL</mat-label>
+      <input matInput formControlName="urlInput" placeholder="https://example.com/document.pdf" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('urlInput')?.valid && addSourceForm.get('urlInput')?.value" color="primary">link</mat-icon>
+      <mat-error *ngIf="addSourceForm.get('urlInput')?.hasError('required') && addSourceForm.get('urlInput')?.touched">
+        URL is required.
+      </mat-error>
+      <mat-error *ngIf="addSourceForm.get('urlInput')?.hasError('pattern') && addSourceForm.get('urlInput')?.touched">
+        Please enter a valid URL (e.g., http://example.com).
+      </mat-error>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Optional: Desired File Name (if downloaded)</mat-label>
+      <input matInput formControlName="fileNameInput" placeholder="e.g., my-document.html" [disabled]="isSubmitting">
+    </mat-form-field>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-stroked-button (click)="onCancelDialog()" [disabled]="isSubmitting">Cancel</button>
+  <button mat-flat-button color="primary" (click)="onSubmitDialog()" [disabled]="!isDialogFormValid() || isSubmitting">
+    <mat-icon>add_circle_outline</mat-icon> Add Source
+  </button>
+</mat-dialog-actions>

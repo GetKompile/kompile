@@ -14,50 +14,207 @@
   ~  * limitations under the License.
   -->
 
-<div class="document-manager-container">
-  <h2>Document Management</h2>
+<div class="document-manager-container" [class.loading-active]="isLoading || isBatchProcessing">
+  <div class="header-bar">
+    <h1>Document Management</h1>
+    <button mat-icon-button color="primary" (click)="refreshAllData()" matTooltip="Refresh all data" [disabled]="isLoading || isBatchProcessing">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
 
-  <div *ngIf="message" class="message success">{{ message }}</div>
-  <div *ngIf="errorMessage" class="message error">{{ errorMessage }}</div>
-  <div *ngIf="isLoading" class="message loading">Loading...</div>
+  <mat-progress-bar mode="indeterminate" *ngIf="isLoading && !isBatchProcessing" class="page-progress-bar"></mat-progress-bar>
 
-  <section>
-    <h3>Add New Document Source</h3>
-    <div>
-      <h4>Upload File</h4>
-      <input type="file" (change)="onFileSelected($event)" id="fileUploadInput" />
-      <button (click)="onUploadFile()" [disabled]="!selectedFile || isLoading">Upload Selected File</button>
-    </div>
-    <hr>
-    <div>
-      <h4>Add from URL</h4>
-      <input type="url" [(ngModel)]="addUrlValue" placeholder="Enter document URL" />
-      <input type="text" [(ngModel)]="addUrlFileName" placeholder="Optional: Desired file name (e.g., page.html)" />
-      <button (click)="onAddUrl()" [disabled]="!addUrlValue.trim() || isLoading">Add URL</button>
-    </div>
-  </section>
-  <hr>
-  <section>
-    <h3>Index Control</h3>
-    <button (click)="onRebuildIndex()" [disabled]="isLoading">Rebuild Anserini Index</button>
-    <p><small>Note: Rebuilding the index will process all configured sources, including newly uploaded files.</small></p>
-  </section>
-  <hr>
-  <section>
-    <h3>Configured Document Sources (from properties)</h3>
-    <button (click)="loadConfiguredSources()" [disabled]="isLoading">Refresh Sources List</button>
-    <ul *ngIf="configuredSources.length > 0; else noConfiguredSources">
-      <li *ngFor="let source of configuredSources">{{ source }}</li>
-    </ul>
-    <ng-template #noConfiguredSources><p>No document sources configured or loaded.</p></ng-template>
-  </section>
-  <hr>
-  <section>
-    <h3>Files in Uploads Directory ({{ uploadedFilesLocation }})</h3>
-    <button (click)="loadUploadedFiles()" [disabled]="isLoading">Refresh Uploaded Files List</button>
-    <ul *ngIf="uploadedFiles.length > 0; else noUploadedFiles">
-      <li *ngFor="let file of uploadedFiles">{{ file }}</li>
-    </ul>
-    <ng-template #noUploadedFiles><p>No files found in the uploads directory or directory not accessible.</p></ng-template>
-  </section>
+  <div class="grid-container">
+    <mat-card class="grid-item control-panel-card">
+      <mat-card-header>
+        <mat-card-title>Actions</mat-card-title>
+      </mat-card-header>
+      <mat-card-content class="actions-content">
+        <button mat-raised-button color="primary" (click)="openAddSourceDialog()" [disabled]="isLoading || isBatchProcessing" class="action-button">
+          <mat-icon>add_circle_outline</mat-icon> Add New Source
+        </button>
+        <button mat-stroked-button color="accent" (click)="onRebuildIndex()" [disabled]="isLoading || isBatchProcessing" class="action-button">
+          <mat-icon>build_circle</mat-icon> Rebuild Index
+        </button>
+        <p class="rebuild-note"><small>Rebuilding processes all configured and uploaded sources.</small></p>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="grid-item loaders-card">
+      <mat-card-header>
+        <mat-card-title>Available Document Loaders</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div *ngIf="isLoading && availableLoaders.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="!isLoading && availableLoaders.length === 0" class="empty-state-message">
+          <mat-icon>info_outline</mat-icon>
+          <span>No document loaders found or an error occurred.</span>
+        </div>
+        <mat-list dense *ngIf="availableLoaders.length > 0">
+          <h3 matSubheader>Loaders</h3>
+          <mat-list-item *ngFor="let loader of availableLoaders">
+            <mat-icon matListItemIcon>settings_applications</mat-icon>
+            <div matListItemTitle>{{ loader.name }}</div>
+            <div matListItemLine class="loader-class-name">Class: {{ loader.className.split('.').pop() }}</div>
+          </mat-list-item>
+        </mat-list>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="grid-item batch-processing-card full-span-card">
+      <mat-card-header>
+        <mat-card-title>Batch Process Sources</mat-card-title>
+        <mat-card-subtitle>Directly load and process documents from specified paths or URLs.</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p><small>Enter comma-separated server-side file paths or URLs. The selected loader will apply to all items.</small></p>
+        <mat-form-field appearance="outline" class="full-width-field">
+          <mat-label>Source Paths/URLs (comma-separated)</mat-label>
+          <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize" cdkAutosizeMinRows="2" cdkAutosizeMaxRows="5"
+                    [(ngModel)]="batchSourcePaths" [disabled]="isBatchProcessing"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width-field">
+          <mat-label>Select Loader for Batch</mat-label>
+          <mat-select [(ngModel)]="batchSelectedLoader" [disabled]="isBatchProcessing" required>
+            <mat-option *ngFor="let loader of availableLoaders" [value]="loader.name">
+              {{ loader.name }}
+            </mat-option>
+          </mat-select>
+          <mat-error *ngIf="!batchSelectedLoader && batchSourcePaths.trim()">Loader is required for batch processing.</mat-error>
+        </mat-form-field>
+
+        <button mat-raised-button color="accent" class="action-button" (click)="onProcessBatch()" [disabled]="isBatchProcessing || !batchSourcePaths.trim() || !batchSelectedLoader">
+          <mat-icon>play_for_work</mat-icon> Process Batch
+        </button>
+
+        <mat-progress-bar mode="indeterminate" *ngIf="isBatchProcessing" class="operation-progress-bar"></mat-progress-bar>
+
+        <div *ngIf="batchResults && !isBatchProcessing" class="batch-results-container">
+          <h4>Batch Processing Details:</h4>
+          <mat-accordion multi="true">
+            <mat-expansion-panel *ngFor="let path of objectKeys(batchResults)" [expanded]="true">
+              <mat-expansion-panel-header>
+                <mat-panel-title>
+                  <mat-icon [color]="batchResults[path]?.error ? 'warn' : 'primary'" class="result-icon">
+                    {{ batchResults[path]?.error ? 'error_outline' : 'check_circle_outline' }}
+                  </mat-icon>
+                  <span class="path-text" [matTooltip]="path">{{ path | slice:0:70 }}{{path.length > 70 ? '...' : ''}}</span>
+                </mat-panel-title>
+                <mat-panel-description>
+                  {{ batchResults[path]?.error ? 'Failed' : ('Processed: ' + (batchResults[path]?.count || 0) + ' document(s)') }}
+                </mat-panel-description>
+              </mat-expansion-panel-header>
+
+              <div *ngIf="batchResults[path]?.error" class="error-details">
+                <strong>Error:</strong> {{ batchResults[path]?.error }}
+              </div>
+
+              <div *ngIf="!batchResults[path]?.error && batchResults[path]?.summaries?.length">
+                <strong>Document Summaries ({{ batchResults[path]?.count }}):</strong>
+                <mat-list dense class="summary-list">
+                  <mat-list-item *ngFor="let summary of batchResults[path]?.summaries">
+                    <mat-icon matListItemIcon>article</mat-icon>
+                    <div matListItemTitle>ID: {{ summary.id }}</div>
+                    <div matListItemLine class="snippet-line">Snippet: {{ summary.contentSnippet }}</div>
+                    <div matListItemLine *ngIf="summary.metadata && objectKeys(summary.metadata).length > 0" class="metadata-display">
+                      Metadata: <pre>{{ summary.metadata | json }}</pre>
+                    </div>
+                  </mat-list-item>
+                </mat-list>
+              </div>
+              <div *ngIf="!batchResults[path]?.error && batchResults[path]?.count === 0 && !batchResults[path]?.summaries?.length">
+                <p>No documents were extracted from this source, or no summaries available.</p>
+              </div>
+            </mat-expansion-panel>
+          </mat-accordion>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="grid-item">
+      <mat-card-header>
+        <mat-card-title>Configured Document Sources</mat-card-title>
+        <mat-card-subtitle>(From application properties and upload path)</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-form-field appearance="outline" class="filter-field">
+          <mat-label>Filter sources</mat-label>
+          <input matInput (keyup)="applyFilterConfigured($event)" placeholder="E.g., /data/docs">
+          <mat-icon matSuffix>search</mat-icon>
+        </mat-form-field>
+        <div *ngIf="isLoading && configuredSourcesDataSource.data.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="!isLoading && configuredSourcesDataSource.data.length === 0" class="empty-state-message">
+          <mat-icon>info_outline</mat-icon>
+          <span>No configured sources found.</span>
+        </div>
+        <div *ngIf="configuredSourcesDataSource.data.length > 0" class="table-container mat-elevation-z4">
+          <table mat-table [dataSource]="configuredSourcesDataSource" matSort #configuredSourcesSort="matSort">
+            <ng-container matColumnDef="id">
+              <th mat-header-cell *matHeaderCellDef mat-sort-header> No. </th>
+              <td mat-cell *matCellDef="let element"> {{element.id}} </td>
+            </ng-container>
+            <ng-container matColumnDef="path">
+              <th mat-header-cell *matHeaderCellDef mat-sort-header> Path/Source </th>
+              <td mat-cell *matCellDef="let element" [matTooltip]="element.path"> {{element.path | slice:0:60}}{{element.path.length > 60 ? '...' : ''}} </td>
+            </ng-container>
+            <ng-container matColumnDef="type">
+              <th mat-header-cell *matHeaderCellDef mat-sort-header> Type </th>
+              <td mat-cell *matCellDef="let element"> {{element.type}} </td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="displayedColumnsConfiguredSources; sticky: true"></tr>
+            <tr mat-row *matRowDef="let row; columns: displayedColumnsConfiguredSources;"></tr>
+          </table>
+          <mat-paginator #configuredSourcesPaginator [pageSizeOptions]="[5, 10, 20]" showFirstLastButtons></mat-paginator>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="grid-item">
+      <mat-card-header>
+        <mat-card-title>Uploaded Files</mat-card-title>
+        <mat-card-subtitle *ngIf="uploadedFilesLocation && uploadedFilesLocation !== 'N/A' && !uploadedFilesLocation.includes('error')">
+          Location: {{ uploadedFilesLocation }}
+        </mat-card-subtitle>
+        <mat-card-subtitle *ngIf="uploadedFilesLocation && uploadedFilesLocation.includes('error')" class="error-text">
+          Upload path error: {{ uploadedFilesLocation }}
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-form-field appearance="outline" class="filter-field">
+          <mat-label>Filter uploaded files</mat-label>
+          <input matInput (keyup)="applyFilterUploaded($event)" placeholder="E.g., report.pdf">
+          <mat-icon matSuffix>search</mat-icon>
+        </mat-form-field>
+        <div *ngIf="isLoading && uploadedFilesDataSource.data.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="!isLoading && uploadedFilesDataSource.data.length === 0" class="empty-state-message">
+          <mat-icon>cloud_off</mat-icon>
+          <span>No files found in the uploads directory.</span>
+        </div>
+        <div *ngIf="uploadedFilesDataSource.data.length > 0" class="table-container mat-elevation-z4">
+          <table mat-table [dataSource]="uploadedFilesDataSource" matSort #uploadedFilesSort="matSort">
+            <ng-container matColumnDef="id">
+              <th mat-header-cell *matHeaderCellDef mat-sort-header> No. </th>
+              <td mat-cell *matCellDef="let element"> {{element.id}} </td>
+            </ng-container>
+            <ng-container matColumnDef="name">
+              <th mat-header-cell *matHeaderCellDef mat-sort-header> File Name </th>
+              <td mat-cell *matCellDef="let element" [matTooltip]="element.name"> {{element.name | slice:0:50}}{{element.name.length > 50 ? '...' : ''}} </td>
+            </ng-container>
+            <ng-container matColumnDef="actions">
+              <th mat-header-cell *matHeaderCellDef> Actions </th>
+              <td mat-cell *matCellDef="let element">
+                <button mat-icon-button color="warn" (click)="deleteUploadedFile(element.name)" matTooltip="Delete file (Requires backend)">
+                  <mat-icon>delete_outline</mat-icon>
+                </button>
+              </td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="displayedColumnsUploadedFiles; sticky: true"></tr>
+            <tr mat-row *matRowDef="let row; columns: displayedColumnsUploadedFiles;"></tr>
+          </table>
+          <mat-paginator #uploadedFilesPaginator [pageSizeOptions]="[5, 10, 25]" showFirstLastButtons></mat-paginator>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
 </div>
