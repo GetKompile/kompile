@@ -148,8 +148,7 @@
                         <manifest>
                             <mainClass>${start-class}</mainClass>
                             <addClasspath>true</addClasspath>
-                            <classpathPrefix>BOOT-INF/lib/</classpathPrefix>
-                        </manifest>
+                            <classpathPrefix>BOOT-INF/lib/</classpathPrefix> </manifest>
                     </archive>
                 </configuration>
             </plugin>
@@ -157,15 +156,16 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <mainClass>${start-class}</mainClass>
-                    <excludes>
-                        <exclude>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </exclude>
-                    </excludes>
-                </configuration>
+                <version>${spring-boot.version}</version> <configuration>
+                <mainClass>${start-class}</mainClass>
+                <excludes>
+                    <exclude>
+                        <groupId>org.projectlombok</groupId>
+                        <artifactId>lombok</artifactId>
+                    </exclude>
+                </excludes>
+                <classifier>spring-boot</classifier>
+            </configuration>
                 <executions>
                     <execution>
                         <id>repackage</id>
@@ -175,7 +175,6 @@
                     </execution>
                 </executions>
             </plugin>
-
             <plugin>
                 <groupId>com.github.eirslett</groupId>
                 <artifactId>frontend-maven-plugin</artifactId>
@@ -217,26 +216,12 @@
                 <native.image.name>${project.artifactId}-native</native.image.name>
             </properties>
             <dependencies>
-                <dependency>
-                    <groupId>org.junit.platform</groupId>
-                    <artifactId>junit-platform-launcher</artifactId>
-                    <scope>test</scope>
-                </dependency>
             </dependencies>
             <build>
                 <plugins>
                     <plugin>
                         <groupId>org.springframework.boot</groupId>
                         <artifactId>spring-boot-maven-plugin</artifactId>
-                        <configuration>
-                            <mainClass>${start-class}</mainClass>
-                            <excludes>
-                                <exclude>
-                                    <groupId>org.projectlombok</groupId>
-                                    <artifactId>lombok</artifactId>
-                                </exclude>
-                            </excludes>
-                        </configuration>
                         <executions>
                             <execution>
                                 <id>process-aot</id>

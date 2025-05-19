@@ -16,7 +16,7 @@
 
 package ai.kompile.cli.main.build;
 
-import ai.kompile.cli.main.Info; // Assuming Info.graalvmDirectory() is static
+import ai.kompile.cli.main.Info;
 import ai.kompile.cli.main.util.EnvironmentUtils;
 import org.apache.commons.io.FileUtils;
 import org.apache.maven.shared.invoker.*;
@@ -40,7 +40,6 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--outputDir"}, description = "Base directory for the build output of this instance", defaultValue = "kompile-rag-builds")
     private File outputDirBase;
 
-    // --- RagPomGenerator Flags ---
     @Option(names = {"--instanceGroupId"}, description = "GroupId for the generated RAG instance", defaultValue = "ai.kompile.rag.instance")
     private String instanceGroupId;
 
@@ -50,7 +49,9 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--ragMcpVersion"}, description = "Version of the ai.kompile:rag-mcp-assistant-parent and its modules", defaultValue = "0.1.0-SNAPSHOT")
     private String ragMcpVersion;
 
-    // --- RAG Module Selection Flags (mirrored from RagPomGenerator) ---
+    @Option(names = {"--includeAppMain"}, description = "Include kompile-app-main module (provides UI and main app)", defaultValue = "true", negatable = true)
+    private boolean includeAppMain;
+
     @Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
     private boolean includeAppCore;
     @Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
@@ -79,7 +80,6 @@ public class BuildRagApp implements Callable<Integer> {
     private boolean includeToolFilesystem;
     @Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
     private boolean includeToolRag;
-    // --- End RAG Module Selection ---
 
     @Option(names = {"--native"}, description = "Build a GraalVM native image")
     private boolean buildNative = false;
@@ -95,13 +95,6 @@ public class BuildRagApp implements Callable<Integer> {
 
     @Option(names = {"--skipTests"}, description = "Skip Maven tests during the build", defaultValue = "true")
     private boolean skipTests;
-
-    @Option(names = {"--ragMcpSourceContextDir"},
-            description = "Path to the root of the cloned 'rag-mcp-assistant-parent' project. " +
-                    "This provides context for plugins (like frontend) that might use relative paths " +
-                    "to modules within the parent project (e.g., 'kompile-app-main/src/main/frontend'). " +
-                    "The build itself runs in a clean sub-directory with the generated POM.")
-    private File ragMcpSourceContextDir;
 
     @Override
     public Integer call() throws Exception {
@@ -123,18 +116,16 @@ public class BuildRagApp implements Callable<Integer> {
 
         File instancePomFile = new File(projectBuildDir, "pom.xml");
 
-        // 1. Generate the POM using RagPomGenerator
         System.out.println("Generating instance-specific POM: " + instancePomFile.getAbsolutePath());
-        RagPomGenerator pomGenerator = new RagPomGenerator();
 
         List<String> ragPomCliArgs = new ArrayList<>();
         ragPomCliArgs.add("--outputFile=" + instancePomFile.getAbsolutePath());
         ragPomCliArgs.add("--instanceGroupId=" + this.instanceGroupId);
         ragPomCliArgs.add("--instanceArtifactId=" + this.configName);
-        ragPomCliArgs.add("--instanceVersion=" + this.instanceVersion); // Corrected: Pass instanceVersion
+        ragPomCliArgs.add("--instanceVersion=" + this.instanceVersion);
         ragPomCliArgs.add("--ragMcpVersion=" + this.ragMcpVersion);
 
-        // Pass boolean flags correctly
+        ragPomCliArgs.add("--includeAppMain=" + this.includeAppMain);
         ragPomCliArgs.add("--includeAppCore=" + this.includeAppCore);
         ragPomCliArgs.add("--includeLoadersOrchestrator=" + this.includeLoadersOrchestrator);
         ragPomCliArgs.add("--includeLoaderTika=" + this.includeLoaderTika);
@@ -149,13 +140,12 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeVectorstorePgvector=" + this.includeVectorstorePgvector);
         ragPomCliArgs.add("--includeToolFilesystem=" + this.includeToolFilesystem);
         ragPomCliArgs.add("--includeToolRag=" + this.includeToolRag);
+        ragPomCliArgs.add("--buildNative=" + this.buildNative);
 
-        if (this.buildNative) ragPomCliArgs.add("--buildNative=true");
-
-        int pomGenExitCode = new CommandLine(pomGenerator).execute(ragPomCliArgs.toArray(new String[0]));
+        int pomGenExitCode = new CommandLine(new RagPomGenerator()).execute(ragPomCliArgs.toArray(new String[0]));
 
         if (pomGenExitCode != 0) {
-            System.err.println("Instance POM generation failed using RagPomGenerator.");
+            System.err.println("Instance POM generation failed using RagPomGenerator. Exit code: " + pomGenExitCode);
             return 1;
         }
         if (!instancePomFile.exists()) {
@@ -163,7 +153,6 @@ public class BuildRagApp implements Callable<Integer> {
             return 1;
         }
 
-        // 2. Invoke Maven build
         InvocationRequest request = new DefaultInvocationRequest();
         request.setPomFile(instancePomFile);
 
@@ -176,32 +165,24 @@ public class BuildRagApp implements Callable<Integer> {
         request.setGoals(goals);
 
         if (skipTests) {
-            request.addArg("-DskipTests");
-        }
-
-        if (ragMcpSourceContextDir != null && ragMcpSourceContextDir.exists()) {
-            request.addArg("-Drag.mcp.source.context.dir=" + ragMcpSourceContextDir.getAbsolutePath());
-            System.out.println("Using RAG MCP source context directory: " + ragMcpSourceContextDir.getAbsolutePath());
-        } else if (ragMcpSourceContextDir != null && !ragMcpSourceContextDir.exists()) {
-            System.err.println("Warning: Specified --ragMcpSourceContextDir does not exist: " + ragMcpSourceContextDir.getAbsolutePath() +
-                    ". Frontend/resource copying might fail if paths in POM are relative to it.");
-        } else {
-            System.out.println("Note: --ragMcpSourceContextDir not specified. Frontend/resource copying might fail if paths in POM are relative and expect it.");
+            request.addArg("-DskipTests=true");
+        } else if (buildNative) {
+            System.out.println("Note: Tests are not skipped by default for native builds to aid AOT, unless --skipTests is explicitly specified by the user.");
+            request.addArg("-DskipTests=false");
         }
 
         if (buildNative) {
-            request.setProfiles(Arrays.asList("native"));
+            request.setProfiles(Arrays.asList("native")); // Corrected: Use setProfiles
             File effectiveGraalVmHome = (this.graalVmHome != null && this.graalVmHome.exists()) ?
                     this.graalVmHome : Info.graalvmDirectory();
 
             if (effectiveGraalVmHome != null && effectiveGraalVmHome.exists()) {
-                System.out.println("Using GraalVM from: " + effectiveGraalVmHome.getAbsolutePath());
-                request.addArg("-Dgraalvm.home=" + effectiveGraalVmHome.getAbsolutePath());
+                System.out.println("Using GraalVM from: " + effectiveGraalVmHome.getAbsolutePath() + " for native build.");
                 request.setJavaHome(effectiveGraalVmHome);
             } else {
                 System.err.println("Error: GraalVM home not specified or default not found (" +
                         (Info.graalvmDirectory() == null ? "null" : Info.graalvmDirectory().getAbsolutePath()) +
-                        "). Native build requires GraalVM.");
+                        "). Native build requires GraalVM to be set via --graalVmHome or accessible via Info.graalvmDirectory().");
                 return 1;
             }
         }
@@ -212,52 +193,71 @@ public class BuildRagApp implements Callable<Integer> {
 
         if (effectiveMavenHome == null || !effectiveMavenHome.exists()) {
             System.err.println("Error: Maven home not specified or default not found. Build requires Maven.");
+            System.err.println("Please set M2_HOME, MAVEN_HOME, or specify --mavenHome.");
             return 1;
         }
         invoker.setMavenHome(effectiveMavenHome);
         invoker.setWorkingDirectory(projectBuildDir);
-        invoker.setErrorHandler(System.err::println);
-        invoker.setOutputHandler(System.out::println);
+
+        StringBuilder buildOutput = new StringBuilder();
+        invoker.setOutputHandler(line -> {
+            System.out.println(line);
+            buildOutput.append(line).append(System.lineSeparator());
+        });
+        invoker.setErrorHandler(line -> {
+            System.err.println(line);
+            buildOutput.append("ERROR: ").append(line).append(System.lineSeparator());
+        });
 
         System.out.println("Starting Maven build for RAG instance: " + configName);
         System.out.println("  Build Directory: " + projectBuildDir.getAbsolutePath());
         System.out.println("  POM File: " + instancePomFile.getName());
         System.out.println("  Maven Goals: " + goals);
-        if (buildNative) System.out.println("  Native Profile: Activated");
+        if (buildNative) System.out.println("  Native Profile: Activated (via -Pnative)");
         System.out.println("  Maven Home: " + effectiveMavenHome.getAbsolutePath());
 
         InvocationResult result = invoker.execute(request);
 
         if (result.getExitCode() != 0) {
-            System.err.println("RAG application build failed!");
+            System.err.println("RAG application build failed! Exit Code: " + result.getExitCode());
             if (result.getExecutionException() != null) {
-                result.getExecutionException().printStackTrace();
+                System.err.println("Maven Invocation Exception: ");
+                result.getExecutionException().printStackTrace(System.err);
             }
             return 1;
         }
 
         System.out.println("RAG application build successful!");
         File targetDir = new File(projectBuildDir, "target");
-        String jarName = configName + "-" + this.instanceVersion + ".jar";
-        String nativeImageName = configName + "-native";
+        String jarNameBase = configName + "-" + this.instanceVersion;
+        String finalJarName = jarNameBase + ".jar";
 
         if (buildNative) {
+            // Try to get native.image.name from generated pom properties if possible, else default
+            // This requires parsing the generated pom, or relying on RagPomGenerator to use a predictable name.
+            // For now, using the default pattern.
+            String nativeImageName = jarNameBase + "-native";
             File nativeExecutable = new File(targetDir, nativeImageName);
-            System.out.println("  Native Executable: " + nativeExecutable.getAbsolutePath());
-            System.out.println("  To run (Native): " + nativeExecutable.getAbsolutePath());
-        } else {
-            File appJar = new File(targetDir, jarName);
+            if (nativeExecutable.exists()) {
+                System.out.println("  Native Executable: " + nativeExecutable.getAbsolutePath());
+                System.out.println("  To run (Native): " + nativeExecutable.getAbsolutePath());
+            } else {
+                System.out.println("  Native Executable expected at: " + nativeExecutable.getAbsolutePath() + " but not found. Check build logs.");
+            }
+        }
+
+        File appJar = new File(targetDir, finalJarName);
+        if(appJar.exists()) {
             System.out.println("  Executable JAR: " + appJar.getAbsolutePath());
             System.out.println("  To run (JAR): java -jar " + appJar.getAbsolutePath());
+        } else {
+            System.out.println("  Executable JAR expected at: " + appJar.getAbsolutePath() + " but not found. Check build logs for why the primary artifact was not created (e.g., if Shade plugin was meant to create it but failed).");
         }
 
         return 0;
     }
 
     public static void main(String... args) {
-        // Example usage:
-        // build-rag-app --configName my-rag-app-01 --instanceVersion 1.0 --includeLlmOpenai true --includeVectorstoreChroma true --ragMcpSourceContextDir /path/to/your/rag-mcp-assistant-parent
-        // build-rag-app --configName my-native-rag-01 --instanceVersion 1.0 --native true --includeLlmOpenai true --ragMcpSourceContextDir /path/to/your/rag-mcp-assistant-parent
         new CommandLine(new BuildRagApp()).execute(args);
     }
 }
