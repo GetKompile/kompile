@@ -15,7 +15,7 @@
  */
 
 /* src/styles.scss or src/styles.css */
-@import '@angular/material/theming'; // If using SCSS theming
+@use '@angular/material' as mat;
 
   /* Snackbar custom styles */
 .snackbar-success {

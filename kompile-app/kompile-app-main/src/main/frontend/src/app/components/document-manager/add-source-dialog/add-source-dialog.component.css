@@ -14,6 +14,32 @@
  *  * limitations under the License.
  */
 
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #e0e0e0; /* Material-like separator */
+  padding-bottom: 12px; /* Spacing below title */
+  margin-bottom: 20px; /* Spacing before content */
+}
+
+.dialog-header span {
+  font-size: 1.25em; /* Slightly larger title */
+  font-weight: 500; /* Material title weight */
+}
+
+.close-button {
+  /* Ensure it's aligned nicely */
+}
+
+.dialog-progress-bar {
+  position: absolute; /* Position it at the top of the dialog */
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+
 .full-width-field {
   width: 100%;
   margin-bottom: 16px;
@@ -25,6 +51,11 @@
   margin-top: 8px;
   margin-bottom: 24px;
 }
+
+.source-type-radio-button {
+  /* Add some margin if needed or use gap in flex container */
+}
+
 
 .form-section {
   margin-top: 16px;
@@ -41,12 +72,44 @@
 .file-input-field {
   margin-bottom: 8px;
   display: block; /* Ensure it takes block space for error message placement */
+  /* Basic styling for the native file input can be added if desired,
+     but often a custom-styled button is used to trigger it. */
 }
+
+.selected-file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9em;
+  margin-top: 8px;
+  padding: 8px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+}
+
+.selected-file-info mat-icon {
+  font-size: 18px; /* Adjust icon size */
+}
+
+
 .file-error-message {
   font-size: 0.75em; /* Standard mat-error font size */
   color: #f44336; /* Material warn color */
+  display: block; /* Ensure it takes its own line */
+  margin-top: 4px;
 }
+
 
 mat-dialog-content {
   min-height: 250px; /* Give some space for content */
+  padding-top: 0 !important; /* Remove padding if dialog-header has enough margin */
+}
+
+mat-dialog-actions {
+  padding-top: 24px; /* Standard Material dialog action padding */
+  border-top: 1px solid #e0e0e0; /* Separator line for actions */
+}
+
+mat-dialog-actions button mat-icon {
+  margin-right: 6px; /* Space between icon and text in button */
 }

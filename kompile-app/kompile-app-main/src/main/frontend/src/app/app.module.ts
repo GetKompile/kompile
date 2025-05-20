@@ -17,16 +17,37 @@
 import { NgModule } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { HttpClientModule } from '@angular/common/http';
-import { FormsModule } from '@angular/forms'; // For ngModel used in components
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'; // For ngModel used in components
 import { CommonModule } from '@angular/common'; // For *ngIf, *ngFor, etc.
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations'; // Required for Angular Material
 
 import { AppComponent } from './app.component';
 import { ChatInterfaceComponent } from './components/chat-interface/chat-interface.component';
 import { DocumentManagerComponent } from './components/document-manager/document-manager.component';
 import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools-viewer.component';
 
-// Services are usually auto-provided with providedIn: 'root'
-// No need to list them in providers array here.
+// Angular Material Modules
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatCardModule } from '@angular/material/card';
+import { MatListModule } from '@angular/material/list';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTableModule } from '@angular/material/table';
+import { MatPaginatorModule } from '@angular/material/paginator';
+import { MatSortModule } from '@angular/material/sort';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatDialogModule } from '@angular/material/dialog';
+import { MatExpansionModule } from '@angular/material/expansion';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { CdkTextareaAutosize } from '@angular/cdk/text-field';
+
+// AddSourceDialogComponent is standalone and imports its own modules.
+// import { AddSourceDialogComponent } from './components/document-manager/add-source-dialog/add-source-dialog.component';
+
 
 @NgModule({
   declarations: [
@@ -34,13 +55,34 @@ import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools
     ChatInterfaceComponent,
     DocumentManagerComponent,
     McpToolsViewerComponent
-    // Make sure all components you create and use are declared here
+    // AddSourceDialogComponent is standalone, so it's not declared here.
   ],
   imports: [
     BrowserModule,
     HttpClientModule,
     FormsModule,      // Needed for [(ngModel)]
-    CommonModule      // Needed for *ngIf, *ngFor, etc. in AppComponent and potentially others
+    ReactiveFormsModule, // Often used with Material forms
+    CommonModule,      // Needed for *ngIf, *ngFor, etc.
+    BrowserAnimationsModule, // Required for Angular Material animations
+
+    // Material Modules
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatCardModule,
+    MatListModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatSelectModule,
+    MatTableModule,
+    MatPaginatorModule,
+    MatSortModule,
+    MatTooltipModule,
+    MatSnackBarModule,
+    MatDialogModule,
+    MatExpansionModule,
+    MatProgressSpinnerModule,
+    CdkTextareaAutosize // Import if cdkTextareaAutosize is used directly in DocumentManagerComponent templates
   ],
   providers: [
     // Services are typically provided in root if using providedIn: 'root'
