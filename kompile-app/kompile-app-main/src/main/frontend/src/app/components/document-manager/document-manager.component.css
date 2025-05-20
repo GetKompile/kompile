@@ -193,24 +193,21 @@
   margin-bottom: 8px;
 }
 
-
-/* Global Snackbar Styles (in styles.scss or styles.scss) */
-/* It's better to put these in the global styles file */
-/*
+/* Global Snackbar Styles should be in the global styles.css/scss file */
+/* For example, in src/styles.css or src/styles.scss:
 .snackbar-success {
-  background-color: #43a047; // Darker green
+  background-color: #4CAF50; Green
   color: white;
 }
-.snackbar-success .mat-mdc-button.mat-mdc-snack-bar-action { // For Material 15+
+.snackbar-success .mat-mdc-button.mat-mdc-snack-bar-action {
   color: white !important;
 }
 
-
 .snackbar-error {
-  background-color: #e53935; // Darker red
+  background-color: #F44336; Red
   color: white;
 }
-.snackbar-error .mat-mdc-button.mat-mdc-snack-bar-action { // For Material 15+
+.snackbar-error .mat-mdc-button.mat-mdc-snack-bar-action {
   color: white !important;
 }
 */

@@ -53,6 +53,7 @@ export interface UploadedFileElement {
 }
 
 @Component({
+  standalone: false,
   selector: 'app-document-manager',
   templateUrl: './document-manager.component.html',
   styleUrls: ['./document-manager.component.css']
@@ -164,8 +165,12 @@ export class DocumentManagerComponent implements OnInit {
     }
     this.configuredSourcesDataSource.data = tableData;
     setTimeout(() => { // Ensure paginator and sort are picked up after data is set
-      this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator;
-      this.configuredSourcesDataSource.sort = this.configuredSourcesSort;
+      if (this.configuredSourcesPaginator) {
+        this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator;
+      }
+      if (this.configuredSourcesSort) {
+        this.configuredSourcesDataSource.sort = this.configuredSourcesSort;
+      }
     });
   }
 
@@ -175,8 +180,12 @@ export class DocumentManagerComponent implements OnInit {
       name: f,
     }));
     setTimeout(() => {
-      this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator;
-      this.uploadedFilesDataSource.sort = this.uploadedFilesSort;
+      if (this.uploadedFilesPaginator) {
+        this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator;
+      }
+      if (this.uploadedFilesSort) {
+        this.uploadedFilesDataSource.sort = this.uploadedFilesSort;
+      }
     });
   }
 
@@ -309,7 +318,7 @@ export class DocumentManagerComponent implements OnInit {
   }
 
   private handleOperationError(operation: string, error: HttpErrorResponse): void {
-    const errorMessage = error.error?.error || error.message || 'Server error';
+    const errorMessage = error.error?.error || error.error?.message || error.message || 'Server error';
     this.showSnackbar(`${operation} failed: ${errorMessage}`, true, 5000);
   }
 
@@ -318,7 +327,7 @@ export class DocumentManagerComponent implements OnInit {
       duration: duration,
       horizontalPosition: 'center',
       verticalPosition: 'top',
-      panelClass: isError ? 'snackbar-error' : 'snackbar-success'
+      panelClass: isError ? ['snackbar-error'] : ['snackbar-success'] // Ensure panelClass is an array
     });
   }
 }
