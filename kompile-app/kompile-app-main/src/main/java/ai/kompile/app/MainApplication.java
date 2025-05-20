@@ -14,15 +14,16 @@
  *  * limitations under the License.
  */
 
-package ai.kompile.app; // New package for the main application module
+package ai.kompile.app;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
-import org.springframework.core.env.PropertySource;
 
 import java.util.Arrays;
 import java.util.Map;
@@ -30,57 +31,66 @@ import java.util.Properties;
 import java.util.stream.StreamSupport;
 
 @SpringBootApplication(scanBasePackages = "ai.kompile")
-@EnableConfigurationProperties({})
+@EnableConfigurationProperties({}) // Keep if other @ConfigurationProperties are used elsewhere
 public class MainApplication {
 
-    public static void main(String[] args) {
-        ConfigurableApplicationContext context = SpringApplication.run(MainApplication.class, args);
-        System.out.println("RAG MCP Assistant (Multi-Module) is running!");
-        System.out.println("API Endpoints typically under /api/...");
-        System.out.println("MCP Server SSE endpoint likely at: http://localhost:8080/mcp/sse (check Spring AI defaults)");
-        System.out.println("MCP Server Message endpoint likely at: http://localhost:8080/mcp/message (check Spring AI defaults)");
+    private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
 
-        System.out.println("\n--- Classpath Dependencies ---");
-        String classPath = System.getProperty("java.class.path");
-        if (classPath != null) {
-            String[] classPathEntries = classPath.split(System.getProperty("path.separator"));
-            Arrays.stream(classPathEntries).forEach(entry -> System.out.println(entry));
-        } else {
-            System.out.println("Classpath not found.");
+    // Define constants for our custom command-line properties
+    public static final String MAX_FILE_SIZE_PROPERTY = "kompile.multipart.max-file-size";
+    public static final String MAX_REQUEST_SIZE_PROPERTY = "kompile.multipart.max-request-size";
+    // Default values if not provided via command line
+    public static final String DEFAULT_MAX_FILE_SIZE = "5000MB"; // Your 5GB default
+    public static final String DEFAULT_MAX_REQUEST_SIZE = "5000MB"; // Your 5GB default
+
+    public static void main(String[] args) {
+        String maxFileSizeArg = DEFAULT_MAX_FILE_SIZE;
+        String maxRequestSizeArg = DEFAULT_MAX_REQUEST_SIZE;
+
+        for (String arg : args) {
+            if (arg.startsWith("--" + MAX_FILE_SIZE_PROPERTY + "=")) {
+                maxFileSizeArg = arg.substring(("--" + MAX_FILE_SIZE_PROPERTY + "=").length());
+            } else if (arg.startsWith("--" + MAX_REQUEST_SIZE_PROPERTY + "=")) {
+                maxRequestSizeArg = arg.substring(("--" + MAX_REQUEST_SIZE_PROPERTY + "=").length());
+            }
         }
 
-        System.out.println("\n--- System Properties ---");
+        System.setProperty(MAX_FILE_SIZE_PROPERTY, maxFileSizeArg);
+        System.setProperty(MAX_REQUEST_SIZE_PROPERTY, maxRequestSizeArg);
+
+        logger.info("Attempting to set Max File Size (from command line or default) to: {}", maxFileSizeArg);
+        logger.info("Attempting to set Max Request Size (from command line or default) to: {}", maxRequestSizeArg);
+
+        ConfigurableApplicationContext context = SpringApplication.run(MainApplication.class, args);
+        logger.info("RAG MCP Assistant (Multi-Module) is running!");
+        // ... (rest of your logging)
+
+        logger.info("\n--- Final System Properties (includes multipart config if passed) ---");
         Properties systemProperties = System.getProperties();
         for (Map.Entry<Object, Object> entry : systemProperties.entrySet()) {
-            System.out.println(entry.getKey() + ": " + entry.getValue());
+            String key = entry.getKey().toString();
+            if (key.startsWith("kompile.multipart") || key.startsWith("java.runtime") || key.startsWith("os.name")) { // Filter for relevance
+                logger.info("{}: {}", key, entry.getValue());
+            }
         }
 
-        System.out.println("\n--- Spring Boot Environment Properties ---");
+        logger.info("\n--- Spring Boot Environment Properties (filtered for multipart) ---");
         ConfigurableEnvironment springEnv = context.getEnvironment();
         StreamSupport.stream(springEnv.getPropertySources().spliterator(), false)
                 .filter(ps -> ps instanceof EnumerablePropertySource)
                 .map(ps -> (EnumerablePropertySource<?>) ps)
                 .forEach(ps -> {
-                    System.out.println("Property Source: " + ps.getName());
                     Arrays.stream(ps.getPropertyNames())
+                            .filter(propName -> propName.startsWith("kompile.multipart"))
                             .sorted()
                             .forEach(propName -> {
                                 try {
                                     Object propValue = ps.getProperty(propName);
-                                    // Avoid printing sensitive properties or very long values if necessary
-                                    // For example, you might want to skip properties containing "password", "secret", "key"
-                                    // or truncate long strings.
-                                    if (propValue != null && (propName.toLowerCase().contains("password") || propName.toLowerCase().contains("secret") || propName.toLowerCase().contains("key"))) {
-                                        System.out.println("  " + propName + ": ******");
-                                    } else {
-                                        System.out.println("  " + propName + ": " + propValue);
-                                    }
+                                    logger.info("  From Property Source '{}': {} = {}", ps.getName(), propName, propValue);
                                 } catch (Exception e) {
-                                    System.out.println("  " + propName + ": Error retrieving value - " + e.getMessage());
+                                    logger.error("  Error retrieving property {} from {}: {}", propName, ps.getName(), e.getMessage());
                                 }
                             });
                 });
-
-        // Consider adding a health check endpoint or more specific startup messages.
     }
 }

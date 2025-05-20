@@ -72,7 +72,7 @@
 
 <mat-dialog-actions align="end">
   <button mat-stroked-button (click)="onCancelDialog()" [disabled]="isSubmitting">Cancel</button>
-  <button mat-flat-button color="primary" (click)="onSubmitDialog()" [disabled]="!isDialogFormValid() || isSubmitting">
+  <button mat-flat-button color="primary" (click)="onSubmitDialog()" [disabled]="isSubmitting">
     <mat-icon>add_circle_outline</mat-icon> Add Source
   </button>
 </mat-dialog-actions>

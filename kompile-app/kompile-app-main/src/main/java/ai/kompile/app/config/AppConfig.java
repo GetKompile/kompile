@@ -14,16 +14,29 @@
  *  * limitations under the License.
  */
 
-package ai.kompile.app.config; // Package within kompile-app-main
+package ai.kompile.app.config;
 
+import ai.kompile.app.MainApplication; // Import to access constants
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule; // For Java 8+ date/time
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import jakarta.servlet.MultipartConfigElement;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.web.servlet.MultipartConfigFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestTemplate;
 
 @Configuration
 public class AppConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);
+
+    @Autowired
+    private Environment environment;
 
     @Bean
     public RestTemplate restTemplate() {
@@ -33,9 +46,46 @@ public class AppConfig {
     @Bean
     public ObjectMapper objectMapper() {
         ObjectMapper objectMapper = new ObjectMapper();
-        // Register modules like JavaTimeModule if you use Java 8+ date/time types in DTOs
         objectMapper.registerModule(new JavaTimeModule());
-        // Add any other custom ObjectMapper configurations here
         return objectMapper;
+    }
+
+    @Bean
+    public MultipartConfigElement multipartConfigElement() {
+        logger.info("Attempting to configure MultipartConfigElement bean.");
+        MultipartConfigFactory factory = new MultipartConfigFactory();
+
+        // Retrieve values from Environment (which includes system properties set in MainApplication)
+        String maxFileSizeValue = environment.getProperty(MainApplication.MAX_FILE_SIZE_PROPERTY, MainApplication.DEFAULT_MAX_FILE_SIZE);
+        String maxRequestSizeValue = environment.getProperty(MainApplication.MAX_REQUEST_SIZE_PROPERTY, MainApplication.DEFAULT_MAX_REQUEST_SIZE);
+
+        logger.info("MultipartConfig: Using max-file-size from environment: {}", maxFileSizeValue);
+        logger.info("MultipartConfig: Using max-request-size from environment: {}", maxRequestSizeValue);
+
+        try {
+            DataSize maxFileSize = DataSize.parse(maxFileSizeValue);
+            DataSize maxRequestSize = DataSize.parse(maxRequestSizeValue);
+
+            factory.setMaxFileSize(maxFileSize);
+            factory.setMaxRequestSize(maxRequestSize);
+
+            logger.info("Successfully parsed and set MaxFileSize to: {} bytes", maxFileSize.toBytes());
+            logger.info("Successfully parsed and set MaxRequestSize to: {} bytes", maxRequestSize.toBytes());
+
+            // Optional: Define a temporary directory for large file uploads.
+            // Ensure this path is writable by the application.
+            // String tempLocation = environment.getProperty("kompile.multipart.temp-location", "/tmp/kompile-uploads");
+            // factory.setLocation(tempLocation);
+            // logger.info("Multipart temporary upload location set to: {}", tempLocation);
+
+
+        } catch (IllegalArgumentException e) {
+            logger.error("MultipartConfig: Failed to parse DataSize values. Falling back to Spring Boot defaults. Error: {}", e.getMessage(), e);
+            // Let Spring Boot handle defaults if parsing fails, or set hardcoded safe defaults.
+            // For example, to explicitly set to Spring's typical defaults if parsing our custom ones fails:
+            // factory.setMaxFileSize(DataSize.ofMegabytes(1));
+            // factory.setMaxRequestSize(DataSize.ofMegabytes(10));
+        }
+        return factory.createMultipartConfig();
     }
 }
