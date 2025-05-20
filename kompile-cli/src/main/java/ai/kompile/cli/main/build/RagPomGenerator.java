@@ -103,6 +103,8 @@ public class RagPomGenerator implements Callable<Void> {
     private static final String DEFAULT_MAVEN_SUREFIRE_PLUGIN_VERSION = "3.2.5";
     private static final String DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION = "3.6.0";
 
+    private static final String DEFAULT_JAKARTA_MAIL_VERSION = "2.1.3";
+
 
     private Dependency createDependencyInternal(String groupId, String artifactId, String versionProperty, String scope, String classifier, boolean optional) {
         Dependency dependency = new Dependency();
@@ -199,6 +201,8 @@ public class RagPomGenerator implements Callable<Void> {
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", "${spring-ai.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", "${spring-ai.version}");
 
+        //needed for tika/pdf
+        addDependency(defaultDependencies,"jakarta.mail", "jakarta.mail-api",DEFAULT_JAKARTA_MAIL_VERSION);
         if (includeAppMain) addDependency(defaultDependencies, "ai.kompile", "kompile-app-main", "${kompile.project.version}");
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
@@ -406,8 +410,8 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/services/.*");
         addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/.*\\.schema\\.json");
         // Deadlock watchdog args - can be uncommented if needed
-        // addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
-        // addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
+         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
+         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
 
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);

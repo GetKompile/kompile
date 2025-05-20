@@ -57,9 +57,9 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
     @Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module")
-    private boolean includeLoaderTika = false;
+    private boolean includeLoaderTika = true;
     @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
-    private boolean includeLoaderPdf = false;
+    private boolean includeLoaderPdf = true;
     @Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
     private boolean includeAnserini = false;
     @Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module")
