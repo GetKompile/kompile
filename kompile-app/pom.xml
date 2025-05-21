@@ -22,10 +22,12 @@
 
   <parent>
     <groupId>ai.kompile</groupId>
-    <artifactId>kompile</artifactId> <version>0.1.0-SNAPSHOT</version>
+    <artifactId>kompile</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>rag-mcp-assistant-parent</artifactId> <packaging>pom</packaging>
+  <artifactId>rag-mcp-assistant-parent</artifactId>
+  <packaging>pom</packaging>
 
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>

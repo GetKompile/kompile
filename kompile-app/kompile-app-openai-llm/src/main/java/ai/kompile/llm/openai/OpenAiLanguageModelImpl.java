@@ -91,7 +91,7 @@ public class OpenAiLanguageModelImpl implements LanguageModel {
         String[] toolNamesArray = {"rag_query", "list_files", "read_file"};
         logger.info("Advertising tools to OpenAI: {}", String.join(", ", toolNamesArray));
 
-        // Correct fluent API chain for Spring AI 1.0.0-M8+
+        // Correct fluent API chain for Spring AI 1.0.0+
         ChatResponse response = chatClient.prompt()
                 .messages(
                         systemPromptTemplate.createMessage(Map.of("context", contextString)),

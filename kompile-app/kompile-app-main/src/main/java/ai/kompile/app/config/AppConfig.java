@@ -30,7 +30,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestTemplate;
 
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class AppConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);

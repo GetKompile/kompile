@@ -82,7 +82,7 @@ public class BuildRagApp implements Callable<Integer> {
     private boolean includeToolRag;
 
     @Option(names = {"--native"}, description = "Build a GraalVM native image")
-    private boolean buildNative = false;
+    private boolean buildNative = true;
 
     @Option(names = {"--mavenHome"}, description = "Path to Maven installation (default: resolved by EnvironmentUtils)")
     private File mavenHome;
@@ -170,6 +170,8 @@ public class BuildRagApp implements Callable<Integer> {
             System.out.println("Note: Tests are not skipped by default for native builds to aid AOT, unless --skipTests is explicitly specified by the user.");
             request.addArg("-DskipTests=false");
         }
+
+        request.setProfiles(Arrays.asList("native")); // Corrected: Use setProfiles
 
         if (buildNative) {
             request.setProfiles(Arrays.asList("native")); // Corrected: Use setProfiles
