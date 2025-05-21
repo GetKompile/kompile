@@ -101,6 +101,8 @@ public class RagPomGenerator implements Callable<Void> {
     private static final String DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION = "3.13.0";
     private static final String DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION = "3.3.1";
     private static final String DEFAULT_MAVEN_JAR_PLUGIN_VERSION = "3.3.0";
+    private static final String DEFAULT_POSTGRES_VERSION = "42.7.5";
+
     private static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.6";
     private static final String DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION = "3.6.0";
 
@@ -246,7 +248,7 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("maven-compiler-plugin.version", DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION);
         props.setProperty("maven-resources-plugin.version", DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION);
         props.setProperty("maven-jar-plugin.version", DEFAULT_MAVEN_JAR_PLUGIN_VERSION);
-
+        props.setProperty("postgres.version",DEFAULT_POSTGRES_VERSION);
         props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
@@ -290,9 +292,15 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeEmbeddingOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-openai", "${kompile.project.version}");
         if (includeEmbeddingSentenceTransformer) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-sentence-transformer", "${kompile.project.version}");
         if (includeVectorstoreChroma) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-chroma", "${kompile.project.version}");
-        if (includeVectorstorePgvector) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
+        if (includeVectorstorePgvector) {
+            addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
+        }
         if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
+
+        if(includeVectorstorePgvector) {
+            addDependency(defaultDependencies,"org.postgresql","postgresql","${postgres.version}","compile" , "",false );
+        }
 
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
         addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}");
