@@ -84,7 +84,7 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
     <spring-boot.version>3.2.5</spring-boot.version>
-    <spring-ai.version>1.0.0-M8</spring-ai.version>
+    <spring-ai.version>1.0.0</spring-ai.version>
     <anserini.version>0.24.0</anserini.version>
     <log4j2.version>2.21.1</log4j2.version>
     <jsoup.version>1.17.2</jsoup.version>

@@ -50,8 +50,8 @@ public class Info implements Callable<Integer> {
         buildProperties.setProperty("kompile.cli.version", "0.1.0-SNAPSHOT"); // Version of the CLI itself (kompile parent)
         buildProperties.setProperty("project.version", "0.1.0-SNAPSHOT"); // Version for kompile-pipelines-* modules
         buildProperties.setProperty("kompile.app.version", "0.0.1-SNAPSHOT"); // Version for kompile-app-* modules (RAG parent)
-        buildProperties.setProperty("spring.boot.version", "3.2.5");
-        buildProperties.setProperty("spring.ai.version", "1.0.0-M8");
+        buildProperties.setProperty("spring.boot.version", "3.4.5");
+        buildProperties.setProperty("spring.ai.version", "1.0.0");
         buildProperties.setProperty("native.image.plugin.version", "0.10.6");
 
         // Default versions for common Maven plugins
@@ -114,7 +114,7 @@ public class Info implements Callable<Integer> {
      * @return The version string.
      */
     public static String getSpringBootVersion() {
-        return buildProperties.getProperty("spring.boot.version", "3.2.5");
+        return buildProperties.getProperty("spring.boot.version", "3.4.5");
     }
 
     /**
@@ -122,7 +122,7 @@ public class Info implements Callable<Integer> {
      * @return The version string.
      */
     public static String getSpringAiVersion() {
-        return buildProperties.getProperty("spring.ai.version", "1.0.0-M8");
+        return buildProperties.getProperty("spring.ai.version", "1.0.0");
     }
 
     /**

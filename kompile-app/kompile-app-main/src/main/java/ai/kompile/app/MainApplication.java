@@ -18,10 +18,15 @@ package ai.kompile.app;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.aot.hint.MemberCategory;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
+import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
 
@@ -42,6 +47,8 @@ public class MainApplication {
     // Default values if not provided via command line
     public static final String DEFAULT_MAX_FILE_SIZE = "5000MB"; // Your 5GB default
     public static final String DEFAULT_MAX_REQUEST_SIZE = "5000MB"; // Your 5GB default
+
+
 
     public static void main(String[] args) {
         String maxFileSizeArg = DEFAULT_MAX_FILE_SIZE;

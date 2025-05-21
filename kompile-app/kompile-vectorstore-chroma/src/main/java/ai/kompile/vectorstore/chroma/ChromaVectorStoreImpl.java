@@ -110,7 +110,7 @@ public class ChromaVectorStoreImpl implements VectorStore {
         logger.debug("Performing similarity search in ChromaVectorStore for query: [{}], k={}, threshold={}",
                 Squery, k, similarityThreshold);
 
-        // CORRECTED SearchRequest construction using the builder methods from 1.0.0-M8 documentation
+        // CORRECTED SearchRequest construction using the builder methods from 1.0.0 documentation
         SearchRequest.Builder requestBuilder = SearchRequest.builder()
                 .query(query)       // Uses .query(String)
                 .topK(k);           // Uses .topK(int)
