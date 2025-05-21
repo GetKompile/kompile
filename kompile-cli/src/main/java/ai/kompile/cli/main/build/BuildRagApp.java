@@ -57,9 +57,9 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
     @Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module")
-    private boolean includeLoaderTika = true;
+    private boolean includeLoaderTika = false;
     @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
-    private boolean includeLoaderPdf = true;
+    private boolean includeLoaderPdf = false;
     @Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
     private boolean includeAnserini = false;
     @Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module")
@@ -202,7 +202,6 @@ public class BuildRagApp implements Callable<Integer> {
         StringBuilder buildOutput = new StringBuilder();
         invoker.setOutputHandler(line -> {
             System.out.println(line);
-            buildOutput.append(line).append(System.lineSeparator());
         });
         invoker.setErrorHandler(line -> {
             System.err.println(line);
