@@ -197,6 +197,7 @@
                                 <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                                 <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
                                 <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
+                                <buildArg>--enable-url-protocols=https,http</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.logger.debug=true</buildArg>
                                 <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
                                 <buildArg>--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager</buildArg>

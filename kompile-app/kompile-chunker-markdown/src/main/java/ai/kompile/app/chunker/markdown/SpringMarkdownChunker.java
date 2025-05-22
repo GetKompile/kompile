@@ -53,4 +53,9 @@ public class SpringMarkdownChunker implements TextChunker {
     public String getName() {
         return CHUNKER_NAME;
     }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        return null;
+    }
 }

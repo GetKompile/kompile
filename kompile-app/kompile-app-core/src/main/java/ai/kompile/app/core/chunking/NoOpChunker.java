@@ -21,10 +21,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-@Component("recursiveCharacterTextChunker")
+@Component("recursiveCharacterTextChunker") // Assuming this was a typo and should be "noOpChunker" or similar, will keep for now
 public class NoOpChunker implements TextChunker {
     @Override
     public List<Document> chunk(Document document, Map<String, Object> options) {
@@ -34,5 +35,11 @@ public class NoOpChunker implements TextChunker {
     @Override
     public String getName() {
         return "noop";
+    }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        // Indicates that this chunker is language-agnostic
+        return Collections.singletonList("*");
     }
 }

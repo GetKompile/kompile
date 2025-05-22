@@ -2,7 +2,6 @@ package ai.kompile.app.chunker.token;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import com.knuddels.jtokkit.Encodings;
-import com.knuddels.jtokkit.api.Encoding;
 import com.knuddels.jtokkit.api.EncodingRegistry;
 import com.knuddels.jtokkit.api.EncodingType;
 import lombok.extern.slf4j.Slf4j;
@@ -11,10 +10,12 @@ import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.stereotype.Component;
 import org.springframework.util.Assert;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 
 @Slf4j
@@ -22,20 +23,26 @@ import java.util.UUID;
 public class SpringTokenChunker implements TextChunker {
 
     private static final String CHUNKER_NAME = "spring_token";
-    public static final String OPTION_MAX_TOKEN_LIMIT = "maxTokenLimit";
-    public static final String OPTION_MIN_CHUNK_SIZE_TOKENS = "minChunkSizeTokens"; // Corrected name
-    public static final String OPTION_CHUNK_OVERLAP_TOKENS = "chunkOverlapTokens"; // Corrected name
-    public static final String OPTION_TOKENIZER_NAME = "tokenizerName"; // e.g., "cl100k_base" for gpt-3.5-turbo/gpt-4
 
-    public static final int DEFAULT_MAX_TOKEN_LIMIT = 1000; // Default in Spring AI
-    public static final int DEFAULT_MIN_CHUNK_SIZE_TOKENS = 20; // Sensible default
-    public static final int DEFAULT_CHUNK_OVERLAP_TOKENS = 5; // Sensible default for tokens
+    // Options aligned with Spring AI's TokenTextSplitter.Builder
+    public static final String OPTION_CHUNK_SIZE_TOKENS = "chunkSize"; // Target size of each chunk in tokens
+    public static final String OPTION_MIN_CHUNK_SIZE_CHARS = "minChunkSizeChars"; // Minimum size of each text chunk in characters
+    public static final String OPTION_MIN_CHUNK_LENGTH_TO_EMBED_CHARS = "minChunkLengthToEmbed"; // Discard chunks shorter than this (chars)
+    public static final String OPTION_MAX_NUM_CHUNKS = "maxNumChunks"; // Maximum number of chunks to generate
+    public static final String OPTION_KEEP_SEPARATOR = "keepSeparator"; // Whether to keep separators
+    public static final String OPTION_TOKENIZER_NAME = "tokenizerName"; // Kept for conceptual compatibility, though TokenTextSplitter uses fixed CL100K_BASE
+
+    // Defaults from Spring AI's TokenTextSplitter
+    public static final int DEFAULT_CHUNK_SIZE_TOKENS = 800;
+    public static final int DEFAULT_MIN_CHUNK_SIZE_CHARS = 350;
+    public static final int DEFAULT_MIN_CHUNK_LENGTH_TO_EMBED_CHARS = 5;
+    public static final int DEFAULT_MAX_NUM_CHUNKS = 10000;
+    public static final boolean DEFAULT_KEEP_SEPARATOR = true;
     public static final String DEFAULT_TOKENIZER_NAME = EncodingType.CL100K_BASE.getName();
 
-    private final EncodingRegistry encodingRegistry;
 
     public SpringTokenChunker() {
-        this.encodingRegistry = Encodings.newDefaultEncodingRegistry();
+        // EncodingRegistry is handled internally by TokenTextSplitter if not using a custom one.
     }
 
     @Override
@@ -43,50 +50,59 @@ public class SpringTokenChunker implements TextChunker {
         Assert.notNull(document, "Document cannot be null");
         Assert.notNull(options, "Options map cannot be null");
 
-        int maxTokenLimit = (int) options.getOrDefault(OPTION_MAX_TOKEN_LIMIT, DEFAULT_MAX_TOKEN_LIMIT);
-        int minTokens = (int) options.getOrDefault(OPTION_MIN_CHUNK_SIZE_TOKENS, DEFAULT_MIN_CHUNK_SIZE_TOKENS);
-        int chunkOverlap = (int) options.getOrDefault(OPTION_CHUNK_OVERLAP_TOKENS, DEFAULT_CHUNK_OVERLAP_TOKENS);
-        String tokenizerName = (String) options.getOrDefault(OPTION_TOKENIZER_NAME, DEFAULT_TOKENIZER_NAME);
+        int chunkSize = (int) options.getOrDefault(OPTION_CHUNK_SIZE_TOKENS, DEFAULT_CHUNK_SIZE_TOKENS);
+        int minChunkSizeChars = (int) options.getOrDefault(OPTION_MIN_CHUNK_SIZE_CHARS, DEFAULT_MIN_CHUNK_SIZE_CHARS);
+        int minChunkLengthToEmbed = (int) options.getOrDefault(OPTION_MIN_CHUNK_LENGTH_TO_EMBED_CHARS, DEFAULT_MIN_CHUNK_LENGTH_TO_EMBED_CHARS);
+        int maxNumChunks = (int) options.getOrDefault(OPTION_MAX_NUM_CHUNKS, DEFAULT_MAX_NUM_CHUNKS);
+        boolean keepSeparator = (boolean) options.getOrDefault(OPTION_KEEP_SEPARATOR, DEFAULT_KEEP_SEPARATOR);
+        String tokenizerNameOption = (String) options.getOrDefault(OPTION_TOKENIZER_NAME, DEFAULT_TOKENIZER_NAME);
 
-        EncodingType encodingType;
-        try {
-            encodingType = EncodingType.valueOf(tokenizerName.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            log.warn("Unknown tokenizer name '{}', defaulting to {}. Available: {}",
-                    tokenizerName, DEFAULT_TOKENIZER_NAME,
-                    List.of(EncodingType.values()));
-            encodingType = EncodingType.valueOf(DEFAULT_TOKENIZER_NAME.toUpperCase());
+        if (!DEFAULT_TOKENIZER_NAME.equalsIgnoreCase(tokenizerNameOption)) {
+            log.warn("Provided tokenizerName option ('{}') is ignored. Spring AI's TokenTextSplitter internally uses '{}'.",
+                    tokenizerNameOption, DEFAULT_TOKENIZER_NAME);
         }
 
-        Encoding encoding = encodingRegistry.getEncoding(encodingType);
-
-        // In Spring AI 1.0.0, TokenTextSplitter has a builder
         TokenTextSplitter textSplitter = TokenTextSplitter.builder()
-                .withChunkSize(maxTokenLimit)
-                .withMaxNumChunks(minTokens)
-                .withMinChunkSizeChars(chunkOverlap)
-                .withKeepSeparator(false)
+                .withChunkSize(chunkSize)
+                .withMinChunkSizeChars(minChunkSizeChars)
+                .withMinChunkLengthToEmbed(minChunkLengthToEmbed)
+                .withMaxNumChunks(maxNumChunks)
+                .withKeepSeparator(keepSeparator)
                 .build();
 
-        List<Document> splitDocuments = textSplitter.apply(List.of(document));
+        List<Document> sourceDocuments = Collections.singletonList(document);
+        // The apply method in TextSplitter handles the conversion from List<Document> to List<String> for splitting,
+        // then wraps the resulting strings back into Document objects.
+        List<Document> splitDocumentsRaw = textSplitter.apply(sourceDocuments);
 
+        List<Document> finalSplitDocuments = new ArrayList<>();
         int chunkNumber = 0;
-        for(Document chunk : splitDocuments) {
-            Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
+        for(Document chunk : splitDocumentsRaw) {
+            Map<String, Object> metadata = new HashMap<>(chunk.getMetadata()); // Start with existing metadata from splitter
             metadata.putIfAbsent("original_document_id", document.getId());
             metadata.put("chunk_number", chunkNumber++);
             metadata.put("chunker", getName());
+            // The actual tokenizer used by TokenTextSplitter is CL100K_BASE
+            metadata.put("tokenizer", DEFAULT_TOKENIZER_NAME);
 
-            chunk.getMetadata().clear();
-            chunk.getMetadata().putAll(metadata);
+
+            finalSplitDocuments.add(new Document(chunk.getId(), chunk.getText(), metadata));
         }
-        log.debug("Split document {} into {} chunks using {}. Options: maxTokens={}, minTokens={}, overlapTokens={}, tokenizer={}",
-                document.getId(), splitDocuments.size(), getName(), maxTokenLimit, minTokens, chunkOverlap, tokenizerName);
-        return splitDocuments;
+
+        log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, minChunkSizeChars={}, minChunkLengthToEmbed={}, maxNumChunks={}, keepSeparator={}. Tokenizer used: {}",
+                document.getId(), finalSplitDocuments.size(), getName(),
+                chunkSize, minChunkSizeChars, minChunkLengthToEmbed, maxNumChunks, keepSeparator, DEFAULT_TOKENIZER_NAME);
+        return finalSplitDocuments;
     }
 
     @Override
     public String getName() {
         return CHUNKER_NAME;
+    }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        // jtokkit tokenizer CL100K_BASE is trained on diverse data but primarily optimized for English.
+        return Arrays.asList("en", "multi");
     }
 }

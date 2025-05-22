@@ -42,10 +42,10 @@ public class RecursiveCharacterChunker implements TextChunker {
         Assert.notNull(document, "Document cannot be null");
         Assert.notNull(options, "Options map cannot be null");
 
-        int chunkSize = (int) options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
-        int chunkOverlap = (int) options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
+        // int chunkSize = (int) options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
+        // int chunkOverlap = (int) options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
 
-        // Spring AI 1.0.0 RecursiveCharacterTextSplitter constructor
+        // Spring AI 1.0.0 RecursiveCharacterTextSplitter constructor is used by CustomRecursiveCharacterTextChunker
         CustomRecursiveCharacterTextChunker textSplitter = new CustomRecursiveCharacterTextChunker();
         // For custom separators:
         // List<String> separators = (List<String>) options.getOrDefault(OPTION_SEPARATORS, List.of("\n\n", "\n", " ", ""));
@@ -53,6 +53,7 @@ public class RecursiveCharacterChunker implements TextChunker {
 
 
         // Spring AI TextSplitters take a List<Document> and return a List<Document>
+        // The custom chunker now directly implements the chunking logic based on options passed.
         List<Document> splitDocuments = textSplitter.chunk(document, options);
 
         // Enrich metadata for each new chunk
@@ -68,12 +69,20 @@ public class RecursiveCharacterChunker implements TextChunker {
             chunk.getMetadata().putAll(metadata);
         }
         log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, chunkOverlap={}",
-                document.getId(), splitDocuments.size(), getName(), chunkSize, chunkOverlap);
+                document.getId(), splitDocuments.size(), getName(),
+                options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE),
+                options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP));
         return splitDocuments;
     }
 
     @Override
     public String getName() {
         return CHUNKER_NAME;
+    }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        // This chunker is based on character splitting and is language-agnostic.
+        return Collections.singletonList("*");
     }
 }
