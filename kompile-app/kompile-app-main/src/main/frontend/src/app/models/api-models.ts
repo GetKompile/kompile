@@ -14,35 +14,42 @@
  * * limitations under the License.
  */
 
-export interface RagQuery {
+// For RAG Service
+export interface RagQueryRequest {
   query: string;
-  useToolCalling?: boolean;
+  maxResults?: number;
 }
 
 export interface RagResponse {
   query: string;
-  answer?: string;
-  error?: string;
+  answer: string;
+  retrieved_contexts: RetrievedContext[];
 }
 
-// --- Document Management Models ---
+export interface RetrievedContext {
+  document_id: string;
+  content: string;
+  score?: number;
+}
+
+
+// For Document Service
 export interface AddUrlRequest {
   url: string;
   fileName?: string;
-  loader?: string; // Optional loader name
+  loader?: string;
 }
 
 export interface FileUploadResponse {
   message: string;
-  path?: string;
-  next_step?: string;
-  error?: string;
   fileName?: string;
-  selectedLoader?: string;
+  filePath?: string;
+  details?: string;
 }
 
 export interface SimpleMessageResponse {
-  message?: string;
+  message: string;
+  details?: string;
   error?: string;
 }
 
@@ -57,10 +64,8 @@ export interface ChunkerInfo {
 }
 
 export enum DocumentSourceType {
-  URL = 'URL',
   FILE = 'FILE',
-  DIRECTORY = 'DIRECTORY'
-  // Add other types if they exist in backend and are needed by frontend
+  URL = 'URL'
 }
 
 export interface BatchLoadRequestItem {
@@ -68,63 +73,62 @@ export interface BatchLoadRequestItem {
   type: DocumentSourceType;
   loaderName?: string;
   originalFileName?: string;
+  chunkerName?: string;
+  chunkerOptions?: { [key: string]: any };
 }
 
 export interface BatchProcessRequest {
   items: BatchLoadRequestItem[];
   defaultLoaderName?: string;
-}
-
-export interface DocumentSummary {
-  id: string;
-  metadata: {[key: string]: any};
-  contentSnippet: string; // Or use 'textSnippet' if it aligns with doc.getText()
-}
-
-export interface BatchProcessResultItem {
-  count?: number;
-  summaries?: DocumentSummary[];
-  error?: string;
+  defaultChunkerName?: string;
+  defaultChunkerOptions?: { [key: string]: any };
 }
 
 export interface BatchProcessResponseDetails {
-  [pathOrUrl: string]: BatchProcessResultItem;
+  [key: string]: {
+    count?: number;
+    error?: string;
+    summaries?: DocumentSummary[];
+  };
 }
+export interface DocumentSummary {
+  id: string;
+  contentSnippet: string;
+  metadata?: { [key: string]: any };
+}
+
 
 export interface BatchProcessResponse {
   message: string;
   successful_items: number;
   failed_items: number;
-  details?: BatchProcessResponseDetails;
-  error?: string;
+  details: BatchProcessResponseDetails | null;
 }
 
-// --- Anserini Models (Re-adding) ---
-export interface AnseriniHit {
-  content: string; // Assuming string content for hits
-  // Add other properties like 'docid', 'score' if available and needed
-}
 
-export interface AnseriniSearchResponse {
-  query: string;
-  maxResults: number;
-  hits?: AnseriniHit[];
-  error?: string;
-}
-
-// --- MCP Tool Models (Re-adding) ---
-export interface McpToolInfo {
+// For MCP Tool Service
+export interface McpTool {
   name: string;
   description: string;
-  note?: string; // e.g., "Full input schema available via MCP tools/list protocol."
-  inputSchemaError?: string; // If fetching schema fails
-  // Potentially add inputSchema?: any; if you plan to fetch and display it
+  inputSchema: any;
 }
 
-// Other existing models if any (e.g., DocumentSource, UploadedFile)
-// can remain if they are still in use and correctly defined.
-// For example:
-export interface UploadedFile { // If this is still used for listing uploaded files.
-  name: string;
-  // Add other properties if your backend provides more for the /uploaded-files endpoint.
+// For Indexer (Anserini) Service
+export interface IndexStatusResponse {
+  index_status: 'AVAILABLE' | 'NOT_AVAILABLE_OR_INVALID';
+  message: string;
+  error?: string;
+}
+
+// New interfaces for Index Browser
+export interface IndexedDocInfo {
+  id: string;
+  preview?: string;
+  content?: string;
+  metadata?: { [key: string]: any };
+  lucene_internal_id?: number;
+}
+
+export interface UpdateDocRequest {
+  content: string;
 }

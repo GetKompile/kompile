@@ -88,22 +88,25 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
     private boolean includeEmbeddingPostgresml = false;
 
+    // New Chunker Options
+    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module")
+    private boolean includeChunkerSentence = false;
+
+    @CommandLine.Option(names = {"--includeChunkerRecursiveCharacter"}, description = "Include kompile-chunker-recursivecharacter module")
+    private boolean includeChunkerRecursiveCharacter = false;
+
+    @CommandLine.Option(names = {"--includeChunkerMarkdown"}, description = "Include kompile-chunker-markdown module")
+    private boolean includeChunkerMarkdown = false;
+
+    @CommandLine.Option(names = {"--includeChunkerToken"}, description = "Include kompile-chunker-token module")
+    private boolean includeChunkerToken = false;
+
+
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
 
     @CommandLine.Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
     private boolean includePgmlIndexer = false;
-
-    // New Chunker Options
-    @CommandLine.Option(names = {"--includeChunkerMarkdown"}, description = "Include kompile-chunker-markdown module")
-    private boolean includeChunkerMarkdown = false;
-    @CommandLine.Option(names = {"--includeChunkerRecursiveCharacter"}, description = "Include kompile-chunker-recursivecharacter module", defaultValue = "true", negatable = true)
-    private boolean includeChunkerRecursiveCharacter;
-    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module")
-    private boolean includeChunkerSentence = false;
-    @CommandLine.Option(names = {"--includeChunkerToken"}, description = "Include kompile-chunker-token module")
-    private boolean includeChunkerToken = false;
-
 
     private Model model;
     private final List<Dependency> defaultDependencies = new ArrayList<>();
@@ -227,39 +230,10 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
 
-        String jarManifestStartClass;
-        String nativeImageEntryPointClass;
-
-        if (buildNative) {
-            // For native builds, we always generate a wrapper MainApplication to ensure AOT processing works correctly
-            // with the user's instanceGroupId. The actual Spring Boot app entry point for native images will be
-            // the core ai.kompile.app.MainApplication, but the generated one helps native-image tool to find things.
-            generateMainApplicationClass(projectDir, instanceGroupId, GENERATED_MAIN_CLASS_SIMPLE_NAME);
-            jarManifestStartClass = instanceGroupId + "." + GENERATED_MAIN_CLASS_SIMPLE_NAME; // For the -exec.jar
-            nativeImageEntryPointClass = CORE_APP_MAIN_CLASS_FQCN; // GraalVM native image points to core
-        } else {
-            // For non-native (standard JAR), if app-main is included, use its MainApplication.
-            // Otherwise, generate and use the instance-specific one.
-            if (includeAppMain) {
-                jarManifestStartClass = CORE_APP_MAIN_CLASS_FQCN;
-            } else {
-                jarManifestStartClass = instanceGroupId + "." + GENERATED_MAIN_CLASS_SIMPLE_NAME;
-                Path generatedMainJavaFileParent = Paths.get(projectDir.getAbsolutePath(), "src", "main", "java", jarManifestStartClass.replace('.', '/'));
-                if (!Files.exists(generatedMainJavaFileParent)) {
-                    Files.createDirectories(generatedMainJavaFileParent);
-                }
-                Path generatedMainJavaFile = generatedMainJavaFileParent.resolve(GENERATED_MAIN_CLASS_SIMPLE_NAME + ".java");
-                if (!Files.exists(generatedMainJavaFile)) {
-                    generateMainApplicationClass(projectDir, instanceGroupId, GENERATED_MAIN_CLASS_SIMPLE_NAME);
-                }
-            }
-            nativeImageEntryPointClass = jarManifestStartClass; // Not strictly used if !buildNative, but set for consistency
-        }
-
 
         Properties props = new Properties();
         props.setProperty("java.version", "17");
-        props.setProperty("start-class", jarManifestStartClass);
+        props.setProperty("start-class", CORE_APP_MAIN_CLASS_FQCN);
 
         props.setProperty("kompile.project.version", this.ragMcpVersion);
         props.setProperty("spring-boot.version", DEFAULT_SPRING_BOOT_VERSION);
@@ -281,8 +255,9 @@ public class RagPomGenerator implements Callable<Void> {
         addApplicationDependencies();
         addApplicationBuild();
 
+        // Only add native profile if buildNative is true
         if (buildNative) {
-            addNativeProfile(nativeImageEntryPointClass);
+            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN);
         }
 
 
@@ -309,8 +284,17 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeAppMain) addDependency(defaultDependencies, "ai.kompile", "kompile-app-main", "${kompile.project.version}");
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
+
+        // Loaders
         if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", "${kompile.project.version}");
         if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", "${kompile.project.version}");
+
+        // Chunkers - NEW
+        if (includeChunkerSentence) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-sentence", "${kompile.project.version}");
+        if (includeChunkerRecursiveCharacter) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-recursivecharacter", "${kompile.project.version}");
+        if (includeChunkerMarkdown) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-markdown", "${kompile.project.version}");
+        if (includeChunkerToken) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-token", "${kompile.project.version}");
+
         if (includeAnserini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anserini", "${kompile.project.version}");
         if (includeLlmOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-app-openai-llm", "${kompile.project.version}");
         if (includeLlmAnthropic) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anthropic-llm", "${kompile.project.version}");
@@ -321,20 +305,14 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeEmbeddingPostgresml) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-postgresml", "${kompile.project.version}");
         if (includePgmlIndexer) addDependency(defaultDependencies, "ai.kompile", "kompile-app-pgml-indexer", "${kompile.project.version}");
 
-        // Chunkers
-        if (includeChunkerMarkdown) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-markdown", "${kompile.project.version}");
-        if (includeChunkerRecursiveCharacter) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-recursivecharacter", "${kompile.project.version}");
-        if (includeChunkerSentence) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-sentence", "${kompile.project.version}");
-        if (includeChunkerToken) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-token", "${kompile.project.version}");
-
-
-        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) { // Corrected: includePgmlIndexer might imply pgvector
+        // Ensure pgvector is added if any of the related pg features are enabled
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) { // Corrected condition
             addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
         }
         if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
 
-        if(includeVectorstorePgvector) {
+        if(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) { // Condition for postgresql driver
             addDependency(defaultDependencies,"org.postgresql","postgresql","${postgres.version}","compile" , "",false );
         }
 
@@ -368,7 +346,6 @@ public class RagPomGenerator implements Callable<Void> {
             PluginExecution defaultResourcesExecution = new PluginExecution();
             defaultResourcesExecution.setId("default-resources");
             defaultResourcesExecution.addGoal("resources");
-            // Using default configuration for resources plugin by not setting <configuration> explicitly for the execution.
             resourcesPlugin.addExecution(defaultResourcesExecution);
             build.addPlugin(resourcesPlugin);
 
@@ -381,23 +358,18 @@ public class RagPomGenerator implements Callable<Void> {
             jarPlugin.setConfiguration(jarConfig);
             build.addPlugin(jarPlugin);
 
-            // This spring-boot-maven-plugin is for the main build (non-native).
-            // The native profile will define its own complete spring-boot-maven-plugin configuration.
-            if (!buildNative) {
-                Plugin springBootMainBuildPlugin = createPlugin("org.springframework.boot", "spring-boot-maven-plugin", "${spring-boot.version}");
-                Xpp3Dom springBootMainConfig = Xpp3DomBuilder.build(new StringReader(
-                        "<configuration>" +
-                                "  <mainClass>${start-class}</mainClass>" +
-                                "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
-                                "</configuration>"));
-                springBootMainBuildPlugin.setConfiguration(springBootMainConfig);
-                PluginExecution springBootRepackageMain = new PluginExecution();
-                springBootRepackageMain.setId("repackage"); // Standard ID
-                springBootRepackageMain.addGoal("repackage");
-                springBootMainBuildPlugin.addExecution(springBootRepackageMain);
-                build.addPlugin(springBootMainBuildPlugin);
-            }
-
+            Plugin springBootMainBuildPlugin = createPlugin("org.springframework.boot", "spring-boot-maven-plugin", "${spring-boot.version}");
+            Xpp3Dom springBootMainConfig = Xpp3DomBuilder.build(new StringReader(
+                    "<configuration>" +
+                            "  <mainClass>${start-class}</mainClass>" +
+                            "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
+                            "</configuration>"));
+            springBootMainBuildPlugin.setConfiguration(springBootMainConfig);
+            PluginExecution springBootRepackageMain = new PluginExecution();
+            springBootRepackageMain.setId("repackage");
+            springBootRepackageMain.addGoal("repackage");
+            springBootMainBuildPlugin.addExecution(springBootRepackageMain);
+            build.addPlugin(springBootMainBuildPlugin);
 
         } catch (XmlPullParserException | IOException e) {
             throw new RuntimeException("Error configuring build plugins", e);
@@ -409,16 +381,12 @@ public class RagPomGenerator implements Callable<Void> {
         nativeProfile.setId("native");
         Build nativeProfileBuild = new Build();
 
-        // 1. Spring Boot Maven Plugin - Fully configured for the native profile
         Plugin springBootPluginNative = createPlugin("org.springframework.boot", "spring-boot-maven-plugin", "${spring-boot.version}");
         try {
             Xpp3Dom springBootNativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
-                            // Important: for native profile, mainClass in spring-boot-maven-plugin should be the *generated* one
-                            // if we are generating one, or the core one if app-main is directly used.
-                            // The nativeImageMainClassFqcn is passed specifically to native-maven-plugin.
                             "  <mainClass>${start-class}</mainClass>" +
-                            "  <classifier>exec</classifier>" + // Create a distinct JAR: artifactId-version-exec.jar
+                            "  <classifier>exec</classifier>" +
                             "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
                             "</configuration>"
             ));
@@ -438,7 +406,6 @@ public class RagPomGenerator implements Callable<Void> {
         springBootPluginNative.addExecution(repackageExecutionNative);
         nativeProfileBuild.addPlugin(springBootPluginNative);
 
-        // 2. Build Helper Maven Plugin
         Plugin buildHelperPlugin = createPlugin("org.codehaus.mojo", "build-helper-maven-plugin", "${build-helper-maven-plugin.version}");
         PluginExecution addAotSourcesExecution = new PluginExecution();
         addAotSourcesExecution.setId("add-spring-aot-sources");
@@ -469,15 +436,13 @@ public class RagPomGenerator implements Callable<Void> {
         buildHelperPlugin.addExecution(addAotResourcesExecution);
         nativeProfileBuild.addPlugin(buildHelperPlugin);
 
-        // 3. Native Maven Plugin (GraalVM Build Tools)
         Plugin nativeMavenPlugin = createPlugin("org.graalvm.buildtools", "native-maven-plugin", "${native-maven-plugin.version}");
         nativeMavenPlugin.setExtensions(true);
 
         Xpp3Dom nativePluginConfig = new Xpp3Dom("configuration");
         addChild(nativePluginConfig, "imageName", "${native.image.name}");
-        addChild(nativePluginConfig, "mainClass", nativeImageMainClassFqcn); // This is CORE_APP_MAIN_CLASS_FQCN
+        addChild(nativePluginConfig, "mainClass", nativeImageMainClassFqcn);
         addChild(nativePluginConfig, "quickBuild", "false");
-        // Explicitly tell native-maven-plugin to use the classified JAR
         addChild(nativePluginConfig, "jarArtifact", "${project.build.directory}/${project.build.finalName}-exec.jar");
 
 
@@ -496,10 +461,10 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-Djava.awt.headless=true");
         String initializeAtBuildTimeArg = "org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder";
         addBuildArg(buildArgsDom, "--initialize-at-build-time=" + initializeAtBuildTimeArg);
-        String initializeAtRunTimeArg = "java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
+        String initializeAtRunTimeArg = "sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
         addBuildArg(buildArgsDom, "--initialize-at-run-time=" + initializeAtRunTimeArg);
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
-        addBuildArg(buildArgsDom,"--trace-class-initialization=java.security.SecureRandom,com.sun.jndi.dns.DnsClient");
+        addBuildArg(buildArgsDom,"--trace-class-initialization=sun.rmi.server.Util,java.security.SecureRandom,com.sun.jndi.dns.DnsClient");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2-spring.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.component.properties");
         addBuildArg(buildArgsDom, "-H:IncludeResources=.*Log4j2Plugins.dat$");
@@ -513,12 +478,17 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
         addBuildArg(buildArgsDom,"--trace-class-initialization=sun.rmi.server.UnicastRef,java.rmi.server.LogStream,com.sun.jndi.dns.DnsClient");
+
+        if(includeChunkerSentence) {
+            addBuildArg(buildArgsDom, "-H:IncludeResources=opennlp-models/.*\\.bin");
+        }
+
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);
 
         PluginExecution nativeBuildExecution = new PluginExecution();
         nativeBuildExecution.setId("build-native");
-        nativeBuildExecution.addGoal("compile-no-fork"); // Changed from build-native
+        nativeBuildExecution.addGoal("compile-no-fork"); // Changed from "native:compile-no-fork"
         nativeBuildExecution.setPhase("package");
         nativeMavenPlugin.addExecution(nativeBuildExecution);
 

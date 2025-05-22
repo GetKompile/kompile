@@ -1,30 +1,31 @@
 /*
- *  Copyright 2025 Kompile Inc.
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  * http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright 2025 Kompile Inc.
+ * *
+ * * Licensed under the Apache License, Version 2.0 (the "License");
+ * * you may not use this file except in compliance with the License.
+ * * You may obtain a copy of the License at
+ * *
+ * * http://www.apache.org/licenses/LICENSE-2.0
+ * *
+ * * Unless required by applicable law or agreed to in writing, software
+ * * distributed under the License is distributed on an "AS IS" BASIS,
+ * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * * See the License for the specific language governing permissions and
+ * * limitations under the License.
  */
 
 import { NgModule } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { HttpClientModule } from '@angular/common/http';
-import { FormsModule, ReactiveFormsModule } from '@angular/forms'; // For ngModel used in components
-import { CommonModule } from '@angular/common'; // For *ngIf, *ngFor, etc.
-import { BrowserAnimationsModule } from '@angular/platform-browser/animations'; // Required for Angular Material
+import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { CommonModule } from '@angular/common';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
 import { AppComponent } from './app.component';
 import { ChatInterfaceComponent } from './components/chat-interface/chat-interface.component';
 import { DocumentManagerComponent } from './components/document-manager/document-manager.component';
 import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools-viewer.component';
+import { IndexBrowserComponent } from './components/index-browser/index-browser.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -43,10 +44,7 @@ import { MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatDialogModule } from '@angular/material/dialog';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { CdkTextareaAutosize } from '@angular/cdk/text-field';
-
-// AddSourceDialogComponent is standalone and imports its own modules.
-// import { AddSourceDialogComponent } from './components/document-manager/add-source-dialog/add-source-dialog.component';
+import { TextFieldModule } from '@angular/cdk/text-field';
 
 
 @NgModule({
@@ -54,16 +52,16 @@ import { CdkTextareaAutosize } from '@angular/cdk/text-field';
     AppComponent,
     ChatInterfaceComponent,
     DocumentManagerComponent,
-    McpToolsViewerComponent
-    // AddSourceDialogComponent is standalone, so it's not declared here.
+    McpToolsViewerComponent,
+    IndexBrowserComponent
   ],
   imports: [
     BrowserModule,
     HttpClientModule,
-    FormsModule,      // Needed for [(ngModel)]
-    ReactiveFormsModule, // Often used with Material forms
-    CommonModule,      // Needed for *ngIf, *ngFor, etc.
-    BrowserAnimationsModule, // Required for Angular Material animations
+    FormsModule,
+    ReactiveFormsModule,
+    CommonModule,
+    BrowserAnimationsModule,
 
     // Material Modules
     MatButtonModule,
@@ -82,11 +80,9 @@ import { CdkTextareaAutosize } from '@angular/cdk/text-field';
     MatDialogModule,
     MatExpansionModule,
     MatProgressSpinnerModule,
-    CdkTextareaAutosize // Import if cdkTextareaAutosize is used directly in DocumentManagerComponent templates
+    TextFieldModule,
   ],
-  providers: [
-    // Services are typically provided in root if using providedIn: 'root'
-  ],
+  providers: [],
   bootstrap: [AppComponent]
 })
 export class AppModule { }
