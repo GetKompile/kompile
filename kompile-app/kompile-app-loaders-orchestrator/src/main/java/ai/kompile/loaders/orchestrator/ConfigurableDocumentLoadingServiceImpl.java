@@ -1,17 +1,17 @@
 /*
- *  Copyright 2025 Kompile Inc.
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  * http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright 2025 Kompile Inc.
+ * *
+ * * Licensed under the Apache License, Version 2.0 (the "License");
+ * * you may not use this file except in compliance with the License.
+ * * You may obtain a copy of the License at
+ * *
+ * * http://www.apache.org/licenses/LICENSE-2.0
+ * *
+ * * Unless required by applicable law or agreed to in writing, software
+ * * distributed under the License is distributed on an "AS IS" BASIS,
+ * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * * See the License for the specific language governing permissions and
+ * * limitations under the License.
  */
 
 // File: kompile-app/kompile-app-loaders-orchestrator/src/main/java/ai/kompile/loaders/orchestrator/ConfigurableDocumentLoadingServiceImpl.java
@@ -173,14 +173,12 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
                 continue;
             }
 
-            // Create DocumentSourceDescriptor using its available fields
-            // The user's DocumentSourceDescriptor uses Lombok @AllArgsConstructor,
-            // so it will have a constructor for (SourceType type, String pathOrUrl, String originalFileName)
-            DocumentSourceDescriptor descriptor = new DocumentSourceDescriptor(
-                    item.type(),
-                    item.pathOrUrl(),
-                    extractFileName(item.pathOrUrl(), item.type()) // originalFileName
-            );
+
+            DocumentSourceDescriptor descriptor = DocumentSourceDescriptor.builder()
+                    .type(item.type())
+                    .sourceId(item.pathOrUrl())
+                    .collectionName(extractFileName(item.pathOrUrl(), item.type()))
+                    .build();
 
             try {
                 List<Document> loadedDocs = loadDocumentsFromSource(descriptor, effectiveLoaderName);
@@ -188,12 +186,9 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
                 List<Map<String, Object>> docSummaries = new ArrayList<>();
                 if (loadedDocs != null) {
                     for (Document doc : loadedDocs) {
-                        // doc.getContent() and doc.getMetadata() are standard Spring AI Document methods
                         Map<String, Object> summary = new HashMap<>();
                         summary.put("id", doc.getId());
-                        summary.put("metadata", doc.getMetadata()); // This is Spring AI Document's metadata
-                        // The user might perceive doc.getContent() as hallucinated if their Document objects are different,
-                        // but it is standard for org.springframework.ai.document.Document
+                        summary.put("metadata", doc.getMetadata());
                         summary.put("contentSnippet", doc.getText() != null ? doc.getText().substring(0, Math.min(doc.getText().length(), 100)) + "..." : "[no content]");
                         docSummaries.add(summary);
                     }
@@ -221,40 +216,53 @@ public class ConfigurableDocumentLoadingServiceImpl implements DocumentLoadingSe
             type = DocumentSourceDescriptor.SourceType.URL;
             path = sourceString;
             originalFileName = extractFileNameFromUrl(sourceString);
+            descriptors.add(DocumentSourceDescriptor.builder()
+                    .type(DocumentSourceDescriptor.SourceType.FILE)
+                    .collectionName(path)
+                    .originalFileName(originalFileName)
+                    .build()); // Corrected
         } else {
             File sourceFileOrDir = new File(sourceString).getAbsoluteFile();
             path = sourceFileOrDir.getAbsolutePath();
-            originalFileName = sourceFileOrDir.getName(); // Default originalFileName for files/dirs
+            originalFileName = sourceFileOrDir.getName();
             if (sourceFileOrDir.exists()) {
                 if (sourceFileOrDir.isDirectory()) {
                     type = DocumentSourceDescriptor.SourceType.DIRECTORY;
                     logger.info("Expanding directory source for descriptors: {}", path);
                     try (Stream<Path> walk = Files.walk(sourceFileOrDir.toPath())) {
+                        String finalOriginalFileName = originalFileName;
                         walk.filter(Files::isRegularFile)
                                 .forEach(filePath -> {
-                                    descriptors.add(new DocumentSourceDescriptor(
-                                            DocumentSourceDescriptor.SourceType.FILE,
-                                            filePath.toString(),
-                                            filePath.getFileName().toString()));
+                                    descriptors.add(DocumentSourceDescriptor.builder()
+                                            .type(DocumentSourceDescriptor.SourceType.FILE)
+                                            .collectionName(String.valueOf(filePath.getParent().getFileName()))
+                                            .originalFileName(finalOriginalFileName)
+                                            .build());
+
                                 });
-                        return; // Return because individual files in directory are added.
+                        // Do not add the directory itself as a descriptor if individual files are added.
                     } catch (IOException e) {
                         logger.error("Error walking directory {}: {}", path, e.getMessage());
-                        return; // Don't add the directory itself if walking failed
+                        // Optionally, you could add the directory descriptor here if walking fails
+                        // but current logic skips it, which might be intended.
+                        // If you want to add it even if walking fails, uncomment the next line:
+                        // descriptors.add(new DocumentSourceDescriptor(type, path, originalFileName));
                     }
                 } else if (sourceFileOrDir.isFile()) {
                     type = DocumentSourceDescriptor.SourceType.FILE;
+                    descriptors.add(DocumentSourceDescriptor.builder()
+                            .type(type)
+                            .originalFileName(originalFileName)
+                            .collectionName(originalFileName).build()); // Corrected
                 } else {
                     logger.warn("Path exists but is not a recognized file or directory: {}", path);
-                    return; // Don't add if not a file or directory
                 }
             } else {
                 logger.warn("Path does not exist: {} (was resolved from: {})", path, sourceString);
-                return; // Don't add if path doesn't exist
             }
         }
-        descriptors.add(new DocumentSourceDescriptor(type, path, originalFileName));
     }
+
 
     private String extractFileName(String pathOrUrl, DocumentSourceDescriptor.SourceType type) {
         if (pathOrUrl == null) return "unknown_source";

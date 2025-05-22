@@ -21,11 +21,42 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
 
 @Service
 public class NoOpIndexerService implements IndexerService {
+    @Override
+    public void indexDocuments(List<Document> documents, String collectionNameParam) {
+
+    }
+
+    @Override
+    public void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException {
+
+    }
+
+    @Override
+    public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException {
+
+    }
+
+    @Override
+    public boolean deleteDocuments(List<String> documentIds, String collectionNameParam) {
+        return false;
+    }
+
+    @Override
+    public boolean deleteAll(String collectionNameParam) {
+        return false;
+    }
+
+    @Override
+    public long getApproxTotalDocCount(String collectionNameParam) {
+        return 0;
+    }
+
     @Override
     public void indexDocuments(List<Document> documents) throws IOException {
 
