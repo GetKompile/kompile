@@ -14,7 +14,7 @@ public interface TextChunker {
      * Chunks the given document into a list of smaller documents.
      *
      * @param document The document to be chunked.
-     * @param options  A map of options to configure the chunking process (e.g., chunkSize, overlap).
+     * @param options  A map of options to configure the chunking process (e.g., chunkSize, overlap, language).
      * @return A list of chunked documents.
      */
     List<Document> chunk(Document document, Map<String, Object> options);
@@ -25,4 +25,11 @@ public interface TextChunker {
      * @return The name of the chunker.
      */
     String getName();
+
+    /**
+     * Returns a list of language codes (e.g., "en", "es", "ja") supported by this chunker.
+     * An asterisk (*) can be used to indicate that the chunker is language-agnostic.
+     * @return A list of supported language codes.
+     */
+    List<String> getSupportedLanguages();
 }

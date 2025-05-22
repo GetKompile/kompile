@@ -24,16 +24,28 @@ import org.codehaus.plexus.util.xml.pull.XmlPullParserException;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringReader;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
+
 
 @CommandLine.Command(name = "rag-pom-generate", mixinStandardHelpOptions = false,
         description = "Generates a pom.xml for a RAG MCP Assistant application instance.")
@@ -84,29 +96,32 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeToolFilesystem;
     @CommandLine.Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
     private boolean includeToolRag;
-
     @CommandLine.Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
     private boolean includeEmbeddingPostgresml = false;
+    @CommandLine.Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
+    private boolean includePgmlIndexer = false;
 
-    // New Chunker Options
-    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module")
+    // Chunker Options
+    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module.")
     private boolean includeChunkerSentence = false;
-
     @CommandLine.Option(names = {"--includeChunkerRecursiveCharacter"}, description = "Include kompile-chunker-recursivecharacter module")
     private boolean includeChunkerRecursiveCharacter = false;
-
     @CommandLine.Option(names = {"--includeChunkerMarkdown"}, description = "Include kompile-chunker-markdown module")
     private boolean includeChunkerMarkdown = false;
-
     @CommandLine.Option(names = {"--includeChunkerToken"}, description = "Include kompile-chunker-token module")
     private boolean includeChunkerToken = false;
+
+    // RESTORED as the single language flag
+    @CommandLine.Option(names = {"--supportedLanguages"},
+            description = "Comma-separated list of ISO 639-1 language codes (e.g., en,de,es). " +
+                    "Used to determine which OpenNLP sentence models to download if --includeChunkerSentence is active. "+
+                    "The first language in this list will also be set as the default 'kompile.opennlp.sentence.language' property.",
+            defaultValue = "en", split = ",")
+    private List<String> supportedLanguages = new ArrayList<>(Collections.singletonList("en"));
 
 
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
-
-    @CommandLine.Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
-    private boolean includePgmlIndexer = false;
 
     private Model model;
     private final List<Dependency> defaultDependencies = new ArrayList<>();
@@ -117,18 +132,87 @@ public class RagPomGenerator implements Callable<Void> {
     private static final String DEFAULT_JACKSON_VERSION = "2.15.3";
     private static final String DEFAULT_GUAVA_VERSION = "32.1.3-jre";
     private static final String DEFAULT_LOG4J_VERSION = "2.24.3";
-
     private static final String DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION = "3.13.0";
     private static final String DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION = "3.3.1";
     private static final String DEFAULT_MAVEN_JAR_PLUGIN_VERSION = "3.3.0";
     private static final String DEFAULT_POSTGRES_VERSION = "42.7.5";
-
     private static final String DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION = "0.10.6";
     private static final String DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION = "3.6.0";
-
     private static final String DEFAULT_JAKARTA_MAIL_VERSION = "2.1.3";
-    private static final String GENERATED_MAIN_CLASS_SIMPLE_NAME = "GeneratedMainApplication";
     private static final String CORE_APP_MAIN_CLASS_FQCN = "ai.kompile.app.MainApplication";
+
+    private static final String OPENNLP_MODEL_TARGET_DIR_IN_RESOURCES = "models";
+    private static final String OPENNLP_MODEL_BASE_URL = "https://dlcdn.apache.org/opennlp/models/ud-models-1.2/";
+
+    private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME = new LinkedHashMap<>();
+    private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME = new LinkedHashMap<>();
+
+    static {
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("bg", "opennlp-bg-ud-btb-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("bg", "bg-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("ca", "opennlp-ca-ud-ancora-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("ca", "ca-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("cs", "opennlp-cs-ud-pdt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("cs", "cs-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("da", "opennlp-da-ud-ddt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("da", "da-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("de", "opennlp-de-ud-gsd-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("de", "de-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("el", "opennlp-el-ud-gdt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("el", "el-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("en", "opennlp-en-ud-ewt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("en", "en-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("es", "opennlp-es-ud-gsd-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("es", "es-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("et", "opennlp-et-ud-edt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("et", "et-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("eu", "opennlp-eu-ud-bdt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("eu", "eu-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("fi", "opennlp-fi-ud-tdt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("fi", "fi-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("fr", "opennlp-fr-ud-gsd-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("fr", "fr-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("hr", "opennlp-hr-ud-set-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("hr", "hr-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("hy", "opennlp-hy-ud-bsut-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("hy", "hy-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("is", "opennlp-is-ud-icepahc-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("is", "is-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("it", "opennlp-it-ud-vit-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("it", "it-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("ka", "opennlp-ka-ud-glc-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("ka", "ka-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("kk", "opennlp-kk-ud-ktb-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("kk", "kk-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("ko", "opennlp-ko-ud-kaist-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("ko", "ko-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("lv", "opennlp-lv-ud-lvtb-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("lv", "lv-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("nl", "opennlp-nl-ud-alpino-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("nl", "nl-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("no", "opennlp-no-ud-bokmaal-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("no", "no-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("pl", "opennlp-pl-ud-pdb-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("pl", "pl-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("pt", "opennlp-pt-ud-gsd-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("pt", "pt-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("ro", "opennlp-ro-ud-rrt-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("ro", "ro-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("ru", "opennlp-ru-ud-gsd-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("ru", "ru-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("sk", "opennlp-sk-ud-snk-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("sk", "sk-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("sl", "opennlp-sl-ud-ssj-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("sl", "sl-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("sr", "opennlp-sr-ud-set-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("sr", "sr-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("sv", "opennlp-sv-ud-talbanken-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("sv", "sv-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("tr", "opennlp-tr-ud-boun-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("tr", "tr-sent.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.put("uk", "opennlp-uk-ud-iu-sentence-1.2-2.5.0.bin");
+        LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.put("uk", "uk-sent.bin");
+    }
 
     private Dependency createDependencyInternal(String groupId, String artifactId, String versionProperty, String scope, String classifier, boolean optional) {
         Dependency dependency = new Dependency();
@@ -198,7 +282,87 @@ public class RagPomGenerator implements Callable<Void> {
         try (FileWriter writer = new FileWriter(mainAppFile.toFile())) {
             writer.write(mainAppContent);
         }
-        System.out.println("Generated main application class for JAR manifest: " + mainAppFile.toAbsolutePath());
+        System.out.println("Generated main application class: " + mainAppFile.toAbsolutePath());
+    }
+
+    // Method to download models for the languages specified in the --supportedLanguages list
+    private List<String> downloadOpenNLPModelsForSupportedLanguages(File projectBaseDir, List<String> languagesToDownload) throws IOException {
+        List<String> successfullyDownloadedLocalFilenames = new ArrayList<>();
+        if (languagesToDownload == null || languagesToDownload.isEmpty()) {
+            // This case should ideally be handled by Picocli's default value for supportedLanguages.
+            // If it still ends up empty, default to "en" or log a warning.
+            System.out.println("No languages specified via --supportedLanguages for OpenNLP sentence model download. Defaulting to 'en'.");
+            languagesToDownload = Collections.singletonList("en");
+        }
+
+        // Normalize to lowercase and distinct to match map keys and avoid duplicate downloads
+        List<String> normalizedLanguages = languagesToDownload.stream()
+                .filter(lang -> lang != null && !lang.trim().isEmpty())
+                .map(String::toLowerCase)
+                .map(String::trim)
+                .distinct()
+                .collect(Collectors.toList());
+
+        if (normalizedLanguages.isEmpty()) {
+            System.out.println("Effectively no valid languages specified for OpenNLP model download after normalization. Skipping.");
+            return successfullyDownloadedLocalFilenames;
+        }
+
+        System.out.println("Attempting to download OpenNLP sentence models for specified languages: " + String.join(", ", normalizedLanguages));
+
+        Path resourcesDir = Paths.get(projectBaseDir.getAbsolutePath(), "src", "main", "resources");
+        Path modelTargetDirInResources = resourcesDir.resolve(OPENNLP_MODEL_TARGET_DIR_IN_RESOURCES);
+
+        if (!Files.exists(modelTargetDirInResources)) {
+            Files.createDirectories(modelTargetDirInResources);
+            System.out.println("Created OpenNLP model directory: " + modelTargetDirInResources.toAbsolutePath());
+        }
+
+        for (String langKey : normalizedLanguages) {
+            String remoteModelFileName = LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME.get(langKey);
+            String localModelFileName = LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.get(langKey);
+
+            if (remoteModelFileName == null || localModelFileName == null) {
+                System.err.println("OpenNLP sentence model configuration (remote or local filename) not found for language code: '" + langKey + "'. Skipping this language.");
+                System.err.println("Ensure language code '" + langKey + "' is present in the predefined model maps in RagPomGenerator.java.");
+                continue;
+            }
+
+            String modelUrlString = OPENNLP_MODEL_BASE_URL + remoteModelFileName;
+            Path modelFile = modelTargetDirInResources.resolve(localModelFileName);
+
+            if (Files.exists(modelFile)) {
+                System.out.println("OpenNLP model " + localModelFileName + " for language '" + langKey + "' already exists. Adding to list of available models.");
+                successfullyDownloadedLocalFilenames.add(localModelFileName); // Add to list even if skipped, for native image inclusion
+                continue;
+            }
+
+            System.out.println("Downloading OpenNLP sentence model " + localModelFileName + " for language '" + langKey + "' from " + modelUrlString + " to " + modelFile.toAbsolutePath());
+            URL url;
+            try {
+                url = new URL(modelUrlString);
+            } catch (MalformedURLException e) {
+              throw new RuntimeException(e);
+            }
+
+            try (InputStream in = url.openStream();
+                 ReadableByteChannel rbc = Channels.newChannel(in);
+                 FileOutputStream fos = new FileOutputStream(modelFile.toFile())) {
+                fos.getChannel().transferFrom(rbc, 0, Long.MAX_VALUE);
+                System.out.println("Successfully downloaded " + localModelFileName);
+                successfullyDownloadedLocalFilenames.add(localModelFileName);
+            } catch (IOException e) {
+                System.err.println("Failed to download OpenNLP model '" + localModelFileName + "' for language '" + langKey + "': " + e.getMessage());
+                if (Files.exists(modelFile)) {
+                    try {
+                        Files.delete(modelFile);
+                    } catch (IOException ex) {
+                        System.err.println("Also failed to delete partial model file: " + modelFile.toString() + " - " + ex.getMessage());
+                    }
+                }
+            }
+        }
+        return successfullyDownloadedLocalFilenames;
     }
 
 
@@ -211,30 +375,36 @@ public class RagPomGenerator implements Callable<Void> {
         model.setVersion(instanceVersion);
         model.setPackaging("jar");
 
-        Parent parent = new Parent();
-        parent.setGroupId("org.springframework.boot");
-        parent.setArtifactId("spring-boot-starter-parent");
-        parent.setVersion(DEFAULT_SPRING_BOOT_VERSION); // Use constant
-        model.setParent(parent);
-        File projectDir = outputFile.getParentFile();
-        if (projectDir == null) {
-            projectDir = new File(".").getAbsoluteFile();
+        Parent parentPom = new Parent();
+        parentPom.setGroupId("org.springframework.boot");
+        parentPom.setArtifactId("spring-boot-starter-parent");
+        parentPom.setVersion(DEFAULT_SPRING_BOOT_VERSION);
+        model.setParent(parentPom);
+
+        File projectDir;
+        if (outputFile.isDirectory()) {
+            projectDir = outputFile;
+        } else {
+            projectDir = outputFile.getCanonicalFile().getParentFile();
+            if (projectDir == null) {
+                projectDir = new File(".").getCanonicalFile();
+            }
         }
         if (!projectDir.exists() && !projectDir.mkdirs()) {
             throw new IOException("Could not create project directory: " + projectDir.getAbsolutePath());
         }
-        if (!projectDir.isDirectory()) {
-            projectDir = outputFile.getCanonicalFile().getParentFile();
-            if (projectDir == null) {
-                projectDir = new File(".");
-            }
+
+
+        List<String> downloadedModelNamesForNative = new ArrayList<>();
+        if (includeChunkerSentence) {
+            // Use the --supportedLanguages list. Picocli defaults it to ["en"] if not specified.
+            downloadedModelNamesForNative.addAll(downloadOpenNLPModelsForSupportedLanguages(projectDir, this.supportedLanguages));
         }
 
 
         Properties props = new Properties();
         props.setProperty("java.version", "17");
         props.setProperty("start-class", CORE_APP_MAIN_CLASS_FQCN);
-
         props.setProperty("kompile.project.version", this.ragMcpVersion);
         props.setProperty("spring-boot.version", DEFAULT_SPRING_BOOT_VERSION);
         props.setProperty("spring-ai.version", DEFAULT_SPRING_AI_VERSION);
@@ -250,23 +420,38 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
 
+        String defaultRuntimeLangForOpenNLP = "en";
+        if (this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
+            String firstSpecifiedLang = this.supportedLanguages.get(0).toLowerCase().trim();
+            if (LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.containsKey(firstSpecifiedLang)) {
+                defaultRuntimeLangForOpenNLP = firstSpecifiedLang;
+            } else {
+                System.out.println("Warning: First language '" + this.supportedLanguages.get(0) +
+                        "' from --supportedLanguages is not in the known model list for setting runtime default property 'kompile.opennlp.sentence.language'. " +
+                        "Defaulting property to 'en'.");
+            }
+        }
+        props.setProperty("kompile.opennlp.sentence.language", defaultRuntimeLangForOpenNLP);
+
+
         model.setProperties(props);
 
         addApplicationDependencies();
         addApplicationBuild();
 
-        // Only add native profile if buildNative is true
         if (buildNative) {
-            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN);
+            // Pass the list of actually downloaded model filenames to be included in native image
+            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, downloadedModelNamesForNative);
         }
-
 
         addSpringRepositories();
 
         MavenXpp3Writer mavenXpp3Writer = new MavenXpp3Writer();
-        try (FileWriter fileWriter = new FileWriter(outputFile)) {
+        File finalPomFile = outputFile.isDirectory() ? new File(outputFile, "pom-rag-instance.xml") : outputFile;
+
+        try (FileWriter fileWriter = new FileWriter(finalPomFile)) {
             mavenXpp3Writer.write(fileWriter, model);
-            System.out.println("Successfully generated RAG application POM: " + outputFile.getAbsolutePath());
+            System.out.println("Successfully generated RAG application POM: " + finalPomFile.getAbsolutePath());
         }
         return null;
     }
@@ -285,11 +470,9 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
 
-        // Loaders
         if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", "${kompile.project.version}");
         if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", "${kompile.project.version}");
 
-        // Chunkers - NEW
         if (includeChunkerSentence) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-sentence", "${kompile.project.version}");
         if (includeChunkerRecursiveCharacter) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-recursivecharacter", "${kompile.project.version}");
         if (includeChunkerMarkdown) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-markdown", "${kompile.project.version}");
@@ -305,15 +488,14 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeEmbeddingPostgresml) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-postgresml", "${kompile.project.version}");
         if (includePgmlIndexer) addDependency(defaultDependencies, "ai.kompile", "kompile-app-pgml-indexer", "${kompile.project.version}");
 
-        // Ensure pgvector is added if any of the related pg features are enabled
-        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) { // Corrected condition
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
             addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
         }
         if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
 
-        if(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) { // Condition for postgresql driver
-            addDependency(defaultDependencies,"org.postgresql","postgresql","${postgres.version}","compile" , "",false );
+        if(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+            addDependency(defaultDependencies,"org.postgresql","postgresql","${postgres.version}","compile" , null, false);
         }
 
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
@@ -343,10 +525,6 @@ public class RagPomGenerator implements Callable<Void> {
             build.addPlugin(compilerPlugin);
 
             Plugin resourcesPlugin = createPlugin("org.apache.maven.plugins", "maven-resources-plugin", "${maven-resources-plugin.version}");
-            PluginExecution defaultResourcesExecution = new PluginExecution();
-            defaultResourcesExecution.setId("default-resources");
-            defaultResourcesExecution.addGoal("resources");
-            resourcesPlugin.addExecution(defaultResourcesExecution);
             build.addPlugin(resourcesPlugin);
 
 
@@ -376,7 +554,7 @@ public class RagPomGenerator implements Callable<Void> {
         }
     }
 
-    private void addNativeProfile(String nativeImageMainClassFqcn) {
+    private void addNativeProfile(String nativeImageMainClassFqcn, List<String> downloadedOpenNLPModelLocalFilenames) {
         Profile nativeProfile = new Profile();
         nativeProfile.setId("native");
         Build nativeProfileBuild = new Build();
@@ -385,7 +563,7 @@ public class RagPomGenerator implements Callable<Void> {
         try {
             Xpp3Dom springBootNativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
-                            "  <mainClass>${start-class}</mainClass>" +
+                            "  <mainClass>" + CORE_APP_MAIN_CLASS_FQCN + "</mainClass>" +
                             "  <classifier>exec</classifier>" +
                             "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
                             "</configuration>"
@@ -479,8 +657,13 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
         addBuildArg(buildArgsDom,"--trace-class-initialization=sun.rmi.server.UnicastRef,java.rmi.server.LogStream,com.sun.jndi.dns.DnsClient");
 
-        if(includeChunkerSentence) {
-            addBuildArg(buildArgsDom, "-H:IncludeResources=opennlp-models/.*\\.bin");
+        // CORRECTED: Only include resources for models that were specified by user via --supportedLanguages and successfully downloaded.
+        if (includeChunkerSentence && downloadedOpenNLPModelLocalFilenames != null) {
+            for (String modelLocalFileName : downloadedOpenNLPModelLocalFilenames) {
+                if (modelLocalFileName != null && !modelLocalFileName.isEmpty()) {
+                    addBuildArg(buildArgsDom, "-H:IncludeResources=" + OPENNLP_MODEL_TARGET_DIR_IN_RESOURCES + "/" + modelLocalFileName);
+                }
+            }
         }
 
         nativePluginConfig.addChild(buildArgsDom);
@@ -488,7 +671,7 @@ public class RagPomGenerator implements Callable<Void> {
 
         PluginExecution nativeBuildExecution = new PluginExecution();
         nativeBuildExecution.setId("build-native");
-        nativeBuildExecution.addGoal("compile-no-fork"); // Changed from "native:compile-no-fork"
+        nativeBuildExecution.addGoal("compile-no-fork");
         nativeBuildExecution.setPhase("package");
         nativeMavenPlugin.addExecution(nativeBuildExecution);
 

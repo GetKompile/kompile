@@ -176,4 +176,9 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
     public String getName() {
         return CHUNKER_NAME;
     }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        return Arrays.asList("en");
+    }
 }

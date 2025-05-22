@@ -28,8 +28,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Properties; // Added for potential future use with invoker
+import java.util.Properties;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
 @Command(name = "build-rag-app", mixinStandardHelpOptions = true,
         description = "Builds a RAG MCP Assistant application instance, optionally as a GraalVM native image.")
@@ -62,9 +63,13 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
     private boolean includeLoaderPdf = false;
 
-    // New Chunker Options
+    // Chunker Options
     @Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module")
     private boolean includeChunkerSentence = false;
+
+    @Option(names = {"--supportedLanguages"}, description = "Comma-separated list of language codes for OpenNLP models (e.g., en,de,ja) if --includeChunkerSentence is true.", arity = "1..*", split = ",", defaultValue = "en")
+    private List<String> supportedLanguages = new ArrayList<>(Arrays.asList("en"));
+
     @Option(names = {"--includeChunkerRecursiveCharacter"}, description = "Include kompile-chunker-recursivecharacter module")
     private boolean includeChunkerRecursiveCharacter = false;
     @Option(names = {"--includeChunkerMarkdown"}, description = "Include kompile-chunker-markdown module")
@@ -76,19 +81,19 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
     private boolean includeAnserini = false;
     @Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module")
-    private boolean includeLlmOpenai = false; // Defaulting more specific modules to false
+    private boolean includeLlmOpenai = false;
     @Option(names = {"--includeLlmAnthropic"}, description = "Include kompile-app-anthropic-llm module")
     private boolean includeLlmAnthropic = false;
     @Option(names = {"--includeLlmGemini"}, description = "Include kompile-app-gemini-llm module")
     private boolean includeLlmGemini = false;
     @Option(names = {"--includeEmbeddingOpenai"}, description = "Include kompile-embedding-openai module")
-    private boolean includeEmbeddingOpenai = false; // Defaulting more specific modules to false
+    private boolean includeEmbeddingOpenai = false;
     @Option(names = {"--includeEmbeddingSentenceTransformer"}, description = "Include kompile-embedding-sentence-transformer module")
     private boolean includeEmbeddingSentenceTransformer = false;
     @Option(names = {"--includeVectorstoreChroma"}, description = "Include kompile-vectorstore-chroma module")
     private boolean includeVectorstoreChroma = false;
     @Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module")
-    private boolean includeVectorstorePgvector = false; // Defaulting more specific modules to false
+    private boolean includeVectorstorePgvector = false;
     @Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module", defaultValue = "true", negatable = true)
     private boolean includeToolFilesystem;
     @Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
@@ -126,7 +131,7 @@ public class BuildRagApp implements Callable<Integer> {
             return 1;
         }
 
-        File projectBuildDir = new File(buildInstanceDir, "project");
+        File projectBuildDir = new File(buildInstanceDir, "project"); // This is the root of the generated Maven project
         if (!projectBuildDir.exists() && !projectBuildDir.mkdirs()) {
             System.err.println("Failed to create project build sub-directory: " + projectBuildDir.getAbsolutePath());
             return 1;
@@ -139,7 +144,7 @@ public class BuildRagApp implements Callable<Integer> {
         List<String> ragPomCliArgs = new ArrayList<>();
         ragPomCliArgs.add("--outputFile=" + instancePomFile.getAbsolutePath());
         ragPomCliArgs.add("--instanceGroupId=" + this.instanceGroupId);
-        ragPomCliArgs.add("--instanceArtifactId=" + this.configName); // Use configName for artifactId
+        ragPomCliArgs.add("--instanceArtifactId=" + this.configName);
         ragPomCliArgs.add("--instanceVersion=" + this.instanceVersion);
         ragPomCliArgs.add("--ragMcpVersion=" + this.ragMcpVersion);
 
@@ -149,8 +154,10 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeLoaderTika=" + this.includeLoaderTika);
         ragPomCliArgs.add("--includeLoaderPdf=" + this.includeLoaderPdf);
 
-        // Add new chunker flags
         ragPomCliArgs.add("--includeChunkerSentence=" + this.includeChunkerSentence);
+        if (this.includeChunkerSentence && this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
+            ragPomCliArgs.add("--supportedLanguages=" + String.join(",", this.supportedLanguages));
+        }
         ragPomCliArgs.add("--includeChunkerRecursiveCharacter=" + this.includeChunkerRecursiveCharacter);
         ragPomCliArgs.add("--includeChunkerMarkdown=" + this.includeChunkerMarkdown);
         ragPomCliArgs.add("--includeChunkerToken=" + this.includeChunkerToken);
@@ -196,9 +203,6 @@ public class BuildRagApp implements Callable<Integer> {
         if (skipTests) {
             systemProperties.setProperty("skipTests", "true");
         } else if (buildNative) {
-            // Explicitly set skipTests to false for native builds if --skipTests=false
-            // The native profile itself might handle test execution for AOT,
-            // but -DskipTests=false ensures Maven attempts to run them if not overridden by plugin.
             systemProperties.setProperty("skipTests", "false");
             System.out.println("Note: Tests are configured to run for native builds (skipTests=false) to aid AOT, unless --skipTests is true.");
         }
@@ -208,15 +212,14 @@ public class BuildRagApp implements Callable<Integer> {
         if (buildNative) {
             request.setProfiles(Arrays.asList("native"));
             File effectiveGraalVmHome = (this.graalVmHome != null && this.graalVmHome.exists()) ?
-                    this.graalVmHome : Info.graalvmDirectory(); // Corrected call
+                    this.graalVmHome : Info.graalvmDirectory();
 
             if (effectiveGraalVmHome != null && effectiveGraalVmHome.exists()) {
                 System.out.println("Using GraalVM from: " + effectiveGraalVmHome.getAbsolutePath() + " for native build.");
-                // Setting JAVA_HOME for the invoker process
                 request.setJavaHome(effectiveGraalVmHome);
             } else {
                 System.err.println("Error: GraalVM home not specified or default not found (" +
-                        (Info.graalvmDirectory() == null ? "null" : Info.graalvmDirectory().getAbsolutePath()) + // Corrected call
+                        (Info.graalvmDirectory() == null ? "null" : Info.graalvmDirectory().getAbsolutePath()) +
                         "). Native build requires GraalVM to be set via --graalVmHome or accessible via Info.graalvmDirectory().");
                 return 1;
             }
@@ -232,15 +235,15 @@ public class BuildRagApp implements Callable<Integer> {
             return 1;
         }
         invoker.setMavenHome(effectiveMavenHome);
-        invoker.setWorkingDirectory(projectBuildDir); // Run Maven from the project directory
+        invoker.setWorkingDirectory(projectBuildDir);
 
-        final StringBuilder buildLogOutput = new StringBuilder(); // For capturing logs
+        final StringBuilder buildLogOutput = new StringBuilder();
         invoker.setOutputHandler(line -> {
             System.out.println(line);
             buildLogOutput.append(line).append(System.lineSeparator());
         });
         invoker.setErrorHandler(line -> {
-            System.err.println(line); // Print errors to stderr as they happen
+            System.err.println(line);
             buildLogOutput.append("ERROR: ").append(line).append(System.lineSeparator());
         });
 
@@ -261,27 +264,33 @@ public class BuildRagApp implements Callable<Integer> {
                 System.err.println("Maven Invocation Exception: ");
                 result.getExecutionException().printStackTrace(System.err);
             }
+            // Optionally write buildLogOutput to a file here
             return 1;
         }
 
         System.out.println("RAG application build successful!");
         File targetDir = new File(projectBuildDir, "target");
 
-        // Determine artifact names based on whether it's a native build or not
         String finalArtifactName;
         String artifactType;
 
         if (buildNative) {
-            finalArtifactName = this.configName + "-" + this.instanceVersion + "-native"; // Default name from RagPomGenerator
+            // The native executable name is based on the native.image.name property in the POM
+            finalArtifactName = this.configName + "-native"; // This aligns with the <native.image.name> property
             artifactType = "Native Executable";
-            File nativeExecutable = new File(targetDir, finalArtifactName);
+            File nativeExecutable = new File(targetDir, finalArtifactName); // On Linux/macOS
+            File nativeExecutableExe = new File(targetDir, finalArtifactName + ".exe"); // On Windows
+
             if (nativeExecutable.exists()) {
                 System.out.println("  " + artifactType + ": " + nativeExecutable.getAbsolutePath());
                 System.out.println("  To run (" + artifactType + "): " + nativeExecutable.getAbsolutePath());
-            } else {
-                System.out.println("  " + artifactType + " expected at: " + nativeExecutable.getAbsolutePath() + " but not found. Check build logs.");
+            } else if (nativeExecutableExe.exists()) {
+                System.out.println("  " + artifactType + ": " + nativeExecutableExe.getAbsolutePath());
+                System.out.println("  To run (" + artifactType + "): " + nativeExecutableExe.getAbsolutePath());
             }
-            // Also check for the classified JAR used as input for native image, if needed for debugging
+            else {
+                System.out.println("  " + artifactType + " expected at: " + nativeExecutable.getAbsolutePath() + " (or .exe) but not found. Check build logs.");
+            }
             File classifiedJar = new File(targetDir, this.configName + "-" + this.instanceVersion + "-exec.jar");
             if(classifiedJar.exists()){
                 System.out.println("  Input classified JAR for native image: " + classifiedJar.getAbsolutePath());
