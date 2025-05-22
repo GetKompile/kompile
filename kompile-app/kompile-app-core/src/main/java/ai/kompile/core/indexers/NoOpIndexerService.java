@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 
 @Service
@@ -69,6 +70,21 @@ public class NoOpIndexerService implements IndexerService {
 
     @Override
     public boolean isIndexAvailable() {
+        return false;
+    }
+
+    @Override
+    public List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException {
+        return null;
+    }
+
+    @Override
+    public Map<String, Object> getIndexedDocument(String docId) throws IOException {
+        return null;
+    }
+
+    @Override
+    public boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException {
         return false;
     }
 }

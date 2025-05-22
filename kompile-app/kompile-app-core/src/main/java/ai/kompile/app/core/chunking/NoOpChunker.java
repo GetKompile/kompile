@@ -25,7 +25,6 @@ import java.util.List;
 import java.util.Map;
 
 @Component("recursiveCharacterTextChunker")
-@ConditionalOnProperty(matchIfMissing = true)
 public class NoOpChunker implements TextChunker {
     @Override
     public List<Document> chunk(Document document, Map<String, Object> options) {

@@ -25,6 +25,7 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.anserini.index.Constants;
 import io.anserini.index.IndexCollection;
 import io.anserini.search.SimpleSearcher;
 import jakarta.annotation.PostConstruct;
@@ -32,17 +33,25 @@ import lombok.SneakyThrows;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Field;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexNotFoundException;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.LeafReaderContext; // Correct import for LeafReaderContext
+import org.apache.lucene.index.Term;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.Bits; // Correct import for Bits
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+
 
 import java.io.File;
 import java.io.IOException;
@@ -52,6 +61,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -113,22 +123,14 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
     public void reprocessAndIndexAllSources() throws IOException {
         logger.info("Full re-processing and indexing of all configured sources triggered (Anserini Keyword Index + Vector Store).");
         List<Document> allLoadedDocs = documentLoadingService.loadAllConfiguredDocuments();
-        // Call the public interface method that takes List<Document> only
         indexDocuments(allLoadedDocs);
     }
 
-    // Method from the minimal IndexerService interface (as per Turn 12 definition)
     @Override
     public void indexDocuments(List<Document> documents) throws IOException {
         indexDocumentsInternal(documents, DEFAULT_ANSERINI_LOGGING_COLLECTION_NAME);
     }
 
-    // --- Methods below are assumed to be part of the richer IndexerService interface ---
-    // --- The user should ensure their IndexerService interface declares these if @Override is used ---
-
-    // This method should be present if your IndexerService interface has this signature.
-    // If it does, uncomment @Override.
-    // @Override
     @SneakyThrows
     public void indexDocuments(List<Document> documents, String collectionNameParam)  {
         indexDocumentsInternal(documents, collectionNameParam);
@@ -169,9 +171,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
             logger.error(errorMsg);
             throw new IOException(errorMsg);
         }
-        // Create a basic descriptor for the supports() check.
-        // Loaders should ideally not require sourceId, metadata, or collectionName for supports() logic,
-        // but if they do, this part might need more context.
         DocumentSourceDescriptor tempDescriptor = DocumentSourceDescriptor.builder()
                 .type(DocumentSourceDescriptor.SourceType.FILE)
                 .pathOrUrl(filePath.toString())
@@ -184,15 +183,13 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                 return loader;
             }
         }
-        // If loop completes, no loader supports the file.
         String availableLoaders = documentLoaders.stream().map(dl -> dl.getName() + " (" + dl.getClass().getSimpleName() + ")").collect(Collectors.joining(", "));
         String errorMsg = "No suitable DocumentLoader found that explicitly supports file: " + filePath +
                 ". Checked " + documentLoaders.size() + " loaders: [" + availableLoaders + "].";
         logger.error(errorMsg);
-        throw new IOException(errorMsg); // Throw error as requested
+        throw new IOException(errorMsg);
     }
 
-    // @Override // Uncomment if this signature is on your IndexerService interface
     public void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException {
         String effectiveCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         logger.info("Request to index file: {} with sourceId: {}. Target Anserini Index: '{}'. Logging/Descriptor Collection: {}",
@@ -203,7 +200,7 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
             throw new IOException("File not found or is not a regular file: " + filePath);
         }
 
-        DocumentLoader loader = findLoaderForPath(filePath); // This will now throw IOException if no loader found
+        DocumentLoader loader = findLoaderForPath(filePath);
 
         DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
                 .type(DocumentSourceDescriptor.SourceType.FILE)
@@ -227,12 +224,11 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
             logger.warn("Loader '{}' produced no documents for file: {}", loader.getName(), filePath);
             return;
         }
-        indexDocuments(documents, effectiveCollectionName); // Calls the version with collectionName
+        indexDocuments(documents, effectiveCollectionName);
         logger.info("Successfully processed file: {} ({} documents). Anserini Index: '{}'. Logging Collection: {}.",
                 filePath, documents.size(), anseriniConfig.getIndexPath(), effectiveCollectionName);
     }
 
-    // @Override // Uncomment if this signature is on your IndexerService interface
     public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException {
         String effectiveCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         logger.info("Request to index directory: {} with sourceIdPrefix: {}. Target Anserini Index: '{}'. Logging/Descriptor Collection: {}",
@@ -260,7 +256,7 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
 
             for (Path filePath : files) {
                 try {
-                    DocumentLoader loader = findLoaderForPath(filePath); // Will throw if no loader
+                    DocumentLoader loader = findLoaderForPath(filePath);
                     String fileSpecificSourceId = StringUtils.hasText(sourceIdPrefix) ?
                             sourceIdPrefix + ":" + directoryPath.relativize(filePath).toString() :
                             directoryPath.relativize(filePath).toString();
@@ -291,9 +287,9 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                         batchDocuments.clear();
                     }
                     processedFileCount++;
-                } catch (IOException e) { // Catch IOException from findLoaderForPath or loader.load
+                } catch (IOException e) {
                     logger.error("Could not load/process file: {} in directory {}. Error: {}. Skipping file.", filePath, directoryPath, e.getMessage());
-                } catch (Exception e) { // Catch other exceptions from loader.load
+                } catch (Exception e) {
                     logger.error("Unexpected error loading file: {} in directory {}. Skipping file.", filePath, directoryPath, e);
                 }
             }
@@ -307,7 +303,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
         }
     }
 
-    // @Override // Uncomment if this signature is on your IndexerService interface
     public boolean deleteDocuments(List<String> documentIds, String collectionNameParam) {
         String loggedCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         logger.info("deleteDocuments called for {} IDs. Anserini Index: '{}'. Logging Collection: {}.",
@@ -331,10 +326,9 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                     "Deleting by external IDs ('{}') is not directly supported by this high-level method and typically requires re-indexing for keyword index changes. " +
                     "The operation for the keyword index part is effectively a no-op here.", documentIds);
         }
-        return vectorStoreSuccess; // Success primarily reflects vector store part.
+        return vectorStoreSuccess;
     }
 
-    // @Override // Uncomment if this signature is on your IndexerService interface
     @SneakyThrows
     public boolean deleteAll(String collectionNameParam)  {
         String loggedCollectionName = getEffectiveLogCollectionName(collectionNameParam);
@@ -373,7 +367,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
         return anseriniCleared;
     }
 
-    // @Override // Uncomment if this signature is on your IndexerService interface
     public long getApproxTotalDocCount(String collectionNameParam) {
         String loggedCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
@@ -381,13 +374,13 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
             return 0;
         }
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
-        if (!isIndexAvailable()) { // Use the method that checks via SimpleSearcher
+        if (!isIndexAvailable()) {
             logger.warn("Cannot get document count: Anserini keyword index at {} is not available or invalid. Logging collection: {}", indexPath, loggedCollectionName);
             return 0;
         }
         try (Directory anseriniDir = FSDirectory.open(indexPath);
              DirectoryReader reader = DirectoryReader.open(anseriniDir)) {
-            long numDocs = reader.numDocs();
+            long numDocs = reader.numDocs(); // This counts live documents.
             logger.debug("Approximate total document count in Anserini index {} (logging collection: {}): {}",
                     indexPath, loggedCollectionName, numDocs);
             return numDocs;
@@ -401,7 +394,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
         }
     }
 
-    // Method from the minimal IndexerService interface
     @Override
     public boolean isIndexAvailable() {
         if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
@@ -411,8 +403,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
         if (Files.exists(indexPath) && Files.isDirectory(indexPath)) {
             try (SimpleSearcher checker = new SimpleSearcher(indexPath.toString())) {
-                // If SimpleSearcher constructor doesn't throw, index is considered basically valid.
-                // It also checks for non-empty segments_N file.
                 logger.debug("isIndexAvailable: Anserini keyword index at {} successfully opened by SimpleSearcher.", indexPath);
                 return true;
             } catch (Exception e) {
@@ -424,7 +414,6 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
         return false;
     }
 
-    // This is the core Anserini Lucene indexing method, adapted from user's provided file
     private void createOrClearAnseriniKeywordIndex(List<Document> springAiDocuments) throws IOException {
         if (!StringUtils.hasText(anseriniConfig.getCorpusPath()) || !StringUtils.hasText(anseriniConfig.getIndexPath())) {
             String msg = "Anserini corpusPath (for staging JSONs) or indexPath is not configured. Cannot create keyword index.";
@@ -454,20 +443,36 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                 }
                 ObjectNode anseriniJsonDoc = objectMapper.createObjectNode();
                 String docId = StringUtils.hasText(springDoc.getId()) ? springDoc.getId() : UUID.randomUUID().toString();
+                // Use the original docId for the 'id' field in JSON for Anserini if possible,
+                // ensure filenames are unique if staging multiple docs with potentially conflicting simple IDs
                 String anseriniStagingFileId = docId.replaceAll("[^a-zA-Z0-9_.-]", "_");
-                if (anseriniStagingFileId.length() > 200) {
-                    anseriniStagingFileId = anseriniStagingFileId.substring(0, 195);
+                if (anseriniStagingFileId.length() > 200) { // Max filename length considerations
+                    anseriniStagingFileId = anseriniStagingFileId.substring(0, 195) + "_" + UUID.randomUUID().toString().substring(0,4);
                 }
-                anseriniStagingFileId = anseriniStagingFileId + "_" + docCounter; // Ensure unique filename
+                // Ensure unique filenames if multiple docs might simplify to the same staging ID
+                anseriniStagingFileId = anseriniStagingFileId + "_" + docCounter;
 
-                anseriniJsonDoc.put("id", anseriniStagingFileId);
-                anseriniJsonDoc.put("contents", springDoc.getText());
 
-                // Optionally include all metadata as a nested JSON object
-                // Map<String, Object> metadata = springDoc.getMetadata();
-                // if (metadata != null && !metadata.isEmpty()) {
-                //    anseriniJsonDoc.set("metadata", objectMapper.valueToTree(metadata));
-                // }
+                anseriniJsonDoc.put(Constants.ID, docId); // Use original Spring AI doc ID as Anserini's 'id' field
+                anseriniJsonDoc.put(Constants.CONTENTS, springDoc.getText());
+
+                ObjectNode metadataNode = objectMapper.createObjectNode();
+                if (springDoc.getMetadata() != null) {
+                    springDoc.getMetadata().forEach((key, value) -> {
+                        if (value != null) {
+                            // Convert common types to string or appropriate JSON types
+                            if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+                                metadataNode.putPOJO(key, value);
+                            } else {
+                                metadataNode.put(key, value.toString());
+                            }
+                        }
+                    });
+                }
+                if (metadataNode.size() > 0) {
+                    anseriniJsonDoc.set("metadata", metadataNode);
+                }
+
 
                 Path jsonFile = stagingPath.resolve(anseriniStagingFileId + ".json");
                 try {
@@ -502,11 +507,11 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
             args.collectionClass = "JsonCollection";
             args.generatorClass = "DefaultLuceneDocumentGenerator";
             args.index = indexPath.toString();
-            // Use defaults from your originally provided AnseriniIndexerServiceImpl
             args.threads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
             args.storePositions = true;
             args.storeDocvectors = true;
             args.storeRaw = true;
+            args.storeContents = true;
 
             try {
                 IndexCollection indexer = new IndexCollection(args);
@@ -516,6 +521,214 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                 logger.error("Error during Anserini IndexCollection from {}: {}", stagingPath, e.getMessage(), e);
                 throw new IOException("Failed to create keyword index with Anserini IndexCollection: " + e.getMessage(), e);
             }
+        }
+    }
+
+    // --- New methods for Index Browser ---
+    @Override
+    public List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException {
+        List<Map<String, Object>> docInfos = new ArrayList<>();
+        if (!isIndexAvailable()) {
+            logger.warn("Anserini index is not available. Cannot list documents.");
+            return docInfos;
+        }
+        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        try (Directory anseriniDir = FSDirectory.open(indexPath);
+             DirectoryReader reader = DirectoryReader.open(anseriniDir)) {
+
+            int maxDoc = reader.maxDoc();
+            int docCount = 0;
+            int docsSkipped = 0;
+
+            for (int i = 0; i < maxDoc && docCount < (offset + limit); i++) {
+                // Correctly check for deleted documents by iterating through LeafReaders
+                boolean isDeleted = false;
+                for (LeafReaderContext leafContext : reader.leaves()) {
+                    Bits liveDocs = leafContext.reader().getLiveDocs();
+                    if (i >= leafContext.docBase && i < (leafContext.docBase + leafContext.reader().maxDoc())) {
+                        if (liveDocs != null && !liveDocs.get(i - leafContext.docBase)) {
+                            isDeleted = true;
+                        }
+                        break;
+                    }
+                }
+                if (isDeleted) {
+                    continue;
+                }
+
+                if (docsSkipped < offset) {
+                    docsSkipped++;
+                    continue;
+                }
+
+                org.apache.lucene.document.Document luceneDoc = reader.storedFields().document(i);
+                if (luceneDoc != null) {
+                    Map<String, Object> docInfo = new HashMap<>();
+                    String docId = luceneDoc.get(Constants.ID);
+                    if (docId == null) {
+                        docId = "lucene_doc_" + i; // Fallback ID
+                    }
+                    docInfo.put("id", docId); // Use "id" consistently
+
+                    String contents = luceneDoc.get(Constants.CONTENTS);
+                    if (contents == null) {
+                        contents = luceneDoc.get(Constants.RAW); // Fallback to "raw"
+                    }
+
+                    if (contents != null) {
+                        docInfo.put("preview", contents.substring(0, Math.min(contents.length(), 100)) + "...");
+                    } else {
+                        docInfo.put("preview", "[No content field]");
+                    }
+                    Map<String, Object> metadata = new HashMap<>();
+                    for (IndexableField field : luceneDoc.getFields()) {
+                        if (!Constants.CONTENTS.equals(field.name()) &&
+                                !Constants.RAW.equals(field.name()) &&
+                                !Constants.ID.equals(field.name())) { // Exclude id from general metadata map
+                            if(field.stringValue() != null) {
+                                metadata.put(field.name(), field.stringValue());
+                            }
+                        }
+                    }
+                    // Attempt to parse metadata if it was stored as a JSON string by DefaultLuceneDocumentGenerator
+                    String metadataJsonString = luceneDoc.get("metadata"); // DefaultLuceneDocumentGenerator might store it this way
+                    if (StringUtils.hasText(metadataJsonString)) {
+                        try {
+                            Map<String,Object> parsedMetadata = objectMapper.readValue(metadataJsonString, Map.class);
+                            metadata.putAll(parsedMetadata);
+                        } catch (Exception e) {
+                            logger.warn("Could not parse 'metadata' field for doc {} as JSON: {}", docId, e.getMessage());
+                            metadata.put("_metadata_raw_string", metadataJsonString);
+                        }
+                    }
+
+                    docInfo.put("metadata", metadata);
+                    docInfo.put("lucene_internal_id", i);
+                    docInfos.add(docInfo);
+                    docCount++;
+                }
+            }
+            logger.info("Listed {} documents from Lucene index. Offset: {}, Limit: {}. Total iterated (pre-offset): {}", docInfos.size(), offset, limit, docCount + docsSkipped);
+        } catch (IOException e) {
+            logger.error("Error listing documents from Lucene index: " + e.getMessage(), e);
+            throw e;
+        }
+        return docInfos;
+    }
+
+    @Override
+    public Map<String, Object> getIndexedDocument(String docId) throws IOException {
+        if (!isIndexAvailable()) {
+            logger.warn("Anserini index is not available. Cannot get document {}.", docId);
+            return null;
+        }
+        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        // SimpleSearcher is convenient for fetching by stored ID.
+        try (SimpleSearcher searcher = new SimpleSearcher(indexPath.toString())) {
+            org.apache.lucene.document.Document luceneDoc = searcher.doc(docId);
+            if (luceneDoc == null) {
+                logger.warn("Document with id {} not found in Anserini index using SimpleSearcher.", docId);
+                return null;
+            }
+            Map<String, Object> docInfo = new HashMap<>();
+            docInfo.put("id", luceneDoc.get(Constants.ID)); // Use "id" for consistency
+            String content = luceneDoc.get(Constants.CONTENTS);
+            if (content == null) {
+                content = luceneDoc.get(Constants.RAW);
+            }
+            docInfo.put("content", content); // Use "content" for consistency
+
+            Map<String, Object> metadata = new HashMap<>();
+            for (IndexableField field : luceneDoc.getFields()) {
+                if (!Constants.CONTENTS.equals(field.name()) &&
+                        !Constants.RAW.equals(field.name()) &&
+                        !Constants.ID.equals(field.name())) {
+                    if(field.stringValue() != null) {
+                        metadata.put(field.name(), field.stringValue());
+                    }
+                }
+            }
+            // Try to parse "metadata" field if it was stored as JSON by DefaultLuceneDocumentGenerator
+            String metadataJsonString = luceneDoc.get("metadata");
+            if (StringUtils.hasText(metadataJsonString)) {
+                try {
+                    Map<String,Object> parsedMetadata = objectMapper.readValue(metadataJsonString, Map.class);
+                    metadata.putAll(parsedMetadata); // Merge or override existing from individual fields
+                } catch (Exception e) {
+                    logger.warn("Could not parse 'metadata' field for doc {} as JSON: {}", docId, e.getMessage());
+                    metadata.put("_metadata_raw_string", metadataJsonString);
+                }
+            }
+            docInfo.put("metadata", metadata);
+            return docInfo;
+        } catch (Exception e) {
+            logger.error("Error retrieving document {} with SimpleSearcher: {}", docId, e.getMessage(), e);
+            throw new IOException("Error retrieving document " + docId, e);
+        }
+    }
+
+    @Override
+    public boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException {
+        if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
+            logger.error("Cannot update document: Anserini index path is not configured.");
+            return false;
+        }
+        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
+        config.setOpenMode(IndexWriterConfig.OpenMode.APPEND);
+
+        try (Directory dir = FSDirectory.open(indexPath);
+             IndexWriter writer = new IndexWriter(dir, config)) {
+
+            // Retrieve the existing document to preserve its other fields
+            Map<String, Object> existingDocMap = getIndexedDocument(docId);
+            if (existingDocMap == null) {
+                logger.error("Document with ID {} not found. Cannot update.", docId);
+                return false;
+            }
+
+            org.apache.lucene.document.Document newLuceneDoc = new org.apache.lucene.document.Document();
+            newLuceneDoc.add(new StringField(Constants.ID, docId, Field.Store.YES));
+            newLuceneDoc.add(new TextField(Constants.CONTENTS, newContent, Field.Store.YES));
+            // Also store in raw if that's your primary content field for Anserini
+            newLuceneDoc.add(new TextField(Constants.RAW, newContent, Field.Store.YES));
+
+
+            // Preserve other metadata fields
+            Map<String, Object> metadata = (Map<String, Object>) existingDocMap.get("metadata");
+            if (metadata != null) {
+                ObjectNode metadataNode = objectMapper.createObjectNode();
+                for (Map.Entry<String, Object> entry : metadata.entrySet()) {
+                    // Avoid re-adding fields already handled or special fields
+                    if (!Constants.ID.equals(entry.getKey()) &&
+                            !Constants.CONTENTS.equals(entry.getKey()) &&
+                            !Constants.RAW.equals(entry.getKey()) &&
+                            !"_metadata_raw_string".equals(entry.getKey())) { // Skip our fallback key
+
+                        if (entry.getValue() instanceof String) {
+                            metadataNode.put(entry.getKey(), (String) entry.getValue());
+                        } else if (entry.getValue() instanceof Number) {
+                            metadataNode.putPOJO(entry.getKey(), entry.getValue());
+                        } else if (entry.getValue() instanceof Boolean) {
+                            metadataNode.putPOJO(entry.getKey(), entry.getValue());
+                        } else if (entry.getValue() != null) {
+                            metadataNode.put(entry.getKey(), entry.getValue().toString());
+                        }
+                    }
+                }
+                if(metadataNode.size() > 0) {
+                    newLuceneDoc.add(new TextField("metadata", objectMapper.writeValueAsString(metadataNode), Field.Store.YES));
+                }
+            }
+
+
+            writer.updateDocument(new Term(Constants.ID, docId), newLuceneDoc);
+            writer.commit();
+            logger.info("Successfully updated document {} in Anserini index with new content.", docId);
+            return true;
+        } catch (IOException e) {
+            logger.error("Failed to update document {} in Anserini index: {}", docId, e.getMessage(), e);
+            throw e;
         }
     }
 }
