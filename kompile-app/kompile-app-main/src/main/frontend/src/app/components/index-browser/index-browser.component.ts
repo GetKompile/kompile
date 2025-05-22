@@ -9,6 +9,7 @@ import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 
 @Component({
   selector: 'app-index-browser',
+  standalone: false,
   templateUrl: './index-browser.component.html',
   styleUrls: ['./index-browser.component.css']
 })

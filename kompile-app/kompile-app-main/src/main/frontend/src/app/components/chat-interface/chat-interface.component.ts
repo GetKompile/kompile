@@ -44,7 +44,7 @@ export class ChatInterfaceComponent {
       return;
     }
 
-    const userQuery: RagQuery = {
+    const userQuery: { query: string; useToolCalling: boolean } = {
       query: this.userInput,
       useToolCalling: this.useToolCalling
     };
@@ -57,9 +57,7 @@ export class ChatInterfaceComponent {
       next: (response: RagResponse) => {
         if (response.answer) {
           this.conversation.push({ sender: 'bot', text: response.answer });
-        } else if (response.error) {
-          this.conversation.push({ sender: 'bot', text: `Error: ${response.error}`, error: true });
-        } else {
+        }  else {
           this.conversation.push({ sender: 'bot', text: 'Received an empty response.', error: true });
         }
         this.isLoading = false;

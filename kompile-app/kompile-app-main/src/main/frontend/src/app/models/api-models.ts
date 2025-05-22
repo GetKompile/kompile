@@ -15,7 +15,7 @@
  */
 
 // For RAG Service
-export interface RagQueryRequest {
+export interface RagQuery {
   query: string;
   maxResults?: number;
 }
@@ -107,7 +107,7 @@ export interface BatchProcessResponse {
 
 
 // For MCP Tool Service
-export interface McpTool {
+export interface McpToolInfo {
   name: string;
   description: string;
   inputSchema: any;
@@ -131,4 +131,13 @@ export interface IndexedDocInfo {
 
 export interface UpdateDocRequest {
   content: string;
+}
+
+// For AddSourceDialogComponent communication
+export interface AddSourceDialogResult {
+  file?: File;
+  url?: string;
+  fileName?: string;
+  selectedLoader?: string;
+  rebuildIndex?: boolean; // Added flag for optional rebuild
 }

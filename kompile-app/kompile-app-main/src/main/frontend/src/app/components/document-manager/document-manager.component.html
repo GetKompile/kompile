@@ -14,7 +14,7 @@
         <mat-card-title>Actions</mat-card-title>
       </mat-card-header>
       <mat-card-content class="actions-content">
-        <button mat-raised-button color="primary" (click)="openAddSourceDialog()" [disabled]="isLoading || isBatchProcessing" class="action-button">
+        <button mat-raised-button color="primary" (click)="openAddSourceDialog()" class="action-button">
           <mat-icon>add_circle_outline</mat-icon> Add New Source
         </button>
         <button mat-stroked-button color="accent" (click)="onRebuildIndex()" [disabled]="isLoading || isBatchProcessing" class="action-button">
@@ -29,17 +29,17 @@
         <mat-card-title>Available Document Loaders</mat-card-title>
       </mat-card-header>
       <mat-card-content>
-        <div *ngIf="isLoading && availableLoaders.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
-        <div *ngIf="!isLoading && availableLoaders.length === 0" class="empty-state-message">
+        <div *ngIf="showLoadersSpinner" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="showNoLoadersMessage" class="empty-state-message">
           <mat-icon>info_outline</mat-icon>
           <span>No document loaders found or an error occurred.</span>
         </div>
-        <mat-list dense *ngIf="availableLoaders.length > 0">
+        <mat-list dense *ngIf="showLoadersList">
           <h3 matSubheader>Loaders</h3>
           <mat-list-item *ngFor="let loader of availableLoaders">
             <mat-icon matListItemIcon>settings_applications</mat-icon>
             <div matListItemTitle>{{ loader.name }}</div>
-            <div matListItemLine class="loader-class-name">Class: {{ loader.className.split('.').pop() }}</div>
+            <div matListItemLine class="loader-class-name">Class: {{ getSimpleName(loader.className) }}</div>
           </mat-list-item>
         </mat-list>
       </mat-card-content>
@@ -50,16 +50,16 @@
         <mat-card-title>Available Document Chunkers</mat-card-title>
       </mat-card-header>
       <mat-card-content>
-        <div *ngIf="isLoading && availableChunkers.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
-        <div *ngIf="!isLoading && availableChunkers.length === 0" class="empty-state-message">
+        <div *ngIf="showChunkersSpinner" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="showNoChunkersMessage" class="empty-state-message">
           <mat-icon>info_outline</mat-icon>
           <span>No document chunkers found or an error occurred.</span>
         </div>
-        <mat-list dense *ngIf="availableChunkers.length > 0">
+        <mat-list dense *ngIf="showChunkersList">
           <h3 matSubheader>Chunkers</h3>
           <mat-list-item *ngFor="let chunker of availableChunkers">
             <mat-icon matListItemIcon>layers</mat-icon> <div matListItemTitle>{{ chunker.name }}</div>
-            <div matListItemLine class="chunker-class-name">Class: {{ chunker.className.split('.').pop() }}</div>
+            <div matListItemLine class="chunker-class-name">Class: {{ getSimpleName(chunker.className) }}</div>
           </mat-list-item>
         </mat-list>
       </mat-card-content>
@@ -86,49 +86,49 @@
               {{ loader.name }}
             </mat-option>
           </mat-select>
-          <mat-error *ngIf="!batchSelectedLoader && batchSourcePaths.trim()">Loader is required for batch processing.</mat-error>
+          <mat-error *ngIf="!batchSelectedLoader && hasBatchSourceContent">Loader is required for batch processing.</mat-error>
         </mat-form-field>
 
-        <button mat-raised-button color="accent" class="action-button" (click)="onProcessBatch()" [disabled]="isBatchProcessing || !batchSourcePaths.trim() || !batchSelectedLoader">
+        <button mat-raised-button color="accent" class="action-button" (click)="onProcessBatch()" [disabled]="isProcessBatchDisabled">
           <mat-icon>play_for_work</mat-icon> Process Batch
         </button>
 
         <mat-progress-bar mode="indeterminate" *ngIf="isBatchProcessing" class="operation-progress-bar"></mat-progress-bar>
 
-        <div *ngIf="batchResults && !isBatchProcessing" class="batch-results-container">
+        <div *ngIf="showBatchResults" class="batch-results-container">
           <h4>Batch Processing Details:</h4>
           <mat-accordion multi="true">
-            <mat-expansion-panel *ngFor="let path of objectKeys(batchResults)" [expanded]="true">
+            <mat-expansion-panel *ngFor="let path of batchResultPaths" [expanded]="true">
               <mat-expansion-panel-header>
                 <mat-panel-title>
-                  <mat-icon [color]="batchResults[path]?.error ? 'warn' : 'primary'" class="result-icon">
-                    {{ batchResults[path]?.error ? 'error_outline' : 'check_circle_outline' }}
+                  <mat-icon [color]="getBatchResultError(path) ? 'warn' : 'primary'" class="result-icon">
+                    {{ getBatchResultError(path) ? 'error_outline' : 'check_circle_outline' }}
                   </mat-icon>
-                  <span class="path-text" [matTooltip]="path">{{ path | slice:0:70 }}{{path.length > 70 ? '...' : ''}}</span>
+                  <span class="path-text" [matTooltip]="path">{{ safeToString(path) | slice:0:70 }}{{safeLength(path) > 70 ? '...' : ''}}</span>
                 </mat-panel-title>
                 <mat-panel-description>
-                  {{ batchResults[path]?.error ? 'Failed' : ('Processed: ' + (batchResults[path]?.count || 0) + ' document(s)') }}
+                  {{ getBatchResultError(path) ? 'Failed' : ('Processed: ' + getBatchResultCount(path) + ' document(s)') }}
                 </mat-panel-description>
               </mat-expansion-panel-header>
 
-              <div *ngIf="batchResults[path]?.error" class="error-details">
-                <strong>Error:</strong> {{ batchResults[path]?.error }}
+              <div *ngIf="getBatchResultError(path)" class="error-details">
+                <strong>Error:</strong> {{ getBatchResultError(path) }}
               </div>
 
-              <div *ngIf="!batchResults[path]?.error && batchResults[path]?.summaries?.length">
-                <strong>Document Summaries ({{ batchResults[path]?.count }}):</strong>
+              <div *ngIf="!getBatchResultError(path) && getBatchResultSummaries(path).length > 0">
+                <strong>Document Summaries ({{ getBatchResultCount(path) }}):</strong>
                 <mat-list dense class="summary-list">
-                  <mat-list-item *ngFor="let summary of batchResults[path]?.summaries">
+                  <mat-list-item *ngFor="let summary of getBatchResultSummaries(path)">
                     <mat-icon matListItemIcon>article</mat-icon>
                     <div matListItemTitle>ID: {{ summary.id }}</div>
                     <div matListItemLine class="snippet-line">Snippet: {{ summary.contentSnippet }}</div>
-                    <div matListItemLine *ngIf="summary.metadata && objectKeys(summary.metadata).length > 0" class="metadata-display">
-                      Metadata: <pre>{{ summary.metadata | json }}</pre>
+                    <div matListItemLine *ngIf="hasMetadata(summary)" class="metadata-display">
+                      Metadata: <pre>{{ summary!.metadata | json }}</pre>
                     </div>
                   </mat-list-item>
                 </mat-list>
               </div>
-              <div *ngIf="!batchResults[path]?.error && batchResults[path]?.count === 0 && !batchResults[path]?.summaries?.length">
+              <div *ngIf="!getBatchResultError(path) && getBatchResultSummaries(path).length === 0 && getBatchResultCount(path) === 0">
                 <p>No documents were extracted from this source, or no summaries available.</p>
               </div>
             </mat-expansion-panel>
@@ -148,12 +148,12 @@
           <input matInput (keyup)="applyFilterConfigured($event)" placeholder="E.g., /data/docs">
           <mat-icon matSuffix>search</mat-icon>
         </mat-form-field>
-        <div *ngIf="isLoading && configuredSourcesDataSource.data.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
-        <div *ngIf="!isLoading && configuredSourcesDataSource.data.length === 0" class="empty-state-message">
+        <div *ngIf="showConfiguredSourcesSpinner" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="showNoConfiguredSourcesMessage" class="empty-state-message">
           <mat-icon>info_outline</mat-icon>
           <span>No configured sources found.</span>
         </div>
-        <div *ngIf="configuredSourcesDataSource.data.length > 0" class="table-container mat-elevation-z4">
+        <div *ngIf="showConfiguredSourcesTable" class="table-container mat-elevation-z4">
           <table mat-table [dataSource]="configuredSourcesDataSource" matSort #configuredSourcesSort="matSort">
             <ng-container matColumnDef="id">
               <th mat-header-cell *matHeaderCellDef mat-sort-header> No. </th>
@@ -161,7 +161,7 @@
             </ng-container>
             <ng-container matColumnDef="path">
               <th mat-header-cell *matHeaderCellDef mat-sort-header> Path/Source </th>
-              <td mat-cell *matCellDef="let element" [matTooltip]="element.path"> {{element.path | slice:0:60}}{{element.path.length > 60 ? '...' : ''}} </td>
+              <td mat-cell *matCellDef="let element" [matTooltip]="element.path"> {{safeToString(element.path) | slice:0:60}}{{safeLength(element.path) > 60 ? '...' : ''}} </td>
             </ng-container>
             <ng-container matColumnDef="type">
               <th mat-header-cell *matHeaderCellDef mat-sort-header> Type </th>
@@ -191,12 +191,12 @@
           <input matInput (keyup)="applyFilterUploaded($event)" placeholder="E.g., report.pdf">
           <mat-icon matSuffix>search</mat-icon>
         </mat-form-field>
-        <div *ngIf="isLoading && uploadedFilesDataSource.data.length === 0" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
-        <div *ngIf="!isLoading && uploadedFilesDataSource.data.length === 0" class="empty-state-message">
+        <div *ngIf="showUploadedFilesSpinner" class="spinner-container"><mat-spinner diameter="40"></mat-spinner></div>
+        <div *ngIf="showNoUploadedFilesMessage" class="empty-state-message">
           <mat-icon>cloud_off</mat-icon>
           <span>No files found in the uploads directory.</span>
         </div>
-        <div *ngIf="uploadedFilesDataSource.data.length > 0" class="table-container mat-elevation-z4">
+        <div *ngIf="showUploadedFilesTable" class="table-container mat-elevation-z4">
           <table mat-table [dataSource]="uploadedFilesDataSource" matSort #uploadedFilesSort="matSort">
             <ng-container matColumnDef="id">
               <th mat-header-cell *matHeaderCellDef mat-sort-header> No. </th>
@@ -204,7 +204,7 @@
             </ng-container>
             <ng-container matColumnDef="name">
               <th mat-header-cell *matHeaderCellDef mat-sort-header> File Name </th>
-              <td mat-cell *matCellDef="let element" [matTooltip]="element.name"> {{element.name | slice:0:50}}{{element.name.length > 50 ? '...' : ''}} </td>
+              <td mat-cell *matCellDef="let element" [matTooltip]="element.name"> {{safeToString(element.name) | slice:0:50}}{{safeLength(element.name) > 50 ? '...' : ''}} </td>
             </ng-container>
             <ng-container matColumnDef="actions">
               <th mat-header-cell *matHeaderCellDef> Actions </th>

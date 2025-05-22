@@ -18,7 +18,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
-import { AnseriniSearchResponse, SimpleMessageResponse } from '../models/api-models';
+import { IndexStatusResponse, SimpleMessageResponse } from '../models/api-models';
 import { BaseService } from './base.service';
 
 @Injectable({
@@ -30,11 +30,11 @@ export class AnseriniService extends BaseService {
     super();
   }
 
-  searchAnserini(query: string, maxResults: number): Observable<AnseriniSearchResponse> {
+  searchAnserini(query: string, maxResults: number): Observable<IndexStatusResponse> {
     let params = new HttpParams()
       .set('query', query)
       .set('maxResults', maxResults.toString());
-    return this.http.get<AnseriniSearchResponse>(`${this.backendUrl}/anserini/search`, { params })
+    return this.http.get<IndexStatusResponse>(`${this.backendUrl}/anserini/search`, { params })
       .pipe(catchError(this.handleError));
   }
 
