@@ -219,10 +219,10 @@ public class DocumentManagementController {
                         // If the strict TextChunker.java interface chunk(docs, int, int) is the ONLY available method,
                         // then specific keys (e.g. "chunkSize", "overlap") would need to be extracted from 'effectiveChunkerOptions' here.
                         // However, per user's last instruction, passing the map directly.
-                       List<Document> finalDocs2 = new ArrayList<>();
+                        List<Document> finalDocs2 = new ArrayList<>();
                         for(Document doc : loadedDocs) {
-                           finalDocs2.addAll(selectedChunker.chunk(doc,effectiveChunkerOptions));
-                       }
+                            finalDocs2.addAll(selectedChunker.chunk(doc,effectiveChunkerOptions));
+                        }
                         finalDocs = finalDocs2;
                         logger.info("Chunking resulted in {} documents for item {}", finalDocs.size(), itemKey);
 
