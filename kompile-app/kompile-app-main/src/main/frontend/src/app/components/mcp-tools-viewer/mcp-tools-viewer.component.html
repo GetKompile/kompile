@@ -25,8 +25,7 @@
     <li *ngFor="let tool of mcpTools" class="tool-item">
       <h3>{{ tool.name }}</h3>
       <p><strong>Description:</strong> {{ tool.description }}</p>
-      <p><small><em>{{ tool.note }}</em></small></p>
-      <p *ngIf="tool.inputSchemaError" class="error-message">Schema Error: {{tool.inputSchemaError}}</p>
+      <p><small><em>{{ tool.description }}</em></small></p>
     </li>
   </ul>
   <ng-template #noTools>

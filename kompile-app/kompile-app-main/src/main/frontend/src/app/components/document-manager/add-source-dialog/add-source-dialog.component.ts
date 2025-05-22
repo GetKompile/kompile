@@ -1,17 +1,17 @@
 /*
- *  Copyright 2025 Kompile Inc.
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  * http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright 2025 Kompile Inc.
+ * *
+ * * Licensed under the Apache License, Version 2.0 (the "License");
+ * * you may not use this file except in compliance with the License.
+ * * You may obtain a copy of the License at
+ * *
+ * * http://www.apache.org/licenses/LICENSE-2.0
+ * *
+ * * Unless required by applicable law or agreed to in writing, software
+ * * distributed under the License is distributed on an "AS IS" BASIS,
+ * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * * See the License for the specific language governing permissions and
+ * * limitations under the License.
  */
 
 import { Component, Inject, OnInit, ChangeDetectionStrategy, ChangeDetectorRef, OnDestroy } from '@angular/core';
@@ -25,27 +25,24 @@ import { MatRadioModule } from '@angular/material/radio';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { Subscription, merge, startWith } from 'rxjs'; // Import merge and startWith
-import { map } from 'rxjs/operators'; // Import map
+import { MatCheckboxModule } from '@angular/material/checkbox'; // Import MatCheckboxModule
+import { Subscription, merge, startWith } from 'rxjs';
+import { map } from 'rxjs/operators';
 
-import { LoaderInfo } from '../../../models/api-models';
+import { LoaderInfo, AddSourceDialogResult } from '../../../models/api-models'; // Ensure AddSourceDialogResult is imported or defined correctly
 
 export interface AddSourceDialogData {
   availableLoaders: LoaderInfo[];
 }
 
-export interface AddSourceDialogResult {
-  file?: File;
-  url?: string;
-  fileName?: string;
-  selectedLoader?: string;
-}
+// AddSourceDialogResult is now imported from api-models.ts
 
 interface AddSourceFormModel {
   sourceType: FormControl<'file' | 'url'>;
   urlInput: FormControl<string | null>;
   fileNameInput: FormControl<string | null>;
   loaderSelect: FormControl<string | null>;
+  rebuildIndex: FormControl<boolean>; // Added for the checkbox
 }
 
 @Component({
@@ -64,7 +61,8 @@ interface AddSourceFormModel {
     MatRadioModule,
     MatButtonModule,
     MatIconModule,
-    MatProgressBarModule
+    MatProgressBarModule,
+    MatCheckboxModule // Add MatCheckboxModule here
   ]
 })
 export class AddSourceDialogComponent implements OnInit, OnDestroy {
@@ -73,9 +71,9 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   fileErrorMessage: string | null = null;
   availableLoaders: LoaderInfo[] = [];
   isSubmitting: boolean = false;
-  isSubmitButtonDisabled: boolean = true; // Property to control button state
+  isSubmitButtonDisabled: boolean = true;
 
-  private subscriptions: Subscription = new Subscription(); // Use a single Subscription to manage all
+  private subscriptions: Subscription = new Subscription();
 
   constructor(
     public dialogRef: MatDialogRef<AddSourceDialogComponent, AddSourceDialogResult>,
@@ -88,38 +86,32 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       sourceType: new FormControl<'file' | 'url'>('file', { nonNullable: true, validators: Validators.required }),
       urlInput: new FormControl('', { validators: [Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)] }),
       fileNameInput: new FormControl(''),
-      loaderSelect: new FormControl('')
+      loaderSelect: new FormControl(''),
+      rebuildIndex: new FormControl(false, { nonNullable: true }) // Initialize checkbox form control
     });
   }
 
   ngOnInit(): void {
-    this.updateValidatorsBasedOnSourceType(); // Initial setup
+    this.updateValidatorsBasedOnSourceType();
 
     const sourceTypeControl = this.addSourceForm.controls.sourceType;
-    const urlInputControl = this.addSourceForm.controls.urlInput;
 
-    // Subscribe to sourceType changes to update validators
     this.subscriptions.add(
       sourceTypeControl.valueChanges.subscribe(() => {
         this.updateValidatorsBasedOnSourceType();
-        // No need to explicitly call updateSubmitButtonState here if form statusChanges handles it
       })
     );
 
-    // Subscribe to form status changes or relevant control value changes to update button state
-    // We also need to consider `this.selectedFile` for the 'file' type.
-    // A combined observable might be cleaner or update in relevant methods.
     this.subscriptions.add(
-      // Listen to changes that affect validity
       merge(
-        this.addSourceForm.statusChanges, // Covers all form validity changes
-        sourceTypeControl.valueChanges // React immediately if sourceType changes logic
-      ).pipe(startWith(null)) // Emit initially to set the button state
+        this.addSourceForm.statusChanges,
+        sourceTypeControl.valueChanges
+      ).pipe(startWith(null))
         .subscribe(() => {
           this.updateSubmitButtonState();
         })
     );
-    this.updateSubmitButtonState(); // Initial check
+    this.updateSubmitButtonState();
   }
 
   private updateValidatorsBasedOnSourceType(): void {
@@ -127,41 +119,33 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     const urlControl = this.addSourceForm.controls.urlInput;
 
     if (sourceType !== 'file') {
-      this.selectedFile = null; // Reset file if not 'file' type
+      this.selectedFile = null;
       this.fileErrorMessage = null;
       const fileInput = document.getElementById('dialogInternalFileInput') as HTMLInputElement;
       if (fileInput) fileInput.value = '';
-    } else {
-      // When switching to file, make sure URL is not required.
-      // If URL was previously invalid due to being required, this makes it valid again (if pattern matches empty string)
     }
-
 
     if (sourceType === 'file') {
       urlControl.clearValidators();
       urlControl.setValidators([Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)]);
-      // urlControl.setValue(''); // Optionally reset, or preserve user input
     } else { // 'url'
       urlControl.setValidators([
         Validators.required,
         Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)
       ]);
     }
-    urlControl.updateValueAndValidity({ emitEvent: false }); // Avoid re-triggering valueChanges if possible
-    // though statusChanges will still fire.
-    this.updateSubmitButtonState(); // Update button state after validator changes
-    this.cdr.markForCheck(); // Essential for OnPush
+    urlControl.updateValueAndValidity({ emitEvent: false });
+    this.updateSubmitButtonState();
+    this.cdr.markForCheck();
   }
 
   private updateSubmitButtonState(): void {
     const sourceType = this.addSourceForm.controls.sourceType.value;
     let isValid = false;
     if (sourceType === 'file') {
-      isValid = !!this.selectedFile; // Valid if a file is selected
+      isValid = !!this.selectedFile;
       if (isValid) {
         this.fileErrorMessage = null;
-      } else {
-        // Don't set error message here directly as it's for display on submit attempt or blur
       }
     } else if (sourceType === 'url') {
       isValid = this.addSourceForm.controls.urlInput.valid;
@@ -170,7 +154,6 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     this.cdr.markForCheck();
   }
 
-
   onFileSelectedChange(event: Event): void {
     const element = event.target as HTMLInputElement;
     this.fileErrorMessage = null;
@@ -178,16 +161,13 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       this.selectedFile = element.files!![0];
       if (this.addSourceForm.controls.sourceType.value !== 'file') {
         this.addSourceForm.controls.sourceType.setValue('file');
-        // updateValidators and updateSubmitButtonState will be called via subscription
       } else {
-        // If already 'file' type, just update button state
         this.updateSubmitButtonState();
       }
     } else {
       this.selectedFile = null;
       this.updateSubmitButtonState();
     }
-    // this.cdr.markForCheck(); // updateSubmitButtonState calls it
   }
 
   onCancelDialog(): void {
@@ -196,8 +176,6 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     }
   }
 
-  // This method is no longer directly bound in the template for [disabled]
-  // It's used internally by updateSubmitButtonState and by onSubmitDialog
   private checkFormValidityForAction(): boolean {
     const sourceType = this.addSourceForm.controls.sourceType.value;
     if (sourceType === 'file') {
@@ -208,7 +186,6 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       this.fileErrorMessage = null;
       return true;
     } else if (sourceType === 'url') {
-      // Ensure all controls are marked as touched for URL validation messages
       this.addSourceForm.controls.urlInput.markAsTouched();
       return this.addSourceForm.controls.urlInput.valid;
     }
@@ -216,12 +193,10 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   }
 
   onSubmitDialog(): void {
-    // Mark all as touched to show any pending validation errors
     Object.values(this.addSourceForm.controls).forEach(control => {
       control.markAsTouched();
     });
 
-    // Explicitly update the error message for file type before checking validity
     if (this.addSourceForm.controls.sourceType.value === 'file') {
       if (!this.selectedFile) {
         this.fileErrorMessage = "A file must be selected to upload.";
@@ -229,19 +204,20 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
         this.fileErrorMessage = null;
       }
     }
-    this.updateSubmitButtonState(); // Re-evaluate button state and trigger CD
-    this.cdr.markForCheck(); // Ensure UI is up-to-date with error messages
+    this.updateSubmitButtonState();
+    this.cdr.markForCheck();
 
     if (!this.checkFormValidityForAction()) {
-      return; // Stop if not valid
+      return;
     }
 
     this.isSubmitting = true;
-    this.updateSubmitButtonState(); // Disable button during submission
+    this.updateSubmitButtonState();
 
     const formValues = this.addSourceForm.getRawValue();
     const result: AddSourceDialogResult = {
-      selectedLoader: formValues.loaderSelect || undefined
+      selectedLoader: formValues.loaderSelect || undefined,
+      rebuildIndex: formValues.rebuildIndex // Include the checkbox value
     };
 
     if (formValues.sourceType === 'file' && this.selectedFile) {

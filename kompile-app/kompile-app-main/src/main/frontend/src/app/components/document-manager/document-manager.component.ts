@@ -14,7 +14,7 @@
  * * limitations under the License.
  */
 
-import { Component, OnInit, ChangeDetectorRef, ViewChild } from '@angular/core'; // Added ViewChild
+import { Component, OnInit, ChangeDetectorRef, ViewChild, AfterViewInit } from '@angular/core';
 import { DocumentService } from '../../services/document.service';
 import { AnseriniService } from '../../services/anserini.service';
 import {
@@ -22,36 +22,37 @@ import {
   FileUploadResponse,
   SimpleMessageResponse,
   LoaderInfo,
-  ChunkerInfo, // Added ChunkerInfo
+  ChunkerInfo,
   BatchProcessRequest,
   BatchLoadRequestItem,
   DocumentSourceType,
   BatchProcessResponse,
-  BatchProcessResponseDetails
+  BatchProcessResponseDetails,
+  AddSourceDialogResult,
+  DocumentSummary
 } from '../../models/api-models';
 import { HttpErrorResponse } from '@angular/common/http';
-
-// Angular Material
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatTableDataSource } from '@angular/material/table';
-import { MatPaginator } from '@angular/material/paginator'; // For table pagination
-import { MatSort } from '@angular/material/sort'; // For table sorting
-
-// Import the dialog component
-import { AddSourceDialogComponent, AddSourceDialogResult } from './add-source-dialog/add-source-dialog.component'; // Adjust path if needed
+import { MatPaginator } from '@angular/material/paginator';
+import { MatSort } from '@angular/material/sort';
+import { AddSourceDialogComponent } from './add-source-dialog/add-source-dialog.component';
+import { forkJoin, of, Observable } from 'rxjs';
+import { catchError, finalize, map } from 'rxjs/operators';
 
 export interface ConfiguredSourceElement {
   id: number;
   path: string;
-  type: 'Property' | 'Upload Path'; // Indicates if it's from app.properties or the uploads folder itself
+  type: 'Property' | 'Upload Path';
 }
 
 export interface UploadedFileElement {
   id: number;
   name: string;
-  // location: string; // Can be added if needed, or shown in a tooltip
 }
+
+type UploadedFilesData = { uploaded_files_location: string; files: string[] };
 
 @Component({
   standalone: false,
@@ -59,8 +60,7 @@ export interface UploadedFileElement {
   templateUrl: './document-manager.component.html',
   styleUrls: ['./document-manager.component.css']
 })
-export class DocumentManagerComponent implements OnInit {
-  // Table Data Sources
+export class DocumentManagerComponent implements OnInit, AfterViewInit {
   configuredSourcesDataSource = new MatTableDataSource<ConfiguredSourceElement>();
   displayedColumnsConfiguredSources: string[] = ['id', 'path', 'type'];
 
@@ -72,26 +72,34 @@ export class DocumentManagerComponent implements OnInit {
   @ViewChild('uploadedFilesPaginator') uploadedFilesPaginator!: MatPaginator;
   @ViewChild('uploadedFilesSort') uploadedFilesSort!: MatSort;
 
-
   availableLoaders: LoaderInfo[] = [];
-  availableChunkers: ChunkerInfo[] = []; // Added availableChunkers
+  availableChunkers: ChunkerInfo[] = [];
 
-  // Original data arrays
   private _configuredSources: string[] = [];
   private _uploadedFiles: string[] = [];
   uploadedFilesLocation: string = 'N/A';
 
-
-  // Batch Processing
   batchSourcePaths: string = '';
   batchSelectedLoader: string = '';
   isBatchProcessing: boolean = false;
   batchResults: BatchProcessResponseDetails | null = null;
+  batchResultPaths: string[] = [];
 
-  // General loading state
   isLoading: boolean = false;
 
-  objectKeys = Object.keys;
+  showLoadersSpinner: boolean = false;
+  showNoLoadersMessage: boolean = false;
+  showLoadersList: boolean = false;
+  showChunkersSpinner: boolean = false;
+  showNoChunkersMessage: boolean = false;
+  showChunkersList: boolean = false;
+  showConfiguredSourcesSpinner: boolean = false;
+  showNoConfiguredSourcesMessage: boolean = false;
+  showConfiguredSourcesTable: boolean = false;
+  showUploadedFilesSpinner: boolean = false;
+  showNoUploadedFilesMessage: boolean = false;
+  showUploadedFilesTable: boolean = false;
+  showBatchResults: boolean = false;
 
   constructor(
     private documentService: DocumentService,
@@ -105,238 +113,272 @@ export class DocumentManagerComponent implements OnInit {
     this.refreshAllData();
   }
 
-  refreshAllData(): void {
+  ngAfterViewInit(): void {
+    this.assignPaginatorsAndSorters();
+  }
+
+  private assignPaginatorsAndSorters(): void {
+    if (this.configuredSourcesPaginator && this.configuredSourcesDataSource.paginator !== this.configuredSourcesPaginator) {
+      this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator;
+    }
+    if (this.configuredSourcesSort && this.configuredSourcesDataSource.sort !== this.configuredSourcesSort) {
+      this.configuredSourcesDataSource.sort = this.configuredSourcesSort;
+    }
+    if (this.uploadedFilesPaginator && this.uploadedFilesDataSource.paginator !== this.uploadedFilesPaginator) {
+      this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator;
+    }
+    if (this.uploadedFilesSort && this.uploadedFilesDataSource.sort !== this.uploadedFilesSort) {
+      this.uploadedFilesDataSource.sort = this.uploadedFilesSort;
+    }
+  }
+
+  private updateTemplateFlags(): void {
+    this.showLoadersSpinner = this.isLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
+    this.showNoLoadersMessage = !this.isLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
+    this.showLoadersList = !!(this.availableLoaders && this.availableLoaders.length > 0);
+
+    this.showChunkersSpinner = this.isLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
+    this.showNoChunkersMessage = !this.isLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
+    this.showChunkersList = !!(this.availableChunkers && this.availableChunkers.length > 0);
+
+    this.showConfiguredSourcesSpinner = this.isLoading && this.configuredSourcesDataSource.data.length === 0;
+    this.showNoConfiguredSourcesMessage = !this.isLoading && this.configuredSourcesDataSource.data.length === 0;
+    this.showConfiguredSourcesTable = this.configuredSourcesDataSource.data.length > 0;
+
+    this.showUploadedFilesSpinner = this.isLoading && this.uploadedFilesDataSource.data.length === 0;
+    this.showNoUploadedFilesMessage = !this.isLoading && this.uploadedFilesDataSource.data.length === 0;
+    this.showUploadedFilesTable = this.uploadedFilesDataSource.data.length > 0;
+
+    this.showBatchResults = !!(this.batchResults && !this.isBatchProcessing && this.batchResultPaths.length > 0);
+    this.cdr.detectChanges();
+  }
+
+  refreshAllData(callback?: () => void): void {
+    if (this.isLoading && !callback) {
+      return;
+    }
     this.isLoading = true;
-    // Sequentially load data
-    this.documentService.getAvailableLoaders().subscribe({
-      next: loaders => this.availableLoaders = loaders || [],
-      error: err => this.handleLoadError('available loaders', err),
-      complete: () => {
-        this.documentService.getAvailableChunkers().subscribe({ // Load chunkers
-          next: chunkers => this.availableChunkers = chunkers || [],
-          error: err => this.handleLoadError('available chunkers', err),
-          complete: () => {
-            this.documentService.getUploadedFiles().subscribe({
-              next: uploadedFilesData => {
-                this._uploadedFiles = uploadedFilesData?.files || [];
-                this.uploadedFilesLocation = uploadedFilesData?.uploaded_files_location || 'N/A';
-                this.updateUploadedFilesTable();
-                // Now load configured sources
-                this.documentService.getConfiguredSources().subscribe({
-                  next: sources => {
-                    this._configuredSources = sources || [];
-                    this.updateConfiguredSourcesTable();
-                    this.isLoading = false;
-                    this.cdr.detectChanges();
-                  },
-                  error: err => this.handleLoadError('configured sources', err, true)
-                });
-              },
-              error: err => this.handleLoadError('uploaded files', err, true)
-            });
-          }
-        });
+    this.updateTemplateFlags();
+
+    const loaders$: Observable<LoaderInfo[]> = this.documentService.getAvailableLoaders().pipe(catchError(err => {
+      this.handleLoadError('available loaders', err);
+      return of([] as LoaderInfo[]);
+    }));
+    const chunkers$: Observable<ChunkerInfo[]> = this.documentService.getAvailableChunkers().pipe(catchError(err => {
+      this.handleLoadError('available chunkers', err);
+      return of([] as ChunkerInfo[]);
+    }));
+    const uploadedFiles$: Observable<UploadedFilesData> = this.documentService.getUploadedFiles().pipe(catchError(err => {
+      this.handleLoadError('uploaded files', err);
+      return of({ files: [], uploaded_files_location: 'Error loading path' } as UploadedFilesData);
+    }));
+    const configuredSources$: Observable<string[]> = this.documentService.getConfiguredSources().pipe(catchError(err => {
+      this.handleLoadError('configured sources', err);
+      return of([] as string[]);
+    }));
+
+    forkJoin([loaders$, chunkers$, uploadedFiles$, configuredSources$]).pipe(
+      finalize(() => {
+        this.isLoading = false;
+        this.updateTemplateFlags();
+        if (callback) {
+          callback();
+        }
+      })
+    ).subscribe({
+      next: ([loaders, chunkers, uploadedFilesData, sources]: [LoaderInfo[], ChunkerInfo[], UploadedFilesData, string[]]) => {
+        this.availableLoaders = loaders || [];
+        this.availableChunkers = chunkers || [];
+        this._uploadedFiles = uploadedFilesData?.files || [];
+        this.uploadedFilesLocation = uploadedFilesData?.uploaded_files_location || 'N/A';
+        this.updateUploadedFilesTable();
+        this._configuredSources = sources || [];
+        this.updateConfiguredSourcesTable();
+      },
+      error: (err) => {
+        this.showSnackbar(`An error occurred while loading initial data: ${err.message || 'Server error'}`, true);
       }
     });
   }
 
-  private handleLoadError(dataType: string, error: HttpErrorResponse, stopLoading: boolean = false) {
+  private handleLoadError(dataType: string, error: HttpErrorResponse) {
     this.showSnackbar(`Error loading ${dataType}: ${error.message || 'Server error'}`, true);
     if (dataType === 'available loaders') this.availableLoaders = [];
-    if (dataType === 'available chunkers') this.availableChunkers = []; // Handle chunker error
+    if (dataType === 'available chunkers') this.availableChunkers = [];
     if (dataType === 'uploaded files') {
-      this._uploadedFiles = [];
-      this.uploadedFilesLocation = 'Error loading path';
-      this.updateUploadedFilesTable();
+      this._uploadedFiles = []; this.uploadedFilesLocation = 'Error loading path'; this.updateUploadedFilesTable();
     }
     if (dataType === 'configured sources') {
-      this._configuredSources = [];
-      this.updateConfiguredSourcesTable();
+      this._configuredSources = []; this.updateConfiguredSourcesTable();
     }
-    if (stopLoading) this.isLoading = false;
-    this.cdr.detectChanges();
+    // this.updateTemplateFlags(); // Not calling here, finalize in refreshAllData will call it
   }
 
+  getSimpleName(className: any): string {
+    const nameStr = this.safeToString(className);
+    const parts = nameStr.split('.');
+    return parts.pop() || '';
+  }
+
+  get hasBatchSourceContent(): boolean {
+    return  this.batchSourcePaths.trim().length > 0;
+  }
+
+  get isProcessBatchDisabled(): boolean {
+    return this.isBatchProcessing || !this.hasBatchSourceContent || !this.batchSelectedLoader;
+  }
+
+  hasMetadata(summary: DocumentSummary | undefined | null): boolean {
+    if (!summary || !summary.metadata) return false;
+    return Object.keys(summary.metadata).length > 0;
+  }
+
+  getBatchResultCount(path: string): number {
+    return this.batchResults?.[path]?.count || 0;
+  }
+
+  getBatchResultSummaries(path: string): DocumentSummary[] {
+    return this.batchResults?.[path]?.summaries || [];
+  }
+
+  getBatchResultError(path: string): string | undefined {
+    return this.batchResults?.[path]?.error;
+  }
+
+  // Utility to safely convert a value to string for the template pipes
+  safeToString(value: any): string {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    return String(value);
+  }
+
+  // Utility to safely get length of a string-like value
+  safeLength(value: any): number {
+    return this.safeToString(value).length;
+  }
 
   updateConfiguredSourcesTable(): void {
-    const tableData: ConfiguredSourceElement[] = this._configuredSources
-      .filter(s => !s.toLowerCase().includes("no primary document sources configured"))
-      .map((s, index) => ({ id: index + 1, path: s, type: 'Property' }));
+    const tableData: ConfiguredSourceElement[] = (this._configuredSources || [])
+      .filter(s => s && !s.toLowerCase().includes("no primary document sources configured"))
+      .map((s, index) => ({ id: index + 1, path: this.safeToString(s), type: 'Property' }));
 
     if (this.uploadedFilesLocation && this.uploadedFilesLocation !== 'N/A' && !this.uploadedFilesLocation.includes("error_uploads_path_not_configured")) {
       if (!tableData.some(item => item.path === this.uploadedFilesLocation && item.type === 'Upload Path')) {
         tableData.push({
           id: tableData.length + 1,
-          path: this.uploadedFilesLocation,
+          path: this.safeToString(this.uploadedFilesLocation),
           type: 'Upload Path'
         });
       }
     }
     this.configuredSourcesDataSource.data = tableData;
-    setTimeout(() => { // Ensure paginator and sort are picked up after data is set
-      if (this.configuredSourcesPaginator) {
-        this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator;
-      }
-      if (this.configuredSourcesSort) {
-        this.configuredSourcesDataSource.sort = this.configuredSourcesSort;
-      }
-    });
+    if (this.configuredSourcesPaginator) { this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator; }
+    if (this.configuredSourcesSort) { this.configuredSourcesDataSource.sort = this.configuredSourcesSort; }
+    this.updateTemplateFlags();
   }
 
   updateUploadedFilesTable(): void {
-    this.uploadedFilesDataSource.data = this._uploadedFiles.map((f, index) => ({
+    this.uploadedFilesDataSource.data = (this._uploadedFiles || []).map((f, index) => ({
       id: index + 1,
-      name: f,
+      name: this.safeToString(f),
     }));
-    setTimeout(() => {
-      if (this.uploadedFilesPaginator) {
-        this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator;
-      }
-      if (this.uploadedFilesSort) {
-        this.uploadedFilesDataSource.sort = this.uploadedFilesSort;
-      }
-    });
+    if (this.uploadedFilesPaginator) { this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator; }
+    if (this.uploadedFilesSort) { this.uploadedFilesDataSource.sort = this.uploadedFilesSort; }
+    this.updateTemplateFlags();
   }
 
   applyFilterConfigured(event: Event) {
     const filterValue = (event.target as HTMLInputElement).value;
     this.configuredSourcesDataSource.filter = filterValue.trim().toLowerCase();
-    if (this.configuredSourcesDataSource.paginator) {
-      this.configuredSourcesDataSource.paginator.firstPage();
-    }
+    if (this.configuredSourcesDataSource.paginator) this.configuredSourcesDataSource.paginator.firstPage();
   }
 
   applyFilterUploaded(event: Event) {
     const filterValue = (event.target as HTMLInputElement).value;
     this.uploadedFilesDataSource.filter = filterValue.trim().toLowerCase();
-    if (this.uploadedFilesDataSource.paginator) {
-      this.uploadedFilesDataSource.paginator.firstPage();
-    }
+    if (this.uploadedFilesDataSource.paginator) this.uploadedFilesDataSource.paginator.firstPage();
   }
 
   openAddSourceDialog(): void {
     const dialogRef = this.dialog.open(AddSourceDialogComponent, {
-      width: '600px', // Increased width for better form layout
-      data: { availableLoaders: this.availableLoaders },
-      disableClose: true // Prevent closing by clicking outside or pressing Esc
+      width: '600px', data: { availableLoaders: this.availableLoaders }, disableClose: true
     });
-
     dialogRef.afterClosed().subscribe((result: AddSourceDialogResult | undefined) => {
-      if (result) {
-        this.submitDocumentSource(result);
-      }
+      if (result) this.submitDocumentSource(result);
     });
   }
 
   private submitDocumentSource(data: AddSourceDialogResult): void {
-    this.isLoading = true; // Use general isLoading here for feedback
+    this.isLoading = true; this.updateTemplateFlags();
+    const handleSuccess = (response: FileUploadResponse | SimpleMessageResponse, operation: string) => {
+      this.showSnackbar(response.message || `${operation} successful!`);
+      this.refreshAllData(() => {
+        if (data?.rebuildIndex) this.onRebuildIndex();
+        else { this.isLoading = false; this.updateTemplateFlags(); }
+      });
+    };
+    const handleError = (operation: string, err: HttpErrorResponse) => {
+      this.handleOperationError(operation, err); this.isLoading = false; this.updateTemplateFlags();
+    };
     if (data.file) {
       this.documentService.uploadFile(data.file, data.selectedLoader).subscribe({
-        next: (response) => {
-          this.showSnackbar(response.message || 'File uploaded successfully!');
-          this.refreshAllData(); // Refresh all data including uploaded files list
-        },
-        error: (err) => this.handleOperationError('File upload', err),
-        complete: () => this.isLoading = false
+        next: (r) => handleSuccess(r, 'File upload'), error: (e) => handleError('File upload', e)
       });
     } else if (data.url) {
-      const request: AddUrlRequest = {
-        url: data.url,
-        fileName: data.fileName,
-        loader: data.selectedLoader
-      };
+      const request: AddUrlRequest = { url: data.url, fileName: data.fileName, loader: data.selectedLoader };
       this.documentService.addUrl(request).subscribe({
-        next: (response) => {
-          this.showSnackbar(response.message || 'URL added successfully!');
-          this.refreshAllData();
-        },
-        error: (err) => this.handleOperationError('Add URL', err),
-        complete: () => this.isLoading = false
+        next: (r) => handleSuccess(r, 'Add URL'), error: (e) => handleError('Add URL', e)
       });
-    } else {
-      this.isLoading = false; // Should not happen if dialog result is validated
-    }
+    } else { this.isLoading = false; this.updateTemplateFlags(); }
   }
 
   onProcessBatch(): void {
-    if (!this.batchSourcePaths.trim()) {
-      this.showSnackbar('Please enter source paths for batch processing.', true);
-      return;
+    if (!this.hasBatchSourceContent) { this.showSnackbar('Please enter source paths...', true); return; }
+    if (!this.batchSelectedLoader) { this.showSnackbar('Please select a loader...', true); return; }
+    this.isBatchProcessing = true; this.batchResults = null; this.batchResultPaths = []; this.updateTemplateFlags();
+    const items: BatchLoadRequestItem[] = this.batchSourcePaths.split(',').map(p => p.trim()).filter(p => p)
+      .map(pathOrUrl => ({ pathOrUrl, type: pathOrUrl.toLowerCase().startsWith('http') ? DocumentSourceType.URL : DocumentSourceType.FILE, loaderName: this.batchSelectedLoader }));
+    if (items.length === 0) {
+      this.showSnackbar("No valid source paths...", true); this.isBatchProcessing = false; this.updateTemplateFlags(); return;
     }
-    if (!this.batchSelectedLoader) {
-      this.showSnackbar('Please select a loader for batch processing.', true);
-      return;
-    }
-
-    this.isBatchProcessing = true;
-    this.batchResults = null; // Clear previous results
-
-    const batchItems: BatchLoadRequestItem[] = this.batchSourcePaths.split(',')
-      .map(p => p.trim()).filter(p => p)
-      .map(pathOrUrl => ({
-        pathOrUrl: pathOrUrl,
-        type: pathOrUrl.toLowerCase().startsWith('http') ? DocumentSourceType.URL : DocumentSourceType.FILE,
-        loaderName: this.batchSelectedLoader,
-        originalFileName: undefined // Currently not collected per item from UI
-      }));
-
-    if (batchItems.length === 0) {
-      this.showSnackbar("No valid source paths provided for batch processing.", true);
-      this.isBatchProcessing = false;
-      return;
-    }
-
-    const request: BatchProcessRequest = { items: batchItems, defaultLoaderName: this.batchSelectedLoader };
-
-    this.documentService.processBatch(request).subscribe({
-      next: (response) => {
-        this.batchResults = response.details || null;
-        const message = `${response.message || 'Batch processing completed.'} Successful: ${response.successful_items}, Failed: ${response.failed_items}.`;
-        this.showSnackbar(message);
-        this.isBatchProcessing = false;
-        this.batchSourcePaths = ''; // Clear input
-        this.cdr.detectChanges();
+    this.documentService.processBatch({ items, defaultLoaderName: this.batchSelectedLoader }).pipe(
+      finalize(() => { this.isBatchProcessing = false; this.updateTemplateFlags(); })
+    ).subscribe({
+      next: (res) => {
+        this.batchResults = res.details || null; this.batchResultPaths = this.batchResults ? Object.keys(this.batchResults) : [];
+        this.showSnackbar(`${res.message || 'Batch complete.'} OK: ${res.successful_items}, Fail: ${res.failed_items}.`);
+        this.batchSourcePaths = '';
       },
-      error: (err) => {
-        this.handleOperationError('Batch processing', err);
-        this.isBatchProcessing = false;
-      }
+      error: (err) => { this.handleOperationError('Batch processing', err); this.batchResults = null; this.batchResultPaths = []; }
     });
   }
 
   onRebuildIndex(): void {
-    this.isLoading = true;
-    this.anseriniService.rebuildIndex().subscribe({
-      next: (response) => {
-        this.showSnackbar(response.message || 'Index rebuild initiated successfully!');
-        this.isLoading = false;
-      },
-      error: (err) => {
-        this.handleOperationError('Rebuild Index', err);
-        this.isLoading = false;
-      }
+    this.isLoading = true; this.updateTemplateFlags();
+    this.anseriniService?.rebuildIndex().pipe(
+      finalize(() => { this.isLoading = false; this.updateTemplateFlags(); })
+    ).subscribe({
+      next: (res) => this.showSnackbar(res.message || 'Index rebuild initiated!'),
+      error: (err) => this.handleOperationError('Rebuild Index', err)
     });
   }
 
   deleteUploadedFile(fileName: string): void {
-    if (confirm(`Are you sure you want to delete '${fileName}' from the uploads directory? This action requires backend support.`)) {
-      this.showSnackbar(`Backend endpoint for deleting '${fileName}' is not yet implemented.`, true, 5000);
-      // TODO: Implement this.documentService.deleteUploadedFile(fileName).subscribe(...);
-      // After successful deletion, call this.refreshAllData();
-    }
+    if (confirm(`Delete '${fileName}'?`)) this.showSnackbar(`Delete '${fileName}' not implemented.`, true, 5000);
   }
 
   private handleOperationError(operation: string, error: HttpErrorResponse): void {
-    const errorMessage = error.error?.error || error.error?.message || error.message || 'Server error';
-    this.showSnackbar(`${operation} failed: ${errorMessage}`, true, 5000);
+    const errMsg = error.error?.error || error.error?.message || error.message || 'Server error';
+    this.showSnackbar(`${operation} failed: ${errMsg}`, true, 5000);
   }
 
   showSnackbar(message: string, isError: boolean = false, duration: number = 4000): void {
     this.snackBar.open(message, 'Close', {
-      duration: duration,
-      horizontalPosition: 'center',
-      verticalPosition: 'top',
-      panelClass: isError ? ['snackbar-error'] : ['snackbar-success'] // Ensure panelClass is an array
+      duration, horizontalPosition: 'center', verticalPosition: 'top', panelClass: isError ? ['snackbar-error'] : ['snackbar-success']
     });
   }
 }
