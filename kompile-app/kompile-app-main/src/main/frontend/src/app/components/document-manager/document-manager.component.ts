@@ -1,17 +1,17 @@
 /*
- *  Copyright 2025 Kompile Inc.
- *  *
- *  * Licensed under the Apache License, Version 2.0 (the "License");
- *  * you may not use this file except in compliance with the License.
- *  * You may obtain a copy of the License at
- *  *
- *  * http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ * Copyright 2025 Kompile Inc.
+ * *
+ * * Licensed under the Apache License, Version 2.0 (the "License");
+ * * you may not use this file except in compliance with the License.
+ * * You may obtain a copy of the License at
+ * *
+ * * http://www.apache.org/licenses/LICENSE-2.0
+ * *
+ * * Unless required by applicable law or agreed to in writing, software
+ * * distributed under the License is distributed on an "AS IS" BASIS,
+ * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * * See the License for the specific language governing permissions and
+ * * limitations under the License.
  */
 
 import { Component, OnInit, ChangeDetectorRef, ViewChild } from '@angular/core'; // Added ViewChild
@@ -22,6 +22,7 @@ import {
   FileUploadResponse,
   SimpleMessageResponse,
   LoaderInfo,
+  ChunkerInfo, // Added ChunkerInfo
   BatchProcessRequest,
   BatchLoadRequestItem,
   DocumentSourceType,
@@ -73,6 +74,7 @@ export class DocumentManagerComponent implements OnInit {
 
 
   availableLoaders: LoaderInfo[] = [];
+  availableChunkers: ChunkerInfo[] = []; // Added availableChunkers
 
   // Original data arrays
   private _configuredSources: string[] = [];
@@ -105,28 +107,34 @@ export class DocumentManagerComponent implements OnInit {
 
   refreshAllData(): void {
     this.isLoading = true;
-    // Sequentially load data to ensure dependencies like uploadedFilesLocation are available
+    // Sequentially load data
     this.documentService.getAvailableLoaders().subscribe({
       next: loaders => this.availableLoaders = loaders || [],
       error: err => this.handleLoadError('available loaders', err),
       complete: () => {
-        this.documentService.getUploadedFiles().subscribe({
-          next: uploadedFilesData => {
-            this._uploadedFiles = uploadedFilesData?.files || [];
-            this.uploadedFilesLocation = uploadedFilesData?.uploaded_files_location || 'N/A';
-            this.updateUploadedFilesTable();
-            // Now load configured sources
-            this.documentService.getConfiguredSources().subscribe({
-              next: sources => {
-                this._configuredSources = sources || [];
-                this.updateConfiguredSourcesTable();
-                this.isLoading = false;
-                this.cdr.detectChanges();
+        this.documentService.getAvailableChunkers().subscribe({ // Load chunkers
+          next: chunkers => this.availableChunkers = chunkers || [],
+          error: err => this.handleLoadError('available chunkers', err),
+          complete: () => {
+            this.documentService.getUploadedFiles().subscribe({
+              next: uploadedFilesData => {
+                this._uploadedFiles = uploadedFilesData?.files || [];
+                this.uploadedFilesLocation = uploadedFilesData?.uploaded_files_location || 'N/A';
+                this.updateUploadedFilesTable();
+                // Now load configured sources
+                this.documentService.getConfiguredSources().subscribe({
+                  next: sources => {
+                    this._configuredSources = sources || [];
+                    this.updateConfiguredSourcesTable();
+                    this.isLoading = false;
+                    this.cdr.detectChanges();
+                  },
+                  error: err => this.handleLoadError('configured sources', err, true)
+                });
               },
-              error: err => this.handleLoadError('configured sources', err, true)
+              error: err => this.handleLoadError('uploaded files', err, true)
             });
-          },
-          error: err => this.handleLoadError('uploaded files', err, true)
+          }
         });
       }
     });
@@ -135,6 +143,7 @@ export class DocumentManagerComponent implements OnInit {
   private handleLoadError(dataType: string, error: HttpErrorResponse, stopLoading: boolean = false) {
     this.showSnackbar(`Error loading ${dataType}: ${error.message || 'Server error'}`, true);
     if (dataType === 'available loaders') this.availableLoaders = [];
+    if (dataType === 'available chunkers') this.availableChunkers = []; // Handle chunker error
     if (dataType === 'uploaded files') {
       this._uploadedFiles = [];
       this.uploadedFilesLocation = 'Error loading path';
