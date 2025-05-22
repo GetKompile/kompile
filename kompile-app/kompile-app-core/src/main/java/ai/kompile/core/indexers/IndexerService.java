@@ -18,9 +18,22 @@ package ai.kompile.core.indexers;
 
 import org.springframework.ai.document.Document; // From spring-ai-commons
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
 public interface IndexerService {
+    void indexDocuments(List<Document> documents, String collectionNameParam);
+
+    void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
+
+    void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException;
+
+    boolean deleteDocuments(List<String> documentIds, String collectionNameParam);
+
+    boolean deleteAll(String collectionNameParam);
+
+    long getApproxTotalDocCount(String collectionNameParam);
+
     /**
      * Indexes the provided list of Spring AI documents.
      * Implementations will handle any necessary staging (e.g., to JSON) and the actual indexing logic.
