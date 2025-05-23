@@ -21,8 +21,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 // Spring AI's EmbeddingModel and related classes
+import org.springframework.ai.embedding.Embedding;
+import org.springframework.ai.embedding.EmbeddingRequest;
+import org.springframework.ai.embedding.EmbeddingResponse;
+import org.springframework.aot.hint.MemberCategory;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.ImportRuntimeHints;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -32,10 +40,26 @@ import java.util.stream.Collectors;
 
 @Service("openAiEmbeddingModelImpl")
 @ConditionalOnProperty(name = "spring.ai.openai.api-key")
+@ImportRuntimeHints(OpenAiEmbeddingModelImpl.OpenAiEmbeddingsHints.class)
 public class OpenAiEmbeddingModelImpl implements EmbeddingModel {
 
     private static final Logger logger = LoggerFactory.getLogger(OpenAiEmbeddingModelImpl.class);
     private final org.springframework.ai.embedding.EmbeddingModel springAiEmbeddingModel; // Spring AI's interface
+
+
+    static class OpenAiEmbeddingsHints implements RuntimeHintsRegistrar {
+
+        @Override
+        public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+            var memberCategories = MemberCategory.values();
+            for (var c : new Class[] { Embedding.class, EmbeddingRequest.class, EmbeddingResponse.class})
+                hints.reflection().registerType(c, memberCategories);
+
+            hints.resources()
+                    .registerResource(new ClassPathResource("embedding/embedding-model-dimensions.properties"));
+        }
+
+    }
 
     @Autowired
     public OpenAiEmbeddingModelImpl(org.springframework.ai.embedding.EmbeddingModel springAiEmbeddingModel) {

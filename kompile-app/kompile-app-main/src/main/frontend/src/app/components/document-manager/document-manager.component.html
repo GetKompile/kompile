@@ -223,6 +223,9 @@
     </mat-tab>
 
     <!-- Debug Tools Tab -->
+    <!-- Replace the Debug Tools and Developer Information tabs with this merged content -->
+
+    <!-- Merged Debug & Developer Tools Tab -->
     <mat-tab label="Debug Tools">
       <div class="tab-content debug-tab-content">
         <div class="debug-header">
@@ -231,7 +234,419 @@
           <p>Analyze document loading, text extraction, and chunking processes in detail.</p>
         </div>
 
+        <!-- Debug File Upload & Analysis Section -->
+        <mat-card class="debug-upload-card" *ngIf="debuggerStatus">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>upload_file</mat-icon>
+              Debug File Upload & Analysis
+            </mat-card-title>
+            <mat-card-subtitle>Upload files for debugging and perform detailed document processing analysis</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- File Upload Controls -->
+            <div class="upload-controls">
+              <input type="file" (change)="onDebugFileChange($event)" #debugFileInput
+                     class="debug-file-input" [disabled]="isTestingUpload">
+              <button mat-raised-button color="primary"
+                      (click)="onTestUploadDebugFile()"
+                      [disabled]="!debugTestUploadFile || isTestingUpload || !debuggerStatus?.uploadsPathConfigured"
+                      class="upload-debug-btn">
+                <mat-icon>upload_file</mat-icon>
+                {{ isTestingUpload ? 'Uploading...' : 'Upload for Debug' }}
+              </button>
+            </div>
+
+            <div *ngIf="debugTestUploadFile" class="selected-debug-file">
+              <mat-icon>attach_file</mat-icon>
+              Selected: <strong>{{ debugTestUploadFile.name }}</strong>
+              ({{ (debugTestUploadFile.size / 1024).toFixed(2) }} KB)
+            </div>
+
+            <div *ngIf="!debuggerStatus?.uploadsPathConfigured" class="upload-warning">
+              <mat-icon color="warn">warning</mat-icon>
+              <span>Debug uploads are not configured on the server.</span>
+            </div>
+
+            <mat-progress-bar mode="indeterminate" *ngIf="isTestingUpload" class="upload-progress"></mat-progress-bar>
+
+            <!-- File Analysis Controls -->
+            <div class="analysis-controls" *ngIf="uploadedFilesDataSource.data.length > 0">
+              <mat-divider></mat-divider>
+              <h4>
+                <mat-icon>analytics</mat-icon>
+                File Analysis
+              </h4>
+
+              <div class="analysis-form">
+                <mat-form-field appearance="outline" class="file-select-field">
+                  <mat-label>Select File to Analyze</mat-label>
+                  <mat-select [(ngModel)]="selectedFileForDebug" (selectionChange)="onFileSelectedForDebug($event.value)">
+                    <mat-option *ngFor="let file of uploadedFilesDataSource.data" [value]="file.name">
+                      {{ file.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="loader-select-field">
+                  <mat-label>Loader (Optional - Auto-select if empty)</mat-label>
+                  <mat-select [(ngModel)]="selectedLoaderForDebug">
+                    <mat-option value="">Auto-select</mat-option>
+                    <mat-option *ngFor="let loader of availableLoaders" [value]="loader.name">
+                      {{ loader.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="chunker-select-field">
+                  <mat-label>Chunker (Optional - Auto-select if empty)</mat-label>
+                  <mat-select [(ngModel)]="selectedChunkerForDebug">
+                    <mat-option value="">Auto-select</mat-option>
+                    <mat-option *ngFor="let chunker of availableChunkers" [value]="chunker.name">
+                      {{ chunker.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <button mat-raised-button color="accent"
+                        (click)="analyzeSelectedFile()"
+                        [disabled]="!selectedFileForDebug || isAnalyzingFile"
+                        class="analyze-btn">
+                  <mat-icon>analytics</mat-icon>
+                  {{ isAnalyzingFile ? 'Analyzing...' : 'Analyze File' }}
+                </button>
+              </div>
+
+              <mat-progress-bar mode="indeterminate" *ngIf="isAnalyzingFile" class="analysis-progress"></mat-progress-bar>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Debug Analysis Results -->
+        <mat-card class="debug-analysis-card" *ngIf="showDebugAnalysisCard && debugAnalysisResult">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon [color]="debugAnalysisResult.errorMessage ? 'warn' : 'primary'">
+                {{ debugAnalysisResult.errorMessage ? 'error' : 'analytics' }}
+              </mat-icon>
+              Debug Analysis Results
+            </mat-card-title>
+            <mat-card-subtitle>
+              File: {{ debugAnalysisResult.fileName }}
+              <span *ngIf="debugAnalysisResult.fileSize"> • Size: {{ (debugAnalysisResult.fileSize / 1024).toFixed(2) }} KB</span>
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="debugAnalysisResult.errorMessage" class="error-message">
+              <mat-icon color="warn">error_outline</mat-icon>
+              <strong>Error:</strong> {{ debugAnalysisResult.errorMessage }}
+            </div>
+
+            <div *ngIf="!debugAnalysisResult.errorMessage">
+              <mat-accordion multi="true">
+                <!-- Loader Information -->
+                <mat-expansion-panel [expanded]="true">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon>extension</mat-icon>
+                      Document Loader Analysis
+                    </mat-panel-title>
+                    <mat-panel-description>
+                      {{ debugAnalysisResult.selectedLoader || 'Auto-selected' }} •
+                      {{ debugAnalysisResult.loadedDocuments?.length || 0 }} document(s) loaded
+                    </mat-panel-description>
+                  </mat-expansion-panel-header>
+
+                  <div class="loader-details">
+                    <p><strong>Selected Loader:</strong> {{ debugAnalysisResult.selectedLoader }}</p>
+                    <p><strong>Available Loaders:</strong> {{ debugAnalysisResult.availableLoaders?.join(', ') || 'None' }}</p>
+                    <p><strong>Documents Loaded:</strong> {{ debugAnalysisResult.loadedDocuments?.length || 0 }}</p>
+
+                    <div *ngIf="debugAnalysisResult.loadedDocuments && debugAnalysisResult.loadedDocuments.length > 0">
+                      <h5>Document Details:</h5>
+                      <mat-list dense>
+                        <mat-list-item *ngFor="let doc of debugAnalysisResult.loadedDocuments; let i = index">
+                          <mat-icon matListItemIcon>article</mat-icon>
+                          <div matListItemTitle>Document {{ i + 1 }}</div>
+                          <div matListItemLine>{{ (doc.content || '').substring(0, 100) }}...</div>
+                        </mat-list-item>
+                      </mat-list>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+
+                <!-- Chunker Information -->
+                <mat-expansion-panel [expanded]="true">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon>widgets</mat-icon>
+                      Text Chunking Analysis
+                    </mat-panel-title>
+                    <mat-panel-description>
+                      {{ debugAnalysisResult.selectedChunker || 'Auto-selected' }} •
+                      {{ debugAnalysisResult.chunks?.length || 0 }} chunk(s) created
+                    </mat-panel-description>
+                  </mat-expansion-panel-header>
+
+                  <div class="chunker-details">
+                    <p><strong>Selected Chunker:</strong> {{ debugAnalysisResult.selectedChunker }}</p>
+                    <p><strong>Available Chunkers:</strong> {{ debugAnalysisResult.availableChunkers?.join(', ') || 'None' }}</p>
+                    <p><strong>Chunks Created:</strong> {{ debugAnalysisResult.chunks?.length || 0 }}</p>
+
+                    <div *ngIf="debugAnalysisResult.chunks && debugAnalysisResult.chunks.length > 0">
+                      <h5>Chunk Preview (First 3):</h5>
+                      <mat-list dense>
+                        <mat-list-item *ngFor="let chunk of debugAnalysisResult.chunks.slice(0, 3); let i = index">
+                          <mat-icon matListItemIcon>note</mat-icon>
+                          <div matListItemTitle>Chunk {{ i + 1 }} ({{ chunk.contentLength }} chars)</div>
+                          <div matListItemLine>{{ chunk.content.substring(0, 150) }}...</div>
+                        </mat-list-item>
+                      </mat-list>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+
+                <!-- Processing Stats -->
+                <mat-expansion-panel *ngIf="debugAnalysisResult.processingStats">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon>timeline</mat-icon>
+                      Processing Statistics
+                    </mat-panel-title>
+                    <mat-panel-description>
+                      Performance and timing information
+                    </mat-panel-description>
+                  </mat-expansion-panel-header>
+
+                  <div class="processing-stats">
+                    <pre>{{ debugAnalysisResult.processingStats | json }}</pre>
+                  </div>
+                </mat-expansion-panel>
+              </mat-accordion>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Document Debugger Component -->
         <app-document-debugger></app-document-debugger>
+      </div>
+    </mat-tab>
+
+    <!-- Developer Information Tab -->
+    <mat-tab label="Developer Information">
+      <div class="tab-content developer-tab-content">
+        <div class="developer-header">
+          <mat-icon>code</mat-icon>
+          <h2>Developer Information</h2>
+          <p>System components, available loaders, chunkers, and technical details.</p>
+        </div>
+
+        <div class="developer-grid">
+          <!-- Available Document Loaders -->
+          <mat-card class="developer-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>extension</mat-icon>
+                Available Document Loaders
+              </mat-card-title>
+              <mat-card-subtitle>Components for loading different document types</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div *ngIf="showLoadersSpinner" class="spinner-container">
+                <mat-spinner diameter="40"></mat-spinner>
+              </div>
+
+              <div *ngIf="showNoLoadersMessage" class="empty-state-message">
+                <mat-icon>info_outline</mat-icon>
+                <span>No document loaders found or an error occurred.</span>
+              </div>
+
+              <div *ngIf="showLoadersList" class="component-list">
+                <mat-list dense>
+                  <h3 matSubheader>
+                    <mat-icon>settings_applications</mat-icon>
+                    Registered Loaders ({{ availableLoaders?.length || 0 }})
+                  </h3>
+                  <mat-list-item *ngFor="let loader of availableLoaders; trackBy: trackByLoaderName" class="component-list-item">
+                    <mat-icon matListItemIcon color="primary">settings_applications</mat-icon>
+                    <div matListItemTitle class="component-name">{{ loader.name }}</div>
+                    <div matListItemLine class="component-details">
+                      <code class="class-name">{{ getSimpleName(loader.className) }}</code>
+                      <mat-chip-set>
+                        <mat-chip color="accent" selected>
+                          <mat-icon matChipAvatar>layers</mat-icon>
+                          Document Loader
+                        </mat-chip>
+                      </mat-chip-set>
+                    </div>
+                  </mat-list-item>
+                </mat-list>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Available Document Chunkers -->
+          <mat-card class="developer-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>widgets</mat-icon>
+                Available Document Chunkers
+              </mat-card-title>
+              <mat-card-subtitle>Components for splitting documents into chunks</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div *ngIf="showChunkersSpinner" class="spinner-container">
+                <mat-spinner diameter="40"></mat-spinner>
+              </div>
+
+              <div *ngIf="showNoChunkersMessage" class="empty-state-message">
+                <mat-icon>info_outline</mat-icon>
+                <span>No document chunkers found or an error occurred.</span>
+              </div>
+
+              <div *ngIf="showChunkersList" class="component-list">
+                <mat-list dense>
+                  <h3 matSubheader>
+                    <mat-icon>layers</mat-icon>
+                    Registered Chunkers ({{ availableChunkers?.length || 0 }})
+                  </h3>
+                  <mat-list-item *ngFor="let chunker of availableChunkers; trackBy: trackByChunkerName" class="component-list-item">
+                    <mat-icon matListItemIcon color="accent">layers</mat-icon>
+                    <div matListItemTitle class="component-name">{{ chunker.name }}</div>
+                    <div matListItemLine class="component-details">
+                      <code class="class-name">{{ getSimpleName(chunker.className) }}</code>
+                      <mat-chip-set>
+                        <mat-chip color="primary" selected>
+                          <mat-icon matChipAvatar>widgets</mat-icon>
+                          Text Chunker
+                        </mat-chip>
+                      </mat-chip-set>
+                    </div>
+                  </mat-list-item>
+                </mat-list>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- System Information -->
+          <mat-card class="developer-card full-width">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>info</mat-icon>
+                System Information
+              </mat-card-title>
+              <mat-card-subtitle>Runtime and configuration details</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="system-info-grid">
+                <!-- Debugger Status -->
+                <div class="info-section" *ngIf="debuggerStatus">
+                  <h4>
+                    <mat-icon>bug_report</mat-icon>
+                    Debugger Status
+                  </h4>
+                  <mat-list dense>
+                    <mat-list-item>
+                      <mat-icon matListItemIcon [color]="debuggerStatus.uploadsPathConfigured ? 'primary' : 'warn'">
+                        {{ debuggerStatus.uploadsPathConfigured ? 'check_circle' : 'error' }}
+                      </mat-icon>
+                      <div matListItemTitle>Debug Uploads</div>
+                      <div matListItemLine>{{ debuggerStatus.uploadsPathConfigured ? 'Configured' : 'Not configured' }}</div>
+                    </mat-list-item>
+                    <mat-list-item *ngIf="debuggerStatus.uploadsPath">
+                      <mat-icon matListItemIcon>folder</mat-icon>
+                      <div matListItemTitle>Debug Upload Path</div>
+                      <div matListItemLine class="monospace-text">{{ debuggerStatus.uploadsPath }}</div>
+                    </mat-list-item>
+                  </mat-list>
+                </div>
+
+                <!-- Upload Configuration -->
+                <div class="info-section">
+                  <h4>
+                    <mat-icon>folder</mat-icon>
+                    Upload Configuration
+                  </h4>
+                  <mat-list dense>
+                    <mat-list-item *ngIf="uploadedFilesLocation && uploadedFilesLocation !== 'N/A'">
+                      <mat-icon matListItemIcon>folder_open</mat-icon>
+                      <div matListItemTitle>Upload Directory</div>
+                      <div matListItemLine class="monospace-text">{{ uploadedFilesLocation }}</div>
+                    </mat-list-item>
+                    <mat-list-item *ngIf="!uploadedFilesLocation || uploadedFilesLocation === 'N/A'">
+                      <mat-icon matListItemIcon color="warn">folder_off</mat-icon>
+                      <div matListItemTitle>Upload Directory</div>
+                      <div matListItemLine class="error-text">Not configured or inaccessible</div>
+                    </mat-list-item>
+                  </mat-list>
+                </div>
+
+                <!-- Component Statistics -->
+                <div class="info-section">
+                  <h4>
+                    <mat-icon>assessment</mat-icon>
+                    Component Statistics
+                  </h4>
+                  <mat-list dense>
+                    <mat-list-item *ngIf="debuggerStatus">
+                      <mat-icon matListItemIcon>extension</mat-icon>
+                      <div matListItemTitle>Document Loaders</div>
+                      <div matListItemLine>
+                        Total: {{ debuggerStatus.totalLoaders }},
+                        Real: {{ debuggerStatus.realLoaders }},
+                        No-Op: {{ debuggerStatus.noOpLoaders }}
+                      </div>
+                    </mat-list-item>
+                    <mat-list-item *ngIf="debuggerStatus">
+                      <mat-icon matListItemIcon>widgets</mat-icon>
+                      <div matListItemTitle>Document Chunkers</div>
+                      <div matListItemLine>
+                        Total: {{ debuggerStatus.totalChunkers }},
+                        Real: {{ debuggerStatus.realChunkers }},
+                        No-Op: {{ debuggerStatus.noOpChunkers }}
+                      </div>
+                    </mat-list-item>
+                    <mat-list-item>
+                      <mat-icon matListItemIcon>library_books</mat-icon>
+                      <div matListItemTitle>Configured Sources</div>
+                      <div matListItemLine>{{ configuredSourcesDataSource?.data?.length || 0 }} sources</div>
+                    </mat-list-item>
+                    <mat-list-item>
+                      <mat-icon matListItemIcon>cloud_upload</mat-icon>
+                      <div matListItemTitle>Uploaded Files</div>
+                      <div matListItemLine>{{ uploadedFilesDataSource?.data?.length || 0 }} files</div>
+                    </mat-list-item>
+                  </mat-list>
+                </div>
+
+                <!-- Recent Activity -->
+                <div class="info-section">
+                  <h4>
+                    <mat-icon>schedule</mat-icon>
+                    Recent Activity
+                  </h4>
+                  <mat-list dense>
+                    <mat-list-item *ngIf="showBatchResults">
+                      <mat-icon matListItemIcon color="primary">batch_prediction</mat-icon>
+                      <div matListItemTitle>Last Batch Processing</div>
+                      <div matListItemLine>{{ batchResultPaths?.length || 0 }} paths processed</div>
+                    </mat-list-item>
+                    <mat-list-item *ngIf="debugAnalysisResult && !debugAnalysisResult.errorMessage">
+                      <mat-icon matListItemIcon color="accent">analytics</mat-icon>
+                      <div matListItemTitle>Last Debug Analysis</div>
+                      <div matListItemLine>{{ debugAnalysisResult.fileName }}</div>
+                    </mat-list-item>
+                    <mat-list-item *ngIf="!showBatchResults && !debugAnalysisResult">
+                      <mat-icon matListItemIcon>history</mat-icon>
+                      <div matListItemTitle>Recent Activity</div>
+                      <div matListItemLine>No recent processing or analysis</div>
+                    </mat-list-item>
+                  </mat-list>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
       </div>
     </mat-tab>
 

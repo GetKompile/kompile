@@ -32,13 +32,15 @@
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
 
-
-
   <modules>
     <module>kompile-app-core</module>
     <module>kompile-app-loaders-orchestrator</module>
     <module>kompile-loader-tika</module>
     <module>kompile-loader-pdf</module>
+    <!-- New specialized loader modules -->
+    <module>kompile-loader-microsoft</module>
+    <module>kompile-loader-mail</module>
+    <module>kompile-loader-pdf-extended</module>
     <module>kompile-app-anserini</module>
     <module>kompile-app-openai-llm</module>
     <module>kompile-app-anthropic-llm</module>
@@ -178,6 +180,22 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-loader-pdf</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- New specialized loader dependencies -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-microsoft</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-mail</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-pdf-extended</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

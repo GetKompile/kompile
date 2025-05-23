@@ -284,3 +284,455 @@
 .table-container::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
 }
+/* Add these styles to document-manager.component.css */
+
+/* Debug & Developer Tab Styles */
+.debug-developer-tab-content {
+  padding: 24px;
+  background-color: #fafafa;
+}
+
+.debug-developer-header {
+  text-align: center;
+  margin-bottom: 32px;
+  padding: 24px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.debug-developer-header mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  color: #1976d2;
+  margin-bottom: 16px;
+}
+
+.debug-developer-header h2 {
+  margin: 0 0 8px 0;
+  color: #1976d2;
+  font-weight: 500;
+}
+
+.debug-developer-header p {
+  margin: 0;
+  color: #666;
+  font-size: 16px;
+}
+
+.debug-developer-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Debug Upload Card */
+.debug-upload-card {
+  border: 2px solid #e3f2fd;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.debug-upload-card mat-card-header {
+  background: linear-gradient(90deg, #e3f2fd 0%, #f3e5f5 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 20px 24px;
+  border-radius: 12px 12px 0 0;
+}
+
+.upload-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.debug-file-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.upload-debug-btn {
+  min-width: 160px;
+}
+
+.selected-debug-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background-color: #e8f5e8;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  border-left: 4px solid #4caf50;
+}
+
+.upload-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background-color: #fff3e0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  border-left: 4px solid #ff9800;
+}
+
+.upload-progress, .analysis-progress {
+  margin-top: 16px;
+}
+
+/* Analysis Controls */
+.analysis-controls {
+  margin-top: 24px;
+}
+
+.analysis-controls h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+  color: #1976d2;
+}
+
+.analysis-form {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 16px;
+  align-items: end;
+  margin: 16px 0;
+}
+
+.file-select-field,
+.loader-select-field,
+.chunker-select-field {
+  width: 100%;
+}
+
+.analyze-btn {
+  min-width: 140px;
+  height: 56px; /* Match form field height */
+}
+
+/* Debug Analysis Results */
+.debug-analysis-card {
+  border: 2px solid #e8f5e8;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fffe 0%, #f0f8ff 100%);
+}
+
+.debug-analysis-card mat-card-header {
+  background: linear-gradient(90deg, #e8f5e8 0%, #e3f2fd 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 20px 24px;
+  border-radius: 12px 12px 0 0;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background-color: #ffebee;
+  border-radius: 8px;
+  border-left: 4px solid #f44336;
+  margin-bottom: 16px;
+}
+
+.loader-details,
+.chunker-details,
+.processing-stats {
+  padding: 16px 0;
+}
+
+.processing-stats pre {
+  background-color: #f5f5f5;
+  padding: 16px;
+  border-radius: 8px;
+  border-left: 4px solid #2196f3;
+  overflow-x: auto;
+  font-size: 14px;
+}
+
+/* Document Debugger Integration */
+.document-debugger-card {
+  border: 2px solid #fff3e0;
+  border-radius: 12px;
+}
+
+.document-debugger-card mat-card-header {
+  background: linear-gradient(90deg, #fff3e0 0%, #fce4ec 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 20px 24px;
+  border-radius: 12px 12px 0 0;
+}
+
+/* System Components Row */
+.system-components-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.developer-card {
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.developer-card mat-card-header {
+  background: linear-gradient(90deg, #f3e5f5 0%, #e8eaf6 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 20px 24px;
+  border-radius: 12px 12px 0 0;
+}
+
+.component-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.component-list-item {
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+
+.component-name {
+  font-weight: 500;
+  color: #1976d2;
+}
+
+.component-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.class-name {
+  background-color: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #666;
+}
+
+/* System Information */
+.system-info-card {
+  border: 2px solid #e8eaf6;
+  border-radius: 12px;
+}
+
+.system-info-card mat-card-header {
+  background: linear-gradient(90deg, #e8eaf6 0%, #f3e5f5 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 20px 24px;
+  border-radius: 12px 12px 0 0;
+}
+
+.system-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 24px;
+}
+
+.info-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 0;
+  color: #1976d2;
+  font-weight: 500;
+  border-bottom: 2px solid #e3f2fd;
+  padding-bottom: 8px;
+}
+
+.monospace-text {
+  font-family: 'Courier New', monospace;
+  background-color: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.error-text {
+  color: #f44336;
+  font-weight: 500;
+}
+
+/* Utility Classes */
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.spinner-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+}
+
+.empty-state-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 40px;
+  text-align: center;
+  color: #666;
+  font-style: italic;
+  justify-content: center;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .system-components-row {
+    grid-template-columns: 1fr;
+  }
+
+  .analysis-form {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .analyze-btn {
+    height: auto;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 768px) {
+  .debug-developer-tab-content {
+    padding: 16px;
+  }
+
+  .debug-developer-header {
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+
+  .debug-developer-header mat-icon {
+    font-size: 36px;
+    width: 36px;
+    height: 36px;
+  }
+
+  .debug-developer-grid {
+    gap: 16px;
+  }
+
+  .upload-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .upload-debug-btn {
+    min-width: unset;
+    width: 100%;
+  }
+
+  .system-info-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .debug-upload-card mat-card-header,
+  .debug-analysis-card mat-card-header,
+  .document-debugger-card mat-card-header,
+  .developer-card mat-card-header,
+  .system-info-card mat-card-header {
+    padding: 16px 20px;
+  }
+}
+
+/* Enhanced Material Design Integration */
+mat-expansion-panel {
+  border-radius: 8px !important;
+  margin-bottom: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+mat-expansion-panel-header {
+  background-color: #fafafa;
+}
+
+mat-expansion-panel-header:hover {
+  background-color: #f0f0f0;
+}
+
+.mat-expansion-panel-body {
+  padding: 16px 24px;
+}
+
+/* Chip Styling */
+mat-chip-set {
+  margin-top: 4px;
+}
+
+mat-chip {
+  font-size: 11px;
+  min-height: 24px;
+}
+
+/* List Styling */
+mat-list-item {
+  min-height: 56px;
+}
+
+.mat-mdc-list-item-content {
+  padding: 8px 0;
+}
+
+/* Progress Bar Styling */
+mat-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Form Field Styling */
+.mat-mdc-form-field {
+  margin-bottom: 16px;
+}
+
+.mat-mdc-form-field-appearance-outline .mat-mdc-form-field-outline {
+  border-radius: 8px;
+}
+
+/* Button Styling */
+.mat-mdc-raised-button,
+.mat-mdc-stroked-button {
+  border-radius: 8px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+/* Card Styling */
+mat-card {
+  border-radius: 12px;
+  transition: box-shadow 0.3s ease;
+}
+
+mat-card:hover {
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+}
+
+/* Scrollbar Styling */
+.component-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.component-list::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+.component-list::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 3px;
+}
+
+.component-list::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}

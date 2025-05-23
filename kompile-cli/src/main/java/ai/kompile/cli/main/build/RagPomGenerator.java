@@ -72,10 +72,21 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeAppCore;
     @CommandLine.Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
-    @CommandLine.Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module")
+
+    // Original Tika loader (deprecated/heavy)
+    @CommandLine.Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module (deprecated - use specialized loaders instead)")
     private boolean includeLoaderTika = false;
     @CommandLine.Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
     private boolean includeLoaderPdf = false;
+
+    // New specialized loader modules
+    @CommandLine.Option(names = {"--includeLoaderMicrosoft"}, description = "Include kompile-loader-microsoft module for Office documents")
+    private boolean includeLoaderMicrosoft = false;
+    @CommandLine.Option(names = {"--includeLoaderMail"}, description = "Include kompile-loader-mail module for email parsing")
+    private boolean includeLoaderMail = false;
+    @CommandLine.Option(names = {"--includeLoaderPdfExtended"}, description = "Include kompile-loader-pdf-extended module for advanced PDF processing")
+    private boolean includeLoaderPdfExtended = false;
+
     @CommandLine.Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
     private boolean includeAnserini = false;
     @CommandLine.Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module", defaultValue = "true", negatable = true)
@@ -118,7 +129,6 @@ public class RagPomGenerator implements Callable<Void> {
                     "The first language in this list will also be set as the default 'kompile.opennlp.sentence.language' property.",
             defaultValue = "en", split = ",")
     private List<String> supportedLanguages = new ArrayList<>(Collections.singletonList("en"));
-
 
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
@@ -289,13 +299,10 @@ public class RagPomGenerator implements Callable<Void> {
     private List<String> downloadOpenNLPModelsForSupportedLanguages(File projectBaseDir, List<String> languagesToDownload) throws IOException {
         List<String> successfullyDownloadedLocalFilenames = new ArrayList<>();
         if (languagesToDownload == null || languagesToDownload.isEmpty()) {
-            // This case should ideally be handled by Picocli's default value for supportedLanguages.
-            // If it still ends up empty, default to "en" or log a warning.
             System.out.println("No languages specified via --supportedLanguages for OpenNLP sentence model download. Defaulting to 'en'.");
             languagesToDownload = Collections.singletonList("en");
         }
 
-        // Normalize to lowercase and distinct to match map keys and avoid duplicate downloads
         List<String> normalizedLanguages = languagesToDownload.stream()
                 .filter(lang -> lang != null && !lang.trim().isEmpty())
                 .map(String::toLowerCase)
@@ -333,7 +340,7 @@ public class RagPomGenerator implements Callable<Void> {
 
             if (Files.exists(modelFile)) {
                 System.out.println("OpenNLP model " + localModelFileName + " for language '" + langKey + "' already exists. Adding to list of available models.");
-                successfullyDownloadedLocalFilenames.add(localModelFileName); // Add to list even if skipped, for native image inclusion
+                successfullyDownloadedLocalFilenames.add(localModelFileName);
                 continue;
             }
 
@@ -342,7 +349,7 @@ public class RagPomGenerator implements Callable<Void> {
             try {
                 url = new URL(modelUrlString);
             } catch (MalformedURLException e) {
-              throw new RuntimeException(e);
+                throw new RuntimeException(e);
             }
 
             try (InputStream in = url.openStream();
@@ -364,7 +371,6 @@ public class RagPomGenerator implements Callable<Void> {
         }
         return successfullyDownloadedLocalFilenames;
     }
-
 
     @Override
     public Void call() throws Exception {
@@ -394,13 +400,10 @@ public class RagPomGenerator implements Callable<Void> {
             throw new IOException("Could not create project directory: " + projectDir.getAbsolutePath());
         }
 
-
         List<String> downloadedModelNamesForNative = new ArrayList<>();
         if (includeChunkerSentence) {
-            // Use the --supportedLanguages list. Picocli defaults it to ["en"] if not specified.
             downloadedModelNamesForNative.addAll(downloadOpenNLPModelsForSupportedLanguages(projectDir, this.supportedLanguages));
         }
-
 
         Properties props = new Properties();
         props.setProperty("java.version", "17");
@@ -415,7 +418,7 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("maven-compiler-plugin.version", DEFAULT_MAVEN_COMPILER_PLUGIN_VERSION);
         props.setProperty("maven-resources-plugin.version", DEFAULT_MAVEN_RESOURCES_PLUGIN_VERSION);
         props.setProperty("maven-jar-plugin.version", DEFAULT_MAVEN_JAR_PLUGIN_VERSION);
-        props.setProperty("postgres.version",DEFAULT_POSTGRES_VERSION);
+        props.setProperty("postgres.version", DEFAULT_POSTGRES_VERSION);
         props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
@@ -433,14 +436,12 @@ public class RagPomGenerator implements Callable<Void> {
         }
         props.setProperty("kompile.opennlp.sentence.language", defaultRuntimeLangForOpenNLP);
 
-
         model.setProperties(props);
 
         addApplicationDependencies();
         addApplicationBuild();
 
         if (buildNative) {
-            // Pass the list of actually downloaded model filenames to be included in native image
             addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, downloadedModelNamesForNative);
         }
 
@@ -462,7 +463,7 @@ public class RagPomGenerator implements Callable<Void> {
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter", "${spring-boot.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", "${spring-ai.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", "${spring-ai.version}");
-        addDependency(defaultDependencies,"jakarta.mail", "jakarta.mail-api",DEFAULT_JAKARTA_MAIL_VERSION);
+        addDependency(defaultDependencies, "jakarta.mail", "jakarta.mail-api", DEFAULT_JAKARTA_MAIL_VERSION);
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-api", "${log4j.version}");
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-core", "${log4j.version}");
 
@@ -470,8 +471,14 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
 
+        // Original loaders
         if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", "${kompile.project.version}");
         if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", "${kompile.project.version}");
+
+        // New specialized loaders
+        if (includeLoaderMicrosoft) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-microsoft", "${kompile.project.version}");
+        if (includeLoaderMail) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-mail", "${kompile.project.version}");
+        if (includeLoaderPdfExtended) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf-extended", "${kompile.project.version}");
 
         if (includeChunkerSentence) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-sentence", "${kompile.project.version}");
         if (includeChunkerRecursiveCharacter) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-recursivecharacter", "${kompile.project.version}");
@@ -494,8 +501,8 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
 
-        if(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
-            addDependency(defaultDependencies,"org.postgresql","postgresql","${postgres.version}","compile" , null, false);
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+            addDependency(defaultDependencies, "org.postgresql", "postgresql", "${postgres.version}", "compile", null, false);
         }
 
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
@@ -526,7 +533,6 @@ public class RagPomGenerator implements Callable<Void> {
 
             Plugin resourcesPlugin = createPlugin("org.apache.maven.plugins", "maven-resources-plugin", "${maven-resources-plugin.version}");
             build.addPlugin(resourcesPlugin);
-
 
             Plugin jarPlugin = createPlugin("org.apache.maven.plugins", "maven-jar-plugin", "${maven-jar-plugin.version}");
             Xpp3Dom jarConfig = Xpp3DomBuilder.build(new StringReader(
@@ -623,7 +629,6 @@ public class RagPomGenerator implements Callable<Void> {
         addChild(nativePluginConfig, "quickBuild", "false");
         addChild(nativePluginConfig, "jarArtifact", "${project.build.directory}/${project.build.finalName}-exec.jar");
 
-
         Xpp3Dom metadataRepoElement = addChild(nativePluginConfig, "metadataRepository", null);
         addChild(metadataRepoElement, "enabled", "true");
 
@@ -639,10 +644,10 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-Djava.awt.headless=true");
         String initializeAtBuildTimeArg = "org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder";
         addBuildArg(buildArgsDom, "--initialize-at-build-time=" + initializeAtBuildTimeArg);
-        String initializeAtRunTimeArg = "sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
+        String initializeAtRunTimeArg = "org.apache.poi.util.RandomSingleton,sun.awt.X11.XWindow,sun.awt.X11.XDataTransferer,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
         addBuildArg(buildArgsDom, "--initialize-at-run-time=" + initializeAtRunTimeArg);
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
-        addBuildArg(buildArgsDom,"--trace-class-initialization=sun.rmi.server.Util,java.security.SecureRandom,com.sun.jndi.dns.DnsClient");
+        addBuildArg(buildArgsDom, "--trace-class-initialization=org.apache.poi.util.RandomSingleton,sun.awt.X11.XDataTransferer,sun.awt.X11.XWindow,sun.rmi.server.Util,java.security.SecureRandom,com.sun.jndi.dns.DnsClient");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2-spring.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.component.properties");
         addBuildArg(buildArgsDom, "-H:IncludeResources=.*Log4j2Plugins.dat$");
@@ -655,9 +660,12 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring\\.components");
         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
-        addBuildArg(buildArgsDom,"--trace-class-initialization=sun.rmi.server.UnicastRef,java.rmi.server.LogStream,com.sun.jndi.dns.DnsClient");
+        addBuildArg(buildArgsDom, "--trace-class-initialization=sun.rmi.server.UnicastRef,java.rmi.server.LogStream,com.sun.jndi.dns.DnsClient");
 
-        // CORRECTED: Only include resources for models that were specified by user via --supportedLanguages and successfully downloaded.
+        if(includeLoaderPdfExtended) {
+            addBuildArg(buildArgsDom, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
+        }
+
         if (includeChunkerSentence && downloadedOpenNLPModelLocalFilenames != null) {
             for (String modelLocalFileName : downloadedOpenNLPModelLocalFilenames) {
                 if (modelLocalFileName != null && !modelLocalFileName.isEmpty()) {
