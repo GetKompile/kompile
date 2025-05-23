@@ -1,470 +1,111 @@
-<div class="comprehensive-debugger">
+<div class="simple-debugger">
   <div class="header-section">
-    <h1>📄 Comprehensive Document Analysis Debugger</h1>
-    <p class="subtitle">Deep dive into document loading, text extraction, and chunking processes</p>
+    <h1>📄 Document Debugger</h1>
+    <p class="subtitle">Upload a file to analyze its content and chunking.</p>
   </div>
 
-  <!-- File Selection -->
-  <mat-card class="file-selection-card">
+  <mat-card class="file-upload-card">
     <mat-card-header>
-      <mat-card-title>📁 File Selection & Analysis</mat-card-title>
+      <mat-card-title>📁 Upload File</mat-card-title>
     </mat-card-header>
     <mat-card-content>
-      <div class="file-controls">
-        <mat-form-field appearance="outline" class="file-dropdown">
-          <mat-label>Select File to Analyze</mat-label>
-          <mat-select [(ngModel)]="selectedFileName">
-            <mat-option *ngFor="let file of uploadedFiles" [value]="file">
-              📄 {{ file }}
-            </mat-option>
-          </mat-select>
-        </mat-form-field>
+      <div class="file-upload-controls">
+        <input type="file" #fileUploadInput (change)="onFileSelected($event); fileUploadInput.value = ''" 
+               class="file-input" aria-label="Upload file for analysis">
 
-        <button mat-raised-button color="primary"
-                (click)="performComprehensiveAnalysis()"
-                [disabled]="!selectedFileName || isAnalyzing"
-                class="analyze-btn">
-          <mat-icon>analytics</mat-icon>
-          {{ isAnalyzing ? 'Analyzing...' : 'Deep Analysis' }}
+        <button mat-stroked-button color="accent" (click)="uploadTestFile()" 
+                [disabled]="!selectedFile || isUploading" class="upload-btn">
+          <mat-icon>cloud_upload</mat-icon>
+          {{ isUploading ? 'Uploading...' : (selectedFile ? 'Upload: ' + selectedFile.name : 'Select File to Upload') }}
         </button>
       </div>
+
+      <mat-divider *ngIf="selectedFileName" style="margin-top: 1rem; margin-bottom: 1rem;"></mat-divider>
+
+      <div class="analysis-trigger-section" *ngIf="selectedFileName">
+        <p class="selected-file-info">
+          Selected for analysis: <strong>📄 {{ selectedFileName }}</strong>
+        </p>
+        <button mat-raised-button color="primary"
+                (click)="analyzeFile()"
+                [disabled]="!selectedFileName || isAnalyzing"
+                class="analyze-btn main-analyze-btn">
+          <mat-icon>analytics</mat-icon>
+          {{ isAnalyzing ? 'Analyzing...' : 'Analyze Selected File' }}
+        </button>
+      </div>
+      <p *ngIf="!selectedFileName" class="no-file-notice">
+        <mat-icon>info_outline</mat-icon>
+        Please upload a file. Once uploaded, its name will appear here, and you can start the analysis.
+      </p>
     </mat-card-content>
   </mat-card>
 
-  <!-- Loading State -->
   <div class="loading-overlay" *ngIf="isAnalyzing">
     <mat-card>
       <mat-card-content class="loading-content">
         <mat-spinner diameter="60"></mat-spinner>
-        <h2>🔬 Performing Deep Analysis...</h2>
-        <p>Extracting text, analyzing structure, and generating chunks...</p>
+        <h2>🔬 Analyzing...</h2>
+        <p>Processing document and generating chunks...</p>
       </mat-card-content>
     </mat-card>
   </div>
 
-  <!-- Comprehensive Results -->
-  <div class="analysis-results" *ngIf="comprehensiveResult && !isAnalyzing">
+  <div class="analysis-results" *ngIf="analysisResult && !isAnalyzing">
 
-    <!-- File Overview -->
-    <mat-card class="overview-card">
+    <!-- Document Content Output -->
+    <mat-card class="content-output-card" *ngIf="analysisResult?.loadedDocuments && analysisResult.loadedDocuments.length > 0 && analysisResult.loadedDocuments[0].content">
       <mat-card-header>
-        <mat-card-title>📊 File Overview</mat-card-title>
+        <mat-card-title>📄 Document Content</mat-card-title>
+        <mat-card-subtitle>{{ analysisResult.fileName }}</mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
-        <div class="overview-grid">
-          <div class="stat-item">
-            <mat-icon>description</mat-icon>
-            <div>
-              <strong>{{ comprehensiveResult.fileName }}</strong>
-              <span>{{ formatFileSize(comprehensiveResult.fileSize) }}</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <mat-icon>text_fields</mat-icon>
-            <div>
-              <strong>{{ comprehensiveResult.totalCharacters | number }}</strong>
-              <span>Total Characters</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <mat-icon>view_headline</mat-icon>
-            <div>
-              <strong>{{ comprehensiveResult.totalLines | number }}</strong>
-              <span>Total Lines</span>
-            </div>
-          </div>
-          <div class="stat-item">
-            <mat-icon>widgets</mat-icon>
-            <div>
-              <strong>{{ comprehensiveResult.totalChunks | number }}</strong>
-              <span>Generated Chunks</span>
-            </div>
-          </div>
-        </div>
-      </mat-card-content>
-    </mat-card>
-
-    <!-- Full Extracted Text -->
-    <mat-card class="extracted-text-card">
-      <mat-card-header>
-        <mat-card-title>📄 Complete Extracted Text</mat-card-title>
-        <mat-card-subtitle>Raw text extracted from the document</mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-        <div class="text-controls">
-          <button mat-button (click)="toggleFullText()">
-            <mat-icon>{{ showFullText ? 'visibility_off' : 'visibility' }}</mat-icon>
-            {{ showFullText ? 'Hide Full Text' : 'Show Full Text' }}
-          </button>
-          <button mat-button (click)="copyFullText()">
+        <div class="content-controls">
+          <button mat-icon-button (click)="copyFirstLoadedDocumentContent()" matTooltip="Copy content to clipboard">
             <mat-icon>content_copy</mat-icon>
-            Copy All Text
           </button>
-          <button mat-button (click)="downloadFullText()">
+          <button mat-icon-button (click)="downloadFirstLoadedDocumentContent()" matTooltip="Download content">
             <mat-icon>download</mat-icon>
-            Download Text
           </button>
         </div>
 
-        <div class="text-stats" *ngIf="comprehensiveResult">
-          <span>📊 {{ comprehensiveResult.totalCharacters | number }} characters</span>
-          <span>📝 {{ comprehensiveResult.totalWords | number }} words</span>
-          <span>📋 {{ comprehensiveResult.totalLines | number }} lines</span>
-          <span>📰 {{ comprehensiveResult.totalParagraphs | number }} paragraphs</span>
+        <div class="content-stats" *ngIf="analysisResult.loadedDocuments[0].contentStats">
+          <span *ngIf="analysisResult.loadedDocuments[0].contentStats.totalCharacters !== undefined">
+            📊 {{ analysisResult.loadedDocuments[0].contentStats.totalCharacters | number }} characters
+          </span>
+          <span *ngIf="analysisResult.loadedDocuments[0].contentStats.totalWords !== undefined">
+            📝 {{ analysisResult.loadedDocuments[0].contentStats.totalWords | number }} words
+          </span>
+          <span *ngIf="analysisResult.loadedDocuments[0].contentStats.totalLines !== undefined">
+            📋 {{ analysisResult.loadedDocuments[0].contentStats.totalLines | number }} lines
+          </span>
         </div>
 
-        <!-- Text Preview (first 1000 chars) -->
-        <div class="text-preview" *ngIf="!showFullText">
-          <h4>📖 Preview (First 1000 characters)</h4>
-          <pre class="text-content preview">{{ getTextPreview(comprehensiveResult.fullText!!, 1000) }}</pre>
-          <div class="preview-notice">
-            <mat-icon>info</mat-icon>
-            <span>Showing preview only. Click "Show Full Text" to see complete content.</span>
-          </div>
-        </div>
-
-        <!-- Full Text Display -->
-        <div class="full-text-display" *ngIf="showFullText">
-          <h4>📄 Complete Document Text</h4>
-          <div class="text-container">
-            <pre class="text-content full">{{ comprehensiveResult?.fullText }}</pre>
-          </div>
-        </div>
+        <mat-form-field appearance="outline" class="content-textarea">
+          <mat-label>Document Content</mat-label>
+          <textarea matInput 
+                    [value]="analysisResult.loadedDocuments[0].content" 
+                    readonly 
+                    rows="15"
+                    class="content-display">
+          </textarea>
+        </mat-form-field>
       </mat-card-content>
     </mat-card>
 
-    <!-- Comprehensive Chunks Table -->
-    <mat-card class="chunks-analysis-card">
+    <!-- Chunks Table -->
+    <mat-card class="chunks-table-card" *ngIf="analysisResult.chunks && analysisResult.chunks.length > 0">
       <mat-card-header>
-        <mat-card-title>🧩 Detailed Chunks Analysis</mat-card-title>
-        <mat-card-subtitle>Every chunk with complete content and metadata</mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-
-        <!-- Chunk Controls -->
-        <div class="chunk-controls">
-          <mat-form-field appearance="outline">
-            <mat-label>🔍 Filter chunks</mat-label>
-            <input matInput [(ngModel)]="chunkFilter" (input)="filterChunks()"
-                   placeholder="Search chunk content...">
-          </mat-form-field>
-
-          <mat-slide-toggle [(ngModel)]="showChunkMetadata">
-            📋 Show Metadata
-          </mat-slide-toggle>
-
-          <button mat-button (click)="exportChunksToCSV()">
-            <mat-icon>download</mat-icon>
-            Export Chunks CSV
-          </button>
-        </div>
-
-        <!-- Chunks Table -->
-        <div class="chunks-table-container">
-          <table mat-table [dataSource]="filteredChunksDataSource" matSort #comprehensiveSort="matSort" class="comprehensive-chunks-table">
-
-            <!-- Chunk Index -->
-            <ng-container matColumnDef="index">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>🔢 Index</th>
-              <td mat-cell *matCellDef="let chunk; let i = index">
-                <mat-chip color="primary">{{ chunk.index }}</mat-chip>
-              </td>
-            </ng-container>
-
-            <!-- Chunk ID -->
-            <ng-container matColumnDef="id">
-              <th mat-header-cell *matHeaderCellDef>🆔 Chunk ID</th>
-              <td mat-cell *matCellDef="let chunk">
-                <code class="chunk-id-full">{{ chunk.id }}</code>
-              </td>
-            </ng-container>
-
-            <!-- Content Length -->
-            <ng-container matColumnDef="length">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>📏 Length</th>
-              <td mat-cell *matCellDef="let chunk">
-                <div class="length-info">
-                  <strong>{{ chunk.contentLength | number }}</strong> chars
-                  <br>
-                  <small>{{ chunk.wordCount | number }} words</small>
-                </div>
-              </td>
-            </ng-container>
-
-            <!-- Complete Content -->
-            <ng-container matColumnDef="content">
-              <th mat-header-cell *matHeaderCellDef>📄 Complete Content</th>
-              <td mat-cell *matCellDef="let chunk; let i = index">
-                <div class="chunk-content-cell">
-                  <!-- Content Preview -->
-                  <div class="content-preview" *ngIf="!isChunkExpanded(i)">
-                    <pre class="chunk-text-preview">{{ getTextPreview(chunk.content, 200) }}</pre>
-                    <button mat-button color="primary" (click)="expandChunk(i)">
-                      <mat-icon>expand_more</mat-icon>
-                      Show Full Content
-                    </button>
-                  </div>
-
-                  <!-- Full Content -->
-                  <div class="content-full" *ngIf="isChunkExpanded(i)">
-                    <div class="content-header">
-                      <h4>🧩 Chunk {{ chunk.index }} - Complete Content</h4>
-                      <div class="content-actions">
-                        <button mat-icon-button (click)="copyChunkContent(chunk.content)"
-                                matTooltip="Copy chunk content">
-                          <mat-icon>content_copy</mat-icon>
-                        </button>
-                        <button mat-icon-button (click)="collapseChunk(i)"
-                                matTooltip="Collapse content">
-                          <mat-icon>expand_less</mat-icon>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div class="full-content-container">
-                      <pre class="chunk-text-full">{{ chunk.content }}</pre>
-                    </div>
-
-                    <!-- Chunk Metadata -->
-                    <div class="chunk-metadata" *ngIf="showChunkMetadata && chunk.metadata">
-                      <h5>📋 Chunk Metadata</h5>
-                      <pre class="metadata-json">{{ formatMetadata(chunk.metadata) }}</pre>
-                    </div>
-
-                    <!-- Chunk Statistics -->
-                    <div class="chunk-stats">
-                      <div class="stat-row">
-                        <span><strong>📊 Statistics:</strong></span>
-                        <span>{{ chunk.contentLength | number }} chars</span>
-                        <span>{{ chunk.wordCount | number }} words</span>
-                        <span>{{ chunk.lineCount | number }} lines</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </td>
-            </ng-container>
-
-            <!-- Actions -->
-            <ng-container matColumnDef="actions">
-              <th mat-header-cell *matHeaderCellDef>⚡ Actions</th>
-              <td mat-cell *matCellDef="let chunk; let i = index">
-                <div class="chunk-actions">
-                  <button mat-icon-button (click)="copyChunkContent(chunk.content)"
-                          matTooltip="Copy content">
-                    <mat-icon>content_copy</mat-icon>
-                  </button>
-                  <button mat-icon-button (click)="highlightChunkInText(chunk)"
-                          matTooltip="Highlight in full text">
-                    <mat-icon>highlight</mat-icon>
-                  </button>
-                  <button mat-icon-button (click)="analyzeChunkSimilarity(chunk)"
-                          matTooltip="Analyze similarity">
-                    <mat-icon>analytics</mat-icon>
-                  </button>
-                </div>
-              </td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="comprehensiveChunkColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: comprehensiveChunkColumns;"
-                [class.expanded-chunk-row]="isChunkExpanded(comprehensiveChunks.indexOf(row))"></tr>
-          </table>
-
-          <mat-paginator #comprehensivePaginator
-                         [pageSizeOptions]="[5, 10, 25, 50, 100]"
-                         [pageSize]="10"
-                         showFirstLastButtons>
-          </mat-paginator>
-        </div>
-      </mat-card-content>
-    </mat-card>
-
-    <!-- Chunk Analysis Summary -->
-    <mat-card class="chunk-summary-card">
-      <mat-card-header>
-        <mat-card-title>📈 Chunk Analysis Summary</mat-card-title>
-      </mat-card-header>
-      <mat-card-content>
-        <div class="summary-grid">
-          <div class="summary-stat">
-            <mat-icon>bar_chart</mat-icon>
-            <div>
-              <strong>Average Chunk Size</strong>
-              <span>{{ comprehensiveResult?.averageChunkSize | number }} characters</span>
-            </div>
-          </div>
-          <div class="summary-stat">
-            <mat-icon>straighten</mat-icon>
-            <div>
-              <strong>Size Range</strong>
-              <span>{{ comprehensiveResult?.minChunkSize | number }} - {{ comprehensiveResult?.maxChunkSize | number }} chars</span>
-            </div>
-          </div>
-          <div class="summary-stat">
-            <mat-icon>speed</mat-icon>
-            <div>
-              <strong>Chunking Efficiency</strong>
-              <span>{{ comprehensiveResult?.chunkingEfficiency | number:'1.1-1' }}%</span>
-            </div>
-          </div>
-          <div class="summary-stat">
-            <mat-icon>timeline</mat-icon>
-            <div>
-              <strong>Text Coverage</strong>
-              <span>{{ comprehensiveResult?.textCoverage | number:'1.1-1' }}%</span>
-            </div>
-          </div>
-        </div>
-      </mat-card-content>
-    </mat-card>
-
-  </div>
-
-  <!-- Legacy Analysis Results (for backward compatibility) -->
-  <div class="legacy-results" *ngIf="analysisResult && !comprehensiveResult">
-
-    <!-- Loaders Analysis -->
-    <mat-card class="loaders-card">
-      <mat-card-header>
-        <mat-card-title>Document Loaders Analysis</mat-card-title>
-        <mat-card-subtitle>
-          Selected: {{ analysisResult.selectedLoader?.name || 'None' }}
-          ({{ getRealLoadersCount() }} real loaders available)
-        </mat-card-subtitle>
+        <mat-card-title>🧩 Generated Chunks</mat-card-title>
+        <mat-card-subtitle>{{ analysisResult.chunks.length }} chunks created</mat-card-subtitle>
       </mat-card-header>
       <mat-card-content>
         <div class="table-container">
-          <table mat-table [dataSource]="loadersDataSource" matSort #loadersSort="matSort" class="debug-table">
-            <ng-container matColumnDef="name">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Name</th>
-              <td mat-cell *matCellDef="let loader">
-                <div class="loader-name">
-                  <mat-icon [color]="getStatusColor(loader.isNoOp, loader.supportsFile)"
-                            [matTooltip]="loader.isNoOp ? 'No-op implementation' : 'Real loader'">
-                    {{ getStatusIcon(loader.isNoOp, loader.supportsFile) }}
-                  </mat-icon>
-                  <span [class.selected-item]="analysisResult?.selectedLoader?.name === loader.name">
-                    {{ loader.name }}
-                  </span>
-                </div>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="className">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Class</th>
-              <td mat-cell *matCellDef="let loader">
-                <code class="class-name">{{ loader.className.split('.').pop() }}</code>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="isNoOp">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Type</th>
-              <td mat-cell *matCellDef="let loader">
-                <mat-chip [color]="loader.isNoOp ? 'warn' : 'primary'" selected>
-                  {{ loader.isNoOp ? 'No-Op' : 'Real' }}
-                </mat-chip>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="supportsFile">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Supports File</th>
-              <td mat-cell *matCellDef="let loader">
-                <mat-icon [color]="loader.supportsFile ? 'primary' : 'warn'">
-                  {{ loader.supportsFile ? 'check' : 'close' }}
-                </mat-icon>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="supportReason">
-              <th mat-header-cell *matHeaderCellDef>Reason</th>
-              <td mat-cell *matCellDef="let loader">{{ loader.supportReason }}</td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="loadersColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: loadersColumns;"></tr>
-          </table>
-          <mat-paginator #loadersPaginator [pageSizeOptions]="[10, 25, 50]" showFirstLastButtons></mat-paginator>
-        </div>
-      </mat-card-content>
-    </mat-card>
-
-    <!-- Chunkers Analysis -->
-    <mat-card class="chunkers-card">
-      <mat-card-header>
-        <mat-card-title>Text Chunkers Analysis</mat-card-title>
-        <mat-card-subtitle>
-          Selected: {{ analysisResult.selectedChunker?.name || 'None' }}
-          ({{ getRealChunkersCount() }} real chunkers available)
-        </mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-        <div class="table-container">
-          <table mat-table [dataSource]="chunkersDataSource" matSort #chunkersSort="matSort" class="debug-table">
-            <ng-container matColumnDef="name">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Name</th>
-              <td mat-cell *matCellDef="let chunker">
-                <div class="chunker-name">
-                  <mat-icon [color]="getStatusColor(chunker.isNoOp)"
-                            [matTooltip]="chunker.isNoOp ? 'No-op implementation' : 'Real chunker'">
-                    {{ getStatusIcon(chunker.isNoOp) }}
-                  </mat-icon>
-                  <span [class.selected-item]="analysisResult?.selectedChunker?.name === chunker.name">
-                    {{ chunker.name }}
-                  </span>
-                </div>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="className">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Class</th>
-              <td mat-cell *matCellDef="let chunker">
-                <code class="class-name">{{ chunker.className.split('.').pop() }}</code>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="isNoOp">
-              <th mat-header-cell *matHeaderCellDef mat-sort-header>Type</th>
-              <td mat-cell *matCellDef="let chunker">
-                <mat-chip [color]="chunker.isNoOp ? 'warn' : 'primary'" selected>
-                  {{ chunker.isNoOp ? 'No-Op' : 'Real' }}
-                </mat-chip>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="reason">
-              <th mat-header-cell *matHeaderCellDef>Description</th>
-              <td mat-cell *matCellDef="let chunker">{{ chunker.reason }}</td>
-            </ng-container>
-
-            <tr mat-header-row *matHeaderRowDef="chunkersColumns"></tr>
-            <tr mat-row *matRowDef="let row; columns: chunkersColumns;"></tr>
-          </table>
-          <mat-paginator #chunkersPaginator [pageSizeOptions]="[10, 25, 50]" showFirstLastButtons></mat-paginator>
-        </div>
-      </mat-card-content>
-    </mat-card>
-
-    <!-- Legacy Chunks Analysis -->
-    <mat-card class="chunks-card" *ngIf="analysisResult.chunks && analysisResult.chunks.length > 0">
-      <mat-card-header>
-        <mat-card-title>Generated Chunks</mat-card-title>
-        <mat-card-subtitle>{{ analysisResult.chunks.length }} chunks created by {{ analysisResult.selectedChunker?.name }}</mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-        <div class="table-container">
-          <table mat-table [dataSource]="chunksDataSource" matSort #chunksSort="matSort" class="debug-table">
+          <table mat-table [dataSource]="chunksDataSource" matSort #chunksSort="matSort" class="chunks-table">
             <ng-container matColumnDef="chunkIndex">
               <th mat-header-cell *matHeaderCellDef mat-sort-header>Index</th>
               <td mat-cell *matCellDef="let chunk">
                 <mat-chip color="accent" selected>{{ chunk.chunkIndex }}</mat-chip>
-              </td>
-            </ng-container>
-
-            <ng-container matColumnDef="id">
-              <th mat-header-cell *matHeaderCellDef>ID</th>
-              <td mat-cell *matCellDef="let chunk">
-                <code class="chunk-id">{{ chunk.id?.substring(0, 8) }}...</code>
               </td>
             </ng-container>
 
@@ -479,7 +120,7 @@
               <th mat-header-cell *matHeaderCellDef>Content Preview</th>
               <td mat-cell *matCellDef="let chunk; let i = index">
                 <div class="chunk-preview">
-                  <div class="preview-text">{{ getContentPreview(chunk.content, 150) }}</div>
+                  <div class="preview-text">{{ getContentPreview(chunk.content, 100) }}</div>
                   <div class="chunk-actions">
                     <button mat-icon-button (click)="toggleChunkContent(i)"
                             [matTooltip]="expandedChunkIndex === i ? 'Hide full content' : 'Show full content'">
@@ -490,14 +131,18 @@
                     </button>
                   </div>
                 </div>
-                <div class="full-content" *ngIf="expandedChunkIndex === i">
+                <div class="expanded-content" *ngIf="expandedChunkIndex === i">
                   <mat-divider></mat-divider>
-                  <h4>Full Chunk Content</h4>
-                  <pre class="chunk-content">{{ chunk.content }}</pre>
-                  <div *ngIf="chunk.metadata && hasValidMetadata(chunk.metadata)">
-                    <h4>Chunk Metadata</h4>
-                    <pre class="chunk-metadata">{{ formatMetadata(chunk.metadata) }}</pre>
-                  </div>
+                  <h4>Full Chunk Content (Chunk {{chunk.chunkIndex}})</h4>
+                  <mat-form-field appearance="outline" class="expanded-textarea">
+                    <mat-label>Chunk {{ chunk.chunkIndex }} Content</mat-label>
+                    <textarea matInput 
+                              [value]="chunk.content" 
+                              readonly 
+                              rows="8"
+                              class="chunk-content-display">
+                    </textarea>
+                  </mat-form-field>
                 </div>
               </td>
             </ng-container>
@@ -513,14 +158,13 @@
 
   </div>
 
-  <!-- Error Display -->
-  <mat-card class="error-card" *ngIf="analysisError">
+  <mat-card class="error-card" *ngIf="analysisError && !isAnalyzing">
     <mat-card-content>
       <div class="error-content">
         <mat-icon color="warn">error</mat-icon>
         <h3>Analysis Error</h3>
         <p>{{ analysisError }}</p>
-        <button mat-button color="primary" (click)="retryAnalysis()">
+        <button mat-button color="warn" (click)="retryAnalysis()">
           <mat-icon>refresh</mat-icon>
           Retry Analysis
         </button>
