@@ -74,7 +74,6 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
   @ViewChild('configuredSourcesSort') configuredSourcesSort!: MatSort;
   @ViewChild('uploadedFilesPaginator') uploadedFilesPaginator!: MatPaginator;
   @ViewChild('uploadedFilesSort') uploadedFilesSort!: MatSort;
-  @ViewChild('debugFileInput') debugFileInput!: ElementRef;
 
   availableLoaders: LoaderInfo[] = [];
   availableChunkers: ChunkerInfo[] = [];
@@ -549,9 +548,6 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       finalize(() => {
         this.isTestingUpload = false;
         this.debugTestUploadFile = null;
-        if (this.debugFileInput) {
-          this.debugFileInput.nativeElement.value = ""; // Reset file input
-        }
         this.updateTemplateFlags();
       })
     ).subscribe({
@@ -582,5 +578,20 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       verticalPosition: 'top',
       panelClass: isError ? ['snackbar-error'] : ['snackbar-success']
     });
+  }
+
+  getFileName(element: any): string {
+    if (typeof element === 'string') {
+      return element;
+    }
+    if (element && typeof element === 'object') {
+      return element.name || element.fileName || element.path || String(element);
+    }
+    return String(element || '');
+  }
+
+  getDisplayFileName(element: any): string {
+    const fileName = this.getFileName(element);
+    return fileName.length > 50 ? fileName.slice(0, 50) + '...' : fileName;
   }
 }
