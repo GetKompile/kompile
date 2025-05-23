@@ -229,8 +229,36 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
   }
 
   hasMetadata(summary: DocumentSummary | undefined | null): boolean {
+    return this.hasValidMetadata(summary);
+  }
+
+  // Enhanced method to safely check if metadata exists and is valid
+  hasValidMetadata(summary: DocumentSummary | undefined | null): boolean {
     if (!summary || !summary.metadata) return false;
-    return Object.keys(summary.metadata).length > 0;
+    
+    try {
+      // Test if metadata can be JSON stringified without circular references
+      JSON.stringify(summary.metadata);
+      return Object.keys(summary.metadata).length > 0;
+    } catch (error) {
+      console.warn('Metadata contains circular references or is invalid:', error);
+      return false;
+    }
+  }
+
+  // Safe metadata getter
+  getSafeMetadata(summary: DocumentSummary | undefined | null): any {
+    if (!this.hasValidMetadata(summary)) {
+      return {};
+    }
+    
+    try {
+      // Return a clean copy to avoid circular reference issues
+      return JSON.parse(JSON.stringify(summary!.metadata));
+    } catch (error) {
+      console.warn('Error creating safe metadata copy:', error);
+      return {};
+    }
   }
 
   getBatchResultCount(path: string): number {
@@ -245,7 +273,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     return this.batchResults?.[path]?.error;
   }
 
-  // Utility to safely convert a value to string for the template pipes
+  // Enhanced safeToString method
   safeToString(value: any): string {
     if (value === null || value === undefined) {
       return '';
@@ -253,7 +281,16 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     if (typeof value === 'string') {
       return value;
     }
-    return String(value);
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    // Handle objects and arrays safely
+    try {
+      return String(value);
+    } catch (error) {
+      console.warn('Error converting value to string:', error);
+      return '';
+    }
   }
 
   // Utility to safely get length of a string-like value
