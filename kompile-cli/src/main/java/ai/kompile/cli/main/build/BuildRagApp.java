@@ -30,7 +30,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.Callable;
-import java.util.stream.Collectors;
 
 @Command(name = "build-rag-app", mixinStandardHelpOptions = true,
         description = "Builds a RAG MCP Assistant application instance, optionally as a GraalVM native image.")
@@ -56,12 +55,23 @@ public class BuildRagApp implements Callable<Integer> {
 
     @Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
     private boolean includeAppCore;
+
     @Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
-    @Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module")
+
+    // Original loaders (deprecated/heavy)
+    @Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module (deprecated - use specialized loaders instead)")
     private boolean includeLoaderTika = false;
     @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
     private boolean includeLoaderPdf = false;
+
+    // New specialized loader modules
+    @Option(names = {"--includeLoaderMicrosoft"}, description = "Include kompile-loader-microsoft module for Office documents")
+    private boolean includeLoaderMicrosoft = false;
+    @Option(names = {"--includeLoaderMail"}, description = "Include kompile-loader-mail module for email parsing")
+    private boolean includeLoaderMail = false;
+    @Option(names = {"--includeLoaderPdfExtended"}, description = "Include kompile-loader-pdf-extended module for advanced PDF processing")
+    private boolean includeLoaderPdfExtended = false;
 
     // Chunker Options
     @Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module")
@@ -77,7 +87,7 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeChunkerToken"}, description = "Include kompile-chunker-token module")
     private boolean includeChunkerToken = false;
 
-
+    // LLM Options
     @Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
     private boolean includeAnserini = false;
     @Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module")
@@ -86,23 +96,30 @@ public class BuildRagApp implements Callable<Integer> {
     private boolean includeLlmAnthropic = false;
     @Option(names = {"--includeLlmGemini"}, description = "Include kompile-app-gemini-llm module")
     private boolean includeLlmGemini = false;
+
+    // Embedding Options
     @Option(names = {"--includeEmbeddingOpenai"}, description = "Include kompile-embedding-openai module")
     private boolean includeEmbeddingOpenai = false;
     @Option(names = {"--includeEmbeddingSentenceTransformer"}, description = "Include kompile-embedding-sentence-transformer module")
     private boolean includeEmbeddingSentenceTransformer = false;
+    @Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
+    private boolean includeEmbeddingPostgresml = false;
+
+    // Vector Store Options
     @Option(names = {"--includeVectorstoreChroma"}, description = "Include kompile-vectorstore-chroma module")
     private boolean includeVectorstoreChroma = false;
     @Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module")
     private boolean includeVectorstorePgvector = false;
+
+    // Tool Options
     @Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module", defaultValue = "true", negatable = true)
     private boolean includeToolFilesystem;
     @Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
     private boolean includeToolRag;
-    @Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
-    private boolean includeEmbeddingPostgresml = false;
+
+    // Additional Options
     @Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
     private boolean includePgmlIndexer = false;
-
 
     @Option(names = {"--native"}, description = "Build a GraalVM native image (activates 'native' profile)", defaultValue = "true", negatable = true)
     private boolean buildNative;
@@ -148,12 +165,21 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--instanceVersion=" + this.instanceVersion);
         ragPomCliArgs.add("--ragMcpVersion=" + this.ragMcpVersion);
 
+        // Core modules
         ragPomCliArgs.add("--includeAppMain=" + this.includeAppMain);
         ragPomCliArgs.add("--includeAppCore=" + this.includeAppCore);
         ragPomCliArgs.add("--includeLoadersOrchestrator=" + this.includeLoadersOrchestrator);
+
+        // Original loaders
         ragPomCliArgs.add("--includeLoaderTika=" + this.includeLoaderTika);
         ragPomCliArgs.add("--includeLoaderPdf=" + this.includeLoaderPdf);
 
+        // New specialized loaders
+        ragPomCliArgs.add("--includeLoaderMicrosoft=" + this.includeLoaderMicrosoft);
+        ragPomCliArgs.add("--includeLoaderMail=" + this.includeLoaderMail);
+        ragPomCliArgs.add("--includeLoaderPdfExtended=" + this.includeLoaderPdfExtended);
+
+        // Chunker options
         ragPomCliArgs.add("--includeChunkerSentence=" + this.includeChunkerSentence);
         if (this.includeChunkerSentence && this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
             ragPomCliArgs.add("--supportedLanguages=" + String.join(",", this.supportedLanguages));
@@ -162,20 +188,28 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeChunkerMarkdown=" + this.includeChunkerMarkdown);
         ragPomCliArgs.add("--includeChunkerToken=" + this.includeChunkerToken);
 
+        // LLM options
         ragPomCliArgs.add("--includeAnserini=" + this.includeAnserini);
         ragPomCliArgs.add("--includeLlmOpenai=" + this.includeLlmOpenai);
         ragPomCliArgs.add("--includeLlmAnthropic=" + this.includeLlmAnthropic);
         ragPomCliArgs.add("--includeLlmGemini=" + this.includeLlmGemini);
+
+        // Embedding options
         ragPomCliArgs.add("--includeEmbeddingOpenai=" + this.includeEmbeddingOpenai);
         ragPomCliArgs.add("--includeEmbeddingSentenceTransformer=" + this.includeEmbeddingSentenceTransformer);
         ragPomCliArgs.add("--includeEmbeddingPostgresml=" + this.includeEmbeddingPostgresml);
+
+        // Vector store options
         ragPomCliArgs.add("--includeVectorstoreChroma=" + this.includeVectorstoreChroma);
         ragPomCliArgs.add("--includeVectorstorePgvector=" + this.includeVectorstorePgvector);
+
+        // Tool options
         ragPomCliArgs.add("--includeToolFilesystem=" + this.includeToolFilesystem);
         ragPomCliArgs.add("--includeToolRag=" + this.includeToolRag);
+
+        // Additional options
         ragPomCliArgs.add("--includePgmlIndexer=" + this.includePgmlIndexer);
         ragPomCliArgs.add("--buildNative=" + this.buildNative);
-
 
         int pomGenExitCode = new CommandLine(new RagPomGenerator()).execute(ragPomCliArgs.toArray(new String[0]));
 
@@ -207,7 +241,6 @@ public class BuildRagApp implements Callable<Integer> {
             System.out.println("Note: Tests are configured to run for native builds (skipTests=false) to aid AOT, unless --skipTests is true.");
         }
         request.setProperties(systemProperties);
-
 
         if (buildNative) {
             request.setProfiles(Arrays.asList("native"));
@@ -255,6 +288,8 @@ public class BuildRagApp implements Callable<Integer> {
         if (skipTests) System.out.println("  Tests: SKIPPED");
         System.out.println("  Maven Home: " + effectiveMavenHome.getAbsolutePath());
 
+        // Print enabled modules for better visibility
+        printEnabledModules();
 
         InvocationResult result = invoker.execute(request);
 
@@ -264,7 +299,6 @@ public class BuildRagApp implements Callable<Integer> {
                 System.err.println("Maven Invocation Exception: ");
                 result.getExecutionException().printStackTrace(System.err);
             }
-            // Optionally write buildLogOutput to a file here
             return 1;
         }
 
@@ -308,6 +342,76 @@ public class BuildRagApp implements Callable<Integer> {
             }
         }
         return 0;
+    }
+
+    private void printEnabledModules() {
+        System.out.println("  Enabled Modules:");
+
+        // Core modules
+        if (includeAppMain) System.out.println("    ✓ App Main (UI & Main Application)");
+        if (includeAppCore) System.out.println("    ✓ App Core");
+        if (includeLoadersOrchestrator) System.out.println("    ✓ Loaders Orchestrator");
+
+        // Document loaders
+        List<String> loaders = new ArrayList<>();
+        if (includeLoaderTika) loaders.add("Tika (deprecated)");
+        if (includeLoaderPdf) loaders.add("PDF Basic");
+        if (includeLoaderMicrosoft) loaders.add("Microsoft Office");
+        if (includeLoaderMail) loaders.add("Email/Mail");
+        if (includeLoaderPdfExtended) loaders.add("PDF Extended");
+        if (!loaders.isEmpty()) {
+            System.out.println("    ✓ Document Loaders: " + String.join(", ", loaders));
+        }
+
+        // Chunkers
+        List<String> chunkers = new ArrayList<>();
+        if (includeChunkerSentence) chunkers.add("Sentence (" + String.join(",", supportedLanguages) + ")");
+        if (includeChunkerRecursiveCharacter) chunkers.add("Recursive Character");
+        if (includeChunkerMarkdown) chunkers.add("Markdown");
+        if (includeChunkerToken) chunkers.add("Token");
+        if (!chunkers.isEmpty()) {
+            System.out.println("    ✓ Chunkers: " + String.join(", ", chunkers));
+        }
+
+        // LLMs
+        List<String> llms = new ArrayList<>();
+        if (includeLlmOpenai) llms.add("OpenAI");
+        if (includeLlmAnthropic) llms.add("Anthropic");
+        if (includeLlmGemini) llms.add("Gemini");
+        if (!llms.isEmpty()) {
+            System.out.println("    ✓ LLM Providers: " + String.join(", ", llms));
+        }
+
+        // Embeddings
+        List<String> embeddings = new ArrayList<>();
+        if (includeEmbeddingOpenai) embeddings.add("OpenAI");
+        if (includeEmbeddingSentenceTransformer) embeddings.add("Sentence Transformers");
+        if (includeEmbeddingPostgresml) embeddings.add("PostgresML");
+        if (!embeddings.isEmpty()) {
+            System.out.println("    ✓ Embedding Providers: " + String.join(", ", embeddings));
+        }
+
+        // Vector stores
+        List<String> vectorStores = new ArrayList<>();
+        if (includeVectorstoreChroma) vectorStores.add("Chroma");
+        if (includeVectorstorePgvector) vectorStores.add("pgvector");
+        if (!vectorStores.isEmpty()) {
+            System.out.println("    ✓ Vector Stores: " + String.join(", ", vectorStores));
+        }
+
+        // Tools
+        List<String> tools = new ArrayList<>();
+        if (includeToolFilesystem) tools.add("Filesystem");
+        if (includeToolRag) tools.add("RAG");
+        if (!tools.isEmpty()) {
+            System.out.println("    ✓ Tools: " + String.join(", ", tools));
+        }
+
+        // Additional
+        if (includeAnserini) System.out.println("    ✓ Anserini Search");
+        if (includePgmlIndexer) System.out.println("    ✓ PostgresML Indexer");
+
+        System.out.println();
     }
 
     public static void main(String... args) {
