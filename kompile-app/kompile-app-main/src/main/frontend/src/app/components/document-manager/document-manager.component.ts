@@ -14,7 +14,7 @@
  * * limitations under the License.
  */
 
-import { Component, OnInit, ChangeDetectorRef, ViewChild, AfterViewInit } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef, ViewChild, AfterViewInit, ElementRef } from '@angular/core';
 import { DocumentService } from '../../services/document.service';
 import { AnseriniService } from '../../services/anserini.service';
 import {
@@ -29,7 +29,10 @@ import {
   BatchProcessResponse,
   BatchProcessResponseDetails,
   AddSourceDialogResult,
-  DocumentSummary
+  DocumentSummary,
+  DebuggerStatus,
+  DebugAnalysisResult,
+  TestUploadResponse
 } from '../../models/api-models';
 import { HttpErrorResponse } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
@@ -39,7 +42,7 @@ import { MatPaginator } from '@angular/material/paginator';
 import { MatSort } from '@angular/material/sort';
 import { AddSourceDialogComponent } from './add-source-dialog/add-source-dialog.component';
 import { forkJoin, of, Observable } from 'rxjs';
-import { catchError, finalize, map } from 'rxjs/operators';
+import { catchError, finalize, map, startWith } from 'rxjs/operators';
 
 export interface ConfiguredSourceElement {
   id: number;
@@ -71,6 +74,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
   @ViewChild('configuredSourcesSort') configuredSourcesSort!: MatSort;
   @ViewChild('uploadedFilesPaginator') uploadedFilesPaginator!: MatPaginator;
   @ViewChild('uploadedFilesSort') uploadedFilesSort!: MatSort;
+  @ViewChild('debugFileInput') debugFileInput!: ElementRef;
 
   availableLoaders: LoaderInfo[] = [];
   availableChunkers: ChunkerInfo[] = [];
@@ -101,6 +105,19 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
   showUploadedFilesTable: boolean = false;
   showBatchResults: boolean = false;
 
+  // Debugger Properties
+  debuggerStatus: DebuggerStatus | null = null;
+  isLoadingDebuggerStatus: boolean = false;
+  selectedFileForDebug: string = '';
+  selectedLoaderForDebug: string = '';
+  selectedChunkerForDebug: string = '';
+  debugAnalysisResult: DebugAnalysisResult | null = null;
+  isAnalyzingFile: boolean = false;
+  showDebugStatusCard: boolean = false;
+  showDebugAnalysisCard: boolean = false;
+  debugTestUploadFile: File | null = null;
+  isTestingUpload: boolean = false;
+
   constructor(
     private documentService: DocumentService,
     private anseriniService: AnseriniService,
@@ -111,6 +128,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
 
   ngOnInit(): void {
     this.refreshAllData();
+    this.loadDebuggerStatus();
   }
 
   ngAfterViewInit(): void {
@@ -133,28 +151,32 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
   }
 
   private updateTemplateFlags(): void {
-    this.showLoadersSpinner = this.isLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
-    this.showNoLoadersMessage = !this.isLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
+    const baseLoading = this.isLoading || this.isLoadingDebuggerStatus || this.isBatchProcessing || this.isAnalyzingFile || this.isTestingUpload;
+
+    this.showLoadersSpinner = baseLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
+    this.showNoLoadersMessage = !baseLoading && (!this.availableLoaders || this.availableLoaders.length === 0);
     this.showLoadersList = !!(this.availableLoaders && this.availableLoaders.length > 0);
 
-    this.showChunkersSpinner = this.isLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
-    this.showNoChunkersMessage = !this.isLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
+    this.showChunkersSpinner = baseLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
+    this.showNoChunkersMessage = !baseLoading && (!this.availableChunkers || this.availableChunkers.length === 0);
     this.showChunkersList = !!(this.availableChunkers && this.availableChunkers.length > 0);
 
-    this.showConfiguredSourcesSpinner = this.isLoading && this.configuredSourcesDataSource.data.length === 0;
-    this.showNoConfiguredSourcesMessage = !this.isLoading && this.configuredSourcesDataSource.data.length === 0;
+    this.showConfiguredSourcesSpinner = baseLoading && this.configuredSourcesDataSource.data.length === 0;
+    this.showNoConfiguredSourcesMessage = !baseLoading && this.configuredSourcesDataSource.data.length === 0;
     this.showConfiguredSourcesTable = this.configuredSourcesDataSource.data.length > 0;
 
-    this.showUploadedFilesSpinner = this.isLoading && this.uploadedFilesDataSource.data.length === 0;
-    this.showNoUploadedFilesMessage = !this.isLoading && this.uploadedFilesDataSource.data.length === 0;
+    this.showUploadedFilesSpinner = baseLoading && this.uploadedFilesDataSource.data.length === 0;
+    this.showNoUploadedFilesMessage = !baseLoading && this.uploadedFilesDataSource.data.length === 0;
     this.showUploadedFilesTable = this.uploadedFilesDataSource.data.length > 0;
 
-    this.showBatchResults = !!(this.batchResults && !this.isBatchProcessing && this.batchResultPaths.length > 0);
+    this.showBatchResults = !!(this.batchResults && !this.isBatchProcessing && (this.batchResultPaths?.length || 0) > 0);
+    this.showDebugStatusCard = !!this.debuggerStatus && !this.isLoadingDebuggerStatus;
+    this.showDebugAnalysisCard = !!this.debugAnalysisResult && !this.isAnalyzingFile;
     this.cdr.detectChanges();
   }
 
   refreshAllData(callback?: () => void): void {
-    if (this.isLoading && !callback) {
+    if (this.isLoading && !callback) { // Prevent multiple parallel refreshes unless a callback is provided
       return;
     }
     this.isLoading = true;
@@ -195,14 +217,14 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
         this._configuredSources = sources || [];
         this.updateConfiguredSourcesTable();
       },
-      error: (err) => {
+      error: (err) => { // This error block might be redundant due to individual catchErrors, but good for a global fallback
         this.showSnackbar(`An error occurred while loading initial data: ${err.message || 'Server error'}`, true);
       }
     });
   }
 
   private handleLoadError(dataType: string, error: HttpErrorResponse) {
-    this.showSnackbar(`Error loading ${dataType}: ${error.message || 'Server error'}`, true);
+    this.showSnackbar(`Error loading ${dataType}: ${error.message || 'Server error'}`, true, 6000);
     if (dataType === 'available loaders') this.availableLoaders = [];
     if (dataType === 'available chunkers') this.availableChunkers = [];
     if (dataType === 'uploaded files') {
@@ -211,13 +233,12 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     if (dataType === 'configured sources') {
       this._configuredSources = []; this.updateConfiguredSourcesTable();
     }
-    // this.updateTemplateFlags(); // Not calling here, finalize in refreshAllData will call it
   }
 
   getSimpleName(className: any): string {
     const nameStr = this.safeToString(className);
     const parts = nameStr.split('.');
-    return parts.pop() || '';
+    return parts.pop() || nameStr; // Return full string if no dots
   }
 
   get hasBatchSourceContent(): boolean {
@@ -232,32 +253,26 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     return this.hasValidMetadata(summary);
   }
 
-  // Enhanced method to safely check if metadata exists and is valid
   hasValidMetadata(summary: DocumentSummary | undefined | null): boolean {
     if (!summary || !summary.metadata) return false;
-    
     try {
-      // Test if metadata can be JSON stringified without circular references
-      JSON.stringify(summary.metadata);
+      JSON.stringify(summary.metadata); // Test for circular refs
       return Object.keys(summary.metadata).length > 0;
     } catch (error) {
-      console.warn('Metadata contains circular references or is invalid:', error);
-      return false;
+      console.warn('Metadata contains circular references or is invalid:', summary.metadata, error);
+      return false; // Treat as invalid
     }
   }
 
-  // Safe metadata getter
   getSafeMetadata(summary: DocumentSummary | undefined | null): any {
     if (!this.hasValidMetadata(summary)) {
-      return {};
+      return {}; // Return empty or some placeholder if not valid
     }
-    
     try {
-      // Return a clean copy to avoid circular reference issues
-      return JSON.parse(JSON.stringify(summary!.metadata));
+      return JSON.parse(JSON.stringify(summary!.metadata)); // Deep copy
     } catch (error) {
-      console.warn('Error creating safe metadata copy:', error);
-      return {};
+      console.warn('Error creating safe metadata copy:', summary!.metadata, error);
+      return { "error": "Could not display metadata due to parsing issues." };
     }
   }
 
@@ -273,7 +288,6 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     return this.batchResults?.[path]?.error;
   }
 
-  // Enhanced safeToString method
   safeToString(value: any): string {
     if (value === null || value === undefined) {
       return '';
@@ -281,21 +295,24 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     if (typeof value === 'string') {
       return value;
     }
-    if (typeof value === 'number' || typeof value === 'boolean') {
-      return String(value);
-    }
-    // Handle objects and arrays safely
     try {
       return String(value);
-    } catch (error) {
-      console.warn('Error converting value to string:', error);
+    } catch (e) {
       return '';
     }
   }
 
-  // Utility to safely get length of a string-like value
   safeLength(value: any): number {
     return this.safeToString(value).length;
+  }
+
+  // TrackBy functions for ngFor performance optimization (NEW)
+  trackByLoaderName(index: number, loader: LoaderInfo): string {
+    return loader.name || index.toString();
+  }
+
+  trackByChunkerName(index: number, chunker: ChunkerInfo): string {
+    return chunker.name || index.toString();
   }
 
   updateConfiguredSourcesTable(): void {
@@ -303,7 +320,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       .filter(s => s && !s.toLowerCase().includes("no primary document sources configured"))
       .map((s, index) => ({ id: index + 1, path: this.safeToString(s), type: 'Property' }));
 
-    if (this.uploadedFilesLocation && this.uploadedFilesLocation !== 'N/A' && !this.uploadedFilesLocation.includes("error_uploads_path_not_configured")) {
+    if (this.uploadedFilesLocation && this.uploadedFilesLocation !== 'N/A' && !this.uploadedFilesLocation.includes("error_uploads_path_not_configured") && !this.uploadedFilesLocation.includes("Error loading path")) {
       if (!tableData.some(item => item.path === this.uploadedFilesLocation && item.type === 'Upload Path')) {
         tableData.push({
           id: tableData.length + 1,
@@ -313,8 +330,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       }
     }
     this.configuredSourcesDataSource.data = tableData;
-    if (this.configuredSourcesPaginator) { this.configuredSourcesDataSource.paginator = this.configuredSourcesPaginator; }
-    if (this.configuredSourcesSort) { this.configuredSourcesDataSource.sort = this.configuredSourcesSort; }
+    this.assignPaginatorsAndSorters(); // Re-assign after data change
     this.updateTemplateFlags();
   }
 
@@ -323,8 +339,7 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       id: index + 1,
       name: this.safeToString(f),
     }));
-    if (this.uploadedFilesPaginator) { this.uploadedFilesDataSource.paginator = this.uploadedFilesPaginator; }
-    if (this.uploadedFilesSort) { this.uploadedFilesDataSource.sort = this.uploadedFilesSort; }
+    this.assignPaginatorsAndSorters(); // Re-assign after data change
     this.updateTemplateFlags();
   }
 
@@ -353,14 +368,19 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
     this.isLoading = true; this.updateTemplateFlags();
     const handleSuccess = (response: FileUploadResponse | SimpleMessageResponse, operation: string) => {
       this.showSnackbar(response.message || `${operation} successful!`);
-      this.refreshAllData(() => {
-        if (data?.rebuildIndex) this.onRebuildIndex();
-        else { this.isLoading = false; this.updateTemplateFlags(); }
+      this.refreshAllData(() => { // Refresh all data after success
+        if (data?.rebuildIndex) {
+          this.onRebuildIndex(); // isLoading will be handled by onRebuildIndex
+        } else {
+          this.isLoading = false;
+          this.updateTemplateFlags();
+        }
       });
     };
     const handleError = (operation: string, err: HttpErrorResponse) => {
       this.handleOperationError(operation, err); this.isLoading = false; this.updateTemplateFlags();
     };
+
     if (data.file) {
       this.documentService.uploadFile(data.file, data.selectedLoader).subscribe({
         next: (r) => handleSuccess(r, 'File upload'), error: (e) => handleError('File upload', e)
@@ -370,52 +390,197 @@ export class DocumentManagerComponent implements OnInit, AfterViewInit {
       this.documentService.addUrl(request).subscribe({
         next: (r) => handleSuccess(r, 'Add URL'), error: (e) => handleError('Add URL', e)
       });
-    } else { this.isLoading = false; this.updateTemplateFlags(); }
+    } else {
+      this.isLoading = false; this.updateTemplateFlags(); // No action taken
+    }
   }
 
   onProcessBatch(): void {
-    if (!this.hasBatchSourceContent) { this.showSnackbar('Please enter source paths...', true); return; }
-    if (!this.batchSelectedLoader) { this.showSnackbar('Please select a loader...', true); return; }
+    if (!this.hasBatchSourceContent) { this.showSnackbar('Please enter source paths/URLs for batch processing.', true); return; }
+    if (!this.batchSelectedLoader) { this.showSnackbar('Please select a loader for batch processing.', true); return; }
     this.isBatchProcessing = true; this.batchResults = null; this.batchResultPaths = []; this.updateTemplateFlags();
-    const items: BatchLoadRequestItem[] = this.batchSourcePaths.split(',').map(p => p.trim()).filter(p => p)
-      .map(pathOrUrl => ({ pathOrUrl, type: pathOrUrl.toLowerCase().startsWith('http') ? DocumentSourceType.URL : DocumentSourceType.FILE, loaderName: this.batchSelectedLoader }));
+    const items: BatchLoadRequestItem[] = this.batchSourcePaths.split(',')
+      .map(p => p.trim()).filter(p => p)
+      .map(pathOrUrl => ({
+        pathOrUrl,
+        type: pathOrUrl.toLowerCase().startsWith('http://') || pathOrUrl.toLowerCase().startsWith('https://') ? DocumentSourceType.URL : DocumentSourceType.FILE,
+        loaderName: this.batchSelectedLoader
+      }));
+
     if (items.length === 0) {
-      this.showSnackbar("No valid source paths...", true); this.isBatchProcessing = false; this.updateTemplateFlags(); return;
+      this.showSnackbar("No valid source paths or URLs provided for batch processing.", true);
+      this.isBatchProcessing = false; this.updateTemplateFlags(); return;
     }
+
     this.documentService.processBatch({ items, defaultLoaderName: this.batchSelectedLoader }).pipe(
       finalize(() => { this.isBatchProcessing = false; this.updateTemplateFlags(); })
     ).subscribe({
       next: (res) => {
-        this.batchResults = res.details || null; this.batchResultPaths = this.batchResults ? Object.keys(this.batchResults) : [];
-        this.showSnackbar(`${res.message || 'Batch complete.'} OK: ${res.successful_items}, Fail: ${res.failed_items}.`);
-        this.batchSourcePaths = '';
+        this.batchResults = res.details || null;
+        this.batchResultPaths = this.batchResults ? Object.keys(this.batchResults) : [];
+        this.showSnackbar(`${res.message || 'Batch process complete.'} Successful: ${res.successful_items}, Failed: ${res.failed_items}.`);
+        this.batchSourcePaths = ''; // Clear input after processing
+        this.refreshAllData(); // Refresh data to reflect any new files from batch processing
       },
       error: (err) => { this.handleOperationError('Batch processing', err); this.batchResults = null; this.batchResultPaths = []; }
     });
   }
 
   onRebuildIndex(): void {
-    this.isLoading = true; this.updateTemplateFlags();
+    this.isLoading = true; this.updateTemplateFlags(); // Use isLoading for general loading state
     this.anseriniService?.rebuildIndex().pipe(
       finalize(() => { this.isLoading = false; this.updateTemplateFlags(); })
     ).subscribe({
-      next: (res) => this.showSnackbar(res.message || 'Index rebuild initiated!'),
+      next: (res) => this.showSnackbar(res.message || 'Index rebuild initiated successfully!'),
       error: (err) => this.handleOperationError('Rebuild Index', err)
     });
   }
 
   deleteUploadedFile(fileName: string): void {
-    if (confirm(`Delete '${fileName}'?`)) this.showSnackbar(`Delete '${fileName}' not implemented.`, true, 5000);
+    if (confirm(`Are you sure you want to attempt to delete '${fileName}'? This action is frontend-only and might not persist if the backend doesn't support deletion or if the file is managed externally.`)) {
+      // For now, only show a snackbar as backend deletion is not specified.
+      // If a backend deletion endpoint exists, it should be called here.
+      this.showSnackbar(`Deletion for '${fileName}' not fully implemented (no backend call). File might reappear on refresh.`, true, 7000);
+
+      // Optimistic UI update (optional, file will reappear if not deleted on backend and refreshAllData is called)
+      // this._uploadedFiles = this._uploadedFiles.filter(f => f !== fileName);
+      // this.updateUploadedFilesTable();
+    }
+  }
+
+  // --- Document Debugger Methods ---
+
+  loadDebuggerStatus(): void {
+    this.isLoadingDebuggerStatus = true;
+    this.debuggerStatus = null;
+    this.updateTemplateFlags();
+    this.documentService.getDebuggerStatus().pipe(
+      finalize(() => {
+        this.isLoadingDebuggerStatus = false;
+        this.updateTemplateFlags();
+      })
+    ).subscribe({
+      next: (status) => {
+        this.debuggerStatus = status;
+      },
+      error: (err) => {
+        this.handleOperationError('Loading debugger status', err);
+        this.debuggerStatus = { // Provide a default error status
+          uploadsPathConfigured: false, uploadsPath: 'Error loading status',
+          totalLoaders: 0, realLoaders: 0, noOpLoaders: 0,
+          totalChunkers: 0, realChunkers: 0, noOpChunkers: 0
+        };
+      }
+    });
+  }
+
+  onFileSelectedForDebug(fileName: string): void {
+    this.selectedFileForDebug = fileName;
+    this.debugAnalysisResult = null;
+    this.selectedLoaderForDebug = ''; // Reset loader
+    this.selectedChunkerForDebug = ''; // Reset chunker
+    this.showDebugAnalysisCard = false;
+    this.updateTemplateFlags();
+    // Optionally trigger analyzeSelectedFile() here or have a dedicated button
+  }
+
+  analyzeSelectedFile(): void {
+    if (!this.selectedFileForDebug) {
+      this.showSnackbar('Please select a file to analyze from the "Uploaded Files" table.', true);
+      return;
+    }
+    this.isAnalyzingFile = true;
+    this.debugAnalysisResult = null;
+    this.updateTemplateFlags();
+
+    this.documentService.analyzeFile(
+      this.selectedFileForDebug,
+      this.selectedLoaderForDebug || undefined, // Pass undefined if empty for auto-select
+      this.selectedChunkerForDebug || undefined // Pass undefined if empty for auto-select
+    ).pipe(
+      finalize(() => {
+        this.isAnalyzingFile = false;
+        this.updateTemplateFlags();
+      })
+    ).subscribe({
+      next: (result) => {
+        this.debugAnalysisResult = result;
+        if (result.errorMessage) {
+          this.showSnackbar(`Analysis Error: ${result.errorMessage}`, true, 7000);
+        } else {
+          this.showSnackbar(`Analysis complete for ${result.fileName}.`, false);
+        }
+      },
+      error: (err) => {
+        this.handleOperationError(`Analyzing file ${this.selectedFileForDebug}`, err);
+        this.debugAnalysisResult = { // Provide a default error result
+          fileName: this.selectedFileForDebug, filePath: null, fileSize: 0,
+          availableLoaders: null, selectedLoader: null, loadedDocuments: null,
+          availableChunkers: null, selectedChunker: null, chunks: null,
+          processingStats: null, errorMessage: `Client-side error or unhandled server error: ${err.message || 'Unknown error'}`
+        };
+      }
+    });
+  }
+
+  onDebugFileChange(event: Event): void {
+    const element = event.currentTarget as HTMLInputElement;
+    const fileList: FileList | null = element.files;
+    if (fileList && fileList.length > 0) {
+      this.debugTestUploadFile = fileList!![0];
+    } else {
+      this.debugTestUploadFile = null;
+    }
+  }
+
+  onTestUploadDebugFile(): void {
+    if (!this.debugTestUploadFile) {
+      this.showSnackbar('Please select a file to upload for debugging.', true);
+      return;
+    }
+    if (!this.debuggerStatus?.uploadsPathConfigured) {
+      this.showSnackbar('Test upload unavailable: Debugger uploads path is not configured on the server.', true, 7000);
+      return;
+    }
+
+    this.isTestingUpload = true;
+    this.updateTemplateFlags();
+    this.documentService.testUploadDebugFile(this.debugTestUploadFile).pipe(
+      finalize(() => {
+        this.isTestingUpload = false;
+        this.debugTestUploadFile = null;
+        if (this.debugFileInput) {
+          this.debugFileInput.nativeElement.value = ""; // Reset file input
+        }
+        this.updateTemplateFlags();
+      })
+    ).subscribe({
+      next: (response: TestUploadResponse) => {
+        if (response.error) {
+          this.showSnackbar(`Test upload failed: ${response.error}`, true, 7000);
+        } else {
+          this.showSnackbar(response.message || 'File uploaded successfully for debugging.', false);
+          this.refreshAllData(); // Refresh to show the newly uploaded debug file
+        }
+      },
+      error: (err) => {
+        this.handleOperationError('Test file upload for debugging', err);
+      }
+    });
   }
 
   private handleOperationError(operation: string, error: HttpErrorResponse): void {
-    const errMsg = error.error?.error || error.error?.message || error.message || 'Server error';
-    this.showSnackbar(`${operation} failed: ${errMsg}`, true, 5000);
+    const errMsg = error.error?.error || error.error?.message || (error.error && typeof error.error === 'string' ? error.error : null) || error.message || 'Server error';
+    this.showSnackbar(`${operation} failed: ${errMsg}`, true, 7000);
+    console.error(`${operation} failed:`, error);
   }
 
-  showSnackbar(message: string, isError: boolean = false, duration: number = 4000): void {
+  showSnackbar(message: string, isError: boolean = false, duration: number = 5000): void {
     this.snackBar.open(message, 'Close', {
-      duration, horizontalPosition: 'center', verticalPosition: 'top', panelClass: isError ? ['snackbar-error'] : ['snackbar-success']
+      duration,
+      horizontalPosition: 'center',
+      verticalPosition: 'top',
+      panelClass: isError ? ['snackbar-error'] : ['snackbar-success']
     });
   }
 }

@@ -44,14 +44,19 @@ import { MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatDialogModule } from '@angular/material/dialog';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatTabsModule } from '@angular/material/tabs';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatDividerModule } from '@angular/material/divider';
 import { TextFieldModule } from '@angular/cdk/text-field';
-
+import {DocumentDebuggerComponent} from './components/document-manager/document-debugger/document-debugger.component';
+import {MatSlideToggle} from '@angular/material/slide-toggle';
 
 @NgModule({
   declarations: [
     AppComponent,
     ChatInterfaceComponent,
     DocumentManagerComponent,
+    DocumentDebuggerComponent,
     McpToolsViewerComponent,
     IndexBrowserComponent
   ],
@@ -80,7 +85,11 @@ import { TextFieldModule } from '@angular/cdk/text-field';
     MatDialogModule,
     MatExpansionModule,
     MatProgressSpinnerModule,
+    MatTabsModule,
+    MatChipsModule,
+    MatDividerModule,
     TextFieldModule,
+    MatSlideToggle,
   ],
   providers: [],
   bootstrap: [AppComponent]

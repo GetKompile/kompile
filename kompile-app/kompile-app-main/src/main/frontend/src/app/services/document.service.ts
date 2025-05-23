@@ -15,7 +15,7 @@
  */
 
 import { Injectable } from '@angular/core';
-import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpParams } from '@angular/common/http';
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import {
@@ -23,9 +23,12 @@ import {
   FileUploadResponse,
   SimpleMessageResponse,
   LoaderInfo,
-  ChunkerInfo, // Added ChunkerInfo
-  BatchProcessRequest,  // Ensure this is defined in api-models.ts
-  BatchProcessResponse  // Ensure this is defined in api-models.ts
+  ChunkerInfo,
+  BatchProcessRequest,
+  BatchProcessResponse,
+  DebugAnalysisResult,
+  DebuggerStatus,
+  TestUploadResponse
 } from '../models/api-models';
 import { BaseService } from './base.service';
 
@@ -53,7 +56,7 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  getAvailableChunkers(): Observable<ChunkerInfo[]> { // Added method
+  getAvailableChunkers(): Observable<ChunkerInfo[]> {
     return this.http.get<ChunkerInfo[]>(`${this.backendUrl}/documents/chunkers`)
       .pipe(catchError(this.handleError));
   }
@@ -78,16 +81,47 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  // Document Debugger Endpoints
+  getDebuggerStatus(): Observable<DebuggerStatus> {
+    return this.http.get<DebuggerStatus>(`${this.backendUrl}/documents/debug/status`)
+      .pipe(catchError(this.handleError));
+  }
+
+  analyzeFile(fileName: string, loaderName?: string, chunkerName?: string): Observable<DebugAnalysisResult> {
+    let params = new HttpParams().set('fileName', fileName);
+    if (loaderName) {
+      params = params.set('loaderName', loaderName);
+    }
+    if (chunkerName) {
+      params = params.set('chunkerName', chunkerName);
+    }
+    return this.http.post<DebugAnalysisResult>(`${this.backendUrl}/documents/debug/analyze-file`, null, { params })
+      .pipe(catchError(this.handleError));
+  }
+
+  testUploadDebugFile(file: File): Observable<TestUploadResponse> {
+    const formData: FormData = new FormData();
+    formData.append('file', file, file.name);
+    return this.http.post<TestUploadResponse>(`${this.backendUrl}/documents/debug/test-upload`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+
   private handleError(error: HttpErrorResponse) {
     let errorMessage = 'Unknown error!';
     if (error.error instanceof ErrorEvent) {
       errorMessage = `Error: ${error.error.message}`;
     } else {
-      errorMessage = `Error Code: ${error.status}\nMessage: ${error.message || (error.error && (error.error.error || JSON.stringify(error.error))) || 'Server error'}`;
+      const serverError = error.error;
+      if (serverError && (serverError.error || serverError.message)) {
+        errorMessage = `Error Code: ${error.status}\nMessage: ${serverError.error || serverError.message}`;
+      } else if (error.message) {
+        errorMessage = `Error Code: ${error.status}\nMessage: ${error.message}`;
+      } else {
+        errorMessage = `Error Code: ${error.status}\nMessage: Server error`;
+      }
     }
     console.error(errorMessage);
-    // It's generally better to return an Observable that emits an error
-    // for the component to handle, rather than just a new Error object.
     return throwError(() => new Error(errorMessage));
   }
 }

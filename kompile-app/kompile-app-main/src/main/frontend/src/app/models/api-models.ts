@@ -95,6 +95,7 @@ export interface DocumentSummary {
   id: string;
   contentSnippet: string;
   metadata?: { [key: string]: any };
+  [key: string]: any; // For other dynamic properties like in DocumentDebugInfo
 }
 
 
@@ -103,6 +104,73 @@ export interface BatchProcessResponse {
   successful_items: number;
   failed_items: number;
   details: BatchProcessResponseDetails | null;
+}
+
+// Models for Document Debugger
+export interface LoaderDebugInfo {
+  name: string;
+  className: string;
+  isNoOp: boolean;
+  supportsFile: boolean;
+  supportReason: string;
+}
+
+export interface ChunkerDebugInfo {
+  name: string;
+  className: string;
+  isNoOp: boolean;
+  reason: string;
+}
+
+export interface DocumentDebugInfo {
+  id: string;
+  content: string;
+  contentLength: number;
+  hasContent: boolean;
+  metadata: { [key: string]: any };
+  contentLines: string[];
+  contentStats: { [key: string]: any };
+}
+
+export interface ChunkDebugInfo {
+  id: string;
+  content: string;
+  contentLength: number;
+  chunkIndex: number;
+  metadata: { [key: string]: any };
+}
+
+export interface DebugAnalysisResult {
+  fileName: string;
+  filePath: string | null;
+  fileSize: number;
+  availableLoaders: LoaderDebugInfo[] | null;
+  selectedLoader: LoaderDebugInfo | null;
+  loadedDocuments: DocumentDebugInfo[] | null;
+  availableChunkers: ChunkerDebugInfo[] | null;
+  selectedChunker: ChunkerDebugInfo | null;
+  chunks: ChunkDebugInfo[] | null;
+  processingStats: { [key: string]: any } | null;
+  errorMessage: string | null;
+}
+
+export interface DebuggerStatus {
+  uploadsPathConfigured: boolean;
+  uploadsPath: string;
+  totalLoaders: number;
+  realLoaders: number;
+  noOpLoaders: number;
+  totalChunkers: number;
+  realChunkers: number;
+  noOpChunkers: number;
+}
+
+export interface TestUploadResponse {
+  message: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  error?: string; // Optional error field
 }
 
 
