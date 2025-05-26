@@ -17,6 +17,7 @@
 package ai.kompile.anserini;
 
 import ai.kompile.core.retrievers.DocumentRetriever;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.anserini.config.AnseriniConfig;
 import ai.kompile.core.indexers.IndexerService;
 
@@ -24,6 +25,7 @@ import io.anserini.search.SimpleSearcher;
 import io.anserini.search.ScoredDoc;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.index.IndexableField;
 // We will use the fully qualified name for org.apache.lucene.document.Document to avoid import clashes
 // import org.springframework.ai.document.Document; // Not directly used in this class's method signatures
 
@@ -38,7 +40,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -151,6 +155,95 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         } catch (Exception e) {
             logger.error("Unexpected error during Anserini search for query '{}': {}", query, e.getMessage(), e);
             return Collections.singletonList("Unexpected error during search: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public List<RetrievedDoc> retrieveWithDetails(String query, int maxResults) {
+        if (this.searcher == null) {
+            logger.error("Anserini SimpleSearcher is not initialized. Cannot perform detailed search. Indexing might have failed or index is unavailable.");
+            return Collections.emptyList();
+        }
+        if (query == null || query.trim().isEmpty()) {
+            logger.warn("Search query is null or empty.");
+            return Collections.emptyList();
+        }
+
+        logger.debug("Anserini retrieving with details for query: '{}', maxResults: {}", query, maxResults);
+        try {
+            ScoredDoc[] hits = searcher.search(query, maxResults);
+
+            if (hits == null) {
+                logger.warn("Anserini search returned null for query: {}", query);
+                return Collections.emptyList();
+            }
+
+            logger.debug("Anserini found {} hits for query: '{}'", hits.length, query);
+
+            return Arrays.stream(hits)
+                    .map(hit -> {
+                        try {
+                            // Use fully qualified name for org.apache.lucene.document.Document
+                            org.apache.lucene.document.Document luceneDoc = searcher.doc(hit.lucene_docid);
+                            if (luceneDoc == null) {
+                                logger.warn("Could not retrieve Lucene document by internal luceneDocid: {}. Trying external docid: {}", hit.lucene_docid, hit.docid);
+                                luceneDoc = searcher.doc(hit.docid);
+                            }
+
+                            if (luceneDoc != null) {
+                                String content = luceneDoc.get("raw");
+                                if (content == null) {
+                                    content = luceneDoc.get("contents");
+                                }
+                                
+                                if (content == null) {
+                                    content = "[Content not available in stored fields for doc " + hit.docid + "]";
+                                }
+
+                                // Extract metadata from all fields
+                                Map<String, Object> metadata = new HashMap<>();
+                                for (IndexableField field : luceneDoc.getFields()) {
+                                    String fieldName = field.name();
+                                    String fieldValue = field.stringValue();
+                                    
+                                    // Skip content fields
+                                    if (!"raw".equals(fieldName) && !"contents".equals(fieldName) && fieldValue != null) {
+                                        metadata.put(fieldName, fieldValue);
+                                    }
+                                }
+                                
+                                // Add search-specific metadata
+                                metadata.put("lucene_internal_id", hit.lucene_docid);
+                                metadata.put("search_score", hit.score);
+                                
+                                return new RetrievedDoc(hit.docid, content, hit.score, metadata);
+                            } else {
+                                logger.warn("Could not retrieve Lucene document for external_id: {}, lucene_id: {}", hit.docid, hit.lucene_docid);
+                                Map<String, Object> errorMetadata = new HashMap<>();
+                                errorMetadata.put("lucene_internal_id", hit.lucene_docid);
+                                errorMetadata.put("search_score", hit.score);
+                                errorMetadata.put("error", "Could not retrieve document");
+                                
+                                return new RetrievedDoc(hit.docid, "[Could not retrieve document " + hit.docid + "]", hit.score, errorMetadata);
+                            }
+                        } catch (Exception e) {
+                            logger.warn("Error processing search hit for docid {}: {}", hit.docid, e.getMessage());
+                            Map<String, Object> errorMetadata = new HashMap<>();
+                            errorMetadata.put("lucene_internal_id", hit.lucene_docid);
+                            errorMetadata.put("search_score", hit.score);
+                            errorMetadata.put("error", "Error processing result: " + e.getMessage());
+                            
+                            return new RetrievedDoc(hit.docid, "[Error processing result]", hit.score, errorMetadata);
+                        }
+                    })
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+        } catch (IOException e) {
+            logger.error("IOException during Anserini detailed search for query '{}': {}", query, e.getMessage(), e);
+            return Collections.emptyList();
+        } catch (Exception e) {
+            logger.error("Unexpected error during Anserini detailed search for query '{}': {}", query, e.getMessage(), e);
+            return Collections.emptyList();
         }
     }
 }

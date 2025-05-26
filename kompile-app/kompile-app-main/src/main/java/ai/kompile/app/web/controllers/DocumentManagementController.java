@@ -18,6 +18,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.indexers.IndexerService;
+import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentLoadingService;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
@@ -56,23 +57,34 @@ public class DocumentManagementController {
     private final List<DocumentLoader> documentLoaders;
     private final DocumentLoadingService documentLoadingService;
     private final List<TextChunker> textChunkers;
-    private final IndexerService indexerService;
+    private  IndexerService indexerService;
 
     @Autowired
     public DocumentManagementController(
-            AppDocumentSourceProperties appDocumentSourceProperties,
-            RestTemplate restTemplate,
-            List<DocumentLoader> documentLoaders,
-            DocumentLoadingService documentLoadingService,
-            List<TextChunker> textChunkers,
-            IndexerService indexerService
+            @Autowired AppDocumentSourceProperties appDocumentSourceProperties,
+            @Autowired RestTemplate restTemplate,
+            @Autowired List<DocumentLoader> documentLoaders,
+            @Autowired DocumentLoadingService documentLoadingService,
+            @Autowired List<TextChunker> textChunkers,
+            @Autowired  List<IndexerService> indexerService
     ) {
         this.sourceProperties = appDocumentSourceProperties;
         this.restTemplate = restTemplate;
         this.documentLoaders = documentLoaders;
         this.documentLoadingService = documentLoadingService;
         this.textChunkers = textChunkers;
-        this.indexerService = indexerService;
+        if(indexerService.size() > 1) {
+            for (IndexerService indexerService1 : indexerService) {
+                if (indexerService1 instanceof NoOpIndexerService) {
+                    continue;
+                } else {
+                    this.indexerService = indexerService1;
+                    break;
+                }
+            }
+        } else {
+            this.indexerService = indexerService.get(0);
+        }
 
         if (appDocumentSourceProperties.getUploadsPath() == null ||
                 appDocumentSourceProperties.getUploadsPath().trim().isEmpty()) {
@@ -961,24 +973,19 @@ public class DocumentManagementController {
 
         // Step 4: Index the documents
         boolean indexingSuccessful = false;
-        try {
-            logger.info("Indexing {} processed documents", finalDocuments.size());
+        logger.info("Indexing {} processed documents", finalDocuments.size());
 
-            // Debug: Log final document details before indexing
-            for (int i = 0; i < Math.min(finalDocuments.size(), 5); i++) { // Log first 5 documents
-                Document doc = finalDocuments.get(i);
-                String content = doc.getText();
-                logger.debug("Final document {}: ID={}, Content length={}",
-                        i, doc.getId(), content != null ? content.length() : 0);
-            }
-
-            indexerService.indexDocuments(finalDocuments);
-            indexingSuccessful = true;
-            logger.info("Successfully indexed {} documents", finalDocuments.size());
-        } catch (Exception e) {
-            logger.error("Failed to index processed documents: {}", e.getMessage(), e);
-            throw new Exception("Document processing succeeded but indexing failed: " + e.getMessage());
+        // Debug: Log final document details before indexing
+        for (int i = 0; i < Math.min(finalDocuments.size(), 5); i++) { // Log first 5 documents
+            Document doc = finalDocuments.get(i);
+            String content = doc.getText();
+            logger.debug("Final document {}: ID={}, Content length={}",
+                    i, doc.getId(), content != null ? content.length() : 0);
         }
+
+        indexerService.indexDocuments(finalDocuments);
+        indexingSuccessful = true;
+        logger.info("Successfully indexed {} documents", finalDocuments.size());
 
         // Collect document IDs
         List<String> processedDocumentIds = finalDocuments.stream()
@@ -1066,6 +1073,109 @@ public class DocumentManagementController {
 
                 } catch (Exception e) {
                     logger.error("File uploaded successfully but processing failed for {}: {}", sanitizedFileName, e.getMessage(), e);
+
+                    // DEBUG POSTGRESQL FUNCTION ERRORS - check the entire exception chain
+                    boolean isPostgresMLError = false;
+                    Throwable current = e;
+                    while (current != null && !isPostgresMLError) {
+                        if (current.getMessage() != null && current.getMessage().contains("pgml.embed")) {
+                            isPostgresMLError = true;
+                        }
+                        current = current.getCause();
+                    }
+
+                    if (isPostgresMLError) {
+                        System.err.println("\n" + "!".repeat(100));
+                        System.err.println("PostgresML ERROR DETECTED IN DOCUMENT UPLOAD!");
+                        System.err.println("Error: " + e.getMessage());
+                        System.err.println("!".repeat(100));
+
+                        // Quick database check using existing DataSource
+                        try {
+                            javax.sql.DataSource dataSource = null;
+
+                            // Get DataSource from Spring context
+                            try {
+                                org.springframework.context.ApplicationContext context =
+                                        org.springframework.web.context.support.WebApplicationContextUtils
+                                                .getWebApplicationContext(((org.springframework.web.context.request.ServletRequestAttributes)
+                                                        org.springframework.web.context.request.RequestContextHolder.currentRequestAttributes())
+                                                        .getRequest().getServletContext());
+                                dataSource = context.getBean(javax.sql.DataSource.class);
+                            } catch (Exception contextError) {
+                                System.err.println("Could not get DataSource from context: " + contextError.getMessage());
+                            }
+
+                            if (dataSource != null) {
+                                try (java.sql.Connection conn = dataSource.getConnection()) {
+
+                                    // Check schema
+                                    System.err.println("\n1. SCHEMA CHECK:");
+                                    try (java.sql.Statement stmt = conn.createStatement()) {
+                                        java.sql.ResultSet rs = stmt.executeQuery(
+                                                "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'pgml'");
+                                        rs.next();
+
+                                        if (rs.getInt(1) > 0) {
+                                            System.err.println("   ✓ pgml schema EXISTS");
+                                        } else {
+                                            System.err.println("   ✗ pgml schema MISSING!");
+                                        }
+                                    }
+
+                                    // Check function
+                                    System.err.println("\n2. FUNCTION CHECK:");
+                                    try (java.sql.Statement stmt = conn.createStatement()) {
+                                        java.sql.ResultSet rs = stmt.executeQuery(
+                                                "SELECT COUNT(*) FROM information_schema.routines " +
+                                                        "WHERE routine_schema = 'pgml' AND routine_name = 'embed'");
+                                        rs.next();
+
+                                        int funcCount = rs.getInt(1);
+                                        if (funcCount > 0) {
+                                            System.err.println("   ✓ pgml.embed function EXISTS (" + funcCount + " variants)");
+                                        } else {
+                                            System.err.println("   ✗ pgml.embed function MISSING!");
+                                            System.err.println("   → This is the ROOT CAUSE of the upload failure");
+                                        }
+                                    }
+
+                                    // Test function call
+                                    System.err.println("\n3. FUNCTION TEST:");
+                                    try (java.sql.Statement stmt = conn.createStatement()) {
+                                        System.err.println("   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
+                                        stmt.executeQuery("SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
+                                        System.err.println("   ✓ Function call SUCCEEDED");
+                                    } catch (Exception testError) {
+                                        System.err.println("   ✗ Function call FAILED: " + testError.getMessage());
+                                    }
+
+                                } catch (Exception dbError) {
+                                    System.err.println("Database connection failed: " + dbError.getMessage());
+                                }
+                            }
+                        } catch (Exception debugError) {
+                            System.err.println("Debug failed: " + debugError.getMessage());
+                        }
+
+                        // Show fix
+                        System.err.println("\n" + "-".repeat(80));
+                        System.err.println("IMMEDIATE FIX - Run this SQL in your database:");
+                        System.err.println("-".repeat(80));
+                        System.err.println("CREATE SCHEMA IF NOT EXISTS pgml;");
+                        System.err.println("CREATE OR REPLACE FUNCTION pgml.embed(");
+                        System.err.println("  model_name character varying,");
+                        System.err.println("  text_input text,");
+                        System.err.println("  kwargs jsonb DEFAULT '{}'");
+                        System.err.println(") RETURNS FLOAT[] AS $$");
+                        System.err.println("BEGIN");
+                        System.err.println("  RAISE EXCEPTION 'PostgresML not installed';");
+                        System.err.println("END;");
+                        System.err.println("$$ LANGUAGE plpgsql;");
+                        System.err.println("-".repeat(80));
+                        System.err.println("!".repeat(100));
+                    }
+
                     response.put("processingCompleted", false);
                     response.put("processingError", e.getMessage());
                     response.put("message", response.get("message") + " However, automatic processing failed. You can trigger processing manually through batch operations or index rebuild.");

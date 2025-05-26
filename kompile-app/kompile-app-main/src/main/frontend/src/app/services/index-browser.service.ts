@@ -3,7 +3,7 @@ import { HttpClient, HttpParams, HttpErrorResponse } from '@angular/common/http'
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { BaseService } from './base.service';
-import { IndexedDocInfo, UpdateDocRequest, SimpleMessageResponse } from '../models/api-models';
+import { IndexedDocInfo, UpdateDocRequest, SimpleMessageResponse, SearchRequest, SearchResponse, IndexBrowserStatus } from '../models/api-models';
 
 @Injectable({
   providedIn: 'root'
@@ -12,6 +12,11 @@ export class IndexBrowserService extends BaseService {
 
   constructor(private http: HttpClient) {
     super();
+  }
+
+  getIndexBrowserStatus(): Observable<IndexBrowserStatus> {
+    return this.http.get<IndexBrowserStatus>(`${this.backendUrl}/index-browser/status`)
+      .pipe(catchError(this.handleError));
   }
 
   getAllIndexedDocs(offset: number = 0, limit: number = 10): Observable<IndexedDocInfo[]> {
@@ -30,6 +35,12 @@ export class IndexBrowserService extends BaseService {
   updateIndexedDoc(docId: string, content: string): Observable<SimpleMessageResponse> {
     const request: UpdateDocRequest = { content };
     return this.http.put<SimpleMessageResponse>(`${this.backendUrl}/index-browser/documents/${encodeURIComponent(docId)}`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  searchIndexedDocs(query: string, maxResults: number = 10): Observable<SearchResponse> {
+    const request: SearchRequest = { query, maxResults };
+    return this.http.post<SearchResponse>(`${this.backendUrl}/index-browser/search`, request)
       .pipe(catchError(this.handleError));
   }
 

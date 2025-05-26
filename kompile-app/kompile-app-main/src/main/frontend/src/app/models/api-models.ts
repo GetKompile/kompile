@@ -201,6 +201,41 @@ export interface UpdateDocRequest {
   content: string;
 }
 
+// New interfaces for Index Browser Search
+export interface SearchRequest {
+  query: string;
+  maxResults?: number;
+}
+
+export interface SearchResult {
+  id: string;
+  content: string;
+  preview: string;
+  score: number;
+  metadata: { [key: string]: any };
+  originalDocument: string;
+}
+
+export interface SearchResponse {
+  query: string;
+  maxResults: number;
+  totalResults: number;
+  results: SearchResult[];
+}
+
+// New interface for Index Browser Status
+export interface IndexBrowserStatus {
+  indexerImplementation: string;
+  indexerFullClassName: string;
+  retrieverImplementation: string;
+  retrieverFullClassName: string;
+  indexAvailable: boolean;
+  approximateDocumentCount: number | string;
+  isNoOpIndexer: boolean;
+  isNoOpRetriever: boolean;
+  warning?: string;
+}
+
 // For AddSourceDialogComponent communication
 export interface AddSourceDialogResult {
   file?: File;

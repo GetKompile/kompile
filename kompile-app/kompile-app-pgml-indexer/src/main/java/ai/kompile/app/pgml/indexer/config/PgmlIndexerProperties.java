@@ -18,10 +18,13 @@ package ai.kompile.app.pgml.indexer.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
 
 @Data
 @ConfigurationProperties(prefix = "kompile.indexer.pgml")
+@Component
 public class PgmlIndexerProperties {
 
     /**
@@ -29,18 +32,7 @@ public class PgmlIndexerProperties {
      */
     private boolean enabled = false;
 
-    /**
-     * The bean name of the EmbeddingModel to use for generating embeddings.
-     * Defaults to "postgresMlEmbeddingModelImpl".
-     */
-    private String embeddingModelBeanName = "postgresMlEmbeddingModelImpl";
 
-    /**
-     * The bean name of the VectorStore to use for storing documents.
-     * Defaults to "pgVectorStoreImpl", assuming it's configured for PGML/pgvector.
-     * This could also point to a future "pgmlVectorStoreImpl" if PGML's own store (via PgmlEmbeddingStore) is preferred.
-     */
-    private String vectorStoreBeanName = "pgVectorStoreImpl";
 
     /**
      * Default collection name (e.g., table name in Postgres) to use if not specified in method calls.
@@ -51,4 +43,6 @@ public class PgmlIndexerProperties {
      * Batch size for processing documents during directory indexing.
      */
     private int batchSize = 100;
+
+
 }

@@ -27,7 +27,7 @@ import java.util.Map;
 
 
 @Service
-public class NoOpIndexerService implements IndexerService {
+public class NoOpIndexerService extends IndexerService {
     @Override
     public void indexDocuments(List<Document> documents, String collectionNameParam) {
 

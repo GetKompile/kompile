@@ -44,7 +44,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass({
         LanguageModel.class,
         KompilePipelineLanguageModelImpl.class,

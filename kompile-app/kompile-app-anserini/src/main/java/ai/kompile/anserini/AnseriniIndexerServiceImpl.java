@@ -17,6 +17,7 @@
 package ai.kompile.anserini;
 
 import ai.kompile.anserini.config.AnseriniConfig;
+import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
@@ -70,13 +71,13 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @Service("anseriniIndexerService")
-public class AnseriniIndexerServiceImpl implements IndexerService {
+public class AnseriniIndexerServiceImpl extends IndexerService {
     private static final Logger logger = LogManager.getLogger(AnseriniIndexerServiceImpl.class);
     private final AnseriniConfig anseriniConfig;
     private final ObjectMapper objectMapper;
     private final DocumentLoadingService documentLoadingService;
     private final List<DocumentLoader> documentLoaders;
-    private final VectorStore vectorStore;
+    private  VectorStore vectorStore;
 
     private static final int DEFAULT_BATCH_SIZE = 100;
     private static final String DEFAULT_ANSERINI_LOGGING_COLLECTION_NAME = "default_anserini_index";
@@ -87,12 +88,24 @@ public class AnseriniIndexerServiceImpl implements IndexerService {
                                       ObjectMapper objectMapper,
                                       DocumentLoadingService documentLoadingService,
                                       List<DocumentLoader> documentLoaders,
-                                      VectorStore vectorStore) {
+                                      List<VectorStore> vectorStore) {
         this.anseriniConfig = anseriniConfig;
         this.objectMapper = objectMapper;
         this.documentLoadingService = documentLoadingService;
         this.documentLoaders = documentLoaders;
-        this.vectorStore = vectorStore;
+        if(vectorStore.size() > 1) {
+            for(VectorStore vectorStore1 : vectorStore) {
+                if(vectorStore1 instanceof NoOpVectorStoreImpl) {
+                    continue;
+                } else {
+                    this.vectorStore = vectorStore1;
+                }
+            }
+
+        } else {
+            this.vectorStore = vectorStore.get(0);
+        }
+
         logger.info("AnseriniIndexerServiceImpl constructed. VectorStore available: {}. DocumentLoaders count: {}",
                 vectorStore != null, this.documentLoaders == null ? 0 : this.documentLoaders.size());
         if (CollectionUtils.isEmpty(this.documentLoaders)) {

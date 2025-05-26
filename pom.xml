@@ -85,7 +85,7 @@
 
     <spring-boot.version>3.2.5</spring-boot.version>
     <spring-ai.version>1.0.0</spring-ai.version>
-    <anserini.version>0.24.0</anserini.version>
+    <anserini.version>1.0.1-SNAPSHOT</anserini.version>
     <log4j2.version>2.21.1</log4j2.version>
     <jsoup.version>1.17.2</jsoup.version>
     <jackson.version>2.15.3</jackson.version>
@@ -102,11 +102,22 @@
     <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
     <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
     <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
-
+    <hibernate.version>6.4.4.Final</hibernate.version>
   </properties>
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>org.hibernate.orm</groupId>
+        <artifactId>hibernate-core</artifactId>
+        <version>${hibernate.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-postgres-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-pipelines-framework-api</artifactId>
@@ -245,6 +256,10 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>${maven-compiler-plugin.version}</version>
           <configuration>
+            <compilerArgs>
+              <arg>-parameters</arg>
+            </compilerArgs>
+
             <source>${maven.compiler.source}</source>
             <target>${maven.compiler.target}</target>
             <annotationProcessorPaths>

@@ -20,39 +20,39 @@ import org.springframework.ai.document.Document; // From spring-ai-commons
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map; // Added import
+import java.util.Map;
 
-public interface IndexerService {
-    void indexDocuments(List<Document> documents, String collectionNameParam);
+public abstract class IndexerService {
+    public abstract void indexDocuments(List<Document> documents, String collectionNameParam);
 
-    void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
+    public abstract void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
 
-    void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException;
+    public abstract void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException;
 
-    boolean deleteDocuments(List<String> documentIds, String collectionNameParam);
+    public abstract boolean deleteDocuments(List<String> documentIds, String collectionNameParam);
 
-    boolean deleteAll(String collectionNameParam);
+    public abstract boolean deleteAll(String collectionNameParam);
 
-    long getApproxTotalDocCount(String collectionNameParam);
+    public abstract long getApproxTotalDocCount(String collectionNameParam);
 
     /**
      * Indexes the provided list of Spring AI documents.
      * Implementations will handle any necessary staging (e.g., to JSON) and the actual indexing logic.
      */
-    void indexDocuments(List<Document> documents) throws IOException;
+    public abstract void indexDocuments(List<Document> documents) throws IOException;
 
     /**
      * Triggers a full re-indexing process.
      * This typically involves using a DocumentLoadingService to fetch all documents
      * and then passing them to the indexDocuments(List<Document> documents) method.
      */
-    void reprocessAndIndexAllSources() throws IOException;
+    public abstract void reprocessAndIndexAllSources() throws IOException;
 
     /**
      * Checks if the underlying index is considered valid and ready for querying.
      * @return true if the index is available, false otherwise.
      */
-    boolean isIndexAvailable();
+    public abstract boolean isIndexAvailable();
 
     // New methods for Index Browser
     /**
@@ -62,7 +62,7 @@ public interface IndexerService {
      * @return a list of maps, where each map represents an indexed document's info (e.g., id, stored fields).
      * @throws IOException if there is an error reading from the index
      */
-    List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException;
+    public abstract List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException;
 
     /**
      * Retrieves a specific document/chunk from the index by its ID.
@@ -70,7 +70,7 @@ public interface IndexerService {
      * @return A map representing the document's fields, or null if not found.
      * @throws IOException if there is an error reading from the index
      */
-    Map<String, Object> getIndexedDocument(String docId) throws IOException;
+    public abstract Map<String, Object> getIndexedDocument(String docId) throws IOException;
 
     /**
      * Updates the content of a specific document/chunk in the keyword index.
@@ -81,5 +81,5 @@ public interface IndexerService {
      * @return true if the update was successful, false otherwise.
      * @throws IOException if there is an error updating the index
      */
-    boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException;
+    public abstract boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException;
 }

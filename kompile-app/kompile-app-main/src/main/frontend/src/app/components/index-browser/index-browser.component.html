@@ -1,37 +1,164 @@
 <div class="index-browser-container">
   <div class="header-bar">
-    <h1>Index Browser</h1>
-    <button mat-icon-button color="primary" (click)="loadDocuments(currentPage * pageSize, pageSize)" matTooltip="Refresh Document List" [disabled]="isLoading">
-      <mat-icon>refresh</mat-icon>
-    </button>
+    <h1>Index Browser & Search</h1>
+    <div class="header-actions">
+      <button mat-icon-button color="primary" (click)="refreshData()" matTooltip="Refresh" [disabled]="isLoading">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
   </div>
-  <p class="component-description"><small>Browse and inspect documents/chunks directly from the Anserini keyword index. Edits here are for debugging and modify the live index directly but not the original source files or vector store.</small></p>
+
+  <!-- Status Section -->
+  <div class="status-section mat-elevation-z2" *ngIf="indexBrowserStatus || isLoadingStatus">
+    <div class="status-header">
+      <mat-icon [color]="getStatusColor()">info</mat-icon>
+      <h3>System Status</h3>
+    </div>
+    
+    <div *ngIf="isLoadingStatus" class="status-loading">
+      <mat-progress-spinner diameter="24" mode="indeterminate"></mat-progress-spinner>
+      <span>Loading status...</span>
+    </div>
+    
+    <div *ngIf="indexBrowserStatus && !isLoadingStatus" class="status-content">
+      <div class="status-message" [ngClass]="getStatusColor()">
+        <strong>{{ getStatusMessage() }}</strong>
+      </div>
+      
+      <div class="status-details">
+        <div class="status-row">
+          <strong>Indexer:</strong> 
+          <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpIndexer">
+            {{ indexBrowserStatus.indexerImplementation }}
+          </span>
+          <mat-icon *ngIf="indexBrowserStatus.isNoOpIndexer" class="warning-icon" color="warn">warning</mat-icon>
+        </div>
+        
+        <div class="status-row">
+          <strong>Retriever:</strong> 
+          <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpRetriever">
+            {{ indexBrowserStatus.retrieverImplementation }}
+          </span>
+          <mat-icon *ngIf="indexBrowserStatus.isNoOpRetriever" class="warning-icon" color="warn">warning</mat-icon>
+        </div>
+        
+        <div class="status-row">
+          <strong>Index Available:</strong> 
+          <span [class.text-success]="indexBrowserStatus.indexAvailable" [class.text-error]="!indexBrowserStatus.indexAvailable">
+            {{ indexBrowserStatus.indexAvailable ? 'Yes' : 'No' }}
+          </span>
+        </div>
+        
+        <div class="status-row" *ngIf="indexBrowserStatus.approximateDocumentCount !== undefined">
+          <strong>Document Count:</strong> 
+          <span>{{ indexBrowserStatus.approximateDocumentCount }}</span>
+        </div>
+      </div>
+      
+      <div *ngIf="indexBrowserStatus.warning" class="status-warning">
+        <mat-icon color="warn">warning</mat-icon>
+        <span>{{ indexBrowserStatus.warning }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Search Section -->
+  <div class="search-section mat-elevation-z2" *ngIf="!indexBrowserStatus?.isNoOpRetriever">
+    <mat-form-field appearance="outline" class="search-field">
+      <mat-label>Search index...</mat-label>
+      <input matInput [formControl]="searchControl" placeholder="Enter your search query">
+      <mat-icon matSuffix>search</mat-icon>
+    </mat-form-field>
+    
+    <div class="search-controls" *ngIf="isSearchMode">
+      <span class="search-info">
+        <mat-icon>info</mat-icon>
+        Showing search results for: <strong>"{{ currentSearchQuery }}"</strong>
+      </span>
+      <button mat-stroked-button (click)="clearSearch()" class="clear-search-btn">
+        <mat-icon>close</mat-icon>
+        Clear Search
+      </button>
+    </div>
+  </div>
+
+  <!-- Disabled Search Notice -->
+  <div class="disabled-search-notice mat-elevation-z2" *ngIf="indexBrowserStatus?.isNoOpRetriever">
+    <mat-icon color="warn">search_off</mat-icon>
+    <span>Search functionality is disabled because the system is using a NoOp retriever implementation.</span>
+  </div>
+
+  <p class="component-description">
+    <small>
+      <span *ngIf="!isSearchMode">Browse indexed documents/chunks from the keyword index.</span>
+      <span *ngIf="isSearchMode">Search results ranked by relevance score.</span>
+      Edits here are for debugging and modify the live index directly but not the original source files or vector store.
+    </small>
+  </p>
 
   <mat-progress-bar mode="indeterminate" *ngIf="isLoading && !selectedDoc" class="page-progress-bar"></mat-progress-bar>
 
   <div *ngIf="!selectedDoc">
     <div *ngIf="!isLoading && dataSource.data.length === 0" class="empty-state-message">
-      <mat-icon>search_off</mat-icon>
-      <span>No documents found in the index or an error occurred.</span>
+      <mat-icon>{{ isSearchMode ? 'search_off' : 'folder_open' }}</mat-icon>
+      <span *ngIf="!isSearchMode && indexBrowserStatus?.isNoOpIndexer">
+        No documents available - system is using a NoOp indexer implementation.
+      </span>
+      <span *ngIf="!isSearchMode && !indexBrowserStatus?.isNoOpIndexer && !indexBrowserStatus?.indexAvailable">
+        No documents found - the index may need to be built or populated.
+      </span>
+      <span *ngIf="!isSearchMode && !indexBrowserStatus?.isNoOpIndexer && indexBrowserStatus?.indexAvailable">
+        No documents found in the index.
+      </span>
+      <span *ngIf="isSearchMode">No search results found for "{{ currentSearchQuery }}".</span>
     </div>
 
     <div *ngIf="dataSource.data.length > 0" class="table-container mat-elevation-z4">
       <table mat-table [dataSource]="dataSource" matSort>
+        <!-- Document ID Column -->
         <ng-container matColumnDef="id">
           <th mat-header-cell *matHeaderCellDef mat-sort-header> Document ID </th>
           <td mat-cell *matCellDef="let doc" [matTooltip]="doc.id">
-            {{doc.id | slice:0:60}}{{doc.id.length > 60 ? '...' : ''}}
+            <span class="doc-id">{{doc.id | slice:0:50}}{{doc.id.length > 50 ? '...' : ''}}</span>
           </td>
         </ng-container>
 
+        <!-- Preview Column -->
         <ng-container matColumnDef="preview">
-          <th mat-header-cell *matHeaderCellDef> Preview / Lucene ID </th>
+          <th mat-header-cell *matHeaderCellDef> Content Preview </th>
           <td mat-cell *matCellDef="let doc">
-            <span class="doc-preview">{{doc.preview}}</span><br>
-            <small class="lucene-id">(Internal Lucene ID: {{doc.lucene_internal_id}})</small>
+            <div class="doc-preview">
+              <span class="preview-text">{{doc.preview}}</span>
+              <small class="lucene-id" *ngIf="doc.lucene_internal_id !== undefined">
+                (Lucene ID: {{doc.lucene_internal_id}})
+              </small>
+            </div>
           </td>
         </ng-container>
 
+        <!-- Score Column (Search Mode Only) -->
+        <ng-container matColumnDef="score">
+          <th mat-header-cell *matHeaderCellDef mat-sort-header> Relevance Score </th>
+          <td mat-cell *matCellDef="let doc">
+            <span class="score-badge" [class.high-score]="doc.score && doc.score > 5" 
+                  [class.medium-score]="doc.score && doc.score > 2 && doc.score <= 5"
+                  [class.low-score]="doc.score && doc.score <= 2">
+              {{ formatScore(doc.score) }}
+            </span>
+          </td>
+        </ng-container>
+
+        <!-- Original Document Column (Search Mode Only) -->
+        <ng-container matColumnDef="originalDocument">
+          <th mat-header-cell *matHeaderCellDef> Original Document </th>
+          <td mat-cell *matCellDef="let doc" [matTooltip]="doc.originalDocument">
+            <span class="original-doc">
+              {{ doc.originalDocument || 'Unknown' | slice:0:40 }}{{ (doc.originalDocument?.length || 0) > 40 ? '...' : '' }}
+            </span>
+          </td>
+        </ng-container>
+
+        <!-- Actions Column -->
         <ng-container matColumnDef="actions">
           <th mat-header-cell *matHeaderCellDef> Actions </th>
           <td mat-cell *matCellDef="let doc">
@@ -41,44 +168,84 @@
           </td>
         </ng-container>
 
-        <tr mat-header-row *matHeaderRowDef="displayedColumns; sticky: true"></tr>
-        <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+        <tr mat-header-row *matHeaderRowDef="getDisplayedColumnsForMode(); sticky: true"></tr>
+        <tr mat-row *matRowDef="let row; columns: getDisplayedColumnsForMode();" 
+            [class.search-result-row]="row.isSearchResult"></tr>
       </table>
-      <mat-paginator [pageSizeOptions]="[5, 10, 20, 50]" [pageSize]="pageSize" [length]="totalDocsEstimate" showFirstLastButtons>
+      
+      <!-- Pagination (disabled for search results) -->
+      <mat-paginator 
+        *ngIf="!isSearchMode"
+        [pageSizeOptions]="[5, 10, 20, 50]" 
+        [pageSize]="pageSize" 
+        [length]="totalDocsEstimate" 
+        showFirstLastButtons>
       </mat-paginator>
+      
+      <!-- Search Results Info -->
+      <div *ngIf="isSearchMode" class="search-results-info">
+        <mat-icon>info_outline</mat-icon>
+        <span>{{ dataSource.data.length }} search results (pagination disabled for search)</span>
+      </div>
     </div>
   </div>
 
+  <!-- Document Detail View -->
   <div *ngIf="selectedDoc" class="document-detail-view">
     <mat-card>
       <mat-card-header>
-        <mat-card-title>Document: {{selectedDoc.id}}</mat-card-title>
-        <button mat-icon-button (click)="closeDocumentView()" class="close-button" matTooltip="Close Document View">
-          <mat-icon>close</mat-icon>
-        </button>
+        <mat-card-title>
+          <div class="document-title">
+            <span>Document: {{selectedDoc.id}}</span>
+            <mat-chip *ngIf="selectedDoc.score !== undefined" class="score-chip">
+              Score: {{ formatScore(selectedDoc.score) }}
+            </mat-chip>
+          </div>
+        </mat-card-title>
+        <div class="document-header-actions">
+          <span *ngIf="selectedDoc.originalDocument" class="original-doc-info">
+            <mat-icon>description</mat-icon>
+            From: {{ selectedDoc.originalDocument }}
+          </span>
+          <button mat-icon-button (click)="closeDocumentView()" class="close-button" matTooltip="Close Document View">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
       </mat-card-header>
+      
       <mat-card-content>
         <mat-progress-bar mode="indeterminate" *ngIf="isLoading" class="operation-progress-bar"></mat-progress-bar>
 
-        <h3>Indexed Content:</h3>
+        <h3>Document Content:</h3>
         <mat-form-field appearance="outline" class="full-width-field content-textarea">
           <mat-label>Content (Editable for Debug)</mat-label>
-          <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize" cdkAutosizeMinRows="10" cdkAutosizeMaxRows="25"
+          <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize" 
+                    cdkAutosizeMinRows="10" cdkAutosizeMaxRows="25"
                     [(ngModel)]="editedContent" [disabled]="isLoading"></textarea>
         </mat-form-field>
 
         <div *ngIf="selectedDoc.metadata && objectKeys(selectedDoc.metadata).length > 0" class="metadata-section">
-          <h3>Stored Metadata:</h3>
-          <pre class="metadata-display">{{ selectedDoc.metadata | json }}</pre>
+          <h3>Document Metadata:</h3>
+          <div class="metadata-display">
+            <div *ngFor="let key of objectKeys(selectedDoc.metadata)" class="metadata-item">
+              <strong>{{ key }}:</strong> 
+              <span class="metadata-value">{{ selectedDoc.metadata[key] }}</span>
+            </div>
+          </div>
         </div>
+        
         <div *ngIf="!selectedDoc.metadata || objectKeys(selectedDoc.metadata).length === 0" class="metadata-section">
-          <p>No additional metadata stored for this document in the index.</p>
+          <p class="no-metadata">No additional metadata stored for this document in the index.</p>
         </div>
-
       </mat-card-content>
+      
       <mat-card-actions align="end">
-        <button mat-stroked-button (click)="closeDocumentView()" [disabled]="isLoading">Cancel</button>
-        <button mat-raised-button color="primary" (click)="saveDocument()" [disabled]="isLoading">Save to Index (Debug)</button>
+        <button mat-stroked-button (click)="closeDocumentView()" [disabled]="isLoading">
+          Cancel
+        </button>
+        <button mat-raised-button color="primary" (click)="saveDocument()" [disabled]="isLoading">
+          Save to Index (Debug)
+        </button>
       </mat-card-actions>
     </mat-card>
   </div>

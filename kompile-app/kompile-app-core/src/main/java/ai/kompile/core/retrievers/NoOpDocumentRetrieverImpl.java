@@ -36,4 +36,10 @@ public class NoOpDocumentRetrieverImpl implements DocumentRetriever {
         logger.warn("NoOpDocumentRetriever called for query: {}. Returning empty list.", query);
         return Collections.emptyList();
     }
+
+    @Override
+    public List<RetrievedDoc> retrieveWithDetails(String query, int maxResults) {
+        logger.warn("NoOpDocumentRetriever called for detailed query: {}. Returning empty list.", query);
+        return Collections.emptyList();
+    }
 }

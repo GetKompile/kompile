@@ -19,9 +19,9 @@ package ai.kompile.core.retrievers;
 import java.util.List;
 
 public interface DocumentRetriever {
-    // Option 1: Return simple strings
+    // Option 1: Return simple strings (backward compatibility)
     List<String> retrieve(String query, int maxResults);
 
-    // Option 2: Return richer DTOs (uncomment if you prefer this)
-    // List<RetrievedDoc> retrieve(String query, int maxResults);
+    // Option 2: Return richer DTOs
+    List<RetrievedDoc> retrieveWithDetails(String query, int maxResults);
 }

@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.retrievers.DocumentRetriever; // From core-abstractions
+import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,13 +35,24 @@ import java.util.Map;
 public class RetrieverController {
 
     private static final Logger logger = LoggerFactory.getLogger(RetrieverController.class);
-    private final DocumentRetriever documentRetriever;
+    private  DocumentRetriever documentRetriever;
 
     @Autowired
-    public RetrieverController(DocumentRetriever documentRetriever) {
+    public RetrieverController(List<DocumentRetriever> documentRetriever) {
         // We inject the specific DocumentRetriever if multiple exist,
         // or just DocumentRetriever if AnseriniDocumentRetrieverImpl is the only one or @Primary
-        this.documentRetriever = documentRetriever;
+        if(documentRetriever.size() > 1) {
+            for (DocumentRetriever retriever : documentRetriever) {
+                if (retriever instanceof NoOpDocumentRetrieverImpl) {
+                    continue;
+                } else {
+                    this.documentRetriever = retriever;
+                    break;
+                }
+            }
+        } else {
+            this.documentRetriever = documentRetriever.get(0);
+        }
         logger.info("RetrieverController initialized with DocumentRetriever: {}", documentRetriever.getClass().getSimpleName());
     }
 

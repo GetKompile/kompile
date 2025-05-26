@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.core.indexers.IndexerService; // From core-abstractions
+import ai.kompile.core.indexers.NoOpIndexerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -35,13 +37,24 @@ import java.util.Map;
 public class IndexerController {
 
     private static final Logger logger = LoggerFactory.getLogger(IndexerController.class);
-    private final IndexerService indexerService;
+    private  IndexerService indexerService;
 
     @Autowired
-    public IndexerController(IndexerService indexerService) {
-        // We inject the specific IndexerService implementation if multiple exist,
-        // or just IndexerService if AnseriniIndexerServiceImpl is the only one or @Primary
-        this.indexerService = indexerService;
+    public IndexerController(List<IndexerService> indexerService) {
+        //yes this looks weird. Graalvm doesn't seem to like spring's
+        //conditional injection though qualifiers are also very brittle
+        if(indexerService.size() > 1) {
+            for(IndexerService indexerService1 : indexerService) {
+                if(indexerService1 instanceof NoOpIndexerService) {
+                    continue;
+                } else {
+                    this.indexerService = indexerService1;
+                }
+            }
+        } else {
+            this.indexerService = indexerService.get(0);
+        }
+
         logger.info("IndexerController initialized with IndexerService: {}", indexerService.getClass().getSimpleName());
     }
 

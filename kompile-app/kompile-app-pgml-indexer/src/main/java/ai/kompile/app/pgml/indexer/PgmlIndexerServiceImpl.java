@@ -1,18 +1,18 @@
 package ai.kompile.app.pgml.indexer;
 
 import ai.kompile.app.pgml.indexer.config.PgmlIndexerProperties;
+import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
-import ai.kompile.loader.pdf.PdfLoaderImpl;
-import ai.kompile.loader.tika.TikaLoaderImpl;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
@@ -22,47 +22,49 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map; // Added import
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public class PgmlIndexerServiceImpl implements IndexerService {
+@Component("pgMlIndexer")
+public class PgmlIndexerServiceImpl extends IndexerService {
 
     private static final Logger logger = LoggerFactory.getLogger(PgmlIndexerServiceImpl.class);
 
     private final PgmlIndexerProperties properties;
-    private final VectorStore vectorStore;
+    private  VectorStore vectorStore;
     private final List<DocumentLoader> documentLoaders;
     private final ApplicationContext applicationContext;
 
     public PgmlIndexerServiceImpl(PgmlIndexerProperties properties,
                                   ApplicationContext applicationContext,
-                                  List<DocumentLoader> documentLoaders) {
+                                  List<DocumentLoader> documentLoaders,
+                                  List<VectorStore> vectorStore) {
         this.properties = properties;
         this.applicationContext = applicationContext;
-        this.vectorStore = getBean(properties.getVectorStoreBeanName(), VectorStore.class);
         this.documentLoaders = documentLoaders;
         if (CollectionUtils.isEmpty(this.documentLoaders)) {
             logger.warn("No DocumentLoader beans found. File and directory indexing capabilities will be limited if used.");
         }
         logger.info("PgmlIndexerServiceImpl initialized with VectorStore: {} (expected to use default collection: '{}') and {} document loaders.",
                 vectorStore.getClass().getName(), properties.getDefaultCollectionName(), this.documentLoaders.size());
+        if(vectorStore.size() > 1) {
+            for(VectorStore vectorStore1 : vectorStore) {
+                if(vectorStore1 instanceof NoOpVectorStoreImpl) {
+                    continue;
+                } else {
+                    this.vectorStore = vectorStore1;
+                }
+            }
+
+        } else {
+            this.vectorStore = vectorStore.get(0);
+        }
+
     }
 
-    private <T> T getBean(String beanName, Class<T> beanClass) {
-        try {
-            return applicationContext.getBean(beanName, beanClass);
-        } catch (NoSuchBeanDefinitionException e) {
-            String errorMessage = String.format(
-                    "CRITICAL: Could not find bean with name '%s' and type '%s' for PgmlIndexerServiceImpl. " +
-                            "Ensure this bean (e.g., a correctly configured PgVectorStoreImpl) is available.",
-                    beanName, beanClass.getSimpleName()
-            );
-            logger.error(errorMessage, e);
-            throw new IllegalStateException(errorMessage, e);
-        }
-    }
+
 
     private String getEffectiveCollectionName(String collectionNameFromParam) {
         return StringUtils.hasText(collectionNameFromParam) ? collectionNameFromParam : properties.getDefaultCollectionName();
@@ -86,19 +88,7 @@ public class PgmlIndexerServiceImpl implements IndexerService {
                 return loader;
             }
         }
-        // Fallback logic if no loader explicitly supports, try common ones (already covered by supports usually)
-        for (DocumentLoader loader : documentLoaders) {
-            if (loader instanceof PdfLoaderImpl && fileNameLower.endsWith(".pdf")) {
-                logger.debug("Fallback: Using PdfLoaderImpl for: {}", filePath);
-                return loader;
-            }
-        }
-        for (DocumentLoader loader : documentLoaders) {
-            if (loader instanceof TikaLoaderImpl) {
-                logger.debug("Fallback: Using TikaLoaderImpl as a general purpose loader for: {}", filePath);
-                return loader;
-            }
-        }
+
         if (!documentLoaders.isEmpty()) {
             DocumentLoader firstLoader = documentLoaders.get(0);
             logger.debug("No specific or Tika loader found for {}. Attempting to use the first available loader: {}",
