@@ -1,17 +1,17 @@
 /*
- * Copyright 2025 Kompile Inc.
- * *
- * * Licensed under the Apache License, Version 2.0 (the "License");
- * * you may not use this file except in compliance with the License.
- * * You may obtain a copy of the License at
- * *
- * * http://www.apache.org/licenses/LICENSE-2.0
- * *
- * * Unless required by applicable law or agreed to in writing, software
- * * distributed under the License is distributed on an "AS IS" BASIS,
- * * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * * See the License for the specific language governing permissions and
- * * limitations under the License.
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 import { Component, OnInit, ViewChild, AfterViewInit, ChangeDetectorRef } from '@angular/core';
@@ -139,15 +139,15 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
 
   // Upload file for analysis
   uploadTestFile(): void {
-    if (!this.selectedFile) { 
-      this.showSnackbar('Please select a file to upload', true); 
-      return; 
+    if (!this.selectedFile) {
+      this.showSnackbar('Please select a file to upload', true);
+      return;
     }
-    
+
     this.isUploading = true;
     const formData = new FormData();
     formData.append('file', this.selectedFile);
-    
+
     this.http.post<any>(`${this.backendUrl}/documents/debug/test-upload`, formData).subscribe({
       next: (resp) => {
         this.showSnackbar('File uploaded: ' + resp.fileName);
@@ -155,13 +155,13 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
         this.selectedFile = null;
         const input = document.querySelector('input[type="file"]') as HTMLInputElement;
         if (input) input.value = '';
-        this.isUploading = false; 
+        this.isUploading = false;
         this.cdr.detectChanges();
       },
-      error: (err) => { 
-        this.showSnackbar('Upload failed: ' + this.getErrorMessage(err), true); 
-        this.isUploading = false; 
-        this.cdr.detectChanges(); 
+      error: (err) => {
+        this.showSnackbar('Upload failed: ' + this.getErrorMessage(err), true);
+        this.isUploading = false;
+        this.cdr.detectChanges();
       }
     });
   }
@@ -172,7 +172,7 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
       this.showSnackbar('Please select a file for analysis', true);
       return;
     }
-    
+
     this.isAnalyzing = true;
     this.analysisResult = null;
     this.analysisError = null;
@@ -184,16 +184,16 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
         next: (result) => {
           this.analysisResult = result;
           this.updateDataSources();
-          this.isAnalyzing = false; 
+          this.isAnalyzing = false;
           this.cdr.detectChanges();
           this.showSnackbar(
-            result.errorMessage ? `Analysis completed with error: ${result.errorMessage}` : 'Analysis successful', 
+            result.errorMessage ? `Analysis completed with error: ${result.errorMessage}` : 'Analysis successful',
             !!result.errorMessage
           );
         },
         error: (error) => {
           this.analysisError = this.getErrorMessage(error);
-          this.isAnalyzing = false; 
+          this.isAnalyzing = false;
           this.cdr.detectChanges();
           this.showSnackbar('Analysis failed: ' + this.analysisError, true);
         }
@@ -252,28 +252,28 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
   }
 
   private showSnackbar(message: string, isError: boolean = false, duration: number = 4000): void {
-    this.snackBar.open(message, 'Close', { 
-      duration, 
-      horizontalPosition: 'center', 
-      verticalPosition: 'top', 
-      panelClass: isError ? 'snackbar-error' : 'snackbar-success' 
+    this.snackBar.open(message, 'Close', {
+      duration,
+      horizontalPosition: 'center',
+      verticalPosition: 'top',
+      panelClass: isError ? 'snackbar-error' : 'snackbar-success'
     });
   }
 
   private downloadBlob(blob: Blob, filename: string): void {
     if (typeof window !== 'undefined') {
       const nav = window.navigator as any;
-      if (nav.msSaveBlob) { 
-        nav.msSaveBlob(blob, filename); 
+      if (nav.msSaveBlob) {
+        nav.msSaveBlob(blob, filename);
       } else {
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
-        link.href = url; 
+        link.href = url;
         link.download = filename;
         document.body.appendChild(link);
-        link.style.display = 'none'; 
+        link.style.display = 'none';
         link.click();
-        document.body.removeChild(link); 
+        document.body.removeChild(link);
         URL.revokeObjectURL(url);
       }
     }
@@ -291,11 +291,11 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
 
   private fallbackCopyTextToClipboard(text: string): void {
     const ta = document.createElement('textarea');
-    ta.value = text; 
-    ta.style.position = 'fixed'; 
+    ta.value = text;
+    ta.style.position = 'fixed';
     ta.style.opacity = '0';
-    document.body.appendChild(ta); 
-    ta.focus(); 
+    document.body.appendChild(ta);
+    ta.focus();
     ta.select();
     try {
       if (document.execCommand('copy')) {
@@ -303,8 +303,8 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
       } else {
         this.showSnackbar('Fallback copy failed', true);
       }
-    } catch (err) { 
-      this.showSnackbar('Fallback copy error', true); 
+    } catch (err) {
+      this.showSnackbar('Fallback copy error', true);
     }
     document.body.removeChild(ta);
   }

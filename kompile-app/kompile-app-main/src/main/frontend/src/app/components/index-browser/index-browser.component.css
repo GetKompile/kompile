@@ -1,3 +1,19 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /* Index Browser Container */
 .index-browser-container {
   padding: 24px;
@@ -424,34 +440,34 @@
   .index-browser-container {
     padding: 16px;
   }
-  
+
   .header-bar {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
   }
-  
+
   .search-controls {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
   }
-  
+
   .document-title {
     flex-direction: column;
     align-items: flex-start;
   }
-  
+
   .document-header-actions {
     flex-direction: column;
     align-items: flex-end;
     gap: 8px;
   }
-  
+
   .doc-preview {
     max-width: 200px;
   }
-  
+
   .status-details {
     grid-template-columns: 1fr;
   }
@@ -486,11 +502,11 @@
   .mat-mdc-table {
     font-size: 12px;
   }
-  
+
   .doc-id {
     font-size: 10px;
   }
-  
+
   .preview-text {
     font-size: 12px;
   }

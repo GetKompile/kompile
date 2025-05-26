@@ -1,3 +1,19 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
 <div class="simple-debugger">
   <div class="header-section">
     <h1>📄 Document Debugger</h1>
@@ -10,10 +26,10 @@
     </mat-card-header>
     <mat-card-content>
       <div class="file-upload-controls">
-        <input type="file" #fileUploadInput (change)="onFileSelected($event); fileUploadInput.value = ''" 
+        <input type="file" #fileUploadInput (change)="onFileSelected($event); fileUploadInput.value = ''"
                class="file-input" aria-label="Upload file for analysis">
 
-        <button mat-stroked-button color="accent" (click)="uploadTestFile()" 
+        <button mat-stroked-button color="accent" (click)="uploadTestFile()"
                 [disabled]="!selectedFile || isUploading" class="upload-btn">
           <mat-icon>cloud_upload</mat-icon>
           {{ isUploading ? 'Uploading...' : (selectedFile ? 'Upload: ' + selectedFile.name : 'Select File to Upload') }}
@@ -83,9 +99,9 @@
 
         <mat-form-field appearance="outline" class="content-textarea">
           <mat-label>Document Content</mat-label>
-          <textarea matInput 
-                    [value]="analysisResult.loadedDocuments[0].content" 
-                    readonly 
+          <textarea matInput
+                    [value]="analysisResult.loadedDocuments[0].content"
+                    readonly
                     rows="15"
                     class="content-display">
           </textarea>
@@ -136,9 +152,9 @@
                   <h4>Full Chunk Content (Chunk {{chunk.chunkIndex}})</h4>
                   <mat-form-field appearance="outline" class="expanded-textarea">
                     <mat-label>Chunk {{ chunk.chunkIndex }} Content</mat-label>
-                    <textarea matInput 
-                              [value]="chunk.content" 
-                              readonly 
+                    <textarea matInput
+                              [value]="chunk.content"
+                              readonly
                               rows="8"
                               class="chunk-content-display">
                     </textarea>

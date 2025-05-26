@@ -1,3 +1,19 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 import { Component, OnInit, ViewChild, ChangeDetectorRef, AfterViewInit } from '@angular/core';
 import { MatTableDataSource } from '@angular/material/table';
 import { MatPaginator, PageEvent } from '@angular/material/paginator';
@@ -29,7 +45,7 @@ interface DisplayItem {
 export class IndexBrowserComponent implements OnInit, AfterViewInit {
   dataSource = new MatTableDataSource<DisplayItem>();
   displayedColumns: string[] = ['id', 'preview', 'score', 'originalDocument', 'actions'];
-  
+
   // Search functionality
   searchControl = new FormControl('');
   searchResults: SearchResult[] = [];
@@ -90,7 +106,7 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit {
         this.indexBrowserStatus = status;
         this.isLoadingStatus = false;
         this.cdr.detectChanges();
-        
+
         if (status.warning) {
           this.snackBar.open(status.warning, 'Close', {
             duration: 10000,
@@ -126,14 +142,14 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit {
     this.isSearchMode = true;
     this.currentSearchQuery = query;
     this.selectedDoc = null;
-    
+
     this.indexBrowserService.searchIndexedDocs(query, this.maxSearchResults).subscribe({
       next: (response: SearchResponse) => {
         this.searchResults = response.results;
         this.updateDataSourceWithSearchResults(response.results);
         this.isLoading = false;
         this.cdr.detectChanges();
-        
+
         this.snackBar.open(`Found ${response.totalResults} results for "${query}"`, 'Close', {
           duration: 3000,
           panelClass: ['snackbar-success']
@@ -168,10 +184,10 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit {
       content: result.content,
       isSearchResult: true
     }));
-    
+
     this.dataSource.data = displayItems;
     this.totalDocsEstimate = displayItems.length;
-    
+
     // Disable pagination for search results
     if (this.paginator) {
       this.paginator.length = displayItems.length;
@@ -192,7 +208,7 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit {
           content: doc.content,
           isSearchResult: false
         }));
-        
+
         this.dataSource.data = displayItems;
         if (docs.length < limit) {
           this.totalDocsEstimate = offset + docs.length;
@@ -298,37 +314,37 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit {
 
   getStatusColor(): string {
     if (!this.indexBrowserStatus) return 'warn';
-    
+
     if (this.indexBrowserStatus.isNoOpIndexer || this.indexBrowserStatus.isNoOpRetriever) {
       return 'warn';
     }
-    
+
     if (!this.indexBrowserStatus.indexAvailable) {
       return 'warn';
     }
-    
+
     return 'primary';
   }
 
   getStatusMessage(): string {
     if (!this.indexBrowserStatus) return 'Loading status...';
-    
+
     if (this.indexBrowserStatus.isNoOpIndexer && this.indexBrowserStatus.isNoOpRetriever) {
       return 'Using NoOp implementations - no functionality available';
     }
-    
+
     if (this.indexBrowserStatus.isNoOpIndexer) {
       return 'Using NoOp Indexer - document browsing not available';
     }
-    
+
     if (this.indexBrowserStatus.isNoOpRetriever) {
       return 'Using NoOp Retriever - search functionality not available';
     }
-    
+
     if (!this.indexBrowserStatus.indexAvailable) {
       return 'Index not available - may need to be built';
     }
-    
+
     return 'Index available and ready';
   }
 
