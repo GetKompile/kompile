@@ -14,7 +14,7 @@
  *  * limitations under the License.
  */
 
-package ai.kompile.vectorstore.pgvector; // Or ai.kompile.vectorstore.chroma;
+package ai.kompile.vectorstore.pgvector;
 
 import ai.kompile.core.embeddings.VectorStore;
 import org.slf4j.Logger;
@@ -30,17 +30,27 @@ import java.util.List;
 import java.util.Optional;
 
 @Service("pgVectorStoreImpl") // Or "chromaVectorStoreImpl"
-@ConditionalOnProperty(prefix = "spring.ai.vectorstore.pgvector.jdbc-url", name = "url") // Adjust prefix for Chroma if needed
-// Example for Chroma: @ConditionalOnProperty(prefix = "spring.ai.vectorstore.chroma.client", name = "host")
 public class PgVectorStoreImpl implements VectorStore {
 
     private static final Logger logger = LoggerFactory.getLogger(PgVectorStoreImpl.class);
 
-    private final org.springframework.ai.vectorstore.VectorStore springAiVectorStore;
+    private  org.springframework.ai.vectorstore.VectorStore springAiVectorStore;
 
     @Autowired
-    public PgVectorStoreImpl(org.springframework.ai.vectorstore.VectorStore springAiVectorStore) {
-        this.springAiVectorStore = springAiVectorStore;
+    public PgVectorStoreImpl(List<org.springframework.ai.vectorstore.VectorStore> springAiVectorStore) {
+        if(springAiVectorStore.size() > 1) {
+            for(org.springframework.ai.vectorstore.VectorStore vectorStore : springAiVectorStore) {
+                if(vectorStore.getClass().getName().contains("Pg")) {
+                    this.springAiVectorStore = vectorStore;
+                    break;
+                }
+            }
+        }
+        //we try to prioritize pgvector but otherwise just use the first one if multiple are present
+        if(this.springAiVectorStore == null) {
+            this.springAiVectorStore = springAiVectorStore.get(0);
+        }
+
         logger.info("PgVectorStoreImpl (or relevant store) initialized with Spring AI VectorStore: {}",
                 springAiVectorStore.getClass().getSimpleName());
     }

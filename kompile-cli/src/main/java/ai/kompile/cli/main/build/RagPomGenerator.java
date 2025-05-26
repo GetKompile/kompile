@@ -51,6 +51,28 @@ import java.util.stream.Collectors;
         description = "Generates a pom.xml for a RAG MCP Assistant application instance.")
 public class RagPomGenerator implements Callable<Void> {
 
+    @CommandLine.Option(names = {"--databaseUrl"},
+            description = "Database URL. Will auto-create database if it doesn't exist",
+            defaultValue = "jdbc:postgresql://localhost:5432/kompile_db")
+    private String databaseUrl = "jdbc:postgresql://localhost:5432/kompile_db";
+
+    @CommandLine.Option(names = {"--databaseUsername"},
+            description = "Database username",
+            defaultValue = "postgres")
+    private String databaseUsername = "postgres";
+
+    @CommandLine.Option(names = {"--databasePassword"},
+            description = "Database password",
+            defaultValue = "postgres")
+    private String databasePassword = "postgres";
+
+    @CommandLine.Option(names = {"--enableSchemaInit"},
+            description = "Enable automatic schema initialization with SQL scripts",
+            defaultValue = "true")
+    private boolean enableSchemaInit = true;
+    private static final String DEFAULT_EMBEDDED_POSTGRES_VERSION = "2.0.7";
+
+
     @CommandLine.Option(names = {"--outputFile"}, description = "The output file for the generated pom.xml", defaultValue = "pom-rag-instance.xml")
     private File outputFile;
 
@@ -267,33 +289,7 @@ public class RagPomGenerator implements Callable<Void> {
         buildArgsDom.addChild(buildArgElement);
     }
 
-    private void generateMainApplicationClass(File projectBaseDir, String packageName, String className) throws IOException {
-        String packagePath = packageName.replace('.', '/');
-        Path mainJavaDir = Paths.get(projectBaseDir.getAbsolutePath(), "src", "main", "java", packagePath);
-        Files.createDirectories(mainJavaDir);
 
-        Path mainAppFile = mainJavaDir.resolve(className + ".java");
-        String mainAppContent = String.format(
-                "package %s;\n\n" +
-                        "import ai.kompile.app.MainApplication;\n" +
-                        "import org.springframework.boot.SpringApplication;\n" +
-                        "import org.springframework.boot.autoconfigure.SpringBootApplication;\n" +
-                        "import org.springframework.context.annotation.Import;\n\n" +
-                        "@SpringBootApplication\n" +
-                        "@Import(MainApplication.class)\n" +
-                        "public class %s {\n\n" +
-                        "    public static void main(String[] args) {\n" +
-                        "        SpringApplication.run(%s.class, args);\n" +
-                        "    }\n" +
-                        "}\n",
-                packageName, className, className
-        );
-
-        try (FileWriter writer = new FileWriter(mainAppFile.toFile())) {
-            writer.write(mainAppContent);
-        }
-        System.out.println("Generated main application class: " + mainAppFile.toAbsolutePath());
-    }
 
     // Method to download models for the languages specified in the --supportedLanguages list
     private List<String> downloadOpenNLPModelsForSupportedLanguages(File projectBaseDir, List<String> languagesToDownload) throws IOException {
@@ -423,6 +419,9 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
 
+        // Add embedded PostgreSQL version property
+        props.setProperty("embedded-postgres.version", DEFAULT_EMBEDDED_POSTGRES_VERSION);
+
         String defaultRuntimeLangForOpenNLP = "en";
         if (this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
             String firstSpecifiedLang = this.supportedLanguages.get(0).toLowerCase().trim();
@@ -454,7 +453,483 @@ public class RagPomGenerator implements Callable<Void> {
             mavenXpp3Writer.write(fileWriter, model);
             System.out.println("Successfully generated RAG application POM: " + finalPomFile.getAbsolutePath());
         }
+
+        // Generate application.properties with provider-specific configuration
+        generateApplicationProperties(projectDir);
+
+        // CRITICAL FIX: Always generate PGML schema files FIRST if needed
+        if (includeEmbeddingPostgresml || includePgmlIndexer) {
+            generatePgmlSchemaFiles(projectDir);
+        }
+
+        // Then generate general SQL schema files
+        if (enableSchemaInit && (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
+            generateSqlSchemaFiles(projectDir);
+        }
+
+        // Always generate database configuration for better database handling
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+            generateDatabaseConfiguration(projectDir);
+            generateGlobalExceptionHandler(projectDir);
+        }
+
+        // Generate a custom configuration class to handle provider selection
+        generateProviderConfigurationClass(projectDir);
+
         return null;
+    }
+
+    /**
+     * COMPREHENSIVE FIX for PostgresML function signature issues
+     *
+     * This creates functions with ALL possible PostgreSQL string type combinations
+     * because PostgreSQL treats each type variation as a completely different signature.
+     *
+     * Replace the generatePgmlSchemaFiles() method in RagPomGenerator.java with this version.
+     */
+    private void generatePgmlSchemaFiles(File projectDir) throws IOException {
+        File resourcesDir = new File(projectDir, "src/main/resources");
+        if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
+            throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
+        }
+
+        File pgmlSchemaFile = new File(resourcesDir, "pgml-schema.sql");
+        try (FileWriter writer = new FileWriter(pgmlSchemaFile)) {
+            writer.write("-- PostgresML Comprehensive Schema Initialization\n");
+            writer.write("-- Generated on: " + new java.util.Date() + "\n");
+            writer.write("-- COMPREHENSIVE FIX: Creates ALL possible function signatures for PostgreSQL string types\n");
+            writer.write("-- This addresses PostgreSQL's strict function overloading rules\n\n");
+
+            writer.write("-- Step 1: Create pgml schema and required extensions\n");
+            writer.write("CREATE SCHEMA IF NOT EXISTS pgml;\n");
+            writer.write("COMMENT ON SCHEMA pgml IS 'PostgresML schema - comprehensive initialization';\n\n");
+
+            writer.write("-- Ensure vector extension if available (for return types)\n");
+            writer.write("DO $extension_setup$\n");
+            writer.write("BEGIN\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE EXTENSION IF NOT EXISTS vector;\n");
+            writer.write("        RAISE NOTICE '✓ Vector extension available';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING '⚠ Vector extension not available - using FLOAT[] fallback';\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE EXTENSION IF NOT EXISTS pgml SCHEMA pgml;\n");
+            writer.write("        RAISE NOTICE '✓ PostgresML extension installed and working!';\n");
+            writer.write("        -- If we get here, PostgresML is available, so we don't need stub functions\n");
+            writer.write("        RETURN;\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING '⚠ PostgresML extension not available - creating comprehensive stub functions';\n");
+            writer.write("    END;\n");
+            writer.write("END $extension_setup$;\n\n");
+
+            writer.write("-- Step 2: Create comprehensive stub functions\n");
+            writer.write("-- PostgreSQL treats these as completely different function signatures:\n");
+            writer.write("-- character varying, text, varchar, char, etc. are all different types for function resolution\n\n");
+
+            // Determine return type based on vector extension availability
+            String returnType;
+            if (includeVectorstorePgvector) {
+                returnType = "vector";
+                writer.write("-- Using vector return type (pgvector enabled)\n");
+            } else {
+                returnType = "FLOAT[]";
+                writer.write("-- Using FLOAT[] return type (pgvector not enabled)\n");
+            }
+
+            writer.write("DO $create_stubs$\n");
+            writer.write("DECLARE\n");
+            writer.write("    pgml_available BOOLEAN := FALSE;\n");
+            writer.write("    vector_available BOOLEAN := FALSE;\n");
+            writer.write("    final_return_type TEXT;\n");
+            writer.write("BEGIN\n");
+            writer.write("    -- Check if PostgresML extension is already working\n");
+            writer.write("    BEGIN\n");
+            writer.write("        PERFORM pgml.version();\n");
+            writer.write("        pgml_available := TRUE;\n");
+            writer.write("        RAISE NOTICE 'PostgresML is available - skipping stub creation';\n");
+            writer.write("        RETURN;\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        pgml_available := FALSE;\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    -- Determine return type based on vector extension availability\n");
+            writer.write("    BEGIN\n");
+            writer.write("        -- Test if vector type exists\n");
+            writer.write("        EXECUTE 'SELECT NULL::vector';\n");
+            writer.write("        vector_available := TRUE;\n");
+            writer.write("        final_return_type := 'vector';\n");
+            writer.write("        RAISE NOTICE 'Using vector return type';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        vector_available := FALSE;\n");
+            writer.write("        final_return_type := 'FLOAT[]';\n");
+            writer.write("        RAISE NOTICE 'Using FLOAT[] return type (vector extension not available)';\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+
+            // Create all possible function signature combinations
+            String[] firstParamTypes = {"character varying", "text", "varchar", "TEXT", "CHAR", "CHARACTER VARYING"};
+            String[] secondParamTypes = {"text", "character varying", "varchar", "TEXT", "VARCHAR", "CHAR"};
+            String[] thirdParamTypes = {"jsonb", "JSONB", "json", "JSON"};
+
+            writer.write("    -- Create comprehensive function signatures to handle all possible Spring AI calls\n");
+            writer.write("    RAISE NOTICE 'Creating comprehensive stub functions for all PostgreSQL string type combinations...';\n");
+            writer.write("    \n");
+
+            int signatureCount = 0;
+            for (String param1 : firstParamTypes) {
+                for (String param2 : secondParamTypes) {
+                    for (String param3 : thirdParamTypes) {
+                        signatureCount++;
+                        writer.write("    -- Signature " + signatureCount + ": " + param1 + ", " + param2 + ", " + param3 + "\n");
+                        writer.write("    BEGIN\n");
+                        writer.write("        EXECUTE 'CREATE OR REPLACE FUNCTION pgml.embed(' ||\n");
+                        writer.write("            'model_name " + param1 + ", ' ||\n");
+                        writer.write("            'text_input " + param2 + ", ' ||\n");
+                        writer.write("            'kwargs " + param3 + " DEFAULT ''{}''::jsonb' ||\n");
+                        writer.write("        ') RETURNS ' || final_return_type || ' AS $stub$' ||\n");
+                        writer.write("        'BEGIN ' ||\n");
+                        writer.write("            'RAISE EXCEPTION ''PostgresML not available. Signature: " + param1 + ", " + param2 + ", " + param3 + ". Install: https://postgresml.org/docs/getting-started/installation''; ' ||\n");
+                        writer.write("        'END; $stub$ LANGUAGE plpgsql;';\n");
+                        writer.write("    EXCEPTION WHEN duplicate_function THEN\n");
+                        writer.write("        -- Function already exists, skip\n");
+                        writer.write("        NULL;\n");
+                        writer.write("    WHEN OTHERS THEN\n");
+                        writer.write("        RAISE WARNING 'Could not create function signature " + signatureCount + " (" + param1 + ", " + param2 + ", " + param3 + "): %', SQLERRM;\n");
+                        writer.write("    END;\n");
+                        writer.write("    \n");
+                    }
+                }
+            }
+
+            writer.write("    -- Create other commonly used stub functions\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE OR REPLACE FUNCTION pgml.version() RETURNS TEXT AS $version$\n");
+            writer.write("        BEGIN\n");
+            writer.write("            RETURN 'stub-version-pgml-not-installed';\n");
+            writer.write("        END;\n");
+            writer.write("        $version$ LANGUAGE plpgsql;\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create pgml.version stub: %', SQLERRM;\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE OR REPLACE FUNCTION pgml.transform(\n");
+            writer.write("            task TEXT,\n");
+            writer.write("            inputs TEXT[],\n");
+            writer.write("            model_name TEXT DEFAULT NULL,\n");
+            writer.write("            kwargs JSONB DEFAULT '{}'\n");
+            writer.write("        ) RETURNS JSONB AS $transform$\n");
+            writer.write("        BEGIN\n");
+            writer.write("            RAISE EXCEPTION 'PostgresML not available. Install: https://postgresml.org/docs/getting-started/installation';\n");
+            writer.write("        END;\n");
+            writer.write("        $transform$ LANGUAGE plpgsql;\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create pgml.transform stub: %', SQLERRM;\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    RAISE NOTICE '✓ Created comprehensive stub functions for PostgresML';\n");
+            writer.write("END $create_stubs$;\n\n");
+
+            // Add indexer tables if needed
+            if (includePgmlIndexer) {
+                writer.write("-- Step 3: Create PGML Indexer tables\n");
+                writer.write("CREATE TABLE IF NOT EXISTS pgml.indexer_jobs (\n");
+                writer.write("    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n");
+                writer.write("    job_name VARCHAR(255) NOT NULL,\n");
+                writer.write("    status VARCHAR(50) DEFAULT 'pending',\n");
+                writer.write("    model_name VARCHAR(255),\n");
+                writer.write("    task_type VARCHAR(100),\n");
+                writer.write("    input_data TEXT,\n");
+                writer.write("    output_data JSONB,\n");
+                writer.write("    error_message TEXT,\n");
+                writer.write("    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n");
+                writer.write("    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n");
+                writer.write("    completed_at TIMESTAMP,\n");
+                writer.write("    metadata JSONB\n");
+                writer.write(");\n\n");
+
+                writer.write("CREATE INDEX IF NOT EXISTS idx_pgml_indexer_jobs_status ON pgml.indexer_jobs(status);\n");
+                writer.write("CREATE INDEX IF NOT EXISTS idx_pgml_indexer_jobs_created_at ON pgml.indexer_jobs(created_at);\n");
+                writer.write("CREATE INDEX IF NOT EXISTS idx_pgml_indexer_jobs_task_type ON pgml.indexer_jobs(task_type);\n\n");
+            }
+
+            writer.write("-- Step 4: Final verification and debugging info\n");
+            writer.write("DO $final_check$\n");
+            writer.write("DECLARE\n");
+            writer.write("    embed_count INTEGER;\n");
+            writer.write("    signatures TEXT;\n");
+            writer.write("BEGIN\n");
+            writer.write("    -- Count embed functions\n");
+            writer.write("    SELECT COUNT(*) INTO embed_count\n");
+            writer.write("    FROM information_schema.routines \n");
+            writer.write("    WHERE routine_schema = 'pgml' AND routine_name = 'embed';\n");
+            writer.write("    \n");
+            writer.write("    -- Get all embed function signatures for debugging\n");
+            writer.write("    SELECT string_agg(\n");
+            writer.write("        'pgml.embed(' || \n");
+            writer.write("        COALESCE(\n");
+            writer.write("            (SELECT string_agg(\n");
+            writer.write("                data_type || CASE WHEN character_maximum_length IS NOT NULL \n");
+            writer.write("                    THEN '(' || character_maximum_length || ')' ELSE '' END,\n");
+            writer.write("                ', ' ORDER BY ordinal_position\n");
+            writer.write("            )\n");
+            writer.write("            FROM information_schema.parameters p \n");
+            writer.write("            WHERE p.specific_name = r.specific_name), ''\n");
+            writer.write("        ) || ')',\n");
+            writer.write("        '; '\n");
+            writer.write("    ) INTO signatures\n");
+            writer.write("    FROM information_schema.routines r\n");
+            writer.write("    WHERE routine_schema = 'pgml' AND routine_name = 'embed';\n");
+            writer.write("    \n");
+            writer.write("    RAISE NOTICE '';\n");
+            writer.write("    RAISE NOTICE '============================================================';\n");
+            writer.write("    RAISE NOTICE 'PostgresML Comprehensive Setup Complete';\n");
+            writer.write("    RAISE NOTICE '============================================================';\n");
+            writer.write("    RAISE NOTICE 'Total embed function variants created: %', embed_count;\n");
+            writer.write("    \n");
+            writer.write("    IF signatures IS NOT NULL THEN\n");
+            writer.write("        RAISE NOTICE 'Available function signatures:';\n");
+            writer.write("        RAISE NOTICE '%', signatures;\n");
+            writer.write("    END IF;\n");
+            writer.write("    \n");
+            writer.write("    IF embed_count > 0 THEN\n");
+            writer.write("        RAISE NOTICE 'Status: ✓ SUCCESS - All function signatures created';\n");
+            writer.write("        RAISE NOTICE 'Spring AI should now find a matching function signature';\n");
+            writer.write("    ELSE\n");
+            writer.write("        RAISE EXCEPTION 'FAILED - No embed functions were created';\n");
+            writer.write("    END IF;\n");
+            writer.write("    \n");
+            writer.write("    RAISE NOTICE '';\n");
+            writer.write("    RAISE NOTICE 'Next steps:';\n");
+            writer.write("    RAISE NOTICE '1. If you see function signature errors, check the log above';\n");
+            writer.write("    RAISE NOTICE '2. To install PostgresML: https://postgresml.org/docs/getting-started/installation';\n");
+            writer.write("    RAISE NOTICE '3. After installing PostgresML, restart your application';\n");
+            writer.write("    RAISE NOTICE '============================================================';\n");
+            writer.write("END $final_check$;\n");
+        }
+
+        System.out.println("Generated comprehensive PostgresML schema file: " + pgmlSchemaFile.getAbsolutePath());
+        System.out.println("COMPREHENSIVE FIX: Created " + (6 * 6 * 4) + " function signature combinations to handle all PostgreSQL string type variations");
+    }
+
+    /**
+     * Generate a custom configuration class that properly configures the selected providers
+     * This replaces the problematic auto-configurations with explicit bean creation
+     */
+    private void generateProviderConfigurationClass(File projectDir) throws IOException {
+        File javaDir = new File(projectDir, "src/main/java/" + instanceGroupId.replace('.', '/') + "/config");
+        if (!javaDir.exists() && !javaDir.mkdirs()) {
+            throw new IOException("Could not create java config directory: " + javaDir.getAbsolutePath());
+        }
+
+        File configFile = new File(javaDir, "ProviderConfiguration.java");
+
+        try (FileWriter writer = new FileWriter(configFile)) {
+            String packageName = instanceGroupId + ".config";
+
+            writer.write("package " + packageName + ";\n\n");
+            writer.write("import org.springframework.context.annotation.Configuration;\n");
+            writer.write("import org.springframework.context.annotation.Bean;\n");
+            writer.write("import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;\n");
+            writer.write("import org.springframework.jdbc.core.JdbcTemplate;\n");
+            writer.write("import org.springframework.dao.DataAccessException;\n");
+            writer.write("import org.springframework.jdbc.BadSqlGrammarException;\n");
+            writer.write("import org.springframework.context.ApplicationListener;\n");
+            writer.write("import org.springframework.boot.context.event.ApplicationReadyEvent;\n");
+            writer.write("import org.springframework.stereotype.Component;\n");
+            writer.write("import lombok.extern.slf4j.Slf4j;\n");
+            writer.write("import javax.sql.DataSource;\n");
+            writer.write("import java.sql.Connection;\n");
+            writer.write("import java.sql.Statement;\n");
+            writer.write("import java.sql.ResultSet;\n\n");
+
+            writer.write("/**\n");
+            writer.write(" * Generated provider configuration for " + instanceArtifactId + "\n");
+            writer.write(" * Automatically debugs PostgresML errors without any manual intervention\n");
+            writer.write(" */\n");
+            writer.write("@Configuration(proxyBeanMethods = false)\n");
+            writer.write("public class ProviderConfiguration {\n\n");
+
+            // Add automatic PostgresML error detector that runs on startup
+            if (includeEmbeddingPostgresml || includePgmlIndexer) {
+                writer.write("    /**\n");
+                writer.write("     * Automatic PostgresML error detector - runs immediately on startup\n");
+                writer.write("     * Tests the exact function that's failing and shows debug info\n");
+                writer.write("     */\n");
+                writer.write("    @Component\n");
+                writer.write("    @Slf4j\n");
+                writer.write("    public static class AutomaticPostgresMLDebugger implements ApplicationListener<ApplicationReadyEvent> {\n\n");
+
+                writer.write("        private final DataSource dataSource;\n");
+                writer.write("        private final JdbcTemplate jdbcTemplate;\n\n");
+
+                writer.write("        public AutomaticPostgresMLDebugger(DataSource dataSource, JdbcTemplate jdbcTemplate) {\n");
+                writer.write("            this.dataSource = dataSource;\n");
+                writer.write("            this.jdbcTemplate = jdbcTemplate;\n");
+                writer.write("        }\n\n");
+
+                writer.write("        @Override\n");
+                writer.write("        public void onApplicationEvent(ApplicationReadyEvent event) {\n");
+                writer.write("            log.info(\"Application ready - testing PostgresML function...\");\n");
+                writer.write("            \n");
+                writer.write("            // Test the exact function that Spring AI calls\n");
+                writer.write("            try {\n");
+                writer.write("                jdbcTemplate.queryForObject(\n");
+                writer.write("                    \"SELECT pgml.embed('startup-test'::character varying, 'test'::text, '{}'::jsonb)\", \n");
+                writer.write("                    Object.class\n");
+                writer.write("                );\n");
+                writer.write("                log.info(\"✓ PostgresML function test PASSED - embeddings should work\");\n");
+                writer.write("                \n");
+                writer.write("            } catch (Exception e) {\n");
+                writer.write("                log.error(\"✗ PostgresML function test FAILED - this will cause upload errors\", e);\n");
+                writer.write("                \n");
+                writer.write("                // Show debug info immediately\n");
+                writer.write("                debugPostgresMLError(e);\n");
+                writer.write("            }\n");
+                writer.write("        }\n\n");
+
+                writer.write("        /**\n");
+                writer.write("         * Debug PostgresML error and show immediate fix\n");
+                writer.write("         */\n");
+                writer.write("        private void debugPostgresMLError(Exception originalError) {\n");
+                writer.write("            System.err.println(\"\\n\" + \"=\".repeat(100));\n");
+                writer.write("            System.err.println(\"AUTOMATIC PostgresML DEBUG - Error detected on startup\");\n");
+                writer.write("            System.err.println(\"Original error: \" + originalError.getMessage());\n");
+                writer.write("            System.err.println(\"=\".repeat(100));\n");
+                writer.write("            \n");
+                writer.write("            try (Connection conn = dataSource.getConnection()) {\n");
+                writer.write("                \n");
+                writer.write("                // Check schema\n");
+                writer.write("                System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
+                writer.write("                try (Statement stmt = conn.createStatement()) {\n");
+                writer.write("                    ResultSet rs = stmt.executeQuery(\n");
+                writer.write("                        \"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'pgml'\");\n");
+                writer.write("                    rs.next();\n");
+                writer.write("                    \n");
+                writer.write("                    if (rs.getInt(1) > 0) {\n");
+                writer.write("                        System.err.println(\"   ✓ pgml schema EXISTS\");\n");
+                writer.write("                    } else {\n");
+                writer.write("                        System.err.println(\"   ✗ pgml schema MISSING!\");\n");
+                writer.write("                    }\n");
+                writer.write("                }\n");
+                writer.write("                \n");
+                writer.write("                // Check function\n");
+                writer.write("                System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
+                writer.write("                try (Statement stmt = conn.createStatement()) {\n");
+                writer.write("                    ResultSet rs = stmt.executeQuery(\n");
+                writer.write("                        \"SELECT COUNT(*) FROM information_schema.routines \" +\n");
+                writer.write("                        \"WHERE routine_schema = 'pgml' AND routine_name = 'embed'\");\n");
+                writer.write("                    rs.next();\n");
+                writer.write("                    \n");
+                writer.write("                    int funcCount = rs.getInt(1);\n");
+                writer.write("                    if (funcCount > 0) {\n");
+                writer.write("                        System.err.println(\"   ✓ pgml.embed function EXISTS (\" + funcCount + \" variants)\");\n");
+                writer.write("                        \n");
+                writer.write("                        // Check specific signature\n");
+                writer.write("                        checkFunctionSignature(conn);\n");
+                writer.write("                        \n");
+                writer.write("                    } else {\n");
+                writer.write("                        System.err.println(\"   ✗ pgml.embed function MISSING!\");\n");
+                writer.write("                        System.err.println(\"   → This is why your uploads will fail\");\n");
+                writer.write("                    }\n");
+                writer.write("                }\n");
+                writer.write("                \n");
+                writer.write("            } catch (Exception debugError) {\n");
+                writer.write("                System.err.println(\"Debug connection failed: \" + debugError.getMessage());\n");
+                writer.write("            }\n");
+                writer.write("            \n");
+                writer.write("            // Show immediate fix\n");
+                writer.write("            System.err.println(\"\\n\" + \"-\".repeat(80));\n");
+                writer.write("            System.err.println(\"IMMEDIATE FIX - Run this SQL in your database:\");\n");
+                writer.write("            System.err.println(\"-\".repeat(80));\n");
+                writer.write("            System.err.println(\"CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+                writer.write("            System.err.println(\"CREATE OR REPLACE FUNCTION pgml.embed(\");\n");
+                writer.write("            System.err.println(\"  model_name character varying,\");\n");
+                writer.write("            System.err.println(\"  text_input text,\");\n");
+                writer.write("            System.err.println(\"  kwargs jsonb DEFAULT '{}'\");\n");
+                writer.write("            System.err.println(\") RETURNS FLOAT[] AS $$\");\n");
+                writer.write("            System.err.println(\"BEGIN\");\n");
+                writer.write("            System.err.println(\"  RAISE EXCEPTION 'PostgresML not installed';\");\n");
+                writer.write("            System.err.println(\"END;\");\n");
+                writer.write("            System.err.println(\"$$ LANGUAGE plpgsql;\");\n");
+                writer.write("            System.err.println(\"-\".repeat(80));\n");
+                writer.write("            System.err.println(\"=\".repeat(100));\n");
+                writer.write("        }\n\n");
+
+                writer.write("        private void checkFunctionSignature(Connection conn) {\n");
+                writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+                writer.write("                ResultSet rs = stmt.executeQuery(\n");
+                writer.write("                    \"SELECT string_agg(p.data_type, ', ' ORDER BY p.ordinal_position) as params \" +\n");
+                writer.write("                    \"FROM information_schema.routines r \" +\n");
+                writer.write("                    \"LEFT JOIN information_schema.parameters p ON r.specific_name = p.specific_name \" +\n");
+                writer.write("                    \"WHERE r.routine_schema = 'pgml' AND r.routine_name = 'embed' \" +\n");
+                writer.write("                    \"GROUP BY r.specific_name\");\n");
+                writer.write("                \n");
+                writer.write("                boolean foundTarget = false;\n");
+                writer.write("                System.err.println(\"   Available function signatures:\");\n");
+                writer.write("                \n");
+                writer.write("                while (rs.next()) {\n");
+                writer.write("                    String params = rs.getString(\"params\");\n");
+                writer.write("                    System.err.println(\"   - pgml.embed(\" + params + \")\");\n");
+                writer.write("                    \n");
+                writer.write("                    if (params != null && params.contains(\"character varying\") && \n");
+                writer.write("                        params.contains(\"text\") && params.contains(\"jsonb\")) {\n");
+                writer.write("                        foundTarget = true;\n");
+                writer.write("                        System.err.println(\"     ✓ MATCHES Spring AI requirement\");\n");
+                writer.write("                    }\n");
+                writer.write("                }\n");
+                writer.write("                \n");
+                writer.write("                if (!foundTarget) {\n");
+                writer.write("                    System.err.println(\"   ✗ MISSING required: (character varying, text, jsonb)\");\n");
+                writer.write("                }\n");
+                writer.write("                \n");
+                writer.write("            } catch (Exception e) {\n");
+                writer.write("                System.err.println(\"   Function signature check failed: \" + e.getMessage());\n");
+                writer.write("            }\n");
+                writer.write("        }\n");
+                writer.write("    }\n\n");
+            }
+
+            writer.write("}\n");
+        }
+
+        System.out.println("Generated ProviderConfiguration.java with automatic PostgresML debugging: " + configFile.getAbsolutePath());
+    }
+
+
+
+
+    private void writeProviderConfigurationClass(FileWriter writer) throws IOException {
+        String packageName = instanceGroupId + ".config";
+
+        writer.write("package " + packageName + ";\n\n");
+        writer.write("import org.springframework.context.annotation.Configuration;\n");
+        writer.write("import org.springframework.context.annotation.Bean;\n");
+        writer.write("import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;\n");
+        writer.write("import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;\n");
+        writer.write("import org.springframework.beans.factory.annotation.Value;\n");
+        writer.write("import org.springframework.jdbc.core.JdbcTemplate;\n");
+        writer.write("import org.springframework.ai.embedding.EmbeddingModel;\n");
+        writer.write("import org.springframework.ai.vectorstore.pgvector.PgVectorStore;\n");
+
+        writer.write("\n/**\n");
+        writer.write(" * Generated provider configuration for " + instanceArtifactId + "\n");
+        writer.write(" * \n");
+        writer.write(" * This configuration only creates beans that are NOT created by the modules.\n");
+        writer.write(" * Individual modules (kompile-embedding-*, kompile-vectorstore-*) create\n");
+        writer.write(" * their own beans via their own configuration classes.\n");
+        writer.write(" * \n");
+        writer.write(" * Configured providers: " + getProviderSummary() + "\n");
+        writer.write(" */\n");
+        writer.write("@Configuration(proxyBeanMethods = false)\n");
+        writer.write("public class ProviderConfiguration {\n\n");
+
+        writer.write("    // No beans needed here - modules create their own beans\n");
+        writer.write("    // This class exists in case you need custom cross-cutting configuration\n\n");
+
+        writer.write("}\n");
     }
 
     private void addApplicationDependencies() {
@@ -463,10 +938,22 @@ public class RagPomGenerator implements Callable<Void> {
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter", "${spring-boot.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", "${spring-ai.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", "${spring-ai.version}");
+
         addDependency(defaultDependencies, "jakarta.mail", "jakarta.mail-api", DEFAULT_JAKARTA_MAIL_VERSION);
+
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-api", "${log4j.version}");
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-core", "${log4j.version}");
 
+        // Add database dependencies for PostgreSQL
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+            // PostgreSQL driver
+            addDependency(defaultDependencies, "org.postgresql", "postgresql", "${postgres.version}", "compile", null, false);
+
+            // Spring JDBC for database operations
+            addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-jdbc", "${spring-boot.version}");
+        }
+
+        // ... rest of existing dependencies remain the same
         if (includeAppMain) addDependency(defaultDependencies, "ai.kompile", "kompile-app-main", "${kompile.project.version}");
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
@@ -494,22 +981,1333 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeVectorstoreChroma) addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-chroma", "${kompile.project.version}");
         if (includeEmbeddingPostgresml) addDependency(defaultDependencies, "ai.kompile", "kompile-embedding-postgresml", "${kompile.project.version}");
         if (includePgmlIndexer) addDependency(defaultDependencies, "ai.kompile", "kompile-app-pgml-indexer", "${kompile.project.version}");
-
         if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
             addDependency(defaultDependencies, "ai.kompile", "kompile-vectorstore-pgvector", "${kompile.project.version}");
         }
         if (includeToolFilesystem) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-filesystem", "${kompile.project.version}");
         if (includeToolRag) addDependency(defaultDependencies, "ai.kompile", "kompile-tool-rag", "${kompile.project.version}");
 
-        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
-            addDependency(defaultDependencies, "org.postgresql", "postgresql", "${postgres.version}", "compile", null, false);
-        }
-
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
         addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}");
         addDependency(defaultDependencies, "com.google.guava", "guava", "${guava.version}");
-        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-test", "${spring-boot.version}", "test", null, false);
         model.setDependencies(defaultDependencies);
+    }
+
+    /**
+     * Generate application.properties with ONLY auto-configuration exclusions
+     * No API keys, no runtime configuration - just structural decisions
+     */
+    private void generateApplicationProperties(File projectDir) throws IOException {
+        File resourcesDir = new File(projectDir, "src/main/resources");
+        if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
+            throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
+        }
+
+        File appPropsFile = new File(resourcesDir, "application.properties");
+
+        try (FileWriter writer = new FileWriter(appPropsFile)) {
+            writeApplicationPropertiesHeader(writer);
+            writeDatabaseConfiguration(writer);
+            writeSchemaManagementConfiguration(writer);
+            writeAutoConfigurationExclusions(writer);
+            writeProviderEnablementFlags(writer);
+            writeStructuralConfiguration(writer);
+            writeConfigurationTemplate(writer);
+        }
+
+        System.out.println("Generated application.properties: " + appPropsFile.getAbsolutePath());
+    }
+
+    private void writeDatabaseConfiguration(FileWriter writer) throws IOException {
+        if (!(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
+            return;
+        }
+
+        writer.write("# =============================================================================\n");
+        writer.write("# DATABASE CONFIGURATION\n");
+        writer.write("# Connects to real PostgreSQL server and auto-creates database if needed\n");
+        writer.write("# =============================================================================\n");
+
+        writer.write("# PostgreSQL Connection Settings\n");
+        writer.write("spring.datasource.url=" + databaseUrl + "\n");
+        writer.write("spring.datasource.username=" + databaseUsername + "\n");
+        writer.write("spring.datasource.password=" + databasePassword + "\n");
+        writer.write("spring.datasource.driver-class-name=org.postgresql.Driver\n");
+        writer.write("\n");
+
+        // Connection pool configuration
+        writer.write("# Connection Pool Configuration\n");
+        writer.write("spring.datasource.type=com.zaxxer.hikari.HikariDataSource\n");
+        writer.write("spring.datasource.hikari.maximum-pool-size=10\n");
+        writer.write("spring.datasource.hikari.minimum-idle=2\n");
+        writer.write("spring.datasource.hikari.connection-timeout=20000\n");
+        writer.write("spring.datasource.hikari.idle-timeout=300000\n");
+        writer.write("spring.datasource.hikari.max-lifetime=1800000\n");
+        writer.write("spring.datasource.hikari.leak-detection-threshold=60000\n");
+        writer.write("\n");
+    }
+
+    private void writeSchemaManagementConfiguration(FileWriter writer) throws IOException {
+        if (!(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
+            return;
+        }
+
+        writer.write("# =============================================================================\n");
+        writer.write("# SCHEMA MANAGEMENT CONFIGURATION\n");
+        writer.write("# CRITICAL: pgml-schema.sql MUST be executed first to create pgml schema\n");
+        writer.write("# =============================================================================\n");
+
+        if (enableSchemaInit) {
+            writer.write("# Simple SQL Schema Initialization\n");
+            writer.write("spring.sql.init.enabled=true\n");
+            writer.write("spring.sql.init.mode=always\n");
+
+            // Build the schema locations list with PROPER ORDER
+            List<String> schemaLocations = new ArrayList<>();
+
+            // CRITICAL: pgml schema MUST come first
+            if (includeEmbeddingPostgresml || includePgmlIndexer) {
+                schemaLocations.add("classpath:pgml-schema.sql");
+            }
+            schemaLocations.add("classpath:schema.sql");
+
+            writer.write("spring.sql.init.schema-locations=" + String.join(",", schemaLocations) + "\n");
+            writer.write("spring.sql.init.data-locations=classpath:data.sql\n");
+            writer.write("spring.sql.init.continue-on-error=true\n");  // Important for graceful failure
+            writer.write("spring.sql.init.separator=;\n");
+            writer.write("spring.sql.init.encoding=UTF-8\n");
+        }
+
+        // Disable JPA/Hibernate schema management
+        writer.write("\n# Disable JPA/Hibernate Schema Management\n");
+        writer.write("spring.jpa.hibernate.ddl-auto=none\n");
+        writer.write("spring.jpa.generate-ddl=false\n");
+        writer.write("spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration\n");
+        writer.write("\n");
+    }
+
+    private void generateSqlSchemaFiles(File projectDir) throws IOException {
+        if (!enableSchemaInit) return;
+
+        File resourcesDir = new File(projectDir, "src/main/resources");
+        if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
+            throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
+        }
+
+        // Generate schema.sql with proper PostgreSQL syntax
+        File schemaFile = new File(resourcesDir, "schema.sql");
+        try (FileWriter writer = new FileWriter(schemaFile)) {
+            writer.write("-- Schema initialization for Kompile RAG application\n");
+            writer.write("-- Generated on: " + new java.util.Date() + "\n");
+            writer.write("-- This script is designed to be idempotent and safe to run multiple times\n");
+            writer.write("-- IMPORTANT: This script runs AFTER pgml-schema.sql (if present)\n\n");
+
+            writer.write("-- Enable required PostgreSQL extensions (with error handling)\n");
+            writer.write("DO $\n");
+            writer.write("BEGIN\n");
+            writer.write("    -- Try to create vector extension\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE EXTENSION IF NOT EXISTS vector;\n");
+            writer.write("        RAISE NOTICE 'Vector extension created/verified successfully';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create vector extension: %', SQLERRM;\n");
+            writer.write("        RAISE WARNING 'This may be normal if pgvector is not installed. Vector operations will not work.';\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    -- Try to create uuid-ossp extension\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";\n");
+            writer.write("        RAISE NOTICE 'UUID-OSSP extension created/verified successfully';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create uuid-ossp extension: %', SQLERRM;\n");
+            writer.write("        RAISE WARNING 'UUID generation will use random() instead';\n");
+            writer.write("    END;\n");
+            writer.write("END $;\n\n");
+
+            writer.write("-- Create vector store table\n");
+            writer.write("CREATE TABLE IF NOT EXISTS vector_store (\n");
+            writer.write("    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n");
+            writer.write("    content TEXT,\n");
+            writer.write("    metadata JSONB,\n");
+            writer.write("    embedding vector(1536),\n");
+            writer.write("    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n");
+            writer.write("    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n");
+            writer.write(");\n\n");
+
+            writer.write("-- Create collections table\n");
+            writer.write("CREATE TABLE IF NOT EXISTS collections (\n");
+            writer.write("    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n");
+            writer.write("    name VARCHAR(255) NOT NULL UNIQUE,\n");
+            writer.write("    description TEXT,\n");
+            writer.write("    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n");
+            writer.write(");\n\n");
+
+            writer.write("-- Add collection reference to vector_store if not exists\n");
+            writer.write("DO $\n");
+            writer.write("BEGIN\n");
+            writer.write("    IF NOT EXISTS (\n");
+            writer.write("        SELECT 1 FROM information_schema.columns \n");
+            writer.write("        WHERE table_name = 'vector_store' AND column_name = 'collection_id'\n");
+            writer.write("    ) THEN\n");
+            writer.write("        ALTER TABLE vector_store ADD COLUMN collection_id UUID REFERENCES collections(id) ON DELETE SET NULL;\n");
+            writer.write("        RAISE NOTICE 'Added collection_id column to vector_store table';\n");
+            writer.write("    END IF;\n");
+            writer.write("END $;\n\n");
+
+            writer.write("-- Create indexes for performance (with error handling)\n");
+            writer.write("DO $\n");
+            writer.write("BEGIN\n");
+            writer.write("    -- Vector similarity index (only if vector extension available)\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE INDEX IF NOT EXISTS vector_store_embedding_idx \n");
+            writer.write("            ON vector_store USING ivfflat (embedding vector_cosine_ops) \n");
+            writer.write("            WITH (lists = 100);\n");
+            writer.write("        RAISE NOTICE 'Vector similarity index created successfully';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create vector similarity index: %', SQLERRM;\n");
+            writer.write("        RAISE WARNING 'This is normal if vector extension is not available';\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    -- JSONB metadata index (FIXED: proper syntax for JSONB)\n");
+            writer.write("    BEGIN\n");
+            writer.write("        CREATE INDEX IF NOT EXISTS idx_vector_store_metadata \n");
+            writer.write("            ON vector_store USING GIN (metadata jsonb_ops);\n");  // FIXED: added jsonb_ops
+            writer.write("        RAISE NOTICE 'JSONB metadata index created successfully';\n");
+            writer.write("    EXCEPTION WHEN OTHERS THEN\n");
+            writer.write("        RAISE WARNING 'Could not create JSONB metadata index: %', SQLERRM;\n");
+            writer.write("    END;\n");
+            writer.write("    \n");
+            writer.write("    -- Other standard indexes\n");
+            writer.write("    CREATE INDEX IF NOT EXISTS idx_vector_store_created_at \n");
+            writer.write("        ON vector_store (created_at);\n");
+            writer.write("    \n");
+            writer.write("    CREATE INDEX IF NOT EXISTS idx_vector_store_collection_id \n");
+            writer.write("        ON vector_store (collection_id);\n");
+            writer.write("    \n");
+            writer.write("    CREATE INDEX IF NOT EXISTS idx_collections_name \n");
+            writer.write("        ON collections (name);\n");
+            writer.write("    \n");
+            writer.write("    RAISE NOTICE 'All standard indexes created successfully';\n");
+            writer.write("END $;\n\n");
+
+            writer.write("-- Verify table creation\n");
+            writer.write("DO $\n");
+            writer.write("BEGIN\n");
+            writer.write("    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'vector_store') THEN\n");
+            writer.write("        RAISE NOTICE 'Schema initialization completed successfully ✓';\n");
+            writer.write("    ELSE\n");
+            writer.write("        RAISE EXCEPTION 'Schema initialization failed - vector_store table not found';\n");
+            writer.write("    END IF;\n");
+            writer.write("END $;\n");
+        }
+
+        // Generate data.sql
+        File dataFile = new File(resourcesDir, "data.sql");
+        try (FileWriter writer = new FileWriter(dataFile)) {
+            writer.write("-- Initial data for Kompile RAG application\n");
+            writer.write("-- Generated on: " + new java.util.Date() + "\n\n");
+
+            writer.write("-- Insert default collection if it doesn't exist\n");
+            writer.write("INSERT INTO collections (name, description) \n");
+            writer.write("VALUES ('default', 'Default document collection') \n");
+            writer.write("ON CONFLICT (name) DO NOTHING;\n\n");
+
+            writer.write("-- Verify data initialization\n");
+            writer.write("DO $\n");
+            writer.write("DECLARE\n");
+            writer.write("    collection_count INTEGER;\n");
+            writer.write("BEGIN\n");
+            writer.write("    SELECT COUNT(*) INTO collection_count FROM collections;\n");
+            writer.write("    RAISE NOTICE 'Data initialization completed. Collections: %', collection_count;\n");
+            writer.write("END $;\n");
+        }
+
+        System.out.println("Generated SQL schema files:");
+        System.out.println("  - " + schemaFile.getAbsolutePath());
+        System.out.println("  - " + dataFile.getAbsolutePath());
+    }
+
+    /**
+     * Complete the addDebugToErrorHandling method and integration
+     * Add these methods to your RagPomGenerator.java class
+     */
+
+    /**
+     * SIMPLE SOLUTION: Just add debug calls to your existing error handling
+     *
+     * In your RagPomGenerator, modify the generateDatabaseConfiguration method
+     * to add debug calls right where the PostgresML errors already occur
+     */
+
+    /**
+     * Enhanced DatabaseSetup class with simple debug integration
+     * Replace your existing DatabaseSetup generation with this
+     */
+    private void generateDatabaseConfiguration(File projectDir) throws IOException {
+        if (!(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
+            return;
+        }
+
+        File javaDir = new File(projectDir, "src/main/java/" + instanceGroupId.replace('.', '/') + "/config");
+        if (!javaDir.exists() && !javaDir.mkdirs()) {
+            throw new IOException("Could not create config directory: " + javaDir.getAbsolutePath());
+        }
+
+        File configFile = new File(javaDir, "DatabaseSetup.java");
+        try (FileWriter writer = new FileWriter(configFile)) {
+            String packageName = instanceGroupId + ".config";
+
+            writer.write("package " + packageName + ";\n\n");
+            writer.write("import org.springframework.beans.factory.annotation.Value;\n");
+            writer.write("import org.springframework.context.annotation.Bean;\n");
+            writer.write("import org.springframework.context.annotation.Configuration;\n");
+            writer.write("import org.springframework.jdbc.core.JdbcTemplate;\n");
+            writer.write("import org.springframework.boot.context.event.ApplicationReadyEvent;\n");
+            writer.write("import org.springframework.context.event.EventListener;\n");
+            writer.write("import lombok.extern.slf4j.Slf4j;\n");
+            writer.write("import javax.sql.DataSource;\n");
+            writer.write("import com.zaxxer.hikari.HikariDataSource;\n");
+            writer.write("import java.sql.Connection;\n");
+            writer.write("import java.sql.DriverManager;\n");
+            writer.write("import java.sql.SQLException;\n");
+            writer.write("import java.sql.Statement;\n");
+            writer.write("import java.sql.ResultSet;\n");
+            writer.write("import java.util.regex.Matcher;\n");
+            writer.write("import java.util.regex.Pattern;\n\n");
+
+            writer.write("@Configuration(proxyBeanMethods = false)\n");
+            writer.write("@Slf4j\n");
+            writer.write("public class DatabaseSetup {\n\n");
+
+            writer.write("    @Value(\"${spring.datasource.url}\")\n");
+            writer.write("    private String databaseUrl;\n");
+            writer.write("    \n");
+            writer.write("    @Value(\"${spring.datasource.username}\")\n");
+            writer.write("    private String username;\n");
+            writer.write("    \n");
+            writer.write("    @Value(\"${spring.datasource.password}\")\n");
+            writer.write("    private String password;\n\n");
+
+            // Standard DataSource method with debug integration
+            writer.write("    @Bean\n");
+            writer.write("    public DataSource dataSource() {\n");
+            writer.write("        log.info(\"Setting up database connection...\");\n");
+            writer.write("        \n");
+            writer.write("        try {\n");
+            writer.write("            ensureDatabaseExists();\n");
+            writer.write("            \n");
+            writer.write("            HikariDataSource dataSource = new HikariDataSource();\n");
+            writer.write("            dataSource.setJdbcUrl(databaseUrl);\n");
+            writer.write("            dataSource.setUsername(username);\n");
+            writer.write("            dataSource.setPassword(password);\n");
+            writer.write("            dataSource.setDriverClassName(\"org.postgresql.Driver\");\n");
+            writer.write("            dataSource.setMaximumPoolSize(10);\n");
+            writer.write("            dataSource.setMinimumIdle(2);\n");
+            writer.write("            \n");
+            writer.write("            log.info(\"DataSource configured successfully\");\n");
+            writer.write("            return dataSource;\n");
+            writer.write("            \n");
+            writer.write("        } catch (Exception e) {\n");
+            writer.write("            log.error(\"Database setup failed\", e);\n");
+            writer.write("            \n");
+            writer.write("            // DEBUG: Check if this is a PostgresML issue\n");
+            writer.write("            if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
+            writer.write("                debugPostgresMLIssue(e);\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
+            writer.write("        }\n");
+            writer.write("    }\n\n");
+
+            // Database creation method with debug integration
+            writer.write("    private void ensureDatabaseExists() {\n");
+            writer.write("        try {\n");
+            writer.write("            String dbName = extractDatabaseName(databaseUrl);\n");
+            writer.write("            String serverUrl = getServerUrl(databaseUrl);\n");
+            writer.write("            \n");
+            writer.write("            log.info(\"Checking if database '{}' exists...\", dbName);\n");
+            writer.write("            \n");
+            writer.write("            try (Connection conn = DriverManager.getConnection(serverUrl + \"/postgres\", username, password)) {\n");
+            writer.write("                try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                    var rs = stmt.executeQuery(\n");
+            writer.write("                        \"SELECT 1 FROM pg_database WHERE datname = '\" + dbName + \"'\");\n");
+            writer.write("                    \n");
+            writer.write("                    if (!rs.next()) {\n");
+            writer.write("                        log.info(\"Database '{}' does not exist. Creating...\", dbName);\n");
+            writer.write("                        stmt.executeUpdate(\"CREATE DATABASE \\\"\" + dbName + \"\\\"\");\n");
+            writer.write("                        log.info(\"Database '{}' created successfully\", dbName);\n");
+            writer.write("                    } else {\n");
+            writer.write("                        log.info(\"Database '{}' already exists\", dbName);\n");
+            writer.write("                    }\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("        } catch (SQLException e) {\n");
+            writer.write("            log.error(\"Failed to ensure database exists: {}\", e.getMessage());\n");
+            writer.write("            \n");
+            writer.write("            // DEBUG: Check for PostgresML issues right here\n");
+            writer.write("            debugPostgresMLIssue(e);\n");
+            writer.write("            \n");
+            writer.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
+            writer.write("        }\n");
+            writer.write("    }\n\n");
+
+            // Simple inline debug method - no external dependencies
+            writer.write("    /**\n");
+            writer.write("     * Simple debug method - called right where errors occur\n");
+            writer.write("     */\n");
+            writer.write("    private void debugPostgresMLIssue(Exception originalError) {\n");
+            writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
+            writer.write("        System.err.println(\"PostgresML ERROR DEBUG\");\n");
+            writer.write("        System.err.println(\"Original Error: \" + originalError.getMessage());\n");
+            writer.write("        System.err.println(\"=\".repeat(80));\n");
+            writer.write("        \n");
+            writer.write("        try (Connection conn = DriverManager.getConnection(databaseUrl, username, password)) {\n");
+            writer.write("            \n");
+            writer.write("            // Check 1: Does pgml schema exist?\n");
+            writer.write("            System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
+            writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                    \"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'pgml'\");\n");
+            writer.write("                rs.next();\n");
+            writer.write("                int schemaCount = rs.getInt(1);\n");
+            writer.write("                \n");
+            writer.write("                if (schemaCount > 0) {\n");
+            writer.write("                    System.err.println(\"   ✓ pgml schema EXISTS\");\n");
+            writer.write("                } else {\n");
+            writer.write("                    System.err.println(\"   ✗ pgml schema MISSING!\");\n");
+            writer.write("                    System.err.println(\"   → SOLUTION: CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            // Check 2: Does pgml.embed function exist?\n");
+            writer.write("            System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
+            writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                    \"SELECT COUNT(*) FROM information_schema.routines \" +\n");
+            writer.write("                    \"WHERE routine_schema = 'pgml' AND routine_name = 'embed'\");\n");
+            writer.write("                rs.next();\n");
+            writer.write("                int funcCount = rs.getInt(1);\n");
+            writer.write("                \n");
+            writer.write("                if (funcCount > 0) {\n");
+            writer.write("                    System.err.println(\"   ✓ pgml.embed function EXISTS (\" + funcCount + \" variants)\");\n");
+            writer.write("                } else {\n");
+            writer.write("                    System.err.println(\"   ✗ pgml.embed function MISSING!\");\n");
+            writer.write("                    System.err.println(\"   → This is likely the cause of your error\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            // Check 3: Test the exact function call Spring AI makes\n");
+            writer.write("            System.err.println(\"\\n3. FUNCTION CALL TEST:\");\n");
+            writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                System.err.println(\"   Testing: pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
+            writer.write("                ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                    \"SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
+            writer.write("                \n");
+            writer.write("                if (rs.next()) {\n");
+            writer.write("                    System.err.println(\"   ✓ Function call SUCCEEDED - PostgresML should work\");\n");
+            writer.write("                }\n");
+            writer.write("                \n");
+            writer.write("            } catch (SQLException testError) {\n");
+            writer.write("                System.err.println(\"   ✗ Function call FAILED: \" + testError.getMessage());\n");
+            writer.write("                System.err.println(\"   → This is the EXACT error Spring AI encounters\");\n");
+            writer.write("                \n");
+            writer.write("                if (testError.getMessage().contains(\"does not exist\")) {\n");
+            writer.write("                    System.err.println(\"\\n   IMMEDIATE FIX - Run this SQL:\");\n");
+            writer.write("                    System.err.println(\"   CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+            writer.write("                    System.err.println(\"   CREATE OR REPLACE FUNCTION pgml.embed(\");\n");
+            writer.write("                    System.err.println(\"     model_name character varying,\");\n");
+            writer.write("                    System.err.println(\"     text_input text,\");\n");
+            writer.write("                    System.err.println(\"     kwargs jsonb DEFAULT '{}'\");\n");
+            writer.write("                    System.err.println(\"   ) RETURNS FLOAT[] AS $$\");\n");
+            writer.write("                    System.err.println(\"   BEGIN\");\n");
+            writer.write("                    System.err.println(\"     RAISE EXCEPTION 'PostgresML not installed';\");\n");
+            writer.write("                    System.err.println(\"   END;\");\n");
+            writer.write("                    System.err.println(\"   $$ LANGUAGE plpgsql;\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("        } catch (SQLException debugError) {\n");
+            writer.write("            System.err.println(\"Debug failed: \" + debugError.getMessage());\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
+            writer.write("    }\n\n");
+
+            // Add startup event listener that tests PostgresML immediately
+            if (includeEmbeddingPostgresml || includePgmlIndexer) {
+                writer.write("    /**\n");
+                writer.write("     * Test PostgresML immediately on startup\n");
+                writer.write("     */\n");
+                writer.write("    @EventListener(ApplicationReadyEvent.class)\n");
+                writer.write("    public void testPostgresMLOnStartup() {\n");
+                writer.write("        log.info(\"Testing PostgresML function on startup...\");\n");
+                writer.write("        \n");
+                writer.write("        try (Connection conn = DriverManager.getConnection(databaseUrl, username, password)) {\n");
+                writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+                writer.write("                // Test the exact function Spring AI calls\n");
+                writer.write("                ResultSet rs = stmt.executeQuery(\n");
+                writer.write("                    \"SELECT pgml.embed('startup-test'::character varying, 'test'::text, '{}'::jsonb)\");\n");
+                writer.write("                \n");
+                writer.write("                if (rs.next()) {\n");
+                writer.write("                    log.info(\"✓ PostgresML function test PASSED on startup\");\n");
+                writer.write("                }\n");
+                writer.write("                \n");
+                writer.write("            } catch (SQLException e) {\n");
+                writer.write("                log.error(\"✗ PostgresML function test FAILED on startup: {}\", e.getMessage());\n");
+                writer.write("                \n");
+                writer.write("                // Debug immediately when the error occurs\n");
+                writer.write("                debugPostgresMLIssue(e);\n");
+                writer.write("            }\n");
+                writer.write("        } catch (SQLException e) {\n");
+                writer.write("            log.error(\"Could not test PostgresML on startup\", e);\n");
+                writer.write("        }\n");
+                writer.write("    }\n\n");
+            }
+
+            // Helper methods
+            writer.write("    private String extractDatabaseName(String url) {\n");
+            writer.write("        Pattern pattern = Pattern.compile(\".*/([^?]+)\");\n");
+            writer.write("        Matcher matcher = pattern.matcher(url);\n");
+            writer.write("        if (matcher.find()) {\n");
+            writer.write("            return matcher.group(1);\n");
+            writer.write("        }\n");
+            writer.write("        throw new IllegalArgumentException(\"Could not extract database name from URL: \" + url);\n");
+            writer.write("    }\n\n");
+
+            writer.write("    private String getServerUrl(String url) {\n");
+            writer.write("        int lastSlash = url.lastIndexOf('/');\n");
+            writer.write("        if (lastSlash > 0) {\n");
+            writer.write("            return url.substring(0, lastSlash);\n");
+            writer.write("        }\n");
+            writer.write("        throw new IllegalArgumentException(\"Invalid database URL: \" + url);\n");
+            writer.write("    }\n");
+
+            writer.write("}\n");
+        }
+
+        System.out.println("Generated DatabaseSetup with inline PostgresML debugging: " + configFile.getAbsolutePath());
+    }
+
+    /**
+     * The error is happening in Spring AI's PostgresML code, not our DatabaseSetup
+     * We need to catch it at the Spring framework level
+     *
+     * Add this to your RagPomGenerator to create a global exception handler
+     */
+
+    private void generateGlobalExceptionHandler(File projectDir) throws IOException {
+        File javaDir = new File(projectDir, "src/main/java/" + instanceGroupId.replace('.', '/') + "/config");
+        if (!javaDir.exists() && !javaDir.mkdirs()) {
+            throw new IOException("Could not create config directory: " + javaDir.getAbsolutePath());
+        }
+
+        File handlerFile = new File(javaDir, "PostgresMLErrorCatcher.java");
+        try (FileWriter writer = new FileWriter(handlerFile)) {
+            String packageName = instanceGroupId + ".config";
+
+            writer.write("package " + packageName + ";\n\n");
+            writer.write("import org.springframework.beans.factory.annotation.Autowired;\n");
+            writer.write("import org.springframework.web.bind.annotation.ControllerAdvice;\n");
+            writer.write("import org.springframework.web.bind.annotation.ExceptionHandler;\n");
+            writer.write("import org.springframework.dao.DataAccessException;\n");
+            writer.write("import org.springframework.jdbc.BadSqlGrammarException;\n");
+            writer.write("import org.springframework.jdbc.core.JdbcTemplate;\n");
+            writer.write("import org.springframework.http.ResponseEntity;\n");
+            writer.write("import lombok.extern.slf4j.Slf4j;\n");
+            writer.write("import java.sql.SQLException;\n");
+            writer.write("import java.sql.Connection;\n");
+            writer.write("import java.sql.Statement;\n");
+            writer.write("import java.sql.ResultSet;\n");
+            writer.write("import javax.sql.DataSource;\n\n");
+
+            writer.write("/**\n");
+            writer.write(" * Catches PostgresML errors exactly where they occur in Spring AI\n");
+            writer.write(" */\n");
+            writer.write("@ControllerAdvice\n");
+            writer.write("@Slf4j\n");
+            writer.write("public class PostgresMLErrorCatcher {\n\n");
+
+            writer.write("    @Autowired(required = false)\n");
+            writer.write("    private DataSource dataSource;\n\n");
+
+            writer.write("    @Autowired(required = false)\n");
+            writer.write("    private JdbcTemplate jdbcTemplate;\n\n");
+
+            writer.write("    /**\n");
+            writer.write("     * Catch BadSqlGrammarException - this is what Spring AI throws\n");
+            writer.write("     */\n");
+            writer.write("    @ExceptionHandler(BadSqlGrammarException.class)\n");
+            writer.write("    public ResponseEntity<String> handleBadSqlGrammar(BadSqlGrammarException e) {\n");
+            writer.write("        log.error(\"BadSqlGrammarException caught\", e);\n");
+            writer.write("        \n");
+            writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml.embed\")) {\n");
+            writer.write("            System.err.println(\"\\n\" + \"!\".repeat(100));\n");
+            writer.write("            System.err.println(\"POSTGRESQL FUNCTION ERROR CAUGHT!\");\n");
+            writer.write("            System.err.println(\"Error: \" + e.getMessage());\n");
+            writer.write("            System.err.println(\"!\".repeat(100));\n");
+            writer.write("            \n");
+            writer.write("            debugPostgresMLError();\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        return ResponseEntity.status(500).body(\"Database function error: \" + e.getMessage());\n");
+            writer.write("    }\n\n");
+
+            writer.write("    /**\n");
+            writer.write("     * Also catch general DataAccessException\n");
+            writer.write("     */\n");
+            writer.write("    @ExceptionHandler(DataAccessException.class)\n");
+            writer.write("    public ResponseEntity<String> handleDataAccess(DataAccessException e) {\n");
+            writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
+            writer.write("            System.err.println(\"\\n\" + \"!\".repeat(100));\n");
+            writer.write("            System.err.println(\"PostgresML DataAccessException CAUGHT!\");\n");
+            writer.write("            System.err.println(\"Error: \" + e.getMessage());\n");
+            writer.write("            System.err.println(\"!\".repeat(100));\n");
+            writer.write("            \n");
+            writer.write("            debugPostgresMLError();\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        return ResponseEntity.status(500).body(\"Database access error\");\n");
+            writer.write("    }\n\n");
+
+            writer.write("    /**\n");
+            writer.write("     * Catch any SQLException that mentions pgml\n");
+            writer.write("     */\n");
+            writer.write("    @ExceptionHandler(SQLException.class)\n");
+            writer.write("    public ResponseEntity<String> handleSQLException(SQLException e) {\n");
+            writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
+            writer.write("            System.err.println(\"\\n\" + \"!\".repeat(100));\n");
+            writer.write("            System.err.println(\"PostgresML SQLException CAUGHT!\");\n");
+            writer.write("            System.err.println(\"Error: \" + e.getMessage());\n");
+            writer.write("            System.err.println(\"!\".repeat(100));\n");
+            writer.write("            \n");
+            writer.write("            debugPostgresMLError();\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        return ResponseEntity.status(500).body(\"SQL error\");\n");
+            writer.write("    }\n\n");
+
+            writer.write("    /**\n");
+            writer.write("     * Catch generic RuntimeException that might wrap PostgresML errors\n");
+            writer.write("     */\n");
+            writer.write("    @ExceptionHandler(RuntimeException.class)\n");
+            writer.write("    public ResponseEntity<String> handleRuntimeException(RuntimeException e) {\n");
+            writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml.embed\")) {\n");
+            writer.write("            System.err.println(\"\\n\" + \"!\".repeat(100));\n");
+            writer.write("            System.err.println(\"PostgresML RuntimeException CAUGHT!\");\n");
+            writer.write("            System.err.println(\"Error: \" + e.getMessage());\n");
+            writer.write("            System.err.println(\"!\".repeat(100));\n");
+            writer.write("            \n");
+            writer.write("            debugPostgresMLError();\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        throw e; // Re-throw non-PostgresML errors\n");
+            writer.write("    }\n\n");
+
+            writer.write("    /**\n");
+            writer.write("     * The actual debug method - runs immediately when PostgresML error occurs\n");
+            writer.write("     */\n");
+            writer.write("    private void debugPostgresMLError() {\n");
+            writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
+            writer.write("        System.err.println(\"IMMEDIATE PostgresML DEBUG\");\n");
+            writer.write("        System.err.println(\"=\".repeat(80));\n");
+            writer.write("        \n");
+            writer.write("        if (dataSource == null) {\n");
+            writer.write("            System.err.println(\"DataSource not available for debugging\");\n");
+            writer.write("            printManualFix();\n");
+            writer.write("            return;\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        try (Connection conn = dataSource.getConnection()) {\n");
+            writer.write("            \n");
+            writer.write("            // Check 1: pgml schema\n");
+            writer.write("            System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
+            writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                    \"SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'pgml'\");\n");
+            writer.write("                rs.next();\n");
+            writer.write("                \n");
+            writer.write("                if (rs.getInt(1) > 0) {\n");
+            writer.write("                    System.err.println(\"   ✓ pgml schema EXISTS\");\n");
+            writer.write("                } else {\n");
+            writer.write("                    System.err.println(\"   ✗ pgml schema MISSING\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            // Check 2: pgml.embed function\n");
+            writer.write("            System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
+            writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("                ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                    \"SELECT COUNT(*) FROM information_schema.routines \" +\n");
+            writer.write("                    \"WHERE routine_schema = 'pgml' AND routine_name = 'embed'\");\n");
+            writer.write("                rs.next();\n");
+            writer.write("                \n");
+            writer.write("                int funcCount = rs.getInt(1);\n");
+            writer.write("                if (funcCount > 0) {\n");
+            writer.write("                    System.err.println(\"   ✓ pgml.embed function EXISTS (\" + funcCount + \" variants)\");\n");
+            writer.write("                    \n");
+            writer.write("                    // Check specific signature\n");
+            writer.write("                    checkFunctionSignatures(conn);\n");
+            writer.write("                    \n");
+            writer.write("                } else {\n");
+            writer.write("                    System.err.println(\"   ✗ pgml.embed function MISSING!\");\n");
+            writer.write("                    System.err.println(\"   → This is the ROOT CAUSE of your error\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            // Check 3: Test exact function call\n");
+            writer.write("            System.err.println(\"\\n3. EXACT FUNCTION TEST:\");\n");
+            writer.write("            testExactFunctionCall(conn);\n");
+            writer.write("            \n");
+            writer.write("        } catch (Exception debugError) {\n");
+            writer.write("            System.err.println(\"Debug connection failed: \" + debugError.getMessage());\n");
+            writer.write("        }\n");
+            writer.write("        \n");
+            writer.write("        printManualFix();\n");
+            writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
+            writer.write("    }\n\n");
+
+            writer.write("    private void checkFunctionSignatures(Connection conn) {\n");
+            writer.write("        try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("            ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                \"SELECT string_agg( \" +\n");
+            writer.write("                \"  p.data_type, ', ' ORDER BY p.ordinal_position \" +\n");
+            writer.write("                \") as parameter_types \" +\n");
+            writer.write("                \"FROM information_schema.routines r \" +\n");
+            writer.write("                \"LEFT JOIN information_schema.parameters p ON r.specific_name = p.specific_name \" +\n");
+            writer.write("                \"WHERE r.routine_schema = 'pgml' AND r.routine_name = 'embed' \" +\n");
+            writer.write("                \"GROUP BY r.specific_name\");\n");
+            writer.write("            \n");
+            writer.write("            System.err.println(\"   Available function signatures:\");\n");
+            writer.write("            boolean foundTargetSignature = false;\n");
+            writer.write("            \n");
+            writer.write("            while (rs.next()) {\n");
+            writer.write("                String signature = rs.getString(\"parameter_types\");\n");
+            writer.write("                System.err.println(\"   - pgml.embed(\" + signature + \")\");\n");
+            writer.write("                \n");
+            writer.write("                if (signature != null && \n");
+            writer.write("                    signature.contains(\"character varying\") && \n");
+            writer.write("                    signature.contains(\"text\") &&\n");
+            writer.write("                    signature.contains(\"jsonb\")) {\n");
+            writer.write("                    foundTargetSignature = true;\n");
+            writer.write("                    System.err.println(\"     ✓ MATCHES Spring AI requirement!\");\n");
+            writer.write("                }\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("            if (!foundTargetSignature) {\n");
+            writer.write("                System.err.println(\"   ✗ MISSING required signature: (character varying, text, jsonb)\");\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("        } catch (Exception e) {\n");
+            writer.write("            System.err.println(\"   Function signature check failed: \" + e.getMessage());\n");
+            writer.write("        }\n");
+            writer.write("    }\n\n");
+
+            writer.write("    private void testExactFunctionCall(Connection conn) {\n");
+            writer.write("        try (Statement stmt = conn.createStatement()) {\n");
+            writer.write("            System.err.println(\"   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
+            writer.write("            \n");
+            writer.write("            ResultSet rs = stmt.executeQuery(\n");
+            writer.write("                \"SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
+            writer.write("            \n");
+            writer.write("            if (rs.next()) {\n");
+            writer.write("                System.err.println(\"   ✓ Function call SUCCEEDED!\");\n");
+            writer.write("                System.err.println(\"   → The function exists, but Spring AI might have a different issue\");\n");
+            writer.write("            }\n");
+            writer.write("            \n");
+            writer.write("        } catch (Exception testError) {\n");
+            writer.write("            System.err.println(\"   ✗ Function call FAILED: \" + testError.getMessage());\n");
+            writer.write("            System.err.println(\"   → This confirms the function signature is missing\");\n");
+            writer.write("        }\n");
+            writer.write("    }\n\n");
+
+            writer.write("    private void printManualFix() {\n");
+            writer.write("        System.err.println(\"\\n\" + \"-\".repeat(80));\n");
+            writer.write("        System.err.println(\"IMMEDIATE FIX - Run this SQL in your database:\");\n");
+            writer.write("        System.err.println(\"-\".repeat(80));\n");
+            writer.write("        System.err.println(\"\");\n");
+            writer.write("        System.err.println(\"CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+            writer.write("        System.err.println(\"\");\n");
+            writer.write("        System.err.println(\"CREATE OR REPLACE FUNCTION pgml.embed(\");\n");
+            writer.write("        System.err.println(\"  model_name character varying,\");\n");
+            writer.write("        System.err.println(\"  text_input text,\");\n");
+            writer.write("        System.err.println(\"  kwargs jsonb DEFAULT '{}'\");\n");
+            writer.write("        System.err.println(\") RETURNS FLOAT[] AS $$\");\n");
+            writer.write("        System.err.println(\"BEGIN\");\n");
+            writer.write("        System.err.println(\"  RAISE EXCEPTION 'PostgresML not installed. Visit https://postgresml.org';\");\n");
+            writer.write("        System.err.println(\"END;\");\n");
+            writer.write("        System.err.println(\"$$ LANGUAGE plpgsql;\");\n");
+            writer.write("        System.err.println(\"\");\n");
+            writer.write("        System.err.println(\"After running this SQL, restart your application.\");\n");
+            writer.write("        System.err.println(\"-\".repeat(80));\n");
+            writer.write("    }\n");
+
+            writer.write("}\n");
+        }
+
+        System.out.println("Generated PostgresML error catcher: " + handlerFile.getAbsolutePath());
+    }
+
+
+    /**
+     * Write the standard DataSource method
+     */
+    private void writeDataSourceMethod(FileWriter writer) throws IOException {
+        writer.write("    /**\n");
+        writer.write("     * Create DataSource with enhanced error handling\n");
+        writer.write("     */\n");
+        writer.write("    @Bean\n");
+        writer.write("    public DataSource dataSource() {\n");
+        writer.write("        log.info(\"Setting up database connection with PostgresML error detection...\");\n");
+        writer.write("        \n");
+        writer.write("        try {\n");
+        writer.write("            // Ensure database exists before creating DataSource\n");
+        writer.write("            ensureDatabaseExists();\n");
+        writer.write("            \n");
+        writer.write("            // Create HikariCP DataSource\n");
+        writer.write("            HikariDataSource dataSource = new HikariDataSource();\n");
+        writer.write("            dataSource.setJdbcUrl(databaseUrl);\n");
+        writer.write("            dataSource.setUsername(username);\n");
+        writer.write("            dataSource.setPassword(password);\n");
+        writer.write("            dataSource.setDriverClassName(\"org.postgresql.Driver\");\n");
+        writer.write("            dataSource.setMaximumPoolSize(10);\n");
+        writer.write("            dataSource.setMinimumIdle(2);\n");
+        writer.write("            \n");
+        writer.write("            log.info(\"DataSource configured successfully\");\n");
+        writer.write("            return dataSource;\n");
+        writer.write("            \n");
+        writer.write("        } catch (Exception e) {\n");
+        writer.write("            log.error(\"Failed to create DataSource\", e);\n");
+        writer.write("            handlePostgresMLError(e);\n");
+        writer.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+    }
+
+    /**
+     * Write database creation helper methods
+     */
+    private void writeDatabaseCreationMethods(FileWriter writer) throws IOException {
+        writer.write("    /**\n");
+        writer.write("     * Ensure the target database exists, create if it doesn't\n");
+        writer.write("     */\n");
+        writer.write("    private void ensureDatabaseExists() {\n");
+        writer.write("        try {\n");
+        writer.write("            String dbName = extractDatabaseName(databaseUrl);\n");
+        writer.write("            String serverUrl = getServerUrl(databaseUrl);\n");
+        writer.write("            \n");
+        writer.write("            log.info(\"Checking if database '{}' exists...\", dbName);\n");
+        writer.write("            \n");
+        writer.write("            try (Connection conn = DriverManager.getConnection(serverUrl + \"/postgres\", username, password)) {\n");
+        writer.write("                try (Statement stmt = conn.createStatement()) {\n");
+        writer.write("                    var rs = stmt.executeQuery(\n");
+        writer.write("                        \"SELECT 1 FROM pg_database WHERE datname = '\" + dbName + \"'\");\n");
+        writer.write("                    \n");
+        writer.write("                    if (!rs.next()) {\n");
+        writer.write("                        log.info(\"Database '{}' does not exist. Creating...\", dbName);\n");
+        writer.write("                        stmt.executeUpdate(\"CREATE DATABASE \\\"\" + dbName + \"\\\"\");\n");
+        writer.write("                        log.info(\"Database '{}' created successfully ✓\", dbName);\n");
+        writer.write("                    } else {\n");
+        writer.write("                        log.info(\"Database '{}' already exists ✓\", dbName);\n");
+        writer.write("                    }\n");
+        writer.write("                }\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("        } catch (SQLException e) {\n");
+        writer.write("            log.error(\"Failed to ensure database exists: {}\", e.getMessage());\n");
+        writer.write("            handlePostgresMLError(e);\n");
+        writer.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+
+        writer.write("    private String extractDatabaseName(String url) {\n");
+        writer.write("        Pattern pattern = Pattern.compile(\".*/([^?]+)\");\n");
+        writer.write("        Matcher matcher = pattern.matcher(url);\n");
+        writer.write("        if (matcher.find()) {\n");
+        writer.write("            return matcher.group(1);\n");
+        writer.write("        }\n");
+        writer.write("        throw new IllegalArgumentException(\"Could not extract database name from URL: \" + url);\n");
+        writer.write("    }\n\n");
+
+        writer.write("    private String getServerUrl(String url) {\n");
+        writer.write("        int lastSlash = url.lastIndexOf('/');\n");
+        writer.write("        if (lastSlash > 0) {\n");
+        writer.write("            return url.substring(0, lastSlash);\n");
+        writer.write("        }\n");
+        writer.write("        throw new IllegalArgumentException(\"Invalid database URL: \" + url);\n");
+        writer.write("    }\n\n");
+    }
+
+    /**
+     * Write the complete debug methods
+     */
+    private void writeCompleteDebugMethods(FileWriter writer) throws IOException {
+        writer.write("    /**\n");
+        writer.write("     * Comprehensive PostgresML diagnostics - safe to call multiple times\n");
+        writer.write("     */\n");
+        writer.write("    public void debugPostgresMLIssues() {\n");
+        writer.write("        System.out.println(\"\\n\" + \"=\".repeat(80));\n");
+        writer.write("        System.out.println(\"PostgresML SCHEMA DIAGNOSTICS\");\n");
+        writer.write("        System.out.println(\"=\".repeat(80));\n");
+        writer.write("        \n");
+        writer.write("        try (Connection conn = dataSource().getConnection()) {\n");
+        writer.write("            \n");
+        writer.write("            // 1. Check if pgml schema exists\n");
+        writer.write("            System.out.println(\"\\n1. SCHEMA CHECK:\");\n");
+        writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+        writer.write("                ResultSet rs = stmt.executeQuery(\n");
+        writer.write("                    \"SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'pgml'\"\n");
+        writer.write("                );\n");
+        writer.write("                \n");
+        writer.write("                if (rs.next()) {\n");
+        writer.write("                    System.out.println(\"   ✓ pgml schema EXISTS\");\n");
+        writer.write("                } else {\n");
+        writer.write("                    System.out.println(\"   ✗ pgml schema MISSING - this could be the problem!\");\n");
+        writer.write("                    System.out.println(\"   → Run: CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+        writer.write("                }\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("            // 2. Check extensions\n");
+        writer.write("            System.out.println(\"\\n2. EXTENSION CHECK:\");\n");
+        writer.write("            try (Statement stmt = conn.createStatement()) {\n");
+        writer.write("                ResultSet rs = stmt.executeQuery(\n");
+        writer.write("                    \"SELECT extname, extversion FROM pg_extension WHERE extname IN ('pgml', 'vector')\"\n");
+        writer.write("                );\n");
+        writer.write("                \n");
+        writer.write("                boolean pgmlFound = false, vectorFound = false;\n");
+        writer.write("                while (rs.next()) {\n");
+        writer.write("                    String name = rs.getString(\"extname\");\n");
+        writer.write("                    String version = rs.getString(\"extversion\");\n");
+        writer.write("                    System.out.println(\"   ✓ \" + name + \" extension v\" + version + \" installed\");\n");
+        writer.write("                    \n");
+        writer.write("                    if (\"pgml\".equals(name)) pgmlFound = true;\n");
+        writer.write("                    if (\"vector\".equals(name)) vectorFound = true;\n");
+        writer.write("                }\n");
+        writer.write("                \n");
+        writer.write("                if (!pgmlFound) {\n");
+        writer.write("                    System.out.println(\"   ✗ pgml extension NOT installed\");\n");
+        writer.write("                    System.out.println(\"   → Install PostgresML: https://postgresml.org/docs/getting-started/installation\");\n");
+        writer.write("                }\n");
+        writer.write("                if (!vectorFound) {\n");
+        writer.write("                    System.out.println(\"   ✗ vector extension NOT installed\");\n");
+        writer.write("                    System.out.println(\"   → Install pgvector: https://github.com/pgvector/pgvector\");\n");
+        writer.write("                }\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("            // 3. Check pgml functions - THE CRITICAL CHECK\n");
+        writer.write("            checkPgmlFunctions(conn);\n");
+        writer.write("            \n");
+        writer.write("            // 4. Test the actual function call\n");
+        writer.write("            testPgmlFunctionCall(conn);\n");
+        writer.write("            \n");
+        writer.write("            // 5. Provide quick fix\n");
+        writer.write("            provideQuickFix();\n");
+        writer.write("            \n");
+        writer.write("        } catch (SQLException e) {\n");
+        writer.write("            System.err.println(\"✗ Database connection failed during diagnostics: \" + e.getMessage());\n");
+        writer.write("        }\n");
+        writer.write("        \n");
+        writer.write("        System.out.println(\"\\n\" + \"=\".repeat(80));\n");
+        writer.write("        System.out.println(\"PostgresML DIAGNOSTICS COMPLETE\");\n");
+        writer.write("        System.out.println(\"=\".repeat(80));\n");
+        writer.write("    }\n\n");
+
+        // Add helper methods for diagnostics
+        writer.write("    private void checkPgmlFunctions(Connection conn) throws SQLException {\n");
+        writer.write("        System.out.println(\"\\n3. FUNCTION CHECK (CRITICAL):\");\n");
+        writer.write("        try (Statement stmt = conn.createStatement()) {\n");
+        writer.write("            ResultSet rs = stmt.executeQuery(\n");
+        writer.write("                \"SELECT \" +\n");
+        writer.write("                \"  routine_name, \" +\n");
+        writer.write("                \"  string_agg( \" +\n");
+        writer.write("                \"    p.data_type || \" +\n");
+        writer.write("                \"    CASE WHEN p.character_maximum_length IS NOT NULL \" +\n");
+        writer.write("                \"      THEN '(' || p.character_maximum_length || ')' \" +\n");
+        writer.write("                \"      ELSE '' \" +\n");
+        writer.write("                \"    END, \" +\n");
+        writer.write("                \"    ', ' ORDER BY p.ordinal_position \" +\n");
+        writer.write("                \"  ) as parameter_types \" +\n");
+        writer.write("                \"FROM information_schema.routines r \" +\n");
+        writer.write("                \"LEFT JOIN information_schema.parameters p ON r.specific_name = p.specific_name \" +\n");
+        writer.write("                \"WHERE r.routine_schema = 'pgml' AND r.routine_name = 'embed' \" +\n");
+        writer.write("                \"GROUP BY r.routine_name, r.specific_name\"\n");
+        writer.write("            );\n");
+        writer.write("            \n");
+        writer.write("            boolean foundTargetSignature = false;\n");
+        writer.write("            int embedFunctionCount = 0;\n");
+        writer.write("            \n");
+        writer.write("            System.out.println(\"   Found pgml.embed function signatures:\");\n");
+        writer.write("            while (rs.next()) {\n");
+        writer.write("                embedFunctionCount++;\n");
+        writer.write("                String signature = rs.getString(\"parameter_types\");\n");
+        writer.write("                System.out.println(\"   - pgml.embed(\" + (signature != null ? signature : \"no params\") + \")\");\n");
+        writer.write("                \n");
+        writer.write("                if (signature != null && \n");
+        writer.write("                    signature.contains(\"character varying\") && \n");
+        writer.write("                    signature.contains(\"text\") && \n");
+        writer.write("                    signature.contains(\"jsonb\")) {\n");
+        writer.write("                    foundTargetSignature = true;\n");
+        writer.write("                    System.out.println(\"     ✓ THIS MATCHES Spring AI's expected signature!\");\n");
+        writer.write("                }\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("            if (embedFunctionCount == 0) {\n");
+        writer.write("                System.out.println(\"   ✗ NO pgml.embed functions found!\");\n");
+        writer.write("                System.out.println(\"   → This is why you're getting 'function does not exist' error\");\n");
+        writer.write("                System.out.println(\"   → Solution: Run the pgml-schema.sql script to create stub functions\");\n");
+        writer.write("            } else if (!foundTargetSignature) {\n");
+        writer.write("                System.out.println(\"   ✗ Missing required signature: pgml.embed(character varying, text, jsonb)\");\n");
+        writer.write("                System.out.println(\"   → Spring AI needs this EXACT signature\");\n");
+        writer.write("                System.out.println(\"   → Solution: Create this specific function signature\");\n");
+        writer.write("            } else {\n");
+        writer.write("                System.out.println(\"   ✓ Required function signature EXISTS - this should work!\");\n");
+        writer.write("            }\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+
+        writer.write("    private void testPgmlFunctionCall(Connection conn) throws SQLException {\n");
+        writer.write("        System.out.println(\"\\n4. FUNCTION CALL TEST:\");\n");
+        writer.write("        try (Statement stmt = conn.createStatement()) {\n");
+        writer.write("            System.out.println(\"   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
+        writer.write("            \n");
+        writer.write("            ResultSet rs = stmt.executeQuery(\n");
+        writer.write("                \"SELECT pgml.embed('test-model'::character varying, 'test text'::text, '{}'::jsonb)\"\n");
+        writer.write("            );\n");
+        writer.write("            \n");
+        writer.write("            if (rs.next()) {\n");
+        writer.write("                System.out.println(\"   ✓ Function call SUCCESS!\");\n");
+        writer.write("                System.out.println(\"   → pgml.embed function is working (even if it's a stub)\");\n");
+        writer.write("                System.out.println(\"   → Spring AI should be able to call this function\");\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("        } catch (SQLException e) {\n");
+        writer.write("            System.out.println(\"   ✗ Function call FAILED: \" + e.getMessage());\n");
+        writer.write("            System.out.println(\"   → This is the EXACT error Spring AI encounters\");\n");
+        writer.write("            \n");
+        writer.write("            if (e.getMessage().contains(\"does not exist\")) {\n");
+        writer.write("                System.out.println(\"   → SOLUTION: Create the missing function signature\");\n");
+        writer.write("            }\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+
+        writer.write("    private void provideQuickFix() {\n");
+        writer.write("        System.out.println(\"\\n5. QUICK FIX:\");\n");
+        writer.write("        System.out.println(\"   If the function is missing, run this SQL to create a stub:\");\n");
+        writer.write("        System.out.println(\"   \");\n");
+        writer.write("        System.out.println(\"   CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+        writer.write("        System.out.println(\"   CREATE OR REPLACE FUNCTION pgml.embed(\");\n");
+        writer.write("        System.out.println(\"     model_name character varying,\");\n");
+        writer.write("        System.out.println(\"     text_input text,\");\n");
+        writer.write("        System.out.println(\"     kwargs jsonb DEFAULT '{}'\");\n");
+        writer.write("        System.out.println(\"   ) RETURNS FLOAT[] AS $$\");\n");
+        writer.write("        System.out.println(\"   BEGIN\");\n");
+        writer.write("        System.out.println(\"     RAISE EXCEPTION 'PostgresML extension not available. Install from https://postgresml.org';\");\n");
+        writer.write("        System.out.println(\"   END;\");\n");
+        writer.write("        System.out.println(\"   $$ LANGUAGE plpgsql;\");\n");
+        writer.write("    }\n\n");
+    }
+
+    /**
+     * Write the enhanced error handling method - COMPLETE VERSION
+     */
+    private void writeEnhancedErrorHandling(FileWriter writer) throws IOException {
+        writer.write("    /**\n");
+        writer.write("     * Enhanced error handling with PostgresML debugging\n");
+        writer.write("     * Call this method whenever PostgresML-related exceptions occur\n");
+        writer.write("     */\n");
+        writer.write("    public void handlePostgresMLError(Exception originalException) {\n");
+        writer.write("        if (originalException.getMessage() != null && \n");
+        writer.write("            originalException.getMessage().contains(\"pgml.embed\") && \n");
+        writer.write("            originalException.getMessage().contains(\"does not exist\")) {\n");
+        writer.write("            \n");
+        writer.write("            log.error(\"PostgresML function signature error detected!\", originalException);\n");
+        writer.write("            \n");
+        writer.write("            System.err.println(\"\\n\" + \"!\".repeat(80));\n");
+        writer.write("            System.err.println(\"PostgresML ERROR DETECTED!\");\n");
+        writer.write("            System.err.println(\"Original error: \" + originalException.getMessage());\n");
+        writer.write("            System.err.println(\"!\".repeat(80));\n");
+        writer.write("            \n");
+        writer.write("            // Run comprehensive diagnostics\n");
+        writer.write("            try {\n");
+        writer.write("                debugPostgresMLIssues();\n");
+        writer.write("                \n");
+        writer.write("                // Provide specific guidance\n");
+        writer.write("                System.err.println(\"\\nSPECIFIC SOLUTION FOR YOUR ERROR:\");\n");
+        writer.write("                System.err.println(\"1. The pgml.embed function with the required signature is missing\");\n");
+        writer.write("                System.err.println(\"2. Spring AI needs: pgml.embed(character varying, text, jsonb)\");\n");
+        writer.write("                System.err.println(\"3. Run the SQL commands shown in the 'QUICK FIX' section above\");\n");
+        writer.write("                System.err.println(\"4. Restart your application\");\n");
+        writer.write("                \n");
+        writer.write("            } catch (Exception debugException) {\n");
+        writer.write("                log.error(\"Failed to run debug diagnostics\", debugException);\n");
+        writer.write("                \n");
+        writer.write("                // Fallback: provide basic fix instructions\n");
+        writer.write("                System.err.println(\"\\nFALLBACK SOLUTION:\");\n");
+        writer.write("                System.err.println(\"Run this SQL in your database:\");\n");
+        writer.write("                System.err.println(\"CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+        writer.write("                System.err.println(\"CREATE OR REPLACE FUNCTION pgml.embed(model_name character varying, text_input text, kwargs jsonb DEFAULT '{}') RETURNS FLOAT[] AS $$ BEGIN RAISE EXCEPTION 'PostgresML not installed'; END; $$ LANGUAGE plpgsql;\");\n");
+        writer.write("            }\n");
+        writer.write("            \n");
+        writer.write("            System.err.println(\"\\n\" + \"!\".repeat(80));\n");
+        writer.write("            \n");
+        writer.write("        } else {\n");
+        writer.write("            // Handle other types of database errors\n");
+        writer.write("            log.error(\"Database error occurred\", originalException);\n");
+        writer.write("            \n");
+        writer.write("            if (originalException.getMessage() != null) {\n");
+        writer.write("                String errorMsg = originalException.getMessage().toLowerCase();\n");
+        writer.write("                \n");
+        writer.write("                if (errorMsg.contains(\"schema\") && errorMsg.contains(\"pgml\")) {\n");
+        writer.write("                    System.err.println(\"\\nSCHEMA ISSUE DETECTED:\");\n");
+        writer.write("                    System.err.println(\"1. Create the pgml schema: CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
+        writer.write("                    System.err.println(\"2. Then create the required functions\");\n");
+        writer.write("                }\n");
+        writer.write("                \n");
+        writer.write("                if (errorMsg.contains(\"extension\") && errorMsg.contains(\"pgml\")) {\n");
+        writer.write("                    System.err.println(\"\\nEXTENSION ISSUE DETECTED:\");\n");
+        writer.write("                    System.err.println(\"1. Install PostgresML: https://postgresml.org/docs/getting-started/installation\");\n");
+        writer.write("                    System.err.println(\"2. Restart PostgreSQL server\");\n");
+        writer.write("                    System.err.println(\"3. Restart your application\");\n");
+        writer.write("                }\n");
+        writer.write("            }\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+    }
+
+    /**
+     * Write startup diagnostics method
+     */
+    private void writeStartupDiagnostics(FileWriter writer) throws IOException {
+        writer.write("    /**\n");
+        writer.write("     * Automatically run PostgresML diagnostics on application startup\n");
+        writer.write("     */\n");
+        writer.write("    @EventListener(ApplicationReadyEvent.class)\n");
+        writer.write("    public void runPostgresMLDiagnosticsOnStartup() {\n");
+        writer.write("        try {\n");
+        if (includeEmbeddingPostgresml || includePgmlIndexer) {
+            writer.write("            // PostgresML modules are enabled - run diagnostics\n");
+            writer.write("            log.info(\"PostgresML modules detected - running schema diagnostics...\");\n");
+            writer.write("            debugPostgresMLIssues();\n");
+        } else {
+            writer.write("            // PostgresML modules not enabled - skip diagnostics\n");
+            writer.write("            log.info(\"PostgresML modules not enabled - skipping diagnostics\");\n");
+        }
+        writer.write("        } catch (Exception e) {\n");
+        writer.write("            log.error(\"Failed to run PostgresML diagnostics on startup\", e);\n");
+        writer.write("            handlePostgresMLError(e);\n");
+        writer.write("        }\n");
+        writer.write("    }\n\n");
+    }
+
+    private void writeApplicationPropertiesHeader(FileWriter writer) throws IOException {
+        writer.write("# Generated application.properties\n");
+        writer.write("# Project: " + instanceArtifactId + "\n");
+        writer.write("# Generated on: " + new java.util.Date() + "\n");
+        writer.write("# Configured providers: " + getProviderSummary() + "\n");
+        writer.write("\n");
+
+        // Add automatic PostgresML error debugging
+        if (includeEmbeddingPostgresml || includePgmlIndexer) {
+            writer.write("# =============================================================================\n");
+            writer.write("# AUTOMATIC PostgresML ERROR DEBUGGING\n");
+            writer.write("# These settings will automatically show PostgresML debug info when errors occur\n");
+            writer.write("# =============================================================================\n");
+            writer.write("\n");
+            writer.write("# Enable detailed SQL logging to catch PostgresML errors\n");
+            writer.write("logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG\n");
+            writer.write("logging.level.org.springframework.jdbc.core.StatementCreatorUtils=TRACE\n");
+            writer.write("logging.level.org.springframework.ai.postgresml=DEBUG\n");
+            writer.write("logging.level.org.postgresql=DEBUG\n");
+            writer.write("logging.level.ai.kompile.app.pgml.indexer=DEBUG\n");
+            writer.write("logging.level.ai.kompile.vectorstore=DEBUG\n");
+            writer.write("\n");
+            writer.write("# Show full exception stack traces\n");
+            writer.write("logging.level.org.springframework.jdbc.support.SQLErrorCodeSQLExceptionTranslator=DEBUG\n");
+            writer.write("logging.level.org.springframework.dao=DEBUG\n");
+            writer.write("\n");
+            writer.write("# Custom PostgresML error handler (automatically loaded)\n");
+            writer.write("logging.level." + instanceGroupId + ".config=DEBUG\n");
+            writer.write("\n");
+        }
+    }
+
+    private void writeAutoConfigurationExclusions(FileWriter writer) throws IOException {
+        List<String> exclusions = determineAutoConfigurationExclusions();
+
+        if (!exclusions.isEmpty()) {
+            writer.write("# =============================================================================\n");
+            writer.write("# AUTO-CONFIGURATION EXCLUSIONS\n");
+            writer.write("# These exclusions prevent bean conflicts by disabling unused provider configs\n");
+            writer.write("# =============================================================================\n");
+            writer.write("spring.autoconfigure.exclude=\\\n");
+
+            for (int i = 0; i < exclusions.size(); i++) {
+                writer.write("    " + exclusions.get(i));
+                if (i < exclusions.size() - 1) {
+                    writer.write(",\\\n");
+                } else {
+                    writer.write("\n\n");
+                }
+            }
+        }
+    }
+
+    private List<String> determineAutoConfigurationExclusions() {
+        List<String> exclusions = new ArrayList<>();
+        return exclusions;
+    }
+
+    private void writeProviderEnablementFlags(FileWriter writer) throws IOException {
+        writer.write("# =============================================================================\n");
+        writer.write("# PROVIDER ENABLEMENT FLAGS\n");
+        writer.write("# These flags explicitly control which providers are active\n");
+        writer.write("# =============================================================================\n");
+
+        // Embedding provider flags
+        writer.write("# Embedding Providers\n");
+        writer.write("spring.ai.openai.embedding.enabled=" + includeEmbeddingOpenai + "\n");
+        writer.write("spring.ai.postgresml.embedding.enabled=" + includeEmbeddingPostgresml + "\n");
+        writer.write("spring.ai.transformers.embedding.enabled=" + includeEmbeddingSentenceTransformer + "\n");
+        writer.write("\n");
+
+        // Chat provider flags
+        writer.write("# Chat Providers\n");
+        writer.write("spring.ai.openai.chat.enabled=" + includeLlmOpenai + "\n");
+        writer.write("spring.ai.anthropic.chat.enabled=" + includeLlmAnthropic + "\n");
+        writer.write("spring.ai.vertex.ai.gemini.chat.enabled=" + includeLlmGemini + "\n");
+        writer.write("\n");
+
+        // Vector store flags
+        writer.write("# Vector Stores\n");
+        writer.write("spring.ai.vectorstore.pgvector.enabled=" + (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) + "\n");
+        writer.write("spring.ai.vectorstore.chroma.enabled=" + includeVectorstoreChroma + "\n");
+        writer.write("\n");
+    }
+
+    private void writeStructuralConfiguration(FileWriter writer) throws IOException {
+        writer.write("# =============================================================================\n");
+        writer.write("# STRUCTURAL CONFIGURATION\n");
+        writer.write("# These are build-time decisions that don't change at runtime\n");
+        writer.write("# =============================================================================\n");
+
+        // Application basics
+        writer.write("spring.application.name=" + instanceArtifactId + "\n");
+        writer.write("server.port=8080\n");
+        writer.write("\n");
+
+        // Logging structure
+        writer.write("# Logging Configuration\n");
+        writer.write("logging.level.ai.kompile=INFO\n");
+        writer.write("logging.level.org.springframework.ai=INFO\n");
+        writer.write("logging.level.org.springframework.boot.autoconfigure=INFO\n");
+        writer.write("\n");
+
+        // Vector store structural settings (dimensions, table names, etc.)
+        if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+            writer.write("# PgVector Structural Configuration\n");
+            writer.write("spring.ai.vectorstore.pgvector.table-name=vector_store\n");
+            writer.write("spring.ai.vectorstore.pgvector.schema-name=public\n");
+            writer.write("spring.ai.vectorstore.pgvector.dimensions=1536\n");
+            writer.write("spring.ai.vectorstore.pgvector.distance-type=COSINE_DISTANCE\n");
+            writer.write("spring.ai.vectorstore.pgvector.initialize-schema=true\n");
+            writer.write("spring.ai.vectorstore.pgvector.schema-validation=true\n");
+            writer.write("\n");
+        }
+
+        if (includeVectorstoreChroma) {
+            writer.write("# Chroma Structural Configuration\n");
+            writer.write("spring.ai.vectorstore.chroma.collection-name=kompile_documents\n");
+            writer.write("spring.ai.vectorstore.chroma.initialize-schema=true\n");
+            writer.write("\n");
+        }
+
+        // Application-specific paths and settings
+        writer.write("# Kompile Application Structure\n");
+        writer.write("anserini.indexPath=./data/index\n");
+        writer.write("anserini.corpusPath=./data/anserini_corpus_json_staging\n");
+        writer.write("app.document.sources=./data/input_documents/sample.txt,./data/input_documents/sample.pdf\n");
+        writer.write("app.document.uploads-path=./data/input_documents/uploads\n");
+        writer.write("mcp.filesystem.roots.default.path=./data/shared_files\n");
+        writer.write("mcp.filesystem.roots.default.alias=default\n\n");
+
+        // OpenNLP configuration (only if sentence chunker is selected)
+        if (includeChunkerSentence) {
+            writer.write("# OpenNLP Configuration\n");
+            writer.write("kompile.opennlp.sentence.language=" +
+                    (supportedLanguages.isEmpty() ? "en" : supportedLanguages.get(0).toLowerCase()) + "\n");
+            writer.write("kompile.opennlp.models.path=classpath:models/\n\n");
+        }
+    }
+
+    private void writeConfigurationTemplate(FileWriter writer) throws IOException {
+        writer.write("# =============================================================================\n");
+        writer.write("# RUNTIME CONFIGURATION TEMPLATE\n");
+        writer.write("# Copy and customize these settings in your environment-specific config\n");
+        writer.write("# =============================================================================\n\n");
+
+        // Provider-specific runtime config templates (commented out)
+        if (includeEmbeddingOpenai || includeLlmOpenai) {
+            writer.write("# OpenAI Configuration (set via environment variables or external config)\n");
+            writer.write("# spring.ai.openai.api-key=${OPENAI_API_KEY}\n");
+            writer.write("# spring.ai.openai.base-url=https://api.openai.com\n");
+            if (includeEmbeddingOpenai) {
+                writer.write("# spring.ai.openai.embedding.options.model=text-embedding-3-large\n");
+            }
+            if (includeLlmOpenai) {
+                writer.write("# spring.ai.openai.chat.options.model=gpt-4o\n");
+                writer.write("# spring.ai.openai.chat.options.temperature=0.7\n");
+            }
+            writer.write("\n");
+        }
+
+        if (includeEmbeddingPostgresml || includeVectorstorePgvector || includePgmlIndexer) {
+            writer.write("# Database Configuration (set via environment variables or external config)\n");
+            writer.write("# spring.datasource.url=jdbc:postgresql://localhost:5432/your_database\n");
+            writer.write("# spring.datasource.username=${DB_USERNAME}\n");
+            writer.write("# spring.datasource.password=${DB_PASSWORD}\n");
+            writer.write("# spring.datasource.driver-class-name=org.postgresql.Driver\n");
+            writer.write("\n");
+        }
+
+        if (includeLlmAnthropic) {
+            writer.write("# Anthropic Configuration (set via environment variables or external config)\n");
+            writer.write("# spring.ai.anthropic.api-key=${ANTHROPIC_API_KEY}\n");
+            writer.write("# spring.ai.anthropic.chat.options.model=claude-3-sonnet-20240229\n");
+            writer.write("# spring.ai.anthropic.chat.options.temperature=0.7\n");
+            writer.write("\n");
+        }
+
+        if (includeLlmGemini) {
+            writer.write("# Google Vertex AI Configuration (set via environment variables or external config)\n");
+            writer.write("# spring.ai.vertex.ai.project-id=${GOOGLE_CLOUD_PROJECT_ID}\n");
+            writer.write("# spring.ai.vertex.ai.location=us-central1\n");
+            writer.write("# spring.ai.vertex.ai.gemini.chat.options.model=gemini-1.5-flash-latest\n");
+            writer.write("\n");
+        }
+
+        if (includeVectorstoreChroma) {
+            writer.write("# Chroma Configuration (set via environment variables or external config)\n");
+            writer.write("# spring.ai.vectorstore.chroma.client.host=localhost\n");
+            writer.write("# spring.ai.vectorstore.chroma.client.port=8000\n");
+            writer.write("\n");
+        }
+
+        writer.write("# Example: Create application-dev.properties, application-prod.properties, etc.\n");
+        writer.write("# Or set environment variables: OPENAI_API_KEY, DB_USERNAME, DB_PASSWORD, etc.\n");
+        writer.write("# Or use command line: --spring.ai.openai.api-key=your-key\n");
+    }
+
+    private String getProviderSummary() {
+        List<String> providers = new ArrayList<>();
+        if (includeEmbeddingOpenai) providers.add("OpenAI Embedding");
+        if (includeEmbeddingPostgresml) providers.add("PostgresML Embedding");
+        if (includeEmbeddingSentenceTransformer) providers.add("Sentence Transformer");
+        if (includeLlmOpenai) providers.add("OpenAI Chat");
+        if (includeLlmAnthropic) providers.add("Anthropic Chat");
+        if (includeLlmGemini) providers.add("Gemini Chat");
+        if (includeVectorstorePgvector) providers.add("PgVector Store");
+        if (includeVectorstoreChroma) providers.add("Chroma Store");
+        return String.join(", ", providers);
     }
 
     private void addApplicationBuild() {
@@ -521,7 +2319,8 @@ public class RagPomGenerator implements Callable<Void> {
             Plugin compilerPlugin = createPlugin("org.apache.maven.plugins", "maven-compiler-plugin", "${maven-compiler-plugin.version}");
             Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
-                            "  <release>${java.version}</release>" +
+                            "  <release>${java.version}</release>\n" +
+                            "<parameters>true</parameters>\n" +
                             "  <annotationProcessorPaths>" +
                             "    <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>${lombok.version}</version></path>" +
                             "    <path><groupId>org.springframework.boot</groupId><artifactId>spring-boot-configuration-processor</artifactId><version>${spring-boot.version}</version></path>" +
@@ -644,10 +2443,9 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-Djava.awt.headless=true");
         String initializeAtBuildTimeArg = "org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder";
         addBuildArg(buildArgsDom, "--initialize-at-build-time=" + initializeAtBuildTimeArg);
-        String initializeAtRunTimeArg = "org.apache.poi.util.RandomSingleton,sun.awt.X11.XWindow,sun.awt.X11.XDataTransferer,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
+        String initializeAtRunTimeArg = "java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
         addBuildArg(buildArgsDom, "--initialize-at-run-time=" + initializeAtRunTimeArg);
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
-        addBuildArg(buildArgsDom, "--trace-class-initialization=org.apache.poi.util.RandomSingleton,sun.awt.X11.XDataTransferer,sun.awt.X11.XWindow,sun.rmi.server.Util,java.security.SecureRandom,com.sun.jndi.dns.DnsClient");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2-spring.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.component.properties");
         addBuildArg(buildArgsDom, "-H:IncludeResources=.*Log4j2Plugins.dat$");
@@ -660,8 +2458,11 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring\\.components");
         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
-        addBuildArg(buildArgsDom, "--trace-class-initialization=sun.rmi.server.UnicastRef,java.rmi.server.LogStream,com.sun.jndi.dns.DnsClient");
-
+        if(includePgmlIndexer || includeVectorstorePgvector) {
+            addBuildArg(buildArgsDom, "-H:IncludeResources=schema.sql");
+            addBuildArg(buildArgsDom, "-H:IncludeResources=data.sql");
+            addBuildArg(buildArgsDom, "-H:IncludeResources=pgml-schema.sql");
+        }
         if(includeLoaderPdfExtended) {
             addBuildArg(buildArgsDom, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
         }

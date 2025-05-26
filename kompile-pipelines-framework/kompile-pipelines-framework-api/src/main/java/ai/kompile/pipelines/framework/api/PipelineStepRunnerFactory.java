@@ -19,7 +19,7 @@
 // Location: kompile-pipelines-framework/kompile-pipelines-framework-api/src/main/java/ai/kompile/pipelines/framework/api/
 package ai.kompile.pipelines.framework.api;
 
-import ai.kompile.pipelines.framework.api.configschema.StepSchema; // Added import
+import ai.kompile.pipelines.framework.api.configschema.StepSchema;
 import java.util.ServiceLoader; // For Javadoc reference
 
 /**

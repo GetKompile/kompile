@@ -61,6 +61,7 @@
     <module>kompile-app-springai-llm</module>
     <module>kompile-chunker-markdown</module>
     <module>kompile-chunker-token</module>
+    <module>kompile-postgres-common</module>
   </modules>
 
   <dependencyManagement>

@@ -22,6 +22,7 @@ import ai.kompile.core.retrievers.DocumentRetriever; // Import from core abstrac
 // If it's a general query structure, it could be in core.
 // For now, keeping it as an inner record as in your original code.
 
+import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import com.fasterxml.jackson.databind.ObjectMapper; // Still needed if you manually work with JSON arguments for other tools
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,7 +38,7 @@ import java.util.Map;
 public class RagToolImpl {
 
     private static final Logger logger = LoggerFactory.getLogger(RagToolImpl.class);
-    private final DocumentRetriever documentRetriever; // Using the interface
+    private  DocumentRetriever documentRetriever; // Using the interface
     private final ObjectMapper objectMapper; // Kept if other tools might need it, or for complex argument handling
 
     // Define a record or class for structured input if not already in core.
@@ -45,8 +46,19 @@ public class RagToolImpl {
     public record RagQueryInput(String query, Integer maxResults) {}
 
     @Autowired
-    public RagToolImpl(DocumentRetriever documentRetriever, ObjectMapper objectMapper) {
-        this.documentRetriever = documentRetriever;
+    public RagToolImpl(List<DocumentRetriever> documentRetriever, ObjectMapper objectMapper) {
+        if(documentRetriever.size() > 1) {
+            for (DocumentRetriever retriever : documentRetriever) {
+                if (retriever instanceof NoOpDocumentRetrieverImpl) {
+                    continue;
+                } else {
+                    this.documentRetriever = retriever;
+                    break;
+                }
+            }
+        } else {
+            this.documentRetriever = documentRetriever.get(0);
+        }
         this.objectMapper = objectMapper; // ObjectMapper can be useful, but not strictly used in this method's current form
         logger.debug("RagToolImpl constructed with DocumentRetriever: {}", documentRetriever.getClass().getSimpleName());
     }
