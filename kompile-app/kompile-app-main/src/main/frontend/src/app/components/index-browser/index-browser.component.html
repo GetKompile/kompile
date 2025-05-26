@@ -1,3 +1,19 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
 <div class="index-browser-container">
   <div class="header-bar">
     <h1>Index Browser & Search</h1>
@@ -14,47 +30,47 @@
       <mat-icon [color]="getStatusColor()">info</mat-icon>
       <h3>System Status</h3>
     </div>
-    
+
     <div *ngIf="isLoadingStatus" class="status-loading">
       <mat-progress-spinner diameter="24" mode="indeterminate"></mat-progress-spinner>
       <span>Loading status...</span>
     </div>
-    
+
     <div *ngIf="indexBrowserStatus && !isLoadingStatus" class="status-content">
       <div class="status-message" [ngClass]="getStatusColor()">
         <strong>{{ getStatusMessage() }}</strong>
       </div>
-      
+
       <div class="status-details">
         <div class="status-row">
-          <strong>Indexer:</strong> 
+          <strong>Indexer:</strong>
           <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpIndexer">
             {{ indexBrowserStatus.indexerImplementation }}
           </span>
           <mat-icon *ngIf="indexBrowserStatus.isNoOpIndexer" class="warning-icon" color="warn">warning</mat-icon>
         </div>
-        
+
         <div class="status-row">
-          <strong>Retriever:</strong> 
+          <strong>Retriever:</strong>
           <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpRetriever">
             {{ indexBrowserStatus.retrieverImplementation }}
           </span>
           <mat-icon *ngIf="indexBrowserStatus.isNoOpRetriever" class="warning-icon" color="warn">warning</mat-icon>
         </div>
-        
+
         <div class="status-row">
-          <strong>Index Available:</strong> 
+          <strong>Index Available:</strong>
           <span [class.text-success]="indexBrowserStatus.indexAvailable" [class.text-error]="!indexBrowserStatus.indexAvailable">
             {{ indexBrowserStatus.indexAvailable ? 'Yes' : 'No' }}
           </span>
         </div>
-        
+
         <div class="status-row" *ngIf="indexBrowserStatus.approximateDocumentCount !== undefined">
-          <strong>Document Count:</strong> 
+          <strong>Document Count:</strong>
           <span>{{ indexBrowserStatus.approximateDocumentCount }}</span>
         </div>
       </div>
-      
+
       <div *ngIf="indexBrowserStatus.warning" class="status-warning">
         <mat-icon color="warn">warning</mat-icon>
         <span>{{ indexBrowserStatus.warning }}</span>
@@ -69,7 +85,7 @@
       <input matInput [formControl]="searchControl" placeholder="Enter your search query">
       <mat-icon matSuffix>search</mat-icon>
     </mat-form-field>
-    
+
     <div class="search-controls" *ngIf="isSearchMode">
       <span class="search-info">
         <mat-icon>info</mat-icon>
@@ -140,7 +156,7 @@
         <ng-container matColumnDef="score">
           <th mat-header-cell *matHeaderCellDef mat-sort-header> Relevance Score </th>
           <td mat-cell *matCellDef="let doc">
-            <span class="score-badge" [class.high-score]="doc.score && doc.score > 5" 
+            <span class="score-badge" [class.high-score]="doc.score && doc.score > 5"
                   [class.medium-score]="doc.score && doc.score > 2 && doc.score <= 5"
                   [class.low-score]="doc.score && doc.score <= 2">
               {{ formatScore(doc.score) }}
@@ -169,19 +185,19 @@
         </ng-container>
 
         <tr mat-header-row *matHeaderRowDef="getDisplayedColumnsForMode(); sticky: true"></tr>
-        <tr mat-row *matRowDef="let row; columns: getDisplayedColumnsForMode();" 
+        <tr mat-row *matRowDef="let row; columns: getDisplayedColumnsForMode();"
             [class.search-result-row]="row.isSearchResult"></tr>
       </table>
-      
+
       <!-- Pagination (disabled for search results) -->
-      <mat-paginator 
+      <mat-paginator
         *ngIf="!isSearchMode"
-        [pageSizeOptions]="[5, 10, 20, 50]" 
-        [pageSize]="pageSize" 
-        [length]="totalDocsEstimate" 
+        [pageSizeOptions]="[5, 10, 20, 50]"
+        [pageSize]="pageSize"
+        [length]="totalDocsEstimate"
         showFirstLastButtons>
       </mat-paginator>
-      
+
       <!-- Search Results Info -->
       <div *ngIf="isSearchMode" class="search-results-info">
         <mat-icon>info_outline</mat-icon>
@@ -212,14 +228,14 @@
           </button>
         </div>
       </mat-card-header>
-      
+
       <mat-card-content>
         <mat-progress-bar mode="indeterminate" *ngIf="isLoading" class="operation-progress-bar"></mat-progress-bar>
 
         <h3>Document Content:</h3>
         <mat-form-field appearance="outline" class="full-width-field content-textarea">
           <mat-label>Content (Editable for Debug)</mat-label>
-          <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize" 
+          <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize"
                     cdkAutosizeMinRows="10" cdkAutosizeMaxRows="25"
                     [(ngModel)]="editedContent" [disabled]="isLoading"></textarea>
         </mat-form-field>
@@ -228,17 +244,17 @@
           <h3>Document Metadata:</h3>
           <div class="metadata-display">
             <div *ngFor="let key of objectKeys(selectedDoc.metadata)" class="metadata-item">
-              <strong>{{ key }}:</strong> 
+              <strong>{{ key }}:</strong>
               <span class="metadata-value">{{ selectedDoc.metadata[key] }}</span>
             </div>
           </div>
         </div>
-        
+
         <div *ngIf="!selectedDoc.metadata || objectKeys(selectedDoc.metadata).length === 0" class="metadata-section">
           <p class="no-metadata">No additional metadata stored for this document in the index.</p>
         </div>
       </mat-card-content>
-      
+
       <mat-card-actions align="end">
         <button mat-stroked-button (click)="closeDocumentView()" [disabled]="isLoading">
           Cancel
