@@ -35,7 +35,7 @@ import org.springframework.context.annotation.Configuration;
  * @author Kompile Inc.
  * @since 1.0.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(LLMChatConfiguration.LLMChatProperties.class)
 @ConditionalOnProperty(prefix = "kompile.llm.chat", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class LLMChatConfiguration {
