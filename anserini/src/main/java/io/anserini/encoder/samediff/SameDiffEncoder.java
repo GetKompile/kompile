@@ -34,37 +34,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Abstract base class for encoders using SameDiff framework (often by importing ONNX models).
- * Refactored for Kompile Model Management: model and vocabulary file paths are provided externally.
- *
- * @param <RETURN_TYPE> The type of encoding produced (e.g., float[], Map<String, Float>).
- */
 public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     private static final Logger LOG = LogManager.getLogger(SameDiffEncoder.class);
 
-    // Instance fields, no longer static
     protected SameDiff sameDiffModel;
     protected SamediffBertTokenizerPreProcessor tokenizerPreProcessor;
 
-    // Model's expected input and output tensor names (must be known for the specific ONNX model)
     protected final List<String> inputTensorNamesForModel;
     protected final List<String> outputTensorNamesFromModel;
-    protected final String modelIdentifier; // For logging/identification, corresponds to Kompile Model ID
+    protected final String modelIdentifier;
 
-    /**
-     * Constructor for SameDiffEncoder, relying on Kompile Model Management for file paths.
-     *
-     * @param modelIdentifier             A unique identifier for the model being used (e.g., "bge-base-en-v1.5-onnx"), primarily for logging.
-     * @param kompileManagedModelPath     Absolute path to the ONNX model file, managed by Kompile.
-     * @param kompileManagedVocabPath     Absolute path to the vocabulary file, managed by Kompile.
-     * @param inputTensorNamesForModel    List of input tensor names expected by the ONNX model.
-     * @param outputTensorNamesFromModel  List of output tensor names produced by the ONNX model.
-     * @param doLowerCaseAndStripAccents  Tokenizer option: whether to lowercase and strip accents.
-     * @param maxSequenceLength           Tokenizer option: maximum sequence length.
-     * @param addSpecialTokens            Tokenizer option: whether to add special tokens (CLS, SEP).
-     * @throws IOException if model or vocabulary loading fails.
-     */
     public SameDiffEncoder(@NotNull String modelIdentifier,
                            @NotNull String kompileManagedModelPath,
                            @NotNull String kompileManagedVocabPath,
@@ -82,6 +61,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         if (!Files.exists(vocabPath) || !Files.isRegularFile(vocabPath)) {
             throw new IOException("Kompile-managed vocabulary path does not exist or is not a file: " + kompileManagedVocabPath);
         }
+        // Use the provided SamediffBertVocabulary constructor
         SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
         this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
 
@@ -93,41 +73,25 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
         try {
             OnnxFrameworkImporter importer = new OnnxFrameworkImporter();
-            // runImport(modelPath, Map<String,DataType> dataTypeMap, boolean suggestDynamicVariables, boolean useOutputNamedDefinition)
             this.sameDiffModel = importer.runImport(onnxModelPath.toFile().getAbsolutePath(), Collections.emptyMap(), true, true);
 
             if (this.sameDiffModel == null) {
                 throw new IOException("Failed to import ONNX model to SameDiff from " + onnxModelPath + ". Importer returned null.");
             }
             LOG.info("[{}] Successfully imported ONNX model to SameDiff from: {}", modelIdentifier, onnxModelPath.toAbsolutePath());
-            // Log input/output names for verification if possible
-            // LOG.info("[{}] SameDiff Model Input Variables: {}", modelIdentifier, this.sameDiffModel.inputs());
-            // LOG.info("[{}] SameDiff Model Output Variables: {}", modelIdentifier, this.sameDiffModel.outputs());
 
-        } catch (Exception e) { // Catch broader exceptions from ONNX import
+        } catch (Exception e) {
             LOG.error("[{}] Failed to import ONNX model to SameDiff from path {}", modelIdentifier, onnxModelPath, e);
             throw new IOException("Failed to import ONNX model to SameDiff from " + onnxModelPath + ": " + e.getMessage(), e);
         }
     }
 
-    // Removed downloadFile method
-    // Removed getCacheDir method
-
     public SamediffBertTokenizerPreProcessor getTokenizerPreProcessor() {
         return tokenizerPreProcessor;
     }
 
-    /**
-     * Encodes the input query or text.
-     * @param text The text to encode.
-     * @return The encoded representation of type RETURN_TYPE.
-     */
     public abstract RETURN_TYPE encode(@NotNull String text);
 
-    /**
-     * Provides a default mechanism for bulk encoding. Subclasses may override for efficiency.
-     * This default is suitable if RETURN_TYPE is Map<String, Float> and T is String.
-     */
     public Map<String, RETURN_TYPE> bulkEncode(@NotNull List<String> texts) {
         Map<String, RETURN_TYPE> results = new HashMap<>();
         for (String text : texts) {
@@ -137,14 +101,10 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         return results;
     }
 
-
     @Override
     public void close() throws IOException {
-        // SameDiff models loaded via OnnxFrameworkImporter might not have an explicit close method
-        // for the graph itself, as ND4J manages resources.
-        // If specific resources were opened (like file streams not managed by importer), close them here.
         LOG.info("Closing SameDiffEncoder for model: {}", modelIdentifier);
-        this.sameDiffModel = null; // Allow for GC
+        this.sameDiffModel = null;
         this.tokenizerPreProcessor = null;
     }
 }
