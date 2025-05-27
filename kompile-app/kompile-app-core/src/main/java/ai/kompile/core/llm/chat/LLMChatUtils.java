@@ -16,15 +16,15 @@
 
 package ai.kompile.core.llm.chat;
 
+import ai.kompile.core.embeddings.VectorStore;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.PromptChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
-import org.springframework.ai.chat.client.advisor.VectorStoreChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.client.advisor.vectorstore.VectorStoreChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.document.Document;
 import org.springframework.util.Assert;
 
 import java.util.ArrayList;
@@ -35,6 +35,7 @@ import java.util.List;
  * Utility class for working with LLMChat and common Spring AI advisor configurations.
  * Provides convenience methods for creating LLMChat instances with pre-configured
  * advisors for common use cases like RAG, chat memory, and function calling.
+ * This class has been updated to work with the Kompile VectorStore wrapper.
  * 
  * @author Kompile Inc.
  * @since 1.0.0
@@ -82,20 +83,23 @@ public final class LLMChatUtils {
     }
 
     /**
-     * Creates an LLMChat with vector store-based chat memory.
-     * The conversation history is stored and retrieved from a vector store.
+     * Creates an LLMChat with custom vector store-based chat memory adapter.
+     * This creates a Spring AI compatible VectorStore from our Kompile VectorStore wrapper.
      * 
      * @param chatClientBuilder the ChatClient builder
-     * @param vectorStore the vector store implementation
+     * @param vectorStore the Kompile vector store implementation
      * @return a configured LLMChat instance
      */
     public static LLMChat createWithVectorMemory(ChatClient.Builder chatClientBuilder, VectorStore vectorStore) {
         Assert.notNull(chatClientBuilder, "chatClientBuilder cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
         
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore);
+        
         return LLMChatFactory.createWithAdvisors(
                 chatClientBuilder,
-                VectorStoreChatMemoryAdvisor.builder(vectorStore).build()
+                VectorStoreChatMemoryAdvisor.builder(springAiVectorStore).build()
         );
     }
 
@@ -104,17 +108,20 @@ public final class LLMChatUtils {
      * Uses a vector store to provide question-answering with context retrieval.
      * 
      * @param chatClientBuilder the ChatClient builder
-     * @param vectorStore the vector store for context retrieval
+     * @param vectorStore the Kompile vector store for context retrieval
      * @return a configured LLMChat instance
      */
     public static LLMChat createWithRAG(ChatClient.Builder chatClientBuilder, VectorStore vectorStore) {
         Assert.notNull(chatClientBuilder, "chatClientBuilder cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
         
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore);
+        
         return LLMChatFactory.createWithAdvisors(
                 chatClientBuilder,
-                QuestionAnswerAdvisor.builder(vectorStore)
-                        .searchRequest(SearchRequest.defaults())
+                QuestionAnswerAdvisor.builder(springAiVectorStore)
+                        .searchRequest(org.springframework.ai.vectorstore.SearchRequest.builder().build())
                         .build()
         );
     }
@@ -123,22 +130,30 @@ public final class LLMChatUtils {
      * Creates an LLMChat with custom RAG configuration.
      * 
      * @param chatClientBuilder the ChatClient builder
-     * @param vectorStore the vector store for context retrieval
-     * @param searchRequest the search request configuration
+     * @param vectorStore the Kompile vector store for context retrieval
+     * @param maxDocuments the maximum number of documents to retrieve
+     * @param similarityThreshold the similarity threshold for document retrieval
      * @return a configured LLMChat instance
      */
     public static LLMChat createWithRAG(
             ChatClient.Builder chatClientBuilder, 
             VectorStore vectorStore, 
-            SearchRequest searchRequest) {
+            int maxDocuments,
+            double similarityThreshold) {
         Assert.notNull(chatClientBuilder, "chatClientBuilder cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
-        Assert.notNull(searchRequest, "searchRequest cannot be null");
+        Assert.isTrue(maxDocuments > 0, "maxDocuments must be positive");
+        
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore, maxDocuments, similarityThreshold);
         
         return LLMChatFactory.createWithAdvisors(
                 chatClientBuilder,
-                QuestionAnswerAdvisor.builder(vectorStore)
-                        .searchRequest(searchRequest)
+                QuestionAnswerAdvisor.builder(springAiVectorStore)
+                        .searchRequest(org.springframework.ai.vectorstore.SearchRequest.builder()
+                                .topK(maxDocuments)
+                                .similarityThreshold(similarityThreshold)
+                                .build())
                         .build()
         );
     }
@@ -149,7 +164,7 @@ public final class LLMChatUtils {
      * 
      * @param chatClientBuilder the ChatClient builder
      * @param chatMemory the chat memory implementation
-     * @param vectorStore the vector store for context retrieval
+     * @param vectorStore the Kompile vector store for context retrieval
      * @return a configured LLMChat instance
      */
     public static LLMChat createWithMemoryAndRAG(
@@ -160,10 +175,13 @@ public final class LLMChatUtils {
         Assert.notNull(chatMemory, "chatMemory cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
         
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore);
+        
         List<Advisor> advisors = Arrays.asList(
                 MessageChatMemoryAdvisor.builder(chatMemory).build(),
-                QuestionAnswerAdvisor.builder(vectorStore)
-                        .searchRequest(SearchRequest.defaults())
+                QuestionAnswerAdvisor.builder(springAiVectorStore)
+                        .searchRequest(org.springframework.ai.vectorstore.SearchRequest.builder().build())
                         .build()
         );
         
@@ -175,8 +193,9 @@ public final class LLMChatUtils {
      * 
      * @param chatClientBuilder the ChatClient builder
      * @param chatMemory the chat memory implementation
-     * @param vectorStore the vector store for context retrieval
-     * @param searchRequest the search request configuration
+     * @param vectorStore the Kompile vector store for context retrieval
+     * @param maxDocuments the maximum number of documents to retrieve
+     * @param similarityThreshold the similarity threshold for document retrieval
      * @param additionalAdvisors additional custom advisors
      * @return a configured LLMChat instance
      */
@@ -184,17 +203,24 @@ public final class LLMChatUtils {
             ChatClient.Builder chatClientBuilder,
             ChatMemory chatMemory,
             VectorStore vectorStore,
-            SearchRequest searchRequest,
+            int maxDocuments,
+            double similarityThreshold,
             Advisor... additionalAdvisors) {
         Assert.notNull(chatClientBuilder, "chatClientBuilder cannot be null");
         Assert.notNull(chatMemory, "chatMemory cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
-        Assert.notNull(searchRequest, "searchRequest cannot be null");
+        Assert.isTrue(maxDocuments > 0, "maxDocuments must be positive");
+        
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore, maxDocuments, similarityThreshold);
         
         List<Advisor> advisors = new ArrayList<>();
         advisors.add(MessageChatMemoryAdvisor.builder(chatMemory).build());
-        advisors.add(QuestionAnswerAdvisor.builder(vectorStore)
-                .searchRequest(searchRequest)
+        advisors.add(QuestionAnswerAdvisor.builder(springAiVectorStore)
+                .searchRequest(org.springframework.ai.vectorstore.SearchRequest.builder()
+                        .topK(maxDocuments)
+                        .similarityThreshold(similarityThreshold)
+                        .build())
                 .build());
         
         if (additionalAdvisors != null) {
@@ -245,7 +271,7 @@ public final class LLMChatUtils {
      * Optimized for processing and answering questions about documents.
      * 
      * @param chatClientBuilder the ChatClient builder
-     * @param vectorStore the vector store containing document embeddings
+     * @param vectorStore the Kompile vector store containing document embeddings
      * @param maxDocuments the maximum number of documents to retrieve
      * @return a configured LLMChat instance
      */
@@ -253,19 +279,41 @@ public final class LLMChatUtils {
             ChatClient.Builder chatClientBuilder,
             VectorStore vectorStore,
             int maxDocuments) {
+        return createDocumentAnalyst(chatClientBuilder, vectorStore, maxDocuments, 0.0);
+    }
+
+    /**
+     * Creates an LLMChat for document analysis with RAG capabilities.
+     * Optimized for processing and answering questions about documents.
+     * 
+     * @param chatClientBuilder the ChatClient builder
+     * @param vectorStore the Kompile vector store containing document embeddings
+     * @param maxDocuments the maximum number of documents to retrieve
+     * @param similarityThreshold the similarity threshold for document retrieval
+     * @return a configured LLMChat instance
+     */
+    public static LLMChat createDocumentAnalyst(
+            ChatClient.Builder chatClientBuilder,
+            VectorStore vectorStore,
+            int maxDocuments,
+            double similarityThreshold) {
         Assert.notNull(chatClientBuilder, "chatClientBuilder cannot be null");
         Assert.notNull(vectorStore, "vectorStore cannot be null");
         Assert.isTrue(maxDocuments > 0, "maxDocuments must be positive");
         
-        SearchRequest searchRequest = SearchRequest.builder()
+        // Create adapter from our VectorStore to Spring AI VectorStore
+        org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore, maxDocuments, similarityThreshold);
+        
+        org.springframework.ai.vectorstore.SearchRequest searchRequest = org.springframework.ai.vectorstore.SearchRequest.builder()
                 .topK(maxDocuments)
+                .similarityThreshold(similarityThreshold)
                 .build();
         
         return LLMChatFactory.builder(chatClientBuilder)
                 .defaultSystem("You are a helpful document analyst. Analyze the provided context carefully " +
                               "and answer questions based on the information in the documents. If the answer " +
                               "is not in the provided context, clearly state that.")
-                .defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore)
+                .defaultAdvisors(QuestionAnswerAdvisor.builder(springAiVectorStore)
                         .searchRequest(searchRequest)
                         .build())
                 .build();
@@ -296,5 +344,68 @@ public final class LLMChatUtils {
      */
     public static boolean isSpringAIBacked(LLMChat llmChat) {
         return llmChat instanceof DefaultLLMChat;
+    }
+
+    /**
+     * Creates a Spring AI VectorStore adapter from our Kompile VectorStore.
+     * This allows our VectorStore interface to work with Spring AI advisors.
+     * 
+     * @param kompileVectorStore the Kompile vector store to adapt
+     * @return a Spring AI compatible VectorStore
+     */
+    private static org.springframework.ai.vectorstore.VectorStore createSpringAiVectorStoreAdapter(VectorStore kompileVectorStore) {
+        return createSpringAiVectorStoreAdapter(kompileVectorStore, 5, 0.0);
+    }
+
+    /**
+     * Creates a Spring AI VectorStore adapter from our Kompile VectorStore with custom parameters.
+     * This allows our VectorStore interface to work with Spring AI advisors.
+     * 
+     * @param kompileVectorStore the Kompile vector store to adapt  
+     * @param defaultMaxDocuments the default maximum number of documents to retrieve
+     * @param defaultSimilarityThreshold the default similarity threshold
+     * @return a Spring AI compatible VectorStore
+     */
+    private static org.springframework.ai.vectorstore.VectorStore createSpringAiVectorStoreAdapter(
+            VectorStore kompileVectorStore, 
+            int defaultMaxDocuments, 
+            double defaultSimilarityThreshold) {
+        
+        return new org.springframework.ai.vectorstore.VectorStore() {
+            @Override
+            public void add(List<Document> documents) {
+                kompileVectorStore.add(documents);
+            }
+
+            @Override
+            public void delete(List<String> idList) {
+                kompileVectorStore.delete(idList);
+            }
+
+            @Override
+            public void delete(org.springframework.ai.vectorstore.filter.Filter.Expression filterExpression) {
+                // Note: Our Kompile VectorStore doesn't support filter expressions yet
+                // This would need to be implemented based on your specific VectorStore implementation
+                throw new UnsupportedOperationException("Filter-based deletion not yet supported in Kompile VectorStore adapter");
+            }
+
+            @Override
+            public List<Document> similaritySearch(org.springframework.ai.vectorstore.SearchRequest request) {
+                String query = request.getQuery();
+                int topK = request.getTopK() > 0 ? request.getTopK() : defaultMaxDocuments;
+                double threshold = request.getSimilarityThreshold() >= 0 ? request.getSimilarityThreshold() : defaultSimilarityThreshold;
+                
+                if (threshold > 0) {
+                    return kompileVectorStore.similaritySearch(query, topK, threshold);
+                } else {
+                    return kompileVectorStore.similaritySearch(query, topK);
+                }
+            }
+
+            @Override
+            public String getName() {
+                return "KompileVectorStoreAdapter";
+            }
+        };
     }
 }
