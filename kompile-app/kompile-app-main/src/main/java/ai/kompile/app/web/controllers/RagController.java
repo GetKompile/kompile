@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers; // New package for controllers in the main app
 
 import ai.kompile.core.rag.RagQuery;    // Import DTO from kompile-app-core
+import ai.kompile.core.rag.RagResult;
 import ai.kompile.core.rag.RagService;    // Import interface from kompile-app-core
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,14 +52,14 @@ public class RagController {
         }
         try {
             logger.info("RagController received RAG query: '{}', useToolCalling: {}", query.getQuery(), query.isUseToolCalling());
-            String answer = ragService.answerQuery(query); // Calls the interface method
+            RagResult answer = ragService.answerQuery(query); // Calls the interface method
 
             if (answer == null) { // Handle case where service might return null
                 logger.error("RagService returned a null answer for query: {}", query.getQuery());
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("query", query.getQuery(), "error", "Received null answer from RAG service."));
             }
 
-            if (answer.startsWith("Error:")) {
+            if (answer.getAnswer().startsWith("Error:")) {
                 logger.warn("RagService indicated an error for query [{}]: {}", query.getQuery(), answer);
                 // Consider if all errors from service should be 500, or if some are user errors (4xx)
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("query", query.getQuery(), "error", answer));

@@ -17,50 +17,57 @@
 package ai.kompile.app.chunker.markdown;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
-import org.springframework.util.Assert;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @Component("springMarkdownTextChunker")
 public class SpringMarkdownChunker implements TextChunker {
 
     private static final String CHUNKER_NAME = "spring_markdown";
-    // MarkdownTextSplitter specific options can be added if needed,
-    // but its constructor in Spring AI 1.0 is parameterless or takes Tika properties.
-    // For a simple wrapper, we might not expose many options beyond what the splitter does by default.
 
     @Override
-    public List<Document> chunk(Document document, Map<String, Object> options) {
-        Assert.notNull(document, "Document cannot be null");
-        // Optionally, check if the document is indeed Markdown based on mime_type or file extension
+    public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
+        // Validate document using the interface method
+        validateDocument(document);
+        
+        // Prepare options with defaults
+        Map<String, Object> mergedOptions = prepareOptions(options);
+        
+        // Optionally, check if the document is indeed Markdown based on metadata
         // String mimeType = (String) document.getMetadata().getOrDefault("mime_type", "");
         // String fileName = (String) document.getMetadata().getOrDefault("file_name", "");
         // if (!"text/markdown".equalsIgnoreCase(mimeType) && !fileName.toLowerCase().endsWith(".md")) {
         //    log.warn("SpringMarkdownChunker is intended for Markdown documents, but received mime_type: {}, file_name: {}", mimeType, fileName);
         // }
 
-        // Spring AI 1.0.0 MarkdownTextSplitter, typically used within TikaDocumentReader context.
-        // It's a DocumentTransformer.
         CustomMarkdownTextChunker textSplitter = new CustomMarkdownTextChunker();
+        List<RetrievedDoc> splitDocuments = textSplitter.chunk(document, mergedOptions);
 
-        List<Document> splitDocuments = textSplitter.chunk(document,options);
-
-        int chunkNumber = 0;
-        for(Document chunk : splitDocuments) {
+        // Add chunk metadata to each split document
+        for (int i = 0; i < splitDocuments.size(); i++) {
+            RetrievedDoc chunk = splitDocuments.get(i);
             Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
             metadata.putIfAbsent("original_document_id", document.getId());
-            metadata.put("chunk_number", chunkNumber++);
+            metadata.put("chunk_number", i);
             metadata.put("chunker", getName());
 
-            chunk.getMetadata().clear();
-            chunk.getMetadata().putAll(metadata);
+            // Create new RetrievedDoc with updated metadata
+            RetrievedDoc updatedChunk;
+            if (chunk.getScore() != null) {
+                updatedChunk = new RetrievedDoc(chunk.getId(), chunk.getText(), metadata, chunk.getScore());
+            } else {
+                updatedChunk = new RetrievedDoc(chunk.getId(), chunk.getText(), metadata);
+            }
+            splitDocuments.set(i, updatedChunk);
         }
+        
         log.debug("Split Markdown document {} into {} chunks using {}.", document.getId(), splitDocuments.size(), getName());
         return splitDocuments;
     }
@@ -72,6 +79,18 @@ public class SpringMarkdownChunker implements TextChunker {
 
     @Override
     public List<String> getSupportedLanguages() {
-        return null;
+        // Markdown structure is language-agnostic
+        return List.of("*");
+    }
+
+    @Override
+    public Map<String, Object> getDefaultOptions() {
+        Map<String, Object> defaults = new HashMap<>();
+        defaults.put("chunkSize", 2000);
+        defaults.put("overlap", 200);
+        defaults.put("preserveParagraphs", true);
+        defaults.put("splitOnHeadings", true);
+        defaults.put("maxCharsPerChunk", 2000);
+        return defaults;
     }
 }
