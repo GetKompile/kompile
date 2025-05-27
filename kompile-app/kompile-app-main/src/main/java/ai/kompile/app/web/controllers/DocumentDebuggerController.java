@@ -440,36 +440,48 @@ public class DocumentDebuggerController {
 
                 // Chunk the first document
                 try {
-                    RetrievedDocDebugInfo firstDocInfo = documentInfos.get(0);
-                    Document firstDoc = new Document(firstDocInfo.text());
-                    firstDoc.getMetadata().putAll(firstDocInfo.metadata());
+                    // documentInfos contains RetrievedDocDebugInfo, which is derived from RetrievedDoc
+                    RetrievedDocDebugInfo firstDocDebugInfo = documentInfos.get(0);
+
+                    // Create an ai.kompile.core.retrievers.RetrievedDoc instance for chunking
+                    // using the information from RetrievedDocDebugInfo.
+                    // The RetrievedDoc.builder() pattern is assumed based on typical usage
+                    // and previous context about RetrievedDoc.java.
+                    RetrievedDoc documentToChunk = RetrievedDoc.builder()
+                            .id(firstDocDebugInfo.id()) // Use the ID from the debug representation
+                            .text(firstDocDebugInfo.text())
+                            .metadata(new HashMap<>(firstDocDebugInfo.metadata())) // Pass a copy of the metadata
+                            .build();
 
                     Map<String, Object> chunkingOptions = new HashMap<>();
+                    // These options are examples; actual values might come from configuration or request
                     chunkingOptions.put("chunkSize", 1000);
                     chunkingOptions.put("overlap", 200);
 
-                    List<Document> chunks = selectedChunker.chunk(firstDoc, chunkingOptions);
+                    // selectedChunker is of type ai.kompile.app.core.chunking.TextChunker
+                    // Its chunk method takes RetrievedDoc and returns List<RetrievedDoc>
+                    List<RetrievedDoc> chunks = selectedChunker.chunk(documentToChunk, chunkingOptions);
 
                     for (int i = 0; i < chunks.size(); i++) {
-                        Document chunk = chunks.get(i);
-                        RetrievedDoc retrievedChunk = convertToRetrievedDoc(chunk);
+                        RetrievedDoc retrievedChunk = chunks.get(i); // This is already an ai.kompile.core.retrievers.RetrievedDoc
 
                         ChunkDebugInfo chunkInfo = new ChunkDebugInfo(
                                 retrievedChunk.getId(),
                                 retrievedChunk.getText(),
                                 retrievedChunk.getText() != null ? retrievedChunk.getText().length() : 0,
-                                i,
+                                i, // chunkIndex
                                 retrievedChunk.getMetadata(),
-                                retrievedChunk.getScore()
+                                retrievedChunk.getScore() // RetrievedDoc is expected to have getScore()
                         );
                         chunkInfos.add(chunkInfo);
                     }
                 } catch (Exception e) {
                     logger.error("Error chunking document: {}", e.getMessage(), e);
+                    // Consider adding more specific error feedback to the DebugAnalysisResult if chunking fails
                 }
             }
 
-            // Processing stats
+               // Processing stats
             Map<String, Object> processingStats = new HashMap<>();
             processingStats.put("fileSize", fileSize);
             processingStats.put("documentsLoaded", documentInfos.size());
@@ -643,17 +655,15 @@ public class DocumentDebuggerController {
                         Map<String, Object> chunkingOptions = new HashMap<>();
                         chunkingOptions.put("chunkSize", 500);
                         chunkingOptions.put("overlap", 100);
+                        RetrievedDoc docToChunk = convertToRetrievedDoc(originalDoc);
 
-                        List<Document> chunks = chunker.chunk(originalDoc, chunkingOptions);
-                        List<RetrievedDoc> retrievedChunks = chunks.stream()
-                                .map(this::convertToRetrievedDoc)
-                                .collect(Collectors.toList());
+                        List<RetrievedDoc> retrievedChunks = chunker.chunk(docToChunk, chunkingOptions);
 
                         Map<String, Object> chunkingTest = new HashMap<>();
                         chunkingTest.put("chunkerUsed", chunker.getName());
-                        chunkingTest.put("originalChunks", chunks.size());
+                        chunkingTest.put("originalChunks", retrievedChunks.size());
                         chunkingTest.put("retrievedChunks", retrievedChunks.size());
-                        chunkingTest.put("chunkingSuccessful", chunks.size() == retrievedChunks.size());
+                        chunkingTest.put("chunkingSuccessful", retrievedChunks.size() == retrievedChunks.size());
 
                         // Sample chunk analysis
                         List<Map<String, Object>> chunkSamples = new ArrayList<>();

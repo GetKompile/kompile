@@ -71,6 +71,11 @@ public class LLMChatConfiguration {
          */
         private int ragMaxDocuments = 5;
 
+        /**
+         * Similarity threshold for RAG document retrieval.
+         */
+        private double ragSimilarityThreshold = 0.0;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -109,6 +114,14 @@ public class LLMChatConfiguration {
 
         public void setRagMaxDocuments(int ragMaxDocuments) {
             this.ragMaxDocuments = ragMaxDocuments;
+        }
+
+        public double getRagSimilarityThreshold() {
+            return ragSimilarityThreshold;
+        }
+
+        public void setRagSimilarityThreshold(double ragSimilarityThreshold) {
+            this.ragSimilarityThreshold = ragSimilarityThreshold;
         }
     }
 
@@ -202,7 +215,8 @@ public class LLMChatConfiguration {
         return LLMChatUtils.createDocumentAnalyst(
                 chatClientBuilder,
                 vectorStore,
-                properties.getRagMaxDocuments()
+                properties.getRagMaxDocuments(),
+                properties.getRagSimilarityThreshold()
         );
     }
 
@@ -236,9 +250,8 @@ public class LLMChatConfiguration {
                 chatClientBuilder,
                 chatMemory,
                 vectorStore,
-                org.springframework.ai.vectorstore.SearchRequest.builder()
-                        .topK(properties.getRagMaxDocuments())
-                        .build()
+                properties.getRagMaxDocuments(),
+                properties.getRagSimilarityThreshold()
         );
     }
 }
