@@ -17,12 +17,15 @@
 package ai.kompile.app.chunker.recursivecharacter;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
-import org.springframework.util.Assert;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @Component("recursiveCharacterTextChunker")
@@ -38,40 +41,42 @@ public class RecursiveCharacterChunker implements TextChunker {
     public static final int DEFAULT_CHUNK_OVERLAP = 200; // Default based on Spring AI's default
 
     @Override
-    public List<Document> chunk(Document document, Map<String, Object> options) {
-        Assert.notNull(document, "Document cannot be null");
-        Assert.notNull(options, "Options map cannot be null");
-
-        // int chunkSize = (int) options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
-        // int chunkOverlap = (int) options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
+    public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
+        // Validate document using the interface method
+        validateDocument(document);
+        
+        // Prepare options with defaults
+        Map<String, Object> mergedOptions = prepareOptions(options);
 
         // Spring AI 1.0.0 RecursiveCharacterTextSplitter constructor is used by CustomRecursiveCharacterTextChunker
         CustomRecursiveCharacterTextChunker textSplitter = new CustomRecursiveCharacterTextChunker();
-        // For custom separators:
-        // List<String> separators = (List<String>) options.getOrDefault(OPTION_SEPARATORS, List.of("\n\n", "\n", " ", ""));
-        // RecursiveCharacterTextSplitter textSplitter = new RecursiveCharacterTextSplitter(null, chunkSize, chunkOverlap, separators, true);
-
 
         // Spring AI TextSplitters take a List<Document> and return a List<Document>
         // The custom chunker now directly implements the chunking logic based on options passed.
-        List<Document> splitDocuments = textSplitter.chunk(document, options);
+        List<RetrievedDoc> splitDocuments = textSplitter.chunk(document, mergedOptions);
 
         // Enrich metadata for each new chunk
-        int chunkNumber = 0;
-        for(Document chunk : splitDocuments) {
+        for (int i = 0; i < splitDocuments.size(); i++) {
+            RetrievedDoc chunk = splitDocuments.get(i);
             Map<String, Object> metadata = new HashMap<>(chunk.getMetadata()); // Start with existing metadata from splitter
             metadata.putIfAbsent("original_document_id", document.getId());
-            metadata.put("chunk_number", chunkNumber++);
+            metadata.put("chunk_number", i);
             metadata.put("chunker", getName());
 
-            // Replace metadata with the enriched one
-            chunk.getMetadata().clear();
-            chunk.getMetadata().putAll(metadata);
+            // Create new RetrievedDoc with updated metadata
+            RetrievedDoc updatedChunk;
+            if (chunk.getScore() != null) {
+                updatedChunk = new RetrievedDoc(chunk.getId(), chunk.getText(), metadata, chunk.getScore());
+            } else {
+                updatedChunk = new RetrievedDoc(chunk.getId(), chunk.getText(), metadata);
+            }
+            splitDocuments.set(i, updatedChunk);
         }
+        
         log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, chunkOverlap={}",
                 document.getId(), splitDocuments.size(), getName(),
-                options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE),
-                options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP));
+                mergedOptions.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE),
+                mergedOptions.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP));
         return splitDocuments;
     }
 
@@ -84,5 +89,16 @@ public class RecursiveCharacterChunker implements TextChunker {
     public List<String> getSupportedLanguages() {
         // This chunker is based on character splitting and is language-agnostic.
         return Collections.singletonList("*");
+    }
+
+    @Override
+    public Map<String, Object> getDefaultOptions() {
+        Map<String, Object> defaults = new HashMap<>();
+        defaults.put(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
+        defaults.put(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
+        defaults.put("chunkSize", DEFAULT_CHUNK_SIZE);
+        defaults.put("overlap", DEFAULT_CHUNK_OVERLAP);
+        defaults.put("preserveParagraphs", true);
+        return defaults;
     }
 }

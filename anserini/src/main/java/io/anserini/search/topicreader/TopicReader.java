@@ -65,6 +65,7 @@ public abstract class TopicReader<K> {
   private static final String CACHE_DIR = Path.of(System.getProperty("user.home"), ".cache", "pyserini", "topics-and-qrels").toString();
   private static final String SERVER_PATH = "https://raw.githubusercontent.com/castorini/anserini-tools/master/topics-and-qrels/";
   private static final Map<String, Class<? extends TopicReader>> TOPIC_FILE_TO_TYPE = new HashMap<>();
+  public static final String QUERY_DOCID = "docid"; // TREC CAR, Background Linking
 
   static {
     // Inverts the "Topic" enum to populate the lookup table that maps topics filename to reader class.

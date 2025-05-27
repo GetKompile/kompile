@@ -17,11 +17,10 @@
 package ai.kompile.app.chunker.recursivecharacter;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
-import org.springframework.util.Assert;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,35 +48,40 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
     private final Function<String, Integer> defaultLengthFunction = String::length;
 
     @Override
-    public List<Document> chunk(Document document, Map<String, Object> options) {
-        Assert.notNull(document, "Document cannot be null");
-        Assert.notNull(options, "Options map cannot be null");
+    public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
+        // Validate document using the interface method
+        validateDocument(document);
+        
+        // Prepare options with defaults
+        Map<String, Object> mergedOptions = prepareOptions(options);
 
         String text = document.getText();
-        if (StringUtils.isBlank(text)) {
-            return List.of();
-        }
 
-        int chunkSize = (int) options.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
-        int chunkOverlap = (int) options.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
+        int chunkSize = (int) mergedOptions.getOrDefault(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
+        int chunkOverlap = (int) mergedOptions.getOrDefault(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
         @SuppressWarnings("unchecked")
-        List<String> separators = (List<String>) options.getOrDefault(OPTION_SEPARATORS, DEFAULT_SEPARATORS);
+        List<String> separators = (List<String>) mergedOptions.getOrDefault(OPTION_SEPARATORS, DEFAULT_SEPARATORS);
 
         // For simplicity, this implementation uses character length.
         // A more advanced version could accept a Function<String, Integer> for length calculation (e.g. token count)
-        // Function<String, Integer> lengthFunction = (Function<String, Integer>) options.getOrDefault(OPTION_LENGTH_FUNCTION, defaultLengthFunction);
-
-
         List<String> textChunks = splitTextWithSeparators(text, separators, chunkSize, chunkOverlap, defaultLengthFunction);
 
-        List<Document> resultDocuments = new ArrayList<>();
+        List<RetrievedDoc> resultDocuments = new ArrayList<>();
         int chunkNumber = 0;
         for (String chunkText : textChunks) {
             Map<String, Object> metadata = new HashMap<>(document.getMetadata());
             metadata.put("original_document_id", document.getId());
             metadata.put("chunk_number", chunkNumber++);
             metadata.put("chunker", getName());
-            resultDocuments.add(new Document(UUID.randomUUID().toString(), chunkText, metadata));
+            
+            // Create RetrievedDoc using proper constructor
+            RetrievedDoc chunk;
+            if (document.getScore() != null) {
+                chunk = new RetrievedDoc(UUID.randomUUID().toString(), chunkText, metadata, document.getScore());
+            } else {
+                chunk = new RetrievedDoc(UUID.randomUUID().toString(), chunkText, metadata);
+            }
+            resultDocuments.add(chunk);
         }
         log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, chunkOverlap={}",
                 document.getId(), resultDocuments.size(), getName(), chunkSize, chunkOverlap);
@@ -170,7 +174,6 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
             currentChunkList.add(split);
             currentTotalLength = lengthFunction.apply(String.join(separator, currentChunkList));
 
-
             // If the current split itself is larger than chunk_size (after trying to split by finer separators)
             // it should be added as is, or further split if possible (though current logic might not fully handle this perfectly)
             if (splitLength > chunkSize && currentChunkList.size() == 1) {
@@ -187,7 +190,6 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
         return mergedChunks;
     }
 
-
     @Override
     public String getName() {
         return CHUNKER_NAME;
@@ -195,6 +197,18 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
 
     @Override
     public List<String> getSupportedLanguages() {
-        return Arrays.asList("en");
+        return Arrays.asList("en", "*");
+    }
+
+    @Override
+    public Map<String, Object> getDefaultOptions() {
+        Map<String, Object> defaults = new HashMap<>();
+        defaults.put(OPTION_CHUNK_SIZE, DEFAULT_CHUNK_SIZE);
+        defaults.put(OPTION_CHUNK_OVERLAP, DEFAULT_CHUNK_OVERLAP);
+        defaults.put(OPTION_SEPARATORS, DEFAULT_SEPARATORS);
+        defaults.put("chunkSize", DEFAULT_CHUNK_SIZE);
+        defaults.put("overlap", DEFAULT_CHUNK_OVERLAP);
+        defaults.put("preserveParagraphs", true);
+        return defaults;
     }
 }

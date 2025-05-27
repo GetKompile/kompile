@@ -194,9 +194,11 @@ public class PgmlDocumentRetrieverImpl implements DocumentRetriever {
                             
                             // Spring AI Document similarity scores are not always available
                             // We use the rank as a proxy for relevance score (higher rank = lower score)
-                            float score = 1.0f / (i + 1);
+                            Double score = 1.0 / (i + 1);
                             
-                            return new RetrievedDoc(doc.getId(), content, score, metadata);
+                            // Use the correct constructor: (String id, String text, Map<String, Object> metadata, double score)
+                            String docId = doc.getId() != null ? doc.getId() : "doc_" + i;
+                            return new RetrievedDoc(docId, content, metadata, score);
                             
                         } catch (Exception e) {
                             logger.warn("Error processing search result for document {}: {}", doc.getId(), e.getMessage());
@@ -205,7 +207,8 @@ public class PgmlDocumentRetrieverImpl implements DocumentRetriever {
                             errorMetadata.put("error", "Error processing result: " + e.getMessage());
                             errorMetadata.put("collection_name", getEffectiveCollectionName(null));
                             
-                            return new RetrievedDoc(doc.getId(), "[Error processing result]", 0.0f, errorMetadata);
+                            String docId = doc.getId() != null ? doc.getId() : "error_doc_" + i;
+                            return new RetrievedDoc(docId, "[Error processing result]", errorMetadata, 0.0);
                         }
                     })
                     .filter(Objects::nonNull)

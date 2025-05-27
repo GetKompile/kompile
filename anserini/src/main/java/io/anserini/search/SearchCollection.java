@@ -73,7 +73,10 @@ import io.anserini.search.topicreader.BackgroundLinkingTopicReader;
 import io.anserini.search.topicreader.TopicReader;
 import io.anserini.search.topicreader.Topics;
 import io.anserini.util.PrebuiltIndexHandler;
+import io.anserini.eval.RelevanceJudgments;
 
+
+import lombok.SneakyThrows;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DurationFormatUtils;
@@ -147,6 +150,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static io.anserini.encoder.samediff.GenericDenseSameDiffEncoder.*;
 
 public final class SearchCollection<K extends Comparable<K>> implements Runnable, Closeable {
     public static final Sort BREAK_SCORE_TIES_BY_DOCID =
@@ -409,6 +414,11 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         @Option(name = "-axiom.index", usage = "Axiom: path to external index for generating reranking document pool (if different from main index).")
         public String axiom_index = null;
 
+        public static final boolean FALLBACK_DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
+        public static final int FALLBACK_DEFAULT_MAX_SEQUENCE_LENGTH = 512; // A common default
+        public static final boolean FALLBACK_DEFAULT_ADD_SPECIAL_TOKENS = true;
+
+
         public Args impact() { this.impact = true; this.bm25 = false; this.bm25Accurate = false; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
         public Args bm25() { this.impact = false; this.bm25 = true; this.bm25Accurate = false; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
         public Args bm25Accurate() { this.impact = false; this.bm25 = false; this.bm25Accurate = true; this.qld = false; this.qljm = false; this.inl2 = false; this.spl = false; this.f2exp = false; this.f2log = false; return this; }
@@ -537,8 +547,8 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 return docs;
             }
             if (outerArgs.backgroundLinking && SearchCollection.this.collectionClass != null) {
-                // Pass collectionClass name
-                return new NewsBackgroundLinkingReranker(SearchCollection.this.analyzer, SearchCollection.this.collectionClass.getName()).rerank(docs, context);
+                // Pass collectionClass
+                return new NewsBackgroundLinkingReranker(SearchCollection.this.analyzer, SearchCollection.this.collectionClass).rerank(docs, context);
             }
             return docs;
         }
@@ -668,9 +678,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : SpladePlusPlusSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
                 int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE;
                 int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE;
-                // This assumes SpladePlusPlusSelfDistilSameDiffEncoder's constructor is:
-                // (String id, String modelPath, String vocabPath, boolean, int, boolean, int, int)
-                // and it internally passes its specific tensor names to super().
                 return new SpladePlusPlusSelfDistilSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens, weightRange, quantRange);
 
             } else if (encoderTypeIdentifier.equalsIgnoreCase("SpladePlusPlusEnsembleDistil")) {
@@ -679,20 +686,11 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : SpladePlusPlusSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
                 int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE;
                 int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE;
-                // This matches the original user-provided structure for this call, but it's crucial that
-                // SpladePlusPlusEnsembleDistilSameDiffEncoder itself is refactored to:
-                // 1. Accept modelIdentifier (or derive it)
-                // 2. Call super() correctly with modelIdentifier, paths, ITS OWN TENSOR NAMES, and tokenizer settings.
-                // The call here assumes the constructor signature from the original file, which may need updating
-                // in SpladePlusPlusEnsembleDistilSameDiffEncoder.java itself.
-                // For now, to match the user's provided structure for this specific call:
+
                 return new SpladePlusPlusEnsembleDistilSameDiffEncoder(
-                        kompileModelPath, // This part seems to deviate from the pattern of passing modelInstanceIdentifier first.
-                        kompileVocabPath, // This needs to be reconciled with how SpladePlusPlusEnsembleDistilSameDiffEncoder is defined.
-                        List.of(SpladePlusPlusSameDiffEncoder.INPUT_IDS_TENSOR_NAME,
-                                SpladePlusPlusSameDiffEncoder.ATTENTION_MASK_TENSOR_NAME,
-                                SpladePlusPlusSameDiffEncoder.TOKEN_TYPE_IDS_TENSOR_NAME),
-                        Collections.singletonList(SpladePlusPlusSameDiffEncoder.OUTPUT_LOGITS_TENSOR_NAME),
+                        modelInstanceIdentifier, // Pass the resolved model identifier
+                        kompileModelPath,
+                        kompileVocabPath,
                         doLowerCase, maxSeqLen, addSpecialTokens,
                         weightRange, quantRange
                 );
@@ -704,8 +702,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : UniCoilSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
                 int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE; // Assuming UniCoil has these
                 int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : UniCoilSameDiffEncoder.DEFAULT_QUANT_RANGE;   // Assuming UniCoil has these
-                // Assumes UniCoilSameDiffEncoder constructor: (String id, String modelPath, String vocabPath, boolean, int, boolean, int, int)
-                // and it internally passes its specific tensor names to super().
                 return new UniCoilSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens, weightRange, quantRange);
 
             } else if (encoderTypeIdentifier.equalsIgnoreCase("GenericDense")) {
@@ -728,9 +724,9 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                     outputName = GenericDenseSameDiffEncoder.DEFAULT_OUTPUT_NAME;
                 }
 
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : GenericDenseSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : GenericDenseSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : GenericDenseSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
+                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
+                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : DEFAULT_MAX_SEQUENCE_LENGTH;
+                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : DEFAULT_ADD_SPECIAL_TOKENS;
 
                 // GenericDenseSameDiffEncoder takes explicit tensor names in its constructor
                 return new GenericDenseSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath,
@@ -742,11 +738,9 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                     LOG.info("Attempting to load encoder as FQN: {}", encoderTypeIdentifier);
                     Class<?> encoderClazz = Class.forName(encoderTypeIdentifier);
 
-                    // For FQN, use global CLI tokenizer settings, or fallback to SamediffBertTokenizerPreProcessor defaults
-                    // as we can't assume FQN classes will have the same static DEFAULT_ fields.
-                    boolean fqnDoLowerCase = cliDoLowerCase != null ? cliDoLowerCase : SamediffBertTokenizerPreProcessor.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                    int fqnMaxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : SamediffBertTokenizerPreProcessor.DEFAULT_MAX_SEQUENCE_LENGTH;
-                    boolean fqnAddSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : SamediffBertTokenizerPreProcessor.DEFAULT_ADD_SPECIAL_TOKENS;
+                    boolean fqnDoLowerCase = cliDoLowerCase != null ? cliDoLowerCase : Args.FALLBACK_DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
+                    int fqnMaxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : Args.FALLBACK_DEFAULT_MAX_SEQUENCE_LENGTH;
+                    boolean fqnAddSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : Args.FALLBACK_DEFAULT_ADD_SPECIAL_TOKENS;
 
                     try {
                         // Attempt 1: Constructor for dense-like encoders (modelId, modelPath, vocabPath, tokenizerParams)
@@ -895,7 +889,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                             String docIdForQuery = entry.getValue().get(TopicReader.QUERY_DOCID);
                             if (docIdForQuery == null) {
                                 LOG.warn("Background linking task for QID {} missing '{}' field in topic. Using raw query as docid substitute.", qid, TopicReader.QUERY_DOCID);
-                                docIdForQuery = originalQueryString;
+                                docIdForQuery = originalQueryString; // Using original query string if docIdForQuery is missing
                             }
                             docs = searcherForTopic.searchBackgroundLinking(qid, docIdForQuery, cascade);
                         } else {
@@ -990,7 +984,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     private final List<RerankerCascade> cascades;
     private final boolean isRerank;
     private final SortedMap<K, Map<String, String>> topics;
-    private Map<String, ScoredDocs> qrels;
+    private Map<String, ScoredDocs> qrels; // Changed from RelevanceJudgments to Map<String, ScoredDocs>
     private Set<String> queriesWithRel;
 
     @SuppressWarnings("unchecked")
@@ -1003,7 +997,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
             PrebuiltIndexHandler indexHandler = new PrebuiltIndexHandler(args.index);
             try {
                 indexHandler.initialize();
-                if (!indexHandler.indexExists()) {
+                if (!indexHandler.checkIndexFileExist()) { // Corrected method call
                     LOG.info("Downloading prebuilt index: {}", args.index);
                     indexHandler.download();
                 }
@@ -1062,11 +1056,9 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
             LOG.info("  Encoder Add Special Tokens: {}", args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : "Encoder Default");
             if(args.encoder.equalsIgnoreCase("Bge")){
                 LOG.info("  BGE Instruction: {}", args.encoderBgeInstruction != null ? "'" + args.encoderBgeInstruction + "'" : "None (uses BGE default if any)");
-                // Assuming BgeSameDiffEncoder.DEFAULT_NORMALIZE exists
                 LOG.info("  BGE Normalize: {}", args.encoderBgeNormalize != null ? args.encoderBgeNormalize : BgeSameDiffEncoder.DEFAULT_NORMALIZE);
             }
             if(args.encoder.equalsIgnoreCase("GenericDense")){
-                // Assuming GenericDenseSameDiffEncoder.DEFAULT_NORMALIZE, DEFAULT_INPUT_IDS_NAME, etc. exist
                 LOG.info("  GenericDense Normalize: {}", args.encoderGenericDenseNormalize != null ? args.encoderGenericDenseNormalize : GenericDenseSameDiffEncoder.DEFAULT_NORMALIZE);
                 String defaultInputNames = "Uses GenericDenseSameDiffEncoder defaults: " +
                         List.of(GenericDenseSameDiffEncoder.DEFAULT_INPUT_IDS_NAME,
@@ -1076,8 +1068,6 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 LOG.info("  GenericDense Output Name: {}", args.encoderGenericDenseOutputName != null ? args.encoderGenericDenseOutputName : "Encoder Default (" + GenericDenseSameDiffEncoder.DEFAULT_OUTPUT_NAME +")");
             }
             if(args.encoder.toLowerCase().contains("splade") || args.encoder.toLowerCase().contains("coil")){
-                // Assuming SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE and DEFAULT_SPLADE_QUANT_RANGE exist for SPLADE
-                // Assuming UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE and DEFAULT_QUANT_RANGE exist for UniCoil
                 int wRangeDefault = args.encoder.toLowerCase().contains("splade") ? SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE : UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE;
                 int qRangeDefault = args.encoder.toLowerCase().contains("splade") ? SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE : UniCoilSameDiffEncoder.DEFAULT_QUANT_RANGE;
                 LOG.info("  SPLADE/COIL Weight Range: {}", args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : "Encoder Default (" + wRangeDefault + ")");
@@ -1102,7 +1092,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
 
         this.analyzer = getAnalyzer();
         this.similarities = constructSimilarities();
-        this.cascades = constructRerankers(); // Reranker construction remains as per original
+        this.cascades = constructRerankers();
         this.isRerank = args.rm3 || args.axiom || args.bm25prf || args.rocchio;
 
         if (this.isRerank && args.rf_qrels != null && !args.rf_qrels.trim().isEmpty()) {
@@ -1166,27 +1156,22 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         }
     }
 
-    // getAnalyzer, constructSimilarities, constructRerankers, loadQrels, run, main
-    // are kept as in the provided SearchCollection.java for brevity,
-    // assuming the user's primary concern was encoder initialization and related logging.
-    // The reranker instantiation in constructRerankers uses the user's original logic.
     private Analyzer getAnalyzer() {
         try {
             if (args.pretokenized) {
                 return new WhitespaceAnalyzer();
             } else if (args.searchTweets) {
-                return new TweetAnalyzer(true); // Assuming keepPunctuations for tweets
-            } else if (args.language != null && !args.language.isEmpty()) {
-                // Attempt to load a language-specific analyzer from AnalyzerMap
-                Analyzer langAnalyzer = AnalyzerMap.getLanguageSpecificAnalyzer(args.language, args.stemmer, args.keepStopwords, args.stopwords);
+                return new TweetAnalyzer(true);
+            } else if (args.language != null && !args.language.isEmpty() && !args.language.equalsIgnoreCase("en")) {
+                Analyzer langAnalyzer = AnalyzerMap.getLanguageSpecificAnalyzer(args.language);
                 if (langAnalyzer != null) {
+                    LOG.info("Using language-specific analyzer for {}: {}", args.language, langAnalyzer.getClass().getSimpleName());
                     return langAnalyzer;
                 }
-                LOG.warn("Unsupported language '{}' or combination with stemmer/stopwords. Falling back to DefaultEnglishAnalyzer.", args.language);
-                // Fallback to DefaultEnglishAnalyzer if specific language analyzer not found or if language is "en"
+                LOG.warn("Unsupported language '{}'. Falling back to DefaultEnglishAnalyzer.", args.language);
                 return DefaultEnglishAnalyzer.fromArguments(args.stemmer, args.keepStopwords, args.stopwords);
             } else {
-                // Default to English analyzer if no specific language is set
+                // Default to English analyzer if no specific language is set or if language is "en"
                 return DefaultEnglishAnalyzer.fromArguments(args.stemmer, args.keepStopwords, args.stopwords);
             }
         } catch (IOException e) {
@@ -1195,86 +1180,214 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         }
     }
 
+
     private List<TaggedSimilarity> constructSimilarities() {
         List<TaggedSimilarity> similaritiesList = new ArrayList<>();
-        // This logic needs to be robust to handle arrays of parameters for sweeping
-        // For simplicity in this fix, we'll assume the first parameter is used if arrays are present.
         if (args.impact) {
             similaritiesList.add(new TaggedSimilarity(new ImpactSimilarity(), "impact"));
         } else if (args.bm25) {
-            similaritiesList.add(new TaggedSimilarity(new BM25Similarity(Float.parseFloat(args.bm25_k1[0]), Float.parseFloat(args.bm25_b[0])), "bm25_k1=" + args.bm25_k1[0] + "_b=" + args.bm25_b[0]));
+            for (String k1 : args.bm25_k1) {
+                for (String b : args.bm25_b) {
+                    similaritiesList.add(new TaggedSimilarity(new BM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)), "bm25_k1=" + k1 + "_b=" + b));
+                }
+            }
         } else if (args.bm25Accurate) {
-            similaritiesList.add(new TaggedSimilarity(new AccurateBM25Similarity(Float.parseFloat(args.bm25_k1[0]), Float.parseFloat(args.bm25_b[0])), "bm25accurate_k1=" + args.bm25_k1[0] + "_b=" + args.bm25_b[0]));
+            for (String k1 : args.bm25_k1) {
+                for (String b : args.bm25_b) {
+                    similaritiesList.add(new TaggedSimilarity(new AccurateBM25Similarity(Float.parseFloat(k1), Float.parseFloat(b)), "bm25accurate_k1=" + k1 + "_b=" + b));
+                }
+            }
         } else if (args.qld) {
-            similaritiesList.add(new TaggedSimilarity(new LMDirichletSimilarity(Float.parseFloat(args.qld_mu[0])), "qld_mu=" + args.qld_mu[0]));
+            for (String mu : args.qld_mu) {
+                similaritiesList.add(new TaggedSimilarity(new LMDirichletSimilarity(Float.parseFloat(mu)), "qld_mu=" + mu));
+            }
         } else if (args.qljm) {
-            similaritiesList.add(new TaggedSimilarity(new LMJelinekMercerSimilarity(Float.parseFloat(args.qljm_lambda[0])), "qljm_lambda=" + args.qljm_lambda[0]));
+            for (String lambda : args.qljm_lambda) {
+                similaritiesList.add(new TaggedSimilarity(new LMJelinekMercerSimilarity(Float.parseFloat(lambda)), "qljm_lambda=" + lambda));
+            }
         } else if (args.inl2) {
-            similaritiesList.add(new TaggedSimilarity(new DFRSimilarity(new BasicModelIn(), new AfterEffectL(), new NormalizationH2(Float.parseFloat(args.inl2_c[0]))), "inl2_c=" + args.inl2_c[0]));
+            for (String c : args.inl2_c) {
+                similaritiesList.add(new TaggedSimilarity(new DFRSimilarity(new BasicModelIn(), new AfterEffectL(), new NormalizationH2(Float.parseFloat(c))), "inl2_c=" + c));
+            }
         } else if (args.spl) {
-            similaritiesList.add(new TaggedSimilarity(new IBSimilarity(new DistributionSPL(), new LambdaDF(), new NormalizationH2(Float.parseFloat(args.spl_c[0]))), "spl_c=" + args.spl_c[0]));
+            for (String c : args.spl_c) {
+                similaritiesList.add(new TaggedSimilarity(new IBSimilarity(new DistributionSPL(), new LambdaDF(), new NormalizationH2(Float.parseFloat(c))), "spl_c=" + c));
+            }
         } else if (args.f2exp) {
-            similaritiesList.add(new TaggedSimilarity(new AxiomaticF2EXP(Float.parseFloat(args.f2exp_s[0])), "f2exp_s=" + args.f2exp_s[0]));
+            for (String s : args.f2exp_s) {
+                similaritiesList.add(new TaggedSimilarity(new AxiomaticF2EXP(Float.parseFloat(s)), "f2exp_s=" + s));
+            }
         } else if (args.f2log) {
-            similaritiesList.add(new TaggedSimilarity(new AxiomaticF2LOG(Float.parseFloat(args.f2log_s[0])), "f2log_s=" + args.f2log_s[0]));
+            for (String s : args.f2log_s) {
+                similaritiesList.add(new TaggedSimilarity(new AxiomaticF2LOG(Float.parseFloat(s)), "f2log_s=" + s));
+            }
         }
 
 
         if (similaritiesList.isEmpty()) {
-            // Default to BM25 if nothing else is specified
             LOG.warn("No similarity function explicitly specified. Using default BM25 (k1=0.9, b=0.4).");
             similaritiesList.add(new TaggedSimilarity(new BM25Similarity(0.9f, 0.4f), "bm25_default"));
         }
         return similaritiesList;
     }
 
+
+
+    @SneakyThrows
     private List<RerankerCascade> constructRerankers() {
         List<RerankerCascade> cascadesList = new ArrayList<>();
-        RerankerCascade currentCascade = new RerankerCascade(args.runtag);
+        String baseTag = args.runtag != null ? args.runtag : "Anserini";
+
+        List<RerankerCascade> currentStageCascades = new ArrayList<>();
+        currentStageCascades.add(new RerankerCascade(baseTag)); // Initial cascade with base tag
 
         if (args.rm3) {
-            currentCascade.add(new Rm3Reranker(this.analyzer, Constants.CONTENTS,
-                    Integer.parseInt(args.rm3_fbTerms[0]), Integer.parseInt(args.rm3_fbDocs[0]),
-                    Float.parseFloat(args.rm3_originalQueryWeight[0]), args.rm3_outputQuery, !args.rm3_noTermFilter));
-            currentCascade.setTag(currentCascade.getTag() + "_rm3");
-        }
-        if (args.axiom) {
-            String axiomIndexDir = args.axiom_index != null ? args.axiom_index : args.index;
-            String collectionClassName = this.collectionClass != null ? this.collectionClass.getName() : null;
-            if (collectionClassName == null && args.axiom) { // only warn if axiom is truly enabled
-                LOG.warn("Axiom reranker is enabled but -collectionClass is not specified. This might cause issues if AxiomReranker needs to fetch raw document content from a specific collection type.");
+            List<RerankerCascade> nextStageCascades = new ArrayList<>();
+            for (RerankerCascade existingCascade : currentStageCascades) {
+                for (String fbTerms_str : args.rm3_fbTerms) {
+                    for (String fbDocs_str : args.rm3_fbDocs) {
+                        for (String originalQueryWeight_str : args.rm3_originalQueryWeight) {
+                            String newTag = String.format("%s_rm3fbT%sfbD%sW%s", existingCascade.getTag(), fbTerms_str, fbDocs_str, originalQueryWeight_str);
+                            RerankerCascade newCascade = new RerankerCascade(newTag);
+                            newCascade.rerankers.addAll(existingCascade.rerankers);
+                            newCascade.add(new Rm3Reranker(this.analyzer, this.collectionClass, Constants.CONTENTS,
+                                    Integer.parseInt(fbTerms_str), Integer.parseInt(fbDocs_str),
+                                    Float.parseFloat(originalQueryWeight_str), args.rm3_outputQuery, !args.rm3_noTermFilter));
+                            nextStageCascades.add(newCascade);
+                        }
+                    }
+                }
             }
-            currentCascade.add(new AxiomReranker(axiomIndexDir, collectionClassName,
-                    args.axiom_docids, Integer.parseInt(args.axiom_r[0]),
-                    Integer.parseInt(args.axiom_n[0]), Float.parseFloat(args.axiom_beta[0]),
-                    Integer.parseInt(args.axiom_top[0]), args.axiom_outputQuery, args.axiom_deterministic,
-                    Integer.parseInt(args.axiom_seed[0])));
-            currentCascade.setTag(currentCascade.getTag() + "_axiom");
+            currentStageCascades = nextStageCascades.isEmpty() ? currentStageCascades : nextStageCascades;
         }
-        // The following Rocchio and BM25PRF instantiations are kept as per the user's original SearchCollection.java
-        // Their correctness depends on the actual (unavailable) definitions of these reranker classes.
+
+        if (args.axiom) {
+            List<RerankerCascade> nextStageCascades = new ArrayList<>();
+            for (RerankerCascade existingCascade : currentStageCascades) {
+                for (String r_str : args.axiom_r) {
+                    for (String n_str : args.axiom_n) {
+                        for (String beta_str : args.axiom_beta) {
+                            for (String top_str : args.axiom_top) {
+                                for (String seed_str : args.axiom_seed) {
+                                    String currentOriginalIndexPath = args.index; // Path to the main index
+                                    String currentExternalIndexPath = args.axiom_index; // Path to axiom's external index (can be null)
+                                    String currentAxiomDocidsCachePath = args.axiom_docids; // Path to docids cache for deterministic runs
+                                    Class<?> parserClassArg = this.collectionClass;
+
+                                    String newTag = String.format("%s_axiomR%sN%sBeta%sTop%sSeed%s", existingCascade.getTag(),
+                                            r_str, n_str, beta_str, top_str, seed_str);
+                                    RerankerCascade newCascade = new RerankerCascade(newTag);
+                                    newCascade.rerankers.addAll(existingCascade.rerankers);
+                                    try {
+                                        newCascade.add(new AxiomReranker<K>(
+                                                this.analyzer,              // Analyzer analyzer
+                                                parserClassArg,             // Class parser
+                                                currentOriginalIndexPath,   // String originalIndexPath
+                                                currentExternalIndexPath,   // String externalIndexPath
+                                                Constants.CONTENTS,         // String field
+                                                args.axiom_deterministic,   // boolean deterministic
+                                                Long.parseLong(seed_str),   // long seed
+                                                Integer.parseInt(r_str),    // int r
+                                                Integer.parseInt(n_str),    // int n
+                                                Float.parseFloat(beta_str), // float beta
+                                                Integer.parseInt(top_str),  // int top
+                                                currentAxiomDocidsCachePath,// String docidsCachePath
+                                                args.axiom_outputQuery,     // boolean outputQuery
+                                                args.searchTweets           // boolean searchTweets
+                                        ));
+                                    } catch (IOException e) {
+                                        throw new RuntimeException("Failed to instantiate AxiomReranker", e);
+                                    }
+                                    nextStageCascades.add(newCascade);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            currentStageCascades = nextStageCascades.isEmpty() ? currentStageCascades : nextStageCascades;
+        }
+
         if (args.rocchio) {
-            currentCascade.add(new RocchioReranker(this.analyzer, Constants.CONTENTS,
-                    Integer.parseInt(args.rocchio_topFbTerms[0]), Integer.parseInt(args.rocchio_topFbDocs[0]),
-                    Integer.parseInt(args.rocchio_bottomFbTerms[0]), Integer.parseInt(args.rocchio_bottomFbDocs[0]),
-                    Float.parseFloat(args.rocchio_alpha[0]), Float.parseFloat(args.rocchio_beta[0]), Float.parseFloat(args.rocchio_gamma[0]),
-                    args.rocchio_useNegative, args.rocchio_outputQuery));
-            currentCascade.setTag(currentCascade.getTag() + "_rocchio");
+            List<RerankerCascade> nextStageCascades = new ArrayList<>();
+            for (RerankerCascade existingCascade : currentStageCascades) {
+                for (String topFbTerms_str : args.rocchio_topFbTerms) {
+                    for (String topFbDocs_str : args.rocchio_topFbDocs) {
+                        for (String bottomFbTerms_str : args.rocchio_bottomFbTerms) {
+                            for (String bottomFbDocs_str : args.rocchio_bottomFbDocs) {
+                                for (String alpha_str : args.rocchio_alpha) {
+                                    for (String beta_str : args.rocchio_beta) {
+                                        for (String gamma_str : args.rocchio_gamma) {
+                                            String newTag = String.format("%s_rocchioT%sD%sNT%sND%sA%sB%sG%s", existingCascade.getTag(),
+                                                    topFbTerms_str, topFbDocs_str, bottomFbTerms_str, bottomFbDocs_str, alpha_str, beta_str, gamma_str);
+                                            RerankerCascade newCascade = new RerankerCascade(newTag);
+                                            newCascade.rerankers.addAll(existingCascade.rerankers);
+                                            newCascade.add(new RocchioReranker(this.analyzer, this.collectionClass, Constants.CONTENTS,
+                                                    Integer.parseInt(topFbTerms_str), Integer.parseInt(topFbDocs_str),
+                                                    Integer.parseInt(bottomFbTerms_str), Integer.parseInt(bottomFbDocs_str),
+                                                    Float.parseFloat(alpha_str), Float.parseFloat(beta_str), Float.parseFloat(gamma_str),
+                                                    args.rocchio_useNegative, args.rocchio_outputQuery));
+                                            nextStageCascades.add(newCascade);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            currentStageCascades = nextStageCascades.isEmpty() ? currentStageCascades : nextStageCascades;
         }
+
         if (args.bm25prf) {
-            currentCascade.add(new BM25PrfReranker(this.analyzer, Constants.CONTENTS,
-                    Integer.parseInt(args.bm25prf_fbTerms[0]), Integer.parseInt(args.bm25prf_fbDocs[0]),
-                    Float.parseFloat(args.bm25prf_k1[0]), Float.parseFloat(args.bm25prf_b[0]),
-                    Float.parseFloat(args.bm25prf_newTermWeight[0]), args.bm25prf_outputQuery));
-            currentCascade.setTag(currentCascade.getTag() + "_bm25prf");
+            List<RerankerCascade> nextStageCascades = new ArrayList<>();
+            for (RerankerCascade existingCascade : currentStageCascades) {
+                for (String fbTerms_str : args.bm25prf_fbTerms) {
+                    for (String fbDocs_str : args.bm25prf_fbDocs) {
+                        for (String k1_str : args.bm25prf_k1) {
+                            for (String b_str : args.bm25prf_b) {
+                                for (String newTermWeight_str : args.bm25prf_newTermWeight) {
+                                    String newTag = String.format("%s_bm25prfT%sD%sK%sB%sW%s", existingCascade.getTag(),
+                                            fbTerms_str, fbDocs_str, k1_str, b_str, newTermWeight_str);
+                                    RerankerCascade newCascade = new RerankerCascade(newTag);
+                                    newCascade.rerankers.addAll(existingCascade.rerankers);
+                                    newCascade.add(new BM25PrfReranker(this.analyzer, this.collectionClass, Constants.CONTENTS,
+                                            Integer.parseInt(fbTerms_str), Integer.parseInt(fbDocs_str),
+                                            Float.parseFloat(k1_str), Float.parseFloat(b_str),
+                                            Float.parseFloat(newTermWeight_str), args.bm25prf_outputQuery));
+                                    nextStageCascades.add(newCascade);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            currentStageCascades = nextStageCascades.isEmpty() ? currentStageCascades : nextStageCascades;
         }
 
+        // Add ScoreTiesAdjusterReranker to all resulting cascades if not using arbitrary tie-breaking
         if (!args.arbitraryScoreTieBreak) {
-            currentCascade.add(new ScoreTiesAdjusterReranker());
-            // Tag adjustment for only tie-breaker can be handled here if needed, or rely on the base runtag.
+            for (RerankerCascade cascade : currentStageCascades) {
+                // Check if the last reranker is already a ScoreTiesAdjusterReranker to avoid duplicates
+                if (cascade.rerankers.isEmpty() || !(cascade.rerankers.get(cascade.rerankers.size() - 1) instanceof ScoreTiesAdjusterReranker)) {
+                    cascade.add(new ScoreTiesAdjusterReranker());
+                }
+                // The tag of the cascade remains as it was built by the last significant reranker
+            }
         }
 
-        cascadesList.add(currentCascade);
+        cascadesList.addAll(currentStageCascades);
+
+        // If no actual rerankers were added besides possibly the ScoreTiesAdjuster,
+        // ensure there's at least the base cascade.
+        if (cascadesList.isEmpty()) {
+            RerankerCascade defaultCascade = new RerankerCascade(baseTag);
+            if (!args.arbitraryScoreTieBreak) {
+                defaultCascade.add(new ScoreTiesAdjusterReranker());
+            }
+            cascadesList.add(defaultCascade);
+        }
+
         return cascadesList;
     }
 
@@ -1282,34 +1395,33 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
     private void loadQrels(String qrelsFile) throws IOException {
         this.qrels = new HashMap<>();
         this.queriesWithRel = new HashSet<>();
+        RelevanceJudgments relevanceJudgments;
 
         Path qrelsFilePath = Paths.get(qrelsFile);
         if (!Files.exists(qrelsFilePath) || !Files.isRegularFile(qrelsFilePath) || !Files.isReadable(qrelsFilePath)) {
             LOG.warn("Qrels file '{}' not found or not readable. Attempting to load as a pre-defined qrels key.", qrelsFile);
-            io.anserini.eval.Qrels ref = io.anserini.eval.Qrels.getByName(qrelsFile);
-            if (ref == null) {
-                throw new IllegalArgumentException(String.format("Qrels key/file \"%s\" does not refer to a valid pre-defined qrels and is not a readable file.", qrelsFile));
-            } else {
-                LOG.info("Loading pre-defined qrels: {}", qrelsFile);
-                this.qrels = (Map<String, ScoredDocs>) (Map<?,?>) ref.getRelevanceJudgments();
+            try {
+                // Attempt to interpret qrelsFile as an enum name or alias recognized by RelevanceJudgments constructor
+                relevanceJudgments = new RelevanceJudgments(qrelsFile);
+            } catch (IOException e) {
+                throw new IllegalArgumentException(String.format("Qrels key/file \"%s\" does not refer to a valid pre-defined qrels and is not a readable file.", qrelsFile), e);
             }
         } else {
             LOG.info("Loading qrels from local file: {}", qrelsFilePath.toAbsolutePath());
-            this.qrels = (Map<String, ScoredDocs>) (Map<?,?>) io.anserini.eval.Qrels.loadQrels(qrelsFilePath);
+            relevanceJudgments = new RelevanceJudgments(qrelsFilePath.toString());
         }
 
-        for (Map.Entry<String, ScoredDocs> entry : this.qrels.entrySet()) {
-            boolean hasRelevant = false;
-            if (entry.getValue() != null && entry.getValue().getDocs() != null) {
-                for(ScoredDoc doc : entry.getValue().getDocs()){
-                    if(doc.score > 0) {
-                        hasRelevant = true;
+
+        for (String qid : relevanceJudgments.getQids()) {
+            Map<String, Integer> docScores = relevanceJudgments.getDocMap(qid);
+            if (docScores != null && !docScores.isEmpty()) {
+                this.qrels.put(qid, ScoredDocs.fromQrels(docScores, this.reader));
+                for (int score : docScores.values()) {
+                    if (score > 0) {
+                        this.queriesWithRel.add(qid);
                         break;
                     }
                 }
-            }
-            if(hasRelevant){
-                this.queriesWithRel.add(entry.getKey());
             }
         }
         LOG.info("Loaded {} qrels entries, {} queries have at least one relevant document.", this.qrels.size(), this.queriesWithRel.size());
@@ -1326,32 +1438,35 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         for (TaggedSimilarity taggedSimilarity : similarities) {
             for (RerankerCascade cascade : cascades) {
                 final String outputPath;
-                // Ensure unique output path if multiple configs are run
                 if (similarities.size() == 1 && cascades.size() == 1 && args.parallelism == 1 && args.threads == 1 && runCounter.get() == 0) {
                     outputPath = args.output;
                 } else {
-                    // Ensure cascade tag is non-empty if it's just the runtag to avoid "output__runtag_X"
-                    String cascadeTag = cascade.getTag();
-                    if (cascadeTag == null || cascadeTag.equals(args.runtag) || cascadeTag.trim().isEmpty()) {
-                        // If cascade tag is just the runtag or empty, don't append it again or append a generic "reranked"
-                        if (cascade.rerankers.size() > (args.arbitraryScoreTieBreak ? 0 : 1) ) { // has more than just ties adjuster
-                            cascadeTag = "reranked";
+                    String cascadeTagPart = cascade.getTag();
+                    if (cascadeTagPart == null || cascadeTagPart.equals(args.runtag) || cascadeTagPart.trim().isEmpty()) {
+                        // Only add "_default" or "_reranked" if there's more than just the tie-breaker
+                        if (cascade.rerankers.size() > (args.arbitraryScoreTieBreak ? 0 : 1)) {
+                            cascadeTagPart = "reranked";
                         } else {
-                            cascadeTag = "base"; // Or some other indicator of no significant reranking other than ties
+                            cascadeTagPart = "base";
                         }
                     } else {
-                        // Remove runtag prefix if cascade tag already includes it
-                        cascadeTag = cascadeTag.replace(args.runtag + "_", "");
-                        if (cascadeTag.isEmpty()) cascadeTag = "reranked"; // fallback if it became empty
+                        // Remove runtag prefix if cascade tag already includes it to avoid duplication
+                        cascadeTagPart = cascadeTagPart.replace(args.runtag + "_", "");
+                        if (cascadeTagPart.isEmpty() && cascade.rerankers.size() > (args.arbitraryScoreTieBreak ? 0 : 1)) {
+                            cascadeTagPart = "reranked"; // fallback if it became empty
+                        } else if (cascadeTagPart.isEmpty()) {
+                            cascadeTagPart = "base";
+                        }
                     }
-                    outputPath = String.format("%s_%s_%s_%d", args.output, taggedSimilarity.getTag(), cascadeTag, runCounter.incrementAndGet());
+                    outputPath = String.format("%s_%s_%s_%d", args.output, taggedSimilarity.getTag(), cascadeTagPart, runCounter.incrementAndGet());
                 }
+
 
                 if (args.skipExists && new File(outputPath).exists()) {
                     LOG.info("Run output file already exists, skipping: {}", outputPath);
                     continue;
                 }
-                LOG.info("Submitting run: Similarity={}, Cascade={}, Output={}", taggedSimilarity.getTag(), cascade.getTag(), outputPath);
+                LOG.info("Submitting run: Similarity={}, CascadeTag={}, Output={}", taggedSimilarity.getTag(), cascade.getTag(), outputPath);
                 executor.execute(new SearcherThread<>(this.reader, topics, taggedSimilarity, cascade, outputPath));
             }
         }
@@ -1380,7 +1495,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         try {
             parser.parseArgument(cmdArgs);
         } catch (CmdLineException e) {
-            if (searchArgs.options != null && searchArgs.options) { // Check for null on searchArgs.options
+            if (searchArgs.options != null && searchArgs.options) {
                 System.err.printf("Options for %s:\n\n", SearchCollection.class.getSimpleName());
                 parser.printUsage(System.err);
                 List<String> required = new ArrayList<>();
@@ -1402,11 +1517,13 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
         } catch (IllegalArgumentException e) {
             System.err.printf("Error during SearchCollection initialization or run: %s\n", e.getMessage());
             LOG.error("IllegalArgumentException in SearchCollection: ", e);
-            e.printStackTrace(System.err);
+            // Avoid printStackTrace in production code unless for specific debug purposes
+            // e.printStackTrace(System.err);
         } catch (Exception e) {
             System.err.printf("An unexpected error occurred: %s\n", e.getMessage());
             LOG.error("Unexpected exception in SearchCollection: ", e);
-            e.printStackTrace(System.err);
+            // Avoid printStackTrace in production code
+            // e.printStackTrace(System.err);
         } finally {
             final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
             LOG.info("Total run time: " + DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss"));
