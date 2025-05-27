@@ -16,6 +16,10 @@
 
 package ai.kompile.cli.main.build;
 
+import ai.kompile.cli.main.models.KompileModelManager;
+import ai.kompile.cli.main.models.ModelConstants;
+import ai.kompile.cli.main.models.ModelDescriptor;
+import ai.kompile.cli.main.models.ModelType;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -154,6 +158,27 @@ public class RagPomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
+
+
+    @CommandLine.Option(names = {"--anserini-indexes"},
+            description = "Comma-separated list of Anserini prebuilt index IDs to ensure are available (e.g., msmarco-passage-v1). " +
+                    "Requires --includeAnserini to be true. Consult ModelConstants.java for available IDs.",
+            split = ",", arity = "0..*")
+    private List<String> anseriniIndexIds = new ArrayList<>();
+
+
+
+    private KompileModelManager modelManager;
+    private Map<String, Path> resolvedModelPaths = new HashMap<>(); // Stores modelId -> Path to cached model
+
+    @CommandLine.Option(names = {"--anserini-encoders"},
+            description = "Comma-separated list of Anserini encoder model IDs (e.g., bge-base-en-v1.5-onnx, splade-pp-sd-onnx). " +
+                    "Requires --includeAnserini to be true. Consult ModelConstants.java for available IDs.",
+            split = ",", arity = "0..*")
+    private List<String> anseriniEncoderModelIds = new ArrayList<>();
+
+
+
 
     private Model model;
     private final List<Dependency> defaultDependencies = new ArrayList<>();
@@ -370,6 +395,8 @@ public class RagPomGenerator implements Callable<Void> {
 
     @Override
     public Void call() throws Exception {
+        this.modelManager = new KompileModelManager(); // Initialize model manager
+
         model = new Model();
         model.setModelVersion("4.0.0");
         model.setGroupId(instanceGroupId);
@@ -396,12 +423,86 @@ public class RagPomGenerator implements Callable<Void> {
             throw new IOException("Could not create project directory: " + projectDir.getAbsolutePath());
         }
 
-        List<String> downloadedModelNamesForNative = new ArrayList<>();
+        // --- Model Management Integration ---
+        // 1. OpenNLP Models
         if (includeChunkerSentence) {
-            downloadedModelNamesForNative.addAll(downloadOpenNLPModelsForSupportedLanguages(projectDir, this.supportedLanguages));
+            if (this.supportedLanguages == null || this.supportedLanguages.isEmpty()) {
+                this.supportedLanguages = Collections.singletonList("en");
+                System.out.println("No languages specified via --supportedLanguages for OpenNLP, defaulting to 'en'.");
+            }
+            List<String> normalizedLanguages = this.supportedLanguages.stream()
+                    .filter(lang -> lang != null && !lang.trim().isEmpty())
+                    .map(String::toLowerCase).map(String::trim).distinct()
+                    .collect(Collectors.toList());
+
+            for (String langKey : normalizedLanguages) {
+                String remoteFileName = ModelConstants.getOpenNLPModelRemoteFilename(langKey);
+                String localFileName = ModelConstants.getOpenNLPModelLocalFilename(langKey);
+
+                if (remoteFileName == null || localFileName == null) {
+                    System.err.println("OpenNLP sentence model configuration not found for language code: '" + langKey + "'. Skipping.");
+                    continue;
+                }
+                ModelDescriptor opennlpModelDesc = new ModelDescriptor(
+                        "opennlp_sent_" + langKey,
+                        ModelType.OPENNLP_SENTENCE,
+                        ModelConstants.OPENNLP_MODEL_BASE_URL + remoteFileName,
+                        Paths.get("opennlp", localFileName).toString(),
+                        "1.2-2.5.0", null, Map.of("language", langKey)
+                );
+                try {
+                    Path modelPath = modelManager.ensureModelAvailable(opennlpModelDesc);
+                    resolvedModelPaths.put(opennlpModelDesc.getModelId(), modelPath);
+                    System.out.println("Ensured OpenNLP model for " + langKey + " is available at: " + modelPath.toAbsolutePath());
+                } catch (IOException e) {
+                    System.err.println("ERROR: Failed to ensure OpenNLP model for language '" + langKey + "': " + e.getMessage());
+                }
+            }
         }
 
+        // 2. Anserini Lucene Indexes
+        if (includeAnserini && this.anseriniIndexIds != null && !this.anseriniIndexIds.isEmpty()) {
+            for (String indexIdInput : this.anseriniIndexIds) {
+                String indexId = indexIdInput.trim();
+                if (indexId.isEmpty()) continue;
+                ModelDescriptor anseriniDesc = ModelConstants.getAnseriniIndexDescriptor(indexId);
+                if (anseriniDesc == null) {
+                    System.err.println("WARNING: Anserini index descriptor not found for ID: '" + indexId + "'. Skipping. Consult ModelConstants.java.");
+                    continue;
+                }
+                try {
+                    Path indexPath = modelManager.ensureModelAvailable(anseriniDesc);
+                    resolvedModelPaths.put(anseriniDesc.getModelId(), indexPath);
+                    System.out.println("Ensured Anserini index '" + indexId + "' is available at: " + indexPath.toAbsolutePath());
+                } catch (IOException e) {
+                    System.err.println("ERROR: Failed to ensure Anserini index '" + indexId + "': " + e.getMessage());
+                }
+            }
+        }
+
+        // 3. Anserini Encoder Models (e.g., ONNX, DL4J files for SameDiff encoders)
+        if (includeAnserini && this.anseriniEncoderModelIds != null && !this.anseriniEncoderModelIds.isEmpty()) {
+            for (String encoderModelIdInput : this.anseriniEncoderModelIds) {
+                String encoderModelId = encoderModelIdInput.trim();
+                if (encoderModelId.isEmpty()) continue;
+                ModelDescriptor encoderDesc = ModelConstants.getAnseriniEncoderModelDescriptor(encoderModelId);
+                if (encoderDesc == null) {
+                    System.err.println("WARNING: Anserini encoder model descriptor not found for ID: '" + encoderModelId + "'. Skipping. Consult ModelConstants.java.");
+                    continue;
+                }
+                try {
+                    Path modelPath = modelManager.ensureModelAvailable(encoderDesc);
+                    resolvedModelPaths.put(encoderDesc.getModelId(), modelPath);
+                    System.out.println("Ensured Anserini encoder model '" + encoderModelId + "' is available at: " + modelPath.toAbsolutePath());
+                } catch (IOException e) {
+                    System.err.println("ERROR: Failed to ensure Anserini encoder model '" + encoderModelId + "': " + e.getMessage());
+                }
+            }
+        }
+        // --- End Model Management Integration ---
+
         Properties props = new Properties();
+        // Populate props from existing logic (versions, start-class, etc.)
         props.setProperty("java.version", "17");
         props.setProperty("start-class", CORE_APP_MAIN_CLASS_FQCN);
         props.setProperty("kompile.project.version", this.ragMcpVersion);
@@ -418,14 +519,14 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("native-maven-plugin.version", DEFAULT_NATIVE_MAVEN_PLUGIN_VERSION);
         props.setProperty("build-helper-maven-plugin.version", DEFAULT_BUILD_HELPER_MAVEN_PLUGIN_VERSION);
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
-
-        // Add embedded PostgreSQL version property
         props.setProperty("embedded-postgres.version", DEFAULT_EMBEDDED_POSTGRES_VERSION);
 
+
+        // Set default OpenNLP language from CLI options
         String defaultRuntimeLangForOpenNLP = "en";
         if (this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
             String firstSpecifiedLang = this.supportedLanguages.get(0).toLowerCase().trim();
-            if (LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME.containsKey(firstSpecifiedLang)) {
+            if (ModelConstants.isOpenNLPLanguageSupported(firstSpecifiedLang)) {
                 defaultRuntimeLangForOpenNLP = firstSpecifiedLang;
             } else {
                 System.out.println("Warning: First language '" + this.supportedLanguages.get(0) +
@@ -434,6 +535,7 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
         props.setProperty("kompile.opennlp.sentence.language", defaultRuntimeLangForOpenNLP);
+        props.setProperty("instanceArtifactId", this.instanceArtifactId); // Used by generateApplicationPropertiesFile
 
         model.setProperties(props);
 
@@ -441,7 +543,7 @@ public class RagPomGenerator implements Callable<Void> {
         addApplicationBuild();
 
         if (buildNative) {
-            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, downloadedModelNamesForNative);
+            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, Collections.emptyList()); // Models not bundled
         }
 
         addSpringRepositories();
@@ -454,29 +556,164 @@ public class RagPomGenerator implements Callable<Void> {
             System.out.println("Successfully generated RAG application POM: " + finalPomFile.getAbsolutePath());
         }
 
-        // Generate application.properties with provider-specific configuration
-        generateApplicationProperties(projectDir);
+        generateApplicationPropertiesFile(projectDir, props);
 
-        // CRITICAL FIX: Always generate PGML schema files FIRST if needed
+        // Conditional generation of other config files (unchanged from your original logic)
         if (includeEmbeddingPostgresml || includePgmlIndexer) {
             generatePgmlSchemaFiles(projectDir);
         }
-
-        // Then generate general SQL schema files
         if (enableSchemaInit && (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
             generateSqlSchemaFiles(projectDir);
         }
-
-        // Always generate database configuration for better database handling
         if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
             generateDatabaseConfiguration(projectDir);
             generateGlobalExceptionHandler(projectDir);
         }
-
-        // Generate a custom configuration class to handle provider selection
         generateProviderConfigurationClass(projectDir);
 
         return null;
+    }
+
+    private void generateApplicationPropertiesFile(File projectDir, Properties pomProperties) throws IOException {
+        File resourcesDir = new File(projectDir, "src/main/resources");
+        if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
+            throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
+        }
+        File appPropsFile = new File(resourcesDir, "application.properties");
+
+        try (FileWriter writer = new FileWriter(appPropsFile)) {
+            writeApplicationPropertiesHeaderCustom(writer, pomProperties); // Uses instanceArtifactId from pomProperties
+
+            if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
+                writeDatabaseConfiguration(writer);
+                writeSchemaManagementConfiguration(writer);
+            }
+            writeAutoConfigurationExclusions(writer);
+            writeProviderEnablementFlags(writer); // These use RagPomGenerator's boolean fields
+
+            // Write structural configurations, including model paths derived from the cache
+            writeStructuralCustom(writer, pomProperties); // Uses pomProperties for some defaults
+
+            // Instructional properties for runtime model cache path
+            writer.write("\n# --- Runtime Model Cache Configuration ---\n");
+            writer.write("# Your application will attempt to load models from a central cache.\n");
+            writer.write("# Set the " + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + " environment variable to specify the cache location.\n");
+            String defaultCachePath = Paths.get(System.getProperty("user.home"), ModelConstants.DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR).toAbsolutePath().toString().replace("\\", "\\\\");
+            writer.write("# If not set, it defaults to: " + defaultCachePath + "\n");
+            writer.write("# RagPomGenerator used this cache path during generation: " + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "\n");
+            // This property will be resolved at runtime (from ENV or to the generator-time default if ENV is not set)
+            writer.write("kompile.model.cache.path=${" + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + ":" + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "}\n\n");
+
+
+            writeConfigurationTemplate(writer); // Writes examples/templates for user to fill
+        }
+        System.out.println("Generated application.properties: " + appPropsFile.getAbsolutePath());
+    }
+
+
+    private void writeApplicationPropertiesHeaderCustom(FileWriter writer, Properties pomProperties) throws IOException {
+        writer.write("# Generated application.properties\n");
+        writer.write("# Project: " + pomProperties.getProperty("instanceArtifactId", this.instanceArtifactId) + "\n");
+        writer.write("# Generated on: " + new java.util.Date() + "\n");
+        writer.write("# Configured providers: " + getProviderSummary() + "\n\n");
+
+        writer.write("# Logging for model loading and general app behavior\n");
+        writer.write("logging.level.ai.kompile.cli.main.models=INFO\n");
+        writer.write("logging.level.ai.kompile.app=INFO\n"); // General app logging
+        writer.write("logging.level.io.anserini=INFO\n\n");
+
+        // Add automatic PostgresML error debugging if enabled
+        if (includeEmbeddingPostgresml || includePgmlIndexer) {
+            writer.write("# =============================================================================\n");
+            writer.write("# AUTOMATIC PostgresML ERROR DEBUGGING\n");
+            writer.write("# =============================================================================\n");
+            writer.write("logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG\n");
+            writer.write("logging.level.org.springframework.jdbc.core.StatementCreatorUtils=TRACE\n");
+            writer.write("logging.level.org.springframework.ai.postgresml=DEBUG\n");
+            writer.write("logging.level.org.postgresql=DEBUG\n");
+            writer.write("logging.level.ai.kompile.app.pgml.indexer=DEBUG\n");
+            writer.write("logging.level.ai.kompile.vectorstore=DEBUG\n");
+            writer.write("logging.level.org.springframework.jdbc.support.SQLErrorCodeSQLExceptionTranslator=DEBUG\n");
+            writer.write("logging.level.org.springframework.dao=DEBUG\n");
+            writer.write("logging.level." + instanceGroupId + ".config=DEBUG\n\n");
+        }
+    }
+
+    // Modified to use the runtime cache path for models.
+    // pomProperties here can be used to fetch defaults if they were set (e.g., instanceArtifactId)
+    private void writeStructuralCustom(FileWriter writer, Properties pomProperties) throws IOException {
+        writer.write("# =============================================================================\n");
+        writer.write("# STRUCTURAL CONFIGURATION\n");
+        writer.write("# =============================================================================\n");
+
+        writer.write("spring.application.name=" + pomProperties.getProperty("instanceArtifactId", this.instanceArtifactId) + "\n");
+        writer.write("server.port=8080\n\n"); // Default server port
+
+        writer.write("# This property defines the base directory from which models will be loaded AT RUNTIME.\n");
+        writer.write("# It defaults to the path used during generation if KOMPILE_MODEL_CACHE_DIR is not set.\n");
+        String runtimeCachePathProperty = "kompile.runtime.model.cache.path"; // Used by application code
+        String runtimeCachePathValue = "${" + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + ":" +
+                modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "}";
+        writer.write(runtimeCachePathProperty + "=" + runtimeCachePathValue + "\n\n");
+
+        if (includeChunkerSentence) {
+            writer.write("# OpenNLP Configuration (runtime will load models from cache)\n");
+            writer.write("kompile.opennlp.models.basepath=${" + runtimeCachePathProperty + "}/opennlp\n");
+            writer.write("kompile.opennlp.sentence.language=" + pomProperties.getProperty("kompile.opennlp.sentence.language", "en") + "\n\n");
+        }
+
+        if (includeAnserini) {
+            writer.write("# Anserini Configuration (runtime will load indexes/models from cache)\n");
+            writer.write("kompile.anserini.models.basepath=${" + runtimeCachePathProperty + "}/anserini\n");
+
+            // Specific Lucene index paths (resolved to cache)
+            if (this.anseriniIndexIds != null && !this.anseriniIndexIds.isEmpty()) {
+                for (String indexId : this.anseriniIndexIds) {
+                    String trimmedIndexId = indexId.trim();
+                    ModelDescriptor desc = ModelConstants.getAnseriniIndexDescriptor(trimmedIndexId);
+                    if (desc != null && resolvedModelPaths.containsKey(desc.getModelId())) {
+                        // The actual value will be the absolute path from resolvedModelPaths
+                        // but for runtime, it's better if Anserini components can resolve it
+                        // relative to kompile.anserini.models.basepath or use a full path constructed at runtime.
+                        // Let's write the subpath relative to the anserini cache root.
+                        writer.write("anserini.indexPath." + trimmedIndexId + "=${kompile.anserini.models.basepath}/indexes/" + trimmedIndexId + "\n");
+                        // Or, if anseriniDesc.getExpectedCacheSubpath() is anserini/indexes/indexId:
+                        // writer.write("anserini.indexPath." + trimmedIndexId + "=${kompile.runtime.model.cache.path}/" + desc.getExpectedCacheSubpath().replace("\\", "/") + "\n");
+                    }
+                }
+            } else {
+                writer.write("# Default Anserini paths if no specific --anserini-indexes are given\n");
+                writer.write("anserini.indexPath=${kompile.anserini.models.basepath}/indexes/default_index\n");
+                writer.write("anserini.corpusPath=${kompile.anserini.models.basepath}/corpus/default_corpus\n");
+            }
+
+            // Specific Anserini Encoder Model paths (resolved to cache)
+            if (this.anseriniEncoderModelIds != null && !this.anseriniEncoderModelIds.isEmpty()) {
+                writer.write("\n# Anserini Encoder Model Paths (runtime will load from cache)\n");
+                for (String encoderModelId : this.anseriniEncoderModelIds) {
+                    String trimmedEncoderId = encoderModelId.trim();
+                    ModelDescriptor desc = ModelConstants.getAnseriniEncoderModelDescriptor(trimmedEncoderId);
+                    if (desc != null && resolvedModelPaths.containsKey(desc.getModelId())) {
+                        // Path to the specific encoder model file within the cache
+                        // e.g., anserini/encoders/onnx/bge-base-en-v1.5/model.onnx
+                        String encoderModelPathValue = "${kompile.runtime.model.cache.path}/" + desc.getExpectedCacheSubpath().replace("\\", "/");
+                        writer.write("anserini.encoder." + trimmedEncoderId + ".model.path=" + encoderModelPathValue + "\n");
+                        // Associated vocabulary or config files might also need paths
+                        if ("bge-base-en-v1.5-onnx".equals(trimmedEncoderId)) { // Example
+                            writer.write("anserini.encoder." + trimmedEncoderId + ".vocab.path=${kompile.runtime.model.cache.path}/anserini/encoders/onnx/bge-base-en-v1.5/tokenizer.json\n");
+                            // Assuming tokenizer.json is also managed or expected alongside model.onnx
+                        }
+                    }
+                }
+            }
+            writer.write("\n");
+        }
+
+        writer.write("# Kompile Application Structure (original paths, review for deployment)\n");
+        writer.write("app.document.sources=./data/input_documents/sample.txt,./data/input_documents/sample.pdf\n");
+        writer.write("app.document.uploads-path=./data/input_documents/uploads\n");
+        writer.write("mcp.filesystem.roots.default.path=./data/shared_files\n");
+        writer.write("mcp.filesystem.roots.default.alias=default\n\n");
     }
 
     /**
@@ -2359,17 +2596,22 @@ public class RagPomGenerator implements Callable<Void> {
         }
     }
 
-    private void addNativeProfile(String nativeImageMainClassFqcn, List<String> downloadedOpenNLPModelLocalFilenames) {
+    private void addNativeProfile(String nativeImageMainClassFqcn, List<String> modelFilesToIncludePreviously) {
+        // MODIFIED: modelFilesToIncludePreviously is now an empty list passed from call(),
+        // as we are not bundling these model files (OpenNLP, Anserini indexes/encoders) into the native image.
+        // The GraalVM -H:IncludeResources arguments for specific model files are removed.
+
         Profile nativeProfile = new Profile();
         nativeProfile.setId("native");
         Build nativeProfileBuild = new Build();
 
+        // Spring Boot Plugin for AOT processing and repackaging (remains important)
         Plugin springBootPluginNative = createPlugin("org.springframework.boot", "spring-boot-maven-plugin", "${spring-boot.version}");
         try {
             Xpp3Dom springBootNativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
-                            "  <mainClass>" + CORE_APP_MAIN_CLASS_FQCN + "</mainClass>" +
-                            "  <classifier>exec</classifier>" +
+                            "  <mainClass>" + (nativeImageMainClassFqcn != null ? nativeImageMainClassFqcn : CORE_APP_MAIN_CLASS_FQCN) + "</mainClass>" +
+                            "  <classifier>exec</classifier>" + // Ensures the fat jar has a unique classifier
                             "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
                             "</configuration>"
             ));
@@ -2377,18 +2619,18 @@ public class RagPomGenerator implements Callable<Void> {
         } catch (XmlPullParserException | IOException e) {
             throw new RuntimeException("Error configuring spring-boot-maven-plugin in native profile", e);
         }
-
         PluginExecution processAotExecution = new PluginExecution();
         processAotExecution.setId("process-aot");
         processAotExecution.addGoal("process-aot");
         springBootPluginNative.addExecution(processAotExecution);
 
         PluginExecution repackageExecutionNative = new PluginExecution();
-        repackageExecutionNative.setId("repackage-native-profile");
+        repackageExecutionNative.setId("repackage-native-profile"); // Ensure ID is unique if called elsewhere
         repackageExecutionNative.addGoal("repackage");
         springBootPluginNative.addExecution(repackageExecutionNative);
         nativeProfileBuild.addPlugin(springBootPluginNative);
 
+        // Build Helper Maven Plugin for adding AOT generated sources/resources (remains important)
         Plugin buildHelperPlugin = createPlugin("org.codehaus.mojo", "build-helper-maven-plugin", "${build-helper-maven-plugin.version}");
         PluginExecution addAotSourcesExecution = new PluginExecution();
         addAotSourcesExecution.setId("add-spring-aot-sources");
@@ -2419,12 +2661,13 @@ public class RagPomGenerator implements Callable<Void> {
         buildHelperPlugin.addExecution(addAotResourcesExecution);
         nativeProfileBuild.addPlugin(buildHelperPlugin);
 
+        // GraalVM Native Maven Plugin
         Plugin nativeMavenPlugin = createPlugin("org.graalvm.buildtools", "native-maven-plugin", "${native-maven-plugin.version}");
         nativeMavenPlugin.setExtensions(true);
 
         Xpp3Dom nativePluginConfig = new Xpp3Dom("configuration");
         addChild(nativePluginConfig, "imageName", "${native.image.name}");
-        addChild(nativePluginConfig, "mainClass", nativeImageMainClassFqcn);
+        addChild(nativePluginConfig, "mainClass", (nativeImageMainClassFqcn != null ? nativeImageMainClassFqcn : CORE_APP_MAIN_CLASS_FQCN));
         addChild(nativePluginConfig, "quickBuild", "false");
         addChild(nativePluginConfig, "jarArtifact", "${project.build.directory}/${project.build.finalName}-exec.jar");
 
@@ -2432,19 +2675,24 @@ public class RagPomGenerator implements Callable<Void> {
         addChild(metadataRepoElement, "enabled", "true");
 
         Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
+        // Common build args from your original file
         addBuildArg(buildArgsDom, "-J-Xmx16g");
         addBuildArg(buildArgsDom, "--verbose");
         addBuildArg(buildArgsDom, "--no-fallback");
         addBuildArg(buildArgsDom, "--allow-incomplete-classpath");
         addBuildArg(buildArgsDom, "-H:+ReportExceptionStackTraces");
         addBuildArg(buildArgsDom, "-Dspring.native.remove-unused-autoconfig=true");
-        addBuildArg(buildArgsDom, "-H:-AddAllFileSystemProviders");
-        addBuildArg(buildArgsDom, "--enable-url-protocols=http,https");
+        addBuildArg(buildArgsDom, "-H:+AddAllFileSystemProviders"); // Crucial for FS access to models
+        addBuildArg(buildArgsDom, "--enable-url-protocols=http,https"); // For KompileModelManager if it needs to download
         addBuildArg(buildArgsDom, "-Djava.awt.headless=true");
+
+        // Initialization args from your original file
         String initializeAtBuildTimeArg = "org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder";
         addBuildArg(buildArgsDom, "--initialize-at-build-time=" + initializeAtBuildTimeArg);
         String initializeAtRunTimeArg = "java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
         addBuildArg(buildArgsDom, "--initialize-at-run-time=" + initializeAtRunTimeArg);
+
+        // Include essential resources (Log4j config, Spring specific files, SQL schemas, etc.)
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2-spring.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.component.properties");
@@ -2458,6 +2706,7 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring\\.components");
         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
+
         if(includePgmlIndexer || includeVectorstorePgvector) {
             addBuildArg(buildArgsDom, "-H:IncludeResources=schema.sql");
             addBuildArg(buildArgsDom, "-H:IncludeResources=data.sql");
@@ -2467,29 +2716,22 @@ public class RagPomGenerator implements Callable<Void> {
             addBuildArg(buildArgsDom, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
         }
 
-        if (includeChunkerSentence && downloadedOpenNLPModelLocalFilenames != null) {
-            for (String modelLocalFileName : downloadedOpenNLPModelLocalFilenames) {
-                if (modelLocalFileName != null && !modelLocalFileName.isEmpty()) {
-                    addBuildArg(buildArgsDom, "-H:IncludeResources=" + OPENNLP_MODEL_TARGET_DIR_IN_RESOURCES + "/" + modelLocalFileName);
-                }
-            }
-        }
+        // **REMOVED**: The loop and logic for adding OpenNLP model files via -H:IncludeResources
+        // for (String modelLocalFileName : openNLPModelFilesToInclude) { ... }
 
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);
 
         PluginExecution nativeBuildExecution = new PluginExecution();
         nativeBuildExecution.setId("build-native");
-        nativeBuildExecution.addGoal("compile-no-fork");
+        nativeBuildExecution.addGoal("compile-no-fork"); // Using "compile-no-fork" as per original
         nativeBuildExecution.setPhase("package");
         nativeMavenPlugin.addExecution(nativeBuildExecution);
 
         nativeProfileBuild.addPlugin(nativeMavenPlugin);
-
         nativeProfile.setBuild(nativeProfileBuild);
         model.addProfile(nativeProfile);
     }
-
     private void addSpringRepositories() {
         Repository springMilestones = new Repository();
         springMilestones.setId("spring-milestones");

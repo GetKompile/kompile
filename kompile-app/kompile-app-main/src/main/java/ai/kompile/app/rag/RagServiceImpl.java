@@ -169,10 +169,10 @@ public class RagServiceImpl implements RagService {
                     List<RetrievedDoc> semanticRetrievedDocs = semanticSpringAiDocs.stream()
                             .filter(doc -> doc.getText() != null && !doc.getText().trim().isEmpty()) // getText() instead of getContent()
                             .map(springDoc -> new RetrievedDoc(
-                                    springDoc.getId() != null ? springDoc.getId() : UUID.randomUUID().toString(),
-                                    springDoc.getText(), // getText()
-                                    springDoc.getMetadata().containsKey("score") ? ((Number) springDoc.getMetadata().get("score")).floatValue() : 0.0f, // Example score extraction
-                                    springDoc.getMetadata()))
+                                                                springDoc.getId() != null ? springDoc.getId() : UUID.randomUUID().toString(),
+                                                                springDoc.getText(), // getText()
+                                    springDoc.getMetadata(), // Example score extraction
+                                    springDoc.getMetadata().containsKey("score") ? ((Number) springDoc.getMetadata().get("score")).floatValue() : 0.0f))
                             .collect(Collectors.toList());
 
                     semanticRetrievedDocs.forEach(doc -> {
