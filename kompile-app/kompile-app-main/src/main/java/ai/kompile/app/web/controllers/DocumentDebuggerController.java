@@ -19,6 +19,7 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 
 import org.slf4j.Logger;
@@ -79,7 +80,7 @@ public class DocumentDebuggerController {
 
     public record DocumentDebugInfo(
             String id,
-            String content,
+            String text,
             int contentLength,
             boolean hasContent,
             Map<String, Object> metadata,
@@ -89,10 +90,22 @@ public class DocumentDebuggerController {
 
     public record ChunkDebugInfo(
             String id,
-            String content,
+            String text,
             int contentLength,
             int chunkIndex,
-            Map<String, Object> metadata
+            Map<String, Object> metadata,
+            Double score
+    ) {}
+
+    public record RetrievedDocDebugInfo(
+            String id,
+            String text,
+            int contentLength,
+            boolean hasContent,
+            Map<String, Object> metadata,
+            Double score,
+            String contentPreview,
+            Map<String, Object> contentStats
     ) {}
 
     public record DebugAnalysisResult(
@@ -101,13 +114,47 @@ public class DocumentDebuggerController {
             long fileSize,
             List<LoaderDebugInfo> availableLoaders,
             LoaderDebugInfo selectedLoader,
-            List<DocumentDebugInfo> loadedDocuments,
+            List<RetrievedDocDebugInfo> loadedDocuments,
             List<ChunkerDebugInfo> availableChunkers,
             ChunkerDebugInfo selectedChunker,
             List<ChunkDebugInfo> chunks,
             Map<String, Object> processingStats,
             String errorMessage
     ) {}
+
+    /**
+     * Converts a Spring AI Document to a RetrievedDoc
+     */
+    private RetrievedDoc convertToRetrievedDoc(Document document) {
+        return RetrievedDoc.builder()
+                .id(document.getId())
+                .text(document.getText())
+                .metadata(document.getMetadata())
+                .build();
+    }
+
+    /**
+     * Converts a RetrievedDoc to debug info
+     */
+    private RetrievedDocDebugInfo convertToRetrievedDocDebugInfo(RetrievedDoc doc) {
+        String text = doc.getText();
+        String preview = null;
+
+        if (text != null) {
+            preview = text.length() > 200 ? text.substring(0, 200) + "..." : text;
+        }
+
+        return new RetrievedDocDebugInfo(
+                doc.getId(),
+                text,
+                text != null ? text.length() : 0,
+                text != null && !text.trim().isEmpty(),
+                doc.getMetadata(),
+                doc.getScore(),
+                preview,
+                analyzeContent(text)
+        );
+    }
 
     /**
      * Determines if a loader is a no-op/stub implementation
@@ -322,7 +369,7 @@ public class DocumentDebuggerController {
             }
 
             LoaderDebugInfo selectedLoaderInfo = null;
-            List<DocumentDebugInfo> documentInfos = new ArrayList<>();
+            List<RetrievedDocDebugInfo> documentInfos = new ArrayList<>();
 
             if (selectedLoader != null) {
                 selectedLoaderInfo = new LoaderDebugInfo(
@@ -337,27 +384,13 @@ public class DocumentDebuggerController {
                 try {
                     List<Document> documents = selectedLoader.load(sourceDescriptor);
 
-                    for (int i = 0; i < documents.size(); i++) {
-                        Document doc = documents.get(i);
-                        String content = doc.getText();
-                        Map<String, Object> contentStats = analyzeContent(content);
-
-                        List<String> contentLines = new ArrayList<>();
-                        if (content != null && !content.isEmpty()) {
-                            contentLines = content.lines().limit(20).collect(Collectors.toList());
-                        }
-
-                        DocumentDebugInfo docInfo = new DocumentDebugInfo(
-                                doc.getId(),
-                                content,
-                                content != null ? content.length() : 0,
-                                content != null && !content.trim().isEmpty(),
-                                doc.getMetadata(),
-                                contentLines,
-                                contentStats
-                        );
-                        documentInfos.add(docInfo);
+                    // Convert to RetrievedDocs for consistent handling
+                    for (Document doc : documents) {
+                        RetrievedDoc retrievedDoc = convertToRetrievedDoc(doc);
+                        RetrievedDocDebugInfo debugInfo = convertToRetrievedDocDebugInfo(retrievedDoc);
+                        documentInfos.add(debugInfo);
                     }
+
                 } catch (Exception e) {
                     logger.error("Error loading documents: {}", e.getMessage(), e);
                     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -407,8 +440,9 @@ public class DocumentDebuggerController {
 
                 // Chunk the first document
                 try {
-                    Document firstDoc = new Document(documentInfos.get(0).content());
-                    firstDoc.getMetadata().putAll(documentInfos.get(0).metadata());
+                    RetrievedDocDebugInfo firstDocInfo = documentInfos.get(0);
+                    Document firstDoc = new Document(firstDocInfo.text());
+                    firstDoc.getMetadata().putAll(firstDocInfo.metadata());
 
                     Map<String, Object> chunkingOptions = new HashMap<>();
                     chunkingOptions.put("chunkSize", 1000);
@@ -418,12 +452,15 @@ public class DocumentDebuggerController {
 
                     for (int i = 0; i < chunks.size(); i++) {
                         Document chunk = chunks.get(i);
+                        RetrievedDoc retrievedChunk = convertToRetrievedDoc(chunk);
+
                         ChunkDebugInfo chunkInfo = new ChunkDebugInfo(
-                                chunk.getId(),
-                                chunk.getText(),
-                                chunk.getText() != null ? chunk.getText().length() : 0,
+                                retrievedChunk.getId(),
+                                retrievedChunk.getText(),
+                                retrievedChunk.getText() != null ? retrievedChunk.getText().length() : 0,
                                 i,
-                                chunk.getMetadata()
+                                retrievedChunk.getMetadata(),
+                                retrievedChunk.getScore()
                         );
                         chunkInfos.add(chunkInfo);
                     }
@@ -438,7 +475,7 @@ public class DocumentDebuggerController {
             processingStats.put("documentsLoaded", documentInfos.size());
             processingStats.put("chunksCreated", chunkInfos.size());
             processingStats.put("totalContentLength",
-                    documentInfos.stream().mapToInt(DocumentDebugInfo::contentLength).sum());
+                    documentInfos.stream().mapToInt(RetrievedDocDebugInfo::contentLength).sum());
             processingStats.put("avgChunkSize",
                     chunkInfos.isEmpty() ? 0 :
                             chunkInfos.stream().mapToInt(ChunkDebugInfo::contentLength).average().orElse(0));
@@ -501,6 +538,266 @@ public class DocumentDebuggerController {
             logger.error("Failed to upload debug file: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to upload file: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Enhanced endpoint to test RetrievedDoc functionality
+     */
+    @PostMapping("/test-retrieved-doc")
+    public ResponseEntity<?> testRetrievedDoc(@RequestParam("fileName") String fileName) {
+        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Uploads directory is not configured correctly."));
+        }
+
+        try {
+            Path filePath = this.uploadsPath.resolve(fileName).normalize();
+
+            if (!filePath.startsWith(this.uploadsPath.normalize()) || !Files.exists(filePath)) {
+                return ResponseEntity.badRequest().body(Map.of("error", "File not found: " + fileName));
+            }
+
+            // Load document using the first available loader
+            DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
+                    .type(DocumentSourceDescriptor.SourceType.FILE)
+                    .pathOrUrl(filePath.toString())
+                    .originalFileName(fileName)
+                    .sourceId("test_retrieved_doc_" + fileName)
+                    .build();
+
+            DocumentLoader loader = documentLoaders.stream()
+                    .filter(l -> l.supports(sourceDescriptor))
+                    .findFirst()
+                    .orElse(null);
+
+            if (loader == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "No suitable loader found for file"));
+            }
+
+            List<Document> documents = loader.load(sourceDescriptor);
+            if (documents.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "No documents loaded from file"));
+            }
+
+            // Convert to RetrievedDocs and test various operations
+            List<RetrievedDoc> retrievedDocs = documents.stream()
+                    .map(this::convertToRetrievedDoc)
+                    .collect(Collectors.toList());
+
+            Map<String, Object> testResults = new HashMap<>();
+            testResults.put("fileName", fileName);
+            testResults.put("originalDocumentCount", documents.size());
+            testResults.put("retrievedDocCount", retrievedDocs.size());
+
+            // Test RetrievedDoc functionality
+            List<Map<String, Object>> docTests = new ArrayList<>();
+            for (int i = 0; i < retrievedDocs.size(); i++) {
+                RetrievedDoc doc = retrievedDocs.get(i);
+                Map<String, Object> docTest = new HashMap<>();
+
+                docTest.put("index", i);
+                docTest.put("id", doc.getId());
+                docTest.put("hasText", doc.isText());
+                docTest.put("textLength", doc.getText() != null ? doc.getText().length() : 0);
+                docTest.put("score", doc.getScore());
+                docTest.put("metadataKeys", doc.getMetadata().keySet());
+                docTest.put("metadataSize", doc.getMetadata().size());
+
+                // Test builder pattern
+                try {
+                    RetrievedDoc mutatedDoc = doc.mutate()
+                            .score(0.95)
+                            .metadata("test_key", "test_value")
+                            .build();
+
+                    docTest.put("builderPatternWorks", true);
+                    docTest.put("mutatedScore", mutatedDoc.getScore());
+                    docTest.put("mutatedMetadataSize", mutatedDoc.getMetadata().size());
+                } catch (Exception e) {
+                    docTest.put("builderPatternWorks", false);
+                    docTest.put("builderError", e.getMessage());
+                }
+
+                // Test formatted content
+                try {
+                    String formattedContent = doc.getFormattedContent();
+                    docTest.put("formattedContentWorks", true);
+                    docTest.put("formattedContentLength", formattedContent != null ? formattedContent.length() : 0);
+                } catch (Exception e) {
+                    docTest.put("formattedContentWorks", false);
+                    docTest.put("formattedContentError", e.getMessage());
+                }
+
+                docTests.add(docTest);
+            }
+
+            testResults.put("documentTests", docTests);
+
+            // Test chunking with RetrievedDoc conversion
+            if (!retrievedDocs.isEmpty() && !textChunkers.isEmpty()) {
+                TextChunker chunker = selectBestChunker();
+                if (chunker != null) {
+                    try {
+                        Document originalDoc = documents.get(0);
+                        Map<String, Object> chunkingOptions = new HashMap<>();
+                        chunkingOptions.put("chunkSize", 500);
+                        chunkingOptions.put("overlap", 100);
+
+                        List<Document> chunks = chunker.chunk(originalDoc, chunkingOptions);
+                        List<RetrievedDoc> retrievedChunks = chunks.stream()
+                                .map(this::convertToRetrievedDoc)
+                                .collect(Collectors.toList());
+
+                        Map<String, Object> chunkingTest = new HashMap<>();
+                        chunkingTest.put("chunkerUsed", chunker.getName());
+                        chunkingTest.put("originalChunks", chunks.size());
+                        chunkingTest.put("retrievedChunks", retrievedChunks.size());
+                        chunkingTest.put("chunkingSuccessful", chunks.size() == retrievedChunks.size());
+
+                        // Sample chunk analysis
+                        List<Map<String, Object>> chunkSamples = new ArrayList<>();
+                        for (int i = 0; i < Math.min(3, retrievedChunks.size()); i++) {
+                            RetrievedDoc chunk = retrievedChunks.get(i);
+                            Map<String, Object> sample = new HashMap<>();
+                            sample.put("index", i);
+                            sample.put("id", chunk.getId());
+                            sample.put("textLength", chunk.getText() != null ? chunk.getText().length() : 0);
+                            sample.put("hasMetadata", !chunk.getMetadata().isEmpty());
+                            sample.put("preview", chunk.getText() != null && chunk.getText().length() > 100 ?
+                                    chunk.getText().substring(0, 100) + "..." : chunk.getText());
+                            chunkSamples.add(sample);
+                        }
+                        chunkingTest.put("sampleChunks", chunkSamples);
+                        testResults.put("chunkingTest", chunkingTest);
+
+                    } catch (Exception e) {
+                        Map<String, Object> chunkingError = new HashMap<>();
+                        chunkingError.put("error", e.getMessage());
+                        chunkingError.put("chunkerUsed", chunker.getName());
+                        testResults.put("chunkingError", chunkingError);
+                    }
+                }
+            }
+
+            return ResponseEntity.ok(testResults);
+
+        } catch (Exception e) {
+            logger.error("Failed to test RetrievedDoc functionality: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to test RetrievedDoc: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Endpoint to compare Document vs RetrievedDoc functionality
+     */
+    @PostMapping("/compare-doc-types")
+    public ResponseEntity<?> compareDocumentTypes(@RequestParam("fileName") String fileName) {
+        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Uploads directory is not configured correctly."));
+        }
+
+        try {
+            Path filePath = this.uploadsPath.resolve(fileName).normalize();
+
+            if (!filePath.startsWith(this.uploadsPath.normalize()) || !Files.exists(filePath)) {
+                return ResponseEntity.badRequest().body(Map.of("error", "File not found: " + fileName));
+            }
+
+            // Load document
+            DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
+                    .type(DocumentSourceDescriptor.SourceType.FILE)
+                    .pathOrUrl(filePath.toString())
+                    .originalFileName(fileName)
+                    .sourceId("compare_" + fileName)
+                    .build();
+
+            DocumentLoader loader = documentLoaders.stream()
+                    .filter(l -> l.supports(sourceDescriptor))
+                    .findFirst()
+                    .orElse(null);
+
+            if (loader == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "No suitable loader found for file"));
+            }
+
+            List<Document> documents = loader.load(sourceDescriptor);
+            if (documents.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "No documents loaded from file"));
+            }
+
+            Document originalDoc = documents.get(0);
+            RetrievedDoc retrievedDoc = convertToRetrievedDoc(originalDoc);
+
+            Map<String, Object> comparison = new HashMap<>();
+            comparison.put("fileName", fileName);
+
+            // Compare basic properties
+            Map<String, Object> basicComparison = new HashMap<>();
+            basicComparison.put("original_id", originalDoc.getId());
+            basicComparison.put("retrieved_id", retrievedDoc.getId());
+            basicComparison.put("ids_match", Objects.equals(originalDoc.getId(), retrievedDoc.getId()));
+            basicComparison.put("original_text_length", originalDoc.getText() != null ? originalDoc.getText().length() : 0);
+            basicComparison.put("retrieved_text_length", retrievedDoc.getText() != null ? retrievedDoc.getText().length() : 0);
+            basicComparison.put("text_lengths_match",
+                    Objects.equals(originalDoc.getText() != null ? originalDoc.getText().length() : 0,
+                            retrievedDoc.getText() != null ? retrievedDoc.getText().length() : 0));
+            basicComparison.put("original_metadata_size", originalDoc.getMetadata().size());
+            basicComparison.put("retrieved_metadata_size", retrievedDoc.getMetadata().size());
+            basicComparison.put("metadata_sizes_match",
+                    originalDoc.getMetadata().size() == retrievedDoc.getMetadata().size());
+
+            comparison.put("basicComparison", basicComparison);
+
+            // Test unique RetrievedDoc features
+            Map<String, Object> retrievedDocFeatures = new HashMap<>();
+            retrievedDocFeatures.put("has_score_field", retrievedDoc.getScore() != null);
+            retrievedDocFeatures.put("score_value", retrievedDoc.getScore());
+            retrievedDocFeatures.put("is_text_type", retrievedDoc.isText());
+            retrievedDocFeatures.put("has_builder_pattern", true); // Always true for RetrievedDoc
+
+            try {
+                String formattedContent = retrievedDoc.getFormattedContent();
+                retrievedDocFeatures.put("formatted_content_available", true);
+                retrievedDocFeatures.put("formatted_content_length", formattedContent.length());
+            } catch (Exception e) {
+                retrievedDocFeatures.put("formatted_content_available", false);
+                retrievedDocFeatures.put("formatted_content_error", e.getMessage());
+            }
+
+            comparison.put("retrievedDocFeatures", retrievedDocFeatures);
+
+            // Test conversion accuracy
+            Map<String, Object> conversionAccuracy = new HashMap<>();
+            conversionAccuracy.put("text_content_identical",
+                    Objects.equals(originalDoc.getText(), retrievedDoc.getText()));
+            conversionAccuracy.put("metadata_keys_identical",
+                    originalDoc.getMetadata().keySet().equals(retrievedDoc.getMetadata().keySet()));
+
+            // Check if metadata values are preserved
+            boolean metadataValuesMatch = true;
+            for (Map.Entry<String, Object> entry : originalDoc.getMetadata().entrySet()) {
+                if (!Objects.equals(entry.getValue(), retrievedDoc.getMetadata().get(entry.getKey()))) {
+                    metadataValuesMatch = false;
+                    break;
+                }
+            }
+            conversionAccuracy.put("metadata_values_identical", metadataValuesMatch);
+            conversionAccuracy.put("conversion_perfect",
+                    Objects.equals(originalDoc.getText(), retrievedDoc.getText()) &&
+                            metadataValuesMatch &&
+                            Objects.equals(originalDoc.getId(), retrievedDoc.getId()));
+
+            comparison.put("conversionAccuracy", conversionAccuracy);
+
+            return ResponseEntity.ok(comparison);
+
+        } catch (Exception e) {
+            logger.error("Failed to compare document types: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to compare document types: " + e.getMessage()));
         }
     }
 }

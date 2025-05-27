@@ -100,62 +100,13 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     @Override
     public List<String> retrieve(String query, int maxResults) {
-        if (this.searcher == null) {
-            logger.error("Anserini SimpleSearcher is not initialized. Cannot perform search. Indexing might have failed or index is unavailable.");
-            return Collections.singletonList("Error: Searcher not initialized or Anserini index is missing/corrupt.");
-        }
-        if (query == null || query.trim().isEmpty()) {
-            logger.warn("Search query is null or empty.");
-            return Collections.emptyList();
-        }
-
-        logger.debug("Anserini retrieving for query: '{}', maxResults: {}", query, maxResults);
-        try {
-            ScoredDoc[] hits = searcher.search(query, maxResults);
-
-            if (hits == null) {
-                logger.warn("Anserini search returned null for query: {}", query);
-                return Collections.emptyList();
-            }
-
-            logger.debug("Anserini found {} hits for query: '{}'", hits.length, query);
-
-            return Arrays.stream(hits)
-                    .map(hit -> {
-                        // Use fully qualified name for org.apache.lucene.document.Document
-                        org.apache.lucene.document.Document luceneDoc = searcher.doc(hit.lucene_docid);
-                        if (luceneDoc == null) {
-                            logger.warn("Could not retrieve Lucene document by internal luceneDocid: {}. Trying external docid: {}", hit.lucene_docid, hit.docid);
-                            luceneDoc = searcher.doc(hit.docid);
-                        }
-
-                        if (luceneDoc != null) {
-                            String rawContent = luceneDoc.get("raw");
-                            if (rawContent != null) {
-                                return rawContent;
-                            } else {
-                                String contentsField = luceneDoc.get("contents");
-                                if (contentsField != null) {
-                                    logger.trace("Retrieved from 'contents' field for docid: {}", hit.docid);
-                                    return contentsField;
-                                }
-                            }
-                            logger.warn("Neither 'raw' nor 'contents' field found for Lucene doc (external id: {} / internal id: {})", hit.docid, hit.lucene_docid);
-                            return "[Content not available in stored fields for doc " + hit.docid + "]";
-                        } else {
-                            logger.warn("Could not retrieve Lucene document for external_id: {}, lucene_id: {}", hit.docid, hit.lucene_docid);
-                            return "[Could not retrieve document " + hit.docid + "]";
-                        }
-                    })
-                    .filter(Objects::nonNull)
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            logger.error("IOException during Anserini search for query '{}': {}", query, e.getMessage(), e);
-            return Collections.singletonList("Error performing search: " + e.getMessage());
-        } catch (Exception e) {
-            logger.error("Unexpected error during Anserini search for query '{}': {}", query, e.getMessage(), e);
-            return Collections.singletonList("Unexpected error during search: " + e.getMessage());
-        }
+        // Use the detailed retrieval and extract text content for backward compatibility
+        List<RetrievedDoc> detailedResults = retrieveWithDetails(query, maxResults);
+        
+        return detailedResults.stream()
+                .map(RetrievedDoc::getText)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
     }
 
     @Override
@@ -181,61 +132,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
             logger.debug("Anserini found {} hits for query: '{}'", hits.length, query);
 
             return Arrays.stream(hits)
-                    .map(hit -> {
-                        try {
-                            // Use fully qualified name for org.apache.lucene.document.Document
-                            org.apache.lucene.document.Document luceneDoc = searcher.doc(hit.lucene_docid);
-                            if (luceneDoc == null) {
-                                logger.warn("Could not retrieve Lucene document by internal luceneDocid: {}. Trying external docid: {}", hit.lucene_docid, hit.docid);
-                                luceneDoc = searcher.doc(hit.docid);
-                            }
-
-                            if (luceneDoc != null) {
-                                String content = luceneDoc.get("raw");
-                                if (content == null) {
-                                    content = luceneDoc.get("contents");
-                                }
-                                
-                                if (content == null) {
-                                    content = "[Content not available in stored fields for doc " + hit.docid + "]";
-                                }
-
-                                // Extract metadata from all fields
-                                Map<String, Object> metadata = new HashMap<>();
-                                for (IndexableField field : luceneDoc.getFields()) {
-                                    String fieldName = field.name();
-                                    String fieldValue = field.stringValue();
-                                    
-                                    // Skip content fields
-                                    if (!"raw".equals(fieldName) && !"contents".equals(fieldName) && fieldValue != null) {
-                                        metadata.put(fieldName, fieldValue);
-                                    }
-                                }
-                                
-                                // Add search-specific metadata
-                                metadata.put("lucene_internal_id", hit.lucene_docid);
-                                metadata.put("search_score", hit.score);
-                                
-                                return new RetrievedDoc(hit.docid, content, hit.score, metadata);
-                            } else {
-                                logger.warn("Could not retrieve Lucene document for external_id: {}, lucene_id: {}", hit.docid, hit.lucene_docid);
-                                Map<String, Object> errorMetadata = new HashMap<>();
-                                errorMetadata.put("lucene_internal_id", hit.lucene_docid);
-                                errorMetadata.put("search_score", hit.score);
-                                errorMetadata.put("error", "Could not retrieve document");
-                                
-                                return new RetrievedDoc(hit.docid, "[Could not retrieve document " + hit.docid + "]", hit.score, errorMetadata);
-                            }
-                        } catch (Exception e) {
-                            logger.warn("Error processing search hit for docid {}: {}", hit.docid, e.getMessage());
-                            Map<String, Object> errorMetadata = new HashMap<>();
-                            errorMetadata.put("lucene_internal_id", hit.lucene_docid);
-                            errorMetadata.put("search_score", hit.score);
-                            errorMetadata.put("error", "Error processing result: " + e.getMessage());
-                            
-                            return new RetrievedDoc(hit.docid, "[Error processing result]", hit.score, errorMetadata);
-                        }
-                    })
+                    .map(hit -> createRetrievedDoc(hit))
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
         } catch (IOException e) {
@@ -245,5 +142,158 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
             logger.error("Unexpected error during Anserini detailed search for query '{}': {}", query, e.getMessage(), e);
             return Collections.emptyList();
         }
+    }
+
+    /**
+     * Creates a RetrievedDoc from an Anserini ScoredDoc hit.
+     * 
+     * @param hit The ScoredDoc from Anserini search results
+     * @return A RetrievedDoc containing the document content and metadata, or null if document cannot be retrieved
+     */
+    private RetrievedDoc createRetrievedDoc(ScoredDoc hit) {
+        try {
+            // Use fully qualified name for org.apache.lucene.document.Document
+            org.apache.lucene.document.Document luceneDoc = retrieveLuceneDocument(hit);
+            
+            if (luceneDoc == null) {
+                logger.warn("Could not retrieve Lucene document for external_id: {}, lucene_id: {}", hit.docid, hit.lucene_docid);
+                return createErrorRetrievedDoc(hit, "Could not retrieve document");
+            }
+
+            String content = extractContent(luceneDoc, hit.docid);
+            Map<String, Object> metadata = extractMetadata(luceneDoc, hit);
+
+            return RetrievedDoc.builder()
+                    .id(hit.docid)
+                    .text(content)
+                    .score((double) hit.score)
+                    .metadata(metadata)
+                    .build();
+
+        } catch (Exception e) {
+            logger.warn("Error processing search hit for docid {}: {}", hit.docid, e.getMessage());
+            return createErrorRetrievedDoc(hit, "Error processing result: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Retrieves the Lucene document for a given ScoredDoc hit.
+     * Tries internal lucene_docid first, then falls back to external docid.
+     * 
+     * @param hit The ScoredDoc hit
+     * @return The Lucene Document or null if not found
+     */
+    private org.apache.lucene.document.Document retrieveLuceneDocument(ScoredDoc hit) {
+        try {
+            org.apache.lucene.document.Document luceneDoc = searcher.doc(hit.lucene_docid);
+            if (luceneDoc == null) {
+                logger.debug("Could not retrieve Lucene document by internal luceneDocid: {}. Trying external docid: {}", hit.lucene_docid, hit.docid);
+                luceneDoc = searcher.doc(hit.docid);
+            }
+            return luceneDoc;
+        } catch (Exception e) {
+            logger.warn("Exception retrieving Lucene document for docid {}: {}", hit.docid, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Extracts content from a Lucene document.
+     * Prefers 'raw' field, falls back to 'contents' field.
+     * 
+     * @param luceneDoc The Lucene document
+     * @param docId The document ID for error messages
+     * @return The extracted content or an error message
+     */
+    private String extractContent(org.apache.lucene.document.Document luceneDoc, String docId) {
+        String content = luceneDoc.get("raw");
+        if (content != null) {
+            return content;
+        }
+        
+        content = luceneDoc.get("contents");
+        if (content != null) {
+            logger.trace("Retrieved from 'contents' field for docid: {}", docId);
+            return content;
+        }
+        
+        logger.warn("Neither 'raw' nor 'contents' field found for Lucene doc (external id: {})", docId);
+        return "[Content not available in stored fields for doc " + docId + "]";
+    }
+
+    /**
+     * Extracts metadata from a Lucene document and ScoredDoc hit.
+     * 
+     * @param luceneDoc The Lucene document
+     * @param hit The ScoredDoc hit
+     * @return A map containing the extracted metadata
+     */
+    private Map<String, Object> extractMetadata(org.apache.lucene.document.Document luceneDoc, ScoredDoc hit) {
+        Map<String, Object> metadata = new HashMap<>();
+        
+        // Extract metadata from all document fields
+        for (IndexableField field : luceneDoc.getFields()) {
+            String fieldName = field.name();
+            String fieldValue = field.stringValue();
+            
+            // Skip content fields and null values
+            if (shouldIncludeFieldInMetadata(fieldName, fieldValue)) {
+                metadata.put(fieldName, fieldValue);
+            }
+        }
+        
+        // Add search-specific metadata
+        addSearchMetadata(metadata, hit);
+        
+        return metadata;
+    }
+
+    /**
+     * Determines whether a field should be included in metadata.
+     * 
+     * @param fieldName The field name
+     * @param fieldValue The field value
+     * @return true if the field should be included in metadata
+     */
+    private boolean shouldIncludeFieldInMetadata(String fieldName, String fieldValue) {
+        return fieldValue != null 
+                && !"raw".equals(fieldName) 
+                && !"contents".equals(fieldName);
+    }
+
+    /**
+     * Adds search-specific metadata to the metadata map.
+     * 
+     * @param metadata The metadata map to add to
+     * @param hit The ScoredDoc hit
+     */
+    private void addSearchMetadata(Map<String, Object> metadata, ScoredDoc hit) {
+        metadata.put("lucene_internal_id", hit.lucene_docid);
+        metadata.put("search_score", hit.score);
+        metadata.put("retriever_type", "anserini");
+        metadata.put("index_path", anseriniConfig.getIndexPath());
+    }
+
+    /**
+     * Creates an error RetrievedDoc for cases where document processing fails.
+     * 
+     * @param hit The ScoredDoc hit
+     * @param errorMessage The error message
+     * @return A RetrievedDoc containing error information
+     */
+    private RetrievedDoc createErrorRetrievedDoc(ScoredDoc hit, String errorMessage) {
+        Map<String, Object> errorMetadata = new HashMap<>();
+        errorMetadata.put("lucene_internal_id", hit.lucene_docid);
+        errorMetadata.put("search_score", hit.score);
+        errorMetadata.put("error", errorMessage);
+        errorMetadata.put("retriever_type", "anserini");
+        errorMetadata.put("index_path", anseriniConfig.getIndexPath());
+        
+        return RetrievedDoc.builder()
+                .id(hit.docid)
+                .text("[" + errorMessage + " " + hit.docid + "]")
+                .score((double) hit.score)
+                .metadata(errorMetadata)
+                .build();
     }
 }
