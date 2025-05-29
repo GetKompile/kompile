@@ -16,7 +16,7 @@
 
 package ai.kompile.core.indexers;
 
-import org.springframework.ai.document.Document;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 
@@ -29,7 +29,7 @@ import java.util.Map;
 @Service
 public class NoOpIndexerService extends IndexerService {
     @Override
-    public void indexDocuments(List<Document> documents, String collectionNameParam) {
+    public void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam) {
 
     }
 
@@ -59,7 +59,7 @@ public class NoOpIndexerService extends IndexerService {
     }
 
     @Override
-    public void indexDocuments(List<Document> documents) throws IOException {
+    public void indexDocuments(List<RetrievedDoc> documents) throws IOException {
 
     }
 
@@ -88,3 +88,4 @@ public class NoOpIndexerService extends IndexerService {
         return false;
     }
 }
+

@@ -16,7 +16,9 @@
 
 package ai.kompile.anserini;
 
+import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.retrievers.DocumentRetriever;
+import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.anserini.config.AnseriniConfig;
 import ai.kompile.core.indexers.IndexerService;
@@ -51,14 +53,27 @@ import java.util.stream.Stream;
 public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     private static final Logger logger = LogManager.getLogger(AnseriniDocumentRetrieverImpl.class);
-    private final AnseriniConfig anseriniConfig;
+    private  AnseriniConfig anseriniConfig;
     private SimpleSearcher searcher;
-    private final IndexerService indexerService;
+    private IndexerService indexerService;
 
     public AnseriniDocumentRetrieverImpl(AnseriniConfig anseriniConfig,
-                                         IndexerService indexerService) {
+                                         List<IndexerService> indexerService) {
         this.anseriniConfig = anseriniConfig;
-        this.indexerService = indexerService;
+        if(indexerService.size() > 1)  {
+            for(IndexerService indexerService1 : indexerService) {
+                if(indexerService1 instanceof NoOpIndexerService) {
+                    continue;
+                } else {
+                    this.indexerService = indexerService1;
+                    break;
+                }
+            }
+
+        } else {
+            this.indexerService = indexerService.get(0);
+        }
+
         logger.debug("AnseriniDocumentRetrieverImpl constructed.");
     }
 
@@ -102,7 +117,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
     public List<String> retrieve(String query, int maxResults) {
         // Use the detailed retrieval and extract text content for backward compatibility
         List<RetrievedDoc> detailedResults = retrieveWithDetails(query, maxResults);
-        
+
         return detailedResults.stream()
                 .map(RetrievedDoc::getText)
                 .filter(Objects::nonNull)
@@ -146,7 +161,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     /**
      * Creates a RetrievedDoc from an Anserini ScoredDoc hit.
-     * 
+     *
      * @param hit The ScoredDoc from Anserini search results
      * @return A RetrievedDoc containing the document content and metadata, or null if document cannot be retrieved
      */
@@ -154,7 +169,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         try {
             // Use fully qualified name for org.apache.lucene.document.Document
             org.apache.lucene.document.Document luceneDoc = retrieveLuceneDocument(hit);
-            
+
             if (luceneDoc == null) {
                 logger.warn("Could not retrieve Lucene document for external_id: {}, lucene_id: {}", hit.docid, hit.lucene_docid);
                 return createErrorRetrievedDoc(hit, "Could not retrieve document");
@@ -179,7 +194,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
     /**
      * Retrieves the Lucene document for a given ScoredDoc hit.
      * Tries internal lucene_docid first, then falls back to external docid.
-     * 
+     *
      * @param hit The ScoredDoc hit
      * @return The Lucene Document or null if not found
      */
@@ -200,7 +215,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
     /**
      * Extracts content from a Lucene document.
      * Prefers 'raw' field, falls back to 'contents' field.
-     * 
+     *
      * @param luceneDoc The Lucene document
      * @param docId The document ID for error messages
      * @return The extracted content or an error message
@@ -210,60 +225,60 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         if (content != null) {
             return content;
         }
-        
+
         content = luceneDoc.get("contents");
         if (content != null) {
             logger.trace("Retrieved from 'contents' field for docid: {}", docId);
             return content;
         }
-        
+
         logger.warn("Neither 'raw' nor 'contents' field found for Lucene doc (external id: {})", docId);
         return "[Content not available in stored fields for doc " + docId + "]";
     }
 
     /**
      * Extracts metadata from a Lucene document and ScoredDoc hit.
-     * 
+     *
      * @param luceneDoc The Lucene document
      * @param hit The ScoredDoc hit
      * @return A map containing the extracted metadata
      */
     private Map<String, Object> extractMetadata(org.apache.lucene.document.Document luceneDoc, ScoredDoc hit) {
         Map<String, Object> metadata = new HashMap<>();
-        
+
         // Extract metadata from all document fields
         for (IndexableField field : luceneDoc.getFields()) {
             String fieldName = field.name();
             String fieldValue = field.stringValue();
-            
+
             // Skip content fields and null values
             if (shouldIncludeFieldInMetadata(fieldName, fieldValue)) {
                 metadata.put(fieldName, fieldValue);
             }
         }
-        
+
         // Add search-specific metadata
         addSearchMetadata(metadata, hit);
-        
+
         return metadata;
     }
 
     /**
      * Determines whether a field should be included in metadata.
-     * 
+     *
      * @param fieldName The field name
      * @param fieldValue The field value
      * @return true if the field should be included in metadata
      */
     private boolean shouldIncludeFieldInMetadata(String fieldName, String fieldValue) {
-        return fieldValue != null 
-                && !"raw".equals(fieldName) 
+        return fieldValue != null
+                && !"raw".equals(fieldName)
                 && !"contents".equals(fieldName);
     }
 
     /**
      * Adds search-specific metadata to the metadata map.
-     * 
+     *
      * @param metadata The metadata map to add to
      * @param hit The ScoredDoc hit
      */
@@ -276,7 +291,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
     /**
      * Creates an error RetrievedDoc for cases where document processing fails.
-     * 
+     *
      * @param hit The ScoredDoc hit
      * @param errorMessage The error message
      * @return A RetrievedDoc containing error information
@@ -288,7 +303,7 @@ public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
         errorMetadata.put("error", errorMessage);
         errorMetadata.put("retriever_type", "anserini");
         errorMetadata.put("index_path", anseriniConfig.getIndexPath());
-        
+
         return RetrievedDoc.builder()
                 .id(hit.docid)
                 .text("[" + errorMessage + " " + hit.docid + "]")

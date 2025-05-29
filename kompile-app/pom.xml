@@ -26,13 +26,14 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>rag-mcp-assistant-parent</artifactId>
+  <artifactId>kompile-app</artifactId>
   <packaging>pom</packaging>
 
   <name>RAG MCP Assistant - Parent</name>
   <description>Parent POM for the RAG MCP Assistant multi-module project</description>
 
   <modules>
+    <module>kompile-model-manager</module>
     <module>kompile-app-core</module>
     <module>kompile-app-loaders-orchestrator</module>
     <module>kompile-loader-tika</module>
@@ -63,6 +64,8 @@
     <module>kompile-chunker-token</module>
     <module>kompile-postgres-common</module>
     <module>kompile-graph-neo4j</module>
+    <module>kompile-vectorstore-anserini</module>
+
   </modules>
 
   <dependencyManagement>
@@ -158,7 +161,19 @@
         <version>${lombok.version}</version>
         <optional>true</optional>
       </dependency>
-
+      
+      <!-- Kompile Model Manager -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-model-manager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-vectorstore-anserini</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-app-core</artifactId>

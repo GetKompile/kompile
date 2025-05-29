@@ -16,13 +16,21 @@
 
 package ai.kompile.anserini.config; // New package for this module's config
 
+import io.anserini.collection.JsonCollection;
+import io.anserini.index.generator.DefaultLuceneDocumentGenerator;
 import lombok.Data;
+import org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl;
+import org.springframework.aot.hint.MemberCategory;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.stereotype.Component;
 
 @Data
 @Component // Makes it a bean, discoverable by the main app if this module is on classpath
 @ConfigurationProperties(prefix = "anserini")
+@ImportRuntimeHints(AnseriniConfig.AnseriniReflectionHints.class)
 public class AnseriniConfig {
     /**
      * Path where the final Anserini/Lucene index will be built and stored.
@@ -34,4 +42,22 @@ public class AnseriniConfig {
      * for intermediate JSON files that Anserini's JsonCollection will ingest.
      */
     private String corpusPath; // This was used as the staging path for JSONs
+
+
+    public static class AnseriniReflectionHints implements RuntimeHintsRegistrar {
+
+        @Override
+        public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+          for(Class<?> clazz : new Class[] {
+                  JsonCollection.class,
+                  KeywordAttributeImpl.class,
+                  DefaultLuceneDocumentGenerator.class
+          }) {
+              for(MemberCategory memberCategory : MemberCategory.values()) {
+                  hints.reflection().registerType(clazz, memberCategory);
+              }
+          }
+
+        }
+    }
 }

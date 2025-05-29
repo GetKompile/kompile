@@ -182,7 +182,7 @@ public class PomGenerator implements Callable<Void> {
 
     private boolean parentManagesVersion(Parent parent, String groupId, String artifactId) {
         if (parent == null) return false;
-        if ("rag-mcp-assistant-parent".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
+        if ("kompile-app".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
             return groupId.startsWith("ai.kompile") ||
                     groupId.startsWith("org.springframework.boot") ||
                     groupId.startsWith("org.springframework.ai") ||
@@ -618,7 +618,7 @@ public class PomGenerator implements Callable<Void> {
         if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
             Parent parent = new Parent();
             parent.setGroupId("ai.kompile");
-            parent.setArtifactId("rag-mcp-assistant-parent");
+            parent.setArtifactId("kompile-app");
             parent.setVersion(this.ragMcpAssistantParentVersion);
             model.setParent(parent);
             model.setGroupId("ai.kompile.generated.app");
@@ -643,7 +643,7 @@ public class PomGenerator implements Callable<Void> {
         pomProps.setProperty("maven.compiler.release", pomProps.getProperty("java.version"));
         pomProps.setProperty("project.build.sourceEncoding", "UTF-8");
 
-        if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
+        if (model.getParent() == null || !model.getParent().getArtifactId().equals("kompile-app")) {
             pomProps.setProperty("spring-boot.version", this.springBootVersion);
             pomProps.setProperty("spring-ai.version", this.springAiVersion);
         }
@@ -681,7 +681,7 @@ public class PomGenerator implements Callable<Void> {
         model.setDependencies(this.resolvedDependencies);
 
         DependencyManagement depMgmt = new DependencyManagement();
-        if (model.getParent() == null || !model.getParent().getArtifactId().equals("rag-mcp-assistant-parent")) {
+        if (model.getParent() == null || !model.getParent().getArtifactId().equals("kompile-app")) {
             if ("kompile-spring-boot-webapp".equalsIgnoreCase(this.appType)) {
                 Dependency springBootBom = new Dependency();
                 springBootBom.setGroupId("org.springframework.boot");

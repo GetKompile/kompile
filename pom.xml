@@ -108,6 +108,11 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-model-manager</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
         <groupId>org.hibernate.orm</groupId>
         <artifactId>hibernate-core</artifactId>
         <version>${hibernate.version}</version>
