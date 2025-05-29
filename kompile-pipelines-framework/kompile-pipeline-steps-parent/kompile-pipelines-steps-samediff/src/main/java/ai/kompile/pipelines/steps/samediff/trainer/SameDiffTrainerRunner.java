@@ -26,7 +26,6 @@ import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
 import ai.kompile.pipelines.framework.api.configschema.StepSchema;
 import ai.kompile.pipelines.steps.samediff.utils.SameDiffDataUtils;
 import ai.kompile.pipelines.util.URIUtils; // Assuming this utility class is now available
-
 import org.nd4j.autodiff.loss.LossReduce;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.SameDiff;
@@ -40,6 +39,7 @@ import org.nd4j.linalg.learning.config.IUpdater;
 import org.nd4j.linalg.learning.config.NoOp;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
 
+
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
@@ -48,7 +48,6 @@ import java.util.*;
 public class SameDiffTrainerRunner implements PipelineStepRunner {
 
     private SameDiff sd;
-    // Removed: private TrainingConfig trainingConfig; // TrainingConfig is set directly on sd
     private List<String> inputFeatures;
     private List<String> labels;
     private String modelSaveOutputPath;
@@ -128,7 +127,7 @@ public class SameDiffTrainerRunner implements PipelineStepRunner {
         Objects.requireNonNull(updaterClassName, "'updaterClass' field is required within updaterConfig.");
         IUpdater updater;
         try {
-            updater = SameDiffDataUtils.configFromJson(updaterConfigData, (Class<IUpdater>) Class.forName("org.nd4j.linalg.learning.config." + updaterClassName));
+            updater = SameDiffDataUtils.configFromJson(updaterConfigData, (Class<IUpdater>) Class.forName("org.eclipse.deeplearning4j.linalg.learning.config." + updaterClassName));
             if (updater == null) {
                 updater = new NoOp();
             }

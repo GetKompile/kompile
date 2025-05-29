@@ -81,7 +81,7 @@ public class GenerateDl4jBuild implements Callable<Void> {
                 "<dependencySet>       " +
                 "    <outputDirectory>lib/</outputDirectory>\n" +
                 "            <includes>\n" +
-                "              <include>org.nd4j:*:*:*</include>\n" +
+                "              <include>org.eclipse.deeplearning4j:*:*:*</include>\n" +
                 "           </includes>\n" +
                 "        </dependencySet>\n" +
                 "</dependencySets>\n" +

@@ -23,7 +23,7 @@ import lombok.experimental.Accessors;
 import org.nd4j.shade.jackson.annotation.JsonProperty;
 
 /**
- * Configuration for converting {@link ai.konduit.serving.pipeline.api.data.Image}s to {@link ai.konduit.serving.pipeline.api.data.NDArray}s.
+ * Configuration for converting {@link Image}s to {@link ai.konduit.serving.pipeline.api.data.NDArray}s.
  * <p>
  * The following can be configured:<br>
  * <ul>

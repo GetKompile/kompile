@@ -492,7 +492,7 @@
       <artifactId>lombok</artifactId>
     </dependency>
     <dependency>
-      <groupId>org.nd4j</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>nd4j-native</artifactId>
       <version>${nd4j.version}</version>
     </dependency>
@@ -522,11 +522,6 @@
       <groupId>blue.strategic.parquet</groupId>
       <artifactId>parquet-floor</artifactId>
       <version>1.36</version>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>samediff-import-onnx</artifactId>
-      <version>1.0.0-SNAPSHOT</version>
     </dependency>
   </dependencies>
 </project>

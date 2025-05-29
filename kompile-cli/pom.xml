@@ -148,7 +148,7 @@
 
 
         <dependency>
-            <groupId>org.nd4j</groupId>
+            <groupId>org.eclipse.deeplearning4j</groupId>
             <artifactId>nd4j-common</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
@@ -203,8 +203,8 @@
                                 <buildArg>--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager</buildArg>
                                 <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
                                 <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader</buildArg>
-                                <buildArg>--initialize-at-run-time=org.nd4j.linalg.factory.Nd4j</buildArg>
-                                <buildArg>--initialize-at-run-time=org.nd4j.nativeblas.NativeOpsHolder</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.factory.Nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder</buildArg>
                                 <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.jgit.util.FS</buildArg>
                                 <buildArg>--initialize-at-run-time=org.eclipse.jgit.internal.storage.file.WindowCache</buildArg>

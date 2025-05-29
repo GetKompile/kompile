@@ -25,7 +25,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.autodiff.samediff.SameDiff;
-import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
+import org.nd4j.autodiff.samediff.serde.SameDiffSerializer;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -115,8 +115,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
         // Load ONNX model
         try {
-            OnnxFrameworkImporter importer = new OnnxFrameworkImporter();
-            this.sameDiffModel = importer.runImport(modelPath.toFile().getAbsolutePath(), Collections.emptyMap(), true, true);
+            this.sameDiffModel = SameDiffSerializer.loadSharded(modelPath.toFile(),true);
 
             if (this.sameDiffModel == null) {
                 throw new IOException("Failed to import ONNX model to SameDiff from " + modelPath + ". Importer returned null.");
@@ -164,8 +163,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         }
 
         try {
-            OnnxFrameworkImporter importer = new OnnxFrameworkImporter();
-            this.sameDiffModel = importer.runImport(onnxModelPath.toFile().getAbsolutePath(), Collections.emptyMap(), true, true);
+            this.sameDiffModel = SameDiffSerializer.loadSharded(onnxModelPath.toFile(),true);
 
             if (this.sameDiffModel == null) {
                 throw new IOException("Failed to import ONNX model to SameDiff from " + onnxModelPath + ". Importer returned null.");

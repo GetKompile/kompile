@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-// Location: kompile-pipelines-framework/kompile-pipeline-steps-parent/kompile-pipelines-steps-samediff/src/main/java/ai/kompile/pipelines/steps/samediff/llm/
 package ai.kompile.pipelines.steps.samediff.llm;
 
 import ai.kompile.pipelines.framework.api.PipelineStepRunner;
@@ -28,10 +27,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.common.primitives.Pair; // Ensure this import is valid in your ND4J version
 import org.nd4j.linalg.indexing.NDArrayIndex;
+
 
 import java.io.File;
 import java.io.IOException;

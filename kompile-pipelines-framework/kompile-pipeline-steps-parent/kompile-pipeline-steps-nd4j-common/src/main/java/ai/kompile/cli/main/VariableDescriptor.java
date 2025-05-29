@@ -21,6 +21,7 @@ import lombok.*;
 import org.nd4j.autodiff.samediff.VariableType;
 import org.nd4j.linalg.api.buffer.DataType;
 
+
 import java.io.Serializable;
 @Data
 @Builder

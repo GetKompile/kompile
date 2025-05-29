@@ -227,11 +227,11 @@ public class ONNXUtils {
                     break;
                 case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
                     BytePointer pInt8 = tens.GetTensorMutableDataByte().capacity(elementCount);
-                    buffer = Nd4j.createBuffer(pInt8, DataType.INT8, elementCount, ByteIndexer.create(pInt8));
+                    buffer = Nd4j.createBuffer(pInt8, INT8, elementCount, ByteIndexer.create(pInt8));
                     break;
                 case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
                     BytePointer pUint8 = tens.GetTensorMutableDataUByte().capacity(elementCount);
-                    buffer = Nd4j.createBuffer(pUint8, DataType.UINT8, elementCount, ByteIndexer.create(pUint8));
+                    buffer = Nd4j.createBuffer(pUint8, UINT8, elementCount, ByteIndexer.create(pUint8));
                     break;
                 case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:
                     ShortPointer pInt16 = tens.GetTensorMutableDataShort().capacity(elementCount);
@@ -239,7 +239,7 @@ public class ONNXUtils {
                     break;
                 case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:
                     ShortPointer pUint16 = tens.GetTensorMutableDataUShort().capacity(elementCount);
-                    buffer = Nd4j.createBuffer(pUint16, DataType.UINT16, elementCount, ShortIndexer.create(pUint16));
+                    buffer = Nd4j.createBuffer(pUint16, UINT16, elementCount, ShortIndexer.create(pUint16));
                     break;
                 case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
                     IntPointer pInt32 = tens.GetTensorMutableDataInt().capacity(elementCount);

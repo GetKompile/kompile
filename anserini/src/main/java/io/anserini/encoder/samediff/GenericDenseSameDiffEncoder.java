@@ -26,6 +26,7 @@ import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.indexing.NDArrayIndex;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
+
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;

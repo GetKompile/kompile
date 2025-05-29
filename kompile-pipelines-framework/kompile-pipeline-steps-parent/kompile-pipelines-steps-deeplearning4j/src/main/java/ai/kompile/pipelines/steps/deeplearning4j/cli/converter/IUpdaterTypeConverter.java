@@ -18,7 +18,9 @@ package ai.kompile.pipelines.steps.deeplearning4j.cli.converter; // New package
 
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers; // Assuming you have this for JSON
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.nd4j.linalg.learning.config.Adam;
 import org.nd4j.linalg.learning.config.IUpdater;
+import org.nd4j.linalg.learning.config.Sgd;
 import picocli.CommandLine;
 
 import java.util.Map;
@@ -48,9 +50,9 @@ public class IUpdaterTypeConverter implements CommandLine.ITypeConverter<IUpdate
 
             // Example for simple string matching:
             if ("adam".equalsIgnoreCase(value.trim())) {
-                return new org.nd4j.linalg.learning.config.Adam();
+                return new Adam();
             } else if ("sgd".equalsIgnoreCase(value.trim())) {
-                return new org.nd4j.linalg.learning.config.Sgd();
+                return new Sgd();
             }
             // ... add other known updaters
 

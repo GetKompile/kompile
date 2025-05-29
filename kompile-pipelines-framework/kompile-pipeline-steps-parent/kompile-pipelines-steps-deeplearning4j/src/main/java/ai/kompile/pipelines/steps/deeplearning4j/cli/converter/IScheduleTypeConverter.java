@@ -18,7 +18,7 @@ package ai.kompile.pipelines.steps.deeplearning4j.cli.converter;
 
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import org.apache.commons.io.FileUtils;
-import org.nd4j.linalg.learning.config.IUpdater;
+
 import org.nd4j.linalg.schedule.ISchedule;
 import picocli.CommandLine;
 

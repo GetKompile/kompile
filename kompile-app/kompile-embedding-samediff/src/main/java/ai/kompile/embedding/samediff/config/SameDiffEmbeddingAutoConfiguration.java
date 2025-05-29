@@ -19,6 +19,7 @@ package ai.kompile.embedding.samediff.config;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.embedding.samediff.SameDiffEmbeddingModelImpl;
 import ai.kompile.embedding.samediff.pipeline.SameDiffEmbeddingStepRunnerFactory;
+import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.linalg.factory.Nd4j;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -28,7 +29,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 
 @AutoConfiguration // Spring Boot 3+ style, for 2.x use @Configuration
-@ConditionalOnClass({EmbeddingModel.class, org.nd4j.autodiff.samediff.SameDiff.class, Nd4j.class})
+@ConditionalOnClass({EmbeddingModel.class, SameDiff.class, Nd4j.class})
 @EnableConfigurationProperties(SameDiffEmbeddingProperties.class)
 @ConditionalOnProperty(prefix = "kompile.embedding.samediff", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SameDiffEmbeddingAutoConfiguration {

@@ -18,6 +18,7 @@
 package ai.kompile.pipelines.steps.deeplearning4j.nlp;
 
 import org.nd4j.linalg.api.ndarray.INDArray;
+
 import java.util.List;
 import java.util.Map;
 

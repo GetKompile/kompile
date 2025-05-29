@@ -16,7 +16,6 @@
 
 package ai.kompile.cli.main.install;
 
-import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.ArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;

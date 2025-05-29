@@ -41,11 +41,11 @@ public class KompileNd4jClassLoadingPomFileAppender implements PomFileAppender {
         // static initializers that might try to access native backends or resources
         // that are only fully available at runtime in a native image.
         return Arrays.asList(
-                "org.nd4j.common.config.ND4JClassLoading",
-                "org.nd4j.common.base.Preconditions",
-                "org.nd4j.common.config.ND4JEnvironmentVars", // Environment variable checks
-                "org.nd4j.common.util. refleja.ReflectionUtil", // If ND4J uses its own reflection utils
-                "org.nd4j.common.io.ReflectionUtils" // Another common reflection utility in ND4J
+                "org.eclipse.deeplearning4j.common.config.ND4JClassLoading",
+                "org.eclipse.deeplearning4j.common.base.Preconditions",
+                "org.eclipse.deeplearning4j.common.config.ND4JEnvironmentVars", // Environment variable checks
+                "org.eclipse.deeplearning4j.common.util. refleja.ReflectionUtil", // If ND4J uses its own reflection utils
+                "org.eclipse.deeplearning4j.common.io.ReflectionUtils" // Another common reflection utility in ND4J
         );
     }
 
