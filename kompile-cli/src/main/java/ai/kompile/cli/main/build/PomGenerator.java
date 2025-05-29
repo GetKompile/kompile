@@ -186,7 +186,7 @@ public class PomGenerator implements Callable<Void> {
             return groupId.startsWith("ai.kompile") ||
                     groupId.startsWith("org.springframework.boot") ||
                     groupId.startsWith("org.springframework.ai") ||
-                    groupId.startsWith("org.nd4j") ||
+                    groupId.startsWith("org.eclipse.deeplearning4j") ||
                     groupId.startsWith("org.deeplearning4j") ||
                     groupId.startsWith("ch.qos.logback") ||
                     groupId.startsWith("org.slf4j") ||
@@ -194,7 +194,7 @@ public class PomGenerator implements Callable<Void> {
         }
         if ("kompile".equals(parent.getArtifactId()) && "ai.kompile".equals(parent.getGroupId())) {
             return groupId.startsWith("ai.kompile") ||
-                    groupId.startsWith("org.nd4j") ||
+                    groupId.startsWith("org.eclipse.deeplearning4j") ||
                     groupId.startsWith("org.deeplearning4j") ||
                     groupId.startsWith("ch.qos.logback") ||
                     groupId.startsWith("org.slf4j") ||
@@ -349,7 +349,7 @@ public class PomGenerator implements Callable<Void> {
         appenders.add(new KompileSunXmlFileAppender());
 
         boolean hasPython = resolvedDependencies.stream().anyMatch(d -> "kompile-pipelines-steps-python".equals(d.getArtifactId()));
-        boolean hasNd4j = resolvedDependencies.stream().anyMatch(d -> d.getGroupId().equals("org.nd4j"));
+        boolean hasNd4j = resolvedDependencies.stream().anyMatch(d -> d.getGroupId().equals("org.eclipse.deeplearning4j"));
         boolean hasOpenBLAS = resolvedDependencies.stream().anyMatch(d -> d.getArtifactId().contains("openblas"));
 
         if (hasPython) {
@@ -379,7 +379,7 @@ public class PomGenerator implements Callable<Void> {
 
         sb.append("--initialize-at-run-time=io.netty.**,org.bytedeco.**,com.sun.jna.**,org.eclipse.jgit.**\n");
         sb.append("--initialize-at-run-time=ai.kompile.pipelines.**,ai.kompile.app.**\n");
-        sb.append("--initialize-at-run-time=org.nd4j.linalg.factory.Nd4j,org.nd4j.nativeblas.NativeOpsHolder\n");
+        sb.append("--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder\n");
         sb.append("--initialize-at-run-time=org.apache.pdfbox.pdmodel.font.PDType1Font\n");
 
         sb.append("-Dorg.bytedeco.javacpp.logger.debug=true\n");
@@ -675,7 +675,7 @@ public class PomGenerator implements Callable<Void> {
         }
 
         if (this.nd4jBackend != null && !this.nd4jBackend.isEmpty()) {
-            addDependency(this.resolvedDependencies, "org.nd4j", this.nd4jBackend, null, "compile", this.nd4jBackendClassifier, false);
+            addDependency(this.resolvedDependencies, "org.eclipse.deeplearning4j", this.nd4jBackend, null, "compile", this.nd4jBackendClassifier, false);
         }
         addExtraDependenciesFromString(this.resolvedDependencies, this.extraDependencies);
         model.setDependencies(this.resolvedDependencies);

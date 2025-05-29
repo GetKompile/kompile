@@ -26,12 +26,11 @@ import ai.kompile.pipelines.framework.core.config.ConfigAccessor;
 import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
 import ai.kompile.pipelines.framework.api.configschema.StepSchema;
 import ai.kompile.pipelines.steps.onnx.utils.ONNXUtils; // Kompile's ONNXUtils
-
-import lombok.extern.slf4j.Slf4j;
 import org.bytedeco.javacpp.*;
 import org.bytedeco.onnxruntime.*;
 import org.nd4j.common.base.Preconditions;
 import org.nd4j.common.util.ArrayUtil;
+import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -407,7 +406,7 @@ public class OnnxRuntimeRunner implements PipelineStepRunner {
             else throw new IllegalArgumentException("Cannot determine INDArray shape from Kompile NDArray with null/empty shape and length > 1");
         }
 
-        org.nd4j.linalg.api.buffer.DataBuffer dataBuffer = Nd4j.createBuffer(bb,nd4jDataType, ArrayUtil.prod(shape));
+        DataBuffer dataBuffer = Nd4j.createBuffer(bb,nd4jDataType, ArrayUtil.prod(shape));
         return Nd4j.create(dataBuffer, shape, Nd4j.getStrides(shape, 'c'), 0L, 'c', nd4jDataType);
     }
 

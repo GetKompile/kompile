@@ -30,10 +30,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.util.ModelSerializer;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.common.primitives.Pair;
 import org.nd4j.linalg.indexing.NDArrayIndex;
+
 
 import java.io.File;
 import java.io.IOException;

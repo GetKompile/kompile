@@ -28,8 +28,10 @@ import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.util.ModelSerializer;
 import org.nd4j.linalg.api.buffer.DataBuffer;
+import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -244,16 +246,16 @@ public class DL4JRunner implements PipelineStepRunner {
         }
 
         // Map Kompile NDArrayType to ND4J DataType
-        org.nd4j.linalg.api.buffer.DataType nd4jDataType;
+        DataType nd4jDataType;
         switch (kompileNDArray.type()) {
             case FLOAT:
-               nd4jDataType = org.nd4j.linalg.api.buffer.DataType.FLOAT; break;
-            case DOUBLE: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.DOUBLE; break;
-            case INT32: case INT: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.INT32; break;
-             case LONG: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.INT64; break;
-            case BYTE: case INT8: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.INT8; break;
-            case UINT8: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.UINT8; break;
-            case SHORT: case INT16: nd4jDataType = org.nd4j.linalg.api.buffer.DataType.INT16; break;
+               nd4jDataType = DataType.FLOAT; break;
+            case DOUBLE: nd4jDataType = DataType.DOUBLE; break;
+            case INT32: case INT: nd4jDataType = DataType.INT32; break;
+             case LONG: nd4jDataType = DataType.INT64; break;
+            case BYTE: case INT8: nd4jDataType = DataType.INT8; break;
+            case UINT8: nd4jDataType = DataType.UINT8; break;
+            case SHORT: case INT16: nd4jDataType = DataType.INT16; break;
             // Add more mappings as needed (UINT16, FLOAT16, BFLOAT16, BOOLEAN, UTF8 if supported by ND4J in this way)
             default:
                 throw new UnsupportedOperationException("Unsupported Kompile NDArrayType for INDArray conversion: " + kompileNDArray.type());

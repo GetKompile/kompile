@@ -47,6 +47,7 @@
     <module>kompile-app-anthropic-llm</module>
     <module>kompile-app-gemini-llm</module>
     <module>kompile-embedding-openai</module>
+    <module>kompile-embedding-anserini</module>
     <module>kompile-embedding-samediff</module>
     <module>kompile-embedding-sentence-transformer</module>
     <module>kompile-vectorstore-chroma</module>
@@ -238,6 +239,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-embedding-openai</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-embedding-anserini</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

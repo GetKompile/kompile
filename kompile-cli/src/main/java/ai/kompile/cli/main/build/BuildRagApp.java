@@ -100,6 +100,8 @@ public class BuildRagApp implements Callable<Integer> {
     // Embedding Options
     @Option(names = {"--includeEmbeddingOpenai"}, description = "Include kompile-embedding-openai module")
     private boolean includeEmbeddingOpenai = false;
+    @Option(names = {"--includeEmbeddingAnserini"}, description = "Include kompile-embedding-anserini module for BGE, Arctic Embed, and other SameDiff-based embeddings")
+    private boolean includeEmbeddingAnserini = false;
     @Option(names = {"--includeEmbeddingSentenceTransformer"}, description = "Include kompile-embedding-sentence-transformer module")
     private boolean includeEmbeddingSentenceTransformer = false;
     @Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
@@ -204,8 +206,10 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeLlmAnthropic=" + this.includeLlmAnthropic);
         ragPomCliArgs.add("--includeLlmGemini=" + this.includeLlmGemini);
         ragPomCliArgs.add("--includeVectorStoreAnserini=" + this.includeVectorStoreAnserini);
+        
         // Embedding options
         ragPomCliArgs.add("--includeEmbeddingOpenai=" + this.includeEmbeddingOpenai);
+        ragPomCliArgs.add("--includeEmbeddingAnserini=" + this.includeEmbeddingAnserini);
         ragPomCliArgs.add("--includeEmbeddingSentenceTransformer=" + this.includeEmbeddingSentenceTransformer);
         ragPomCliArgs.add("--includeEmbeddingPostgresml=" + this.includeEmbeddingPostgresml);
 
@@ -303,7 +307,7 @@ public class BuildRagApp implements Callable<Integer> {
         if (skipTests) System.out.println("  Tests: SKIPPED");
         System.out.println("  Maven Home: " + effectiveMavenHome.getAbsolutePath());
 
-        // Print enabled modules for better visibility
+        // Print enabled modules for better visibility  
         printEnabledModules();
 
         InvocationResult result = invoker.execute(request);
@@ -400,6 +404,7 @@ public class BuildRagApp implements Callable<Integer> {
         // Embeddings
         List<String> embeddings = new ArrayList<>();
         if (includeEmbeddingOpenai) embeddings.add("OpenAI");
+        if (includeEmbeddingAnserini) embeddings.add("Anserini (BGE, Arctic Embed, SameDiff)");
         if (includeEmbeddingSentenceTransformer) embeddings.add("Sentence Transformers");
         if (includeEmbeddingPostgresml) embeddings.add("PostgresML");
         if (!embeddings.isEmpty()) {
@@ -410,12 +415,11 @@ public class BuildRagApp implements Callable<Integer> {
         List<String> vectorStores = new ArrayList<>();
         if (includeVectorstoreChroma) vectorStores.add("Chroma");
         if (includeVectorstorePgvector) vectorStores.add("pgvector");
-        if(includeVectorStoreAnserini) vectorStores.add("anserini");
+        if(includeVectorStoreAnserini) vectorStores.add("Anserini");
 
         if (!vectorStores.isEmpty()) {
             System.out.println("    ✓ Vector Stores: " + String.join(", ", vectorStores));
         }
-
 
         // Tools
         List<String> tools = new ArrayList<>();

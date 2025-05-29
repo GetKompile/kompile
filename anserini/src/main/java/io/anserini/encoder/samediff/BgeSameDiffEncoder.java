@@ -19,12 +19,13 @@ package io.anserini.encoder.samediff;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable; // For optional instruction
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.indexing.NDArrayIndex;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
 import java.io.IOException;

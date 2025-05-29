@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Configuration properties for the Anserini VectorStore implementation.
+ * Provides sensible defaults so it works out of the box without configuration.
  */
 @Data
 @Component
@@ -36,9 +37,9 @@ public class AnseriniVectorStoreProperties {
 
     /**
      * Whether to enable the Anserini VectorStore.
-     * Default: false
+     * Changed default to TRUE so it works out of the box.
      */
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     /**
      * Memory buffer size for IndexWriter in MB.
@@ -93,7 +94,7 @@ public class AnseriniVectorStoreProperties {
 
         /**
          * Whether to use HNSW indexing instead of flat indexing.
-         * Default: false (use flat indexing)
+         * Default: false (use flat indexing for simplicity)
          */
         private boolean enabled = false;
     }

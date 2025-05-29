@@ -18,20 +18,16 @@ package ai.kompile.embedding.samediff;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.embedding.samediff.config.SameDiffEmbeddingProperties;
-import ai.kompile.pipelines.util.URIUtils; // Assuming this utility for loading
+import ai.kompile.pipelines.util.URIUtils;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.io.FileUtils;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.autodiff.samediff.SameDiff;
+import org.nd4j.common.base.Preconditions;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.common.base.Preconditions;
 import org.springframework.ai.document.Document;
 
-
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
