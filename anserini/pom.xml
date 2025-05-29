@@ -163,14 +163,14 @@
             </goals>
             <configuration>
               <filters>
-                  <filter>
-                      <artifact>*:*</artifact>
-                      <excludes>
-                          <exclude>META-INF/*.SF</exclude>
-                          <exclude>META-INF/*.DSA</exclude>
-                          <exclude>META-INF/*.RSA</exclude>
-                      </excludes>
-                  </filter>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
               </filters>
               <createDependencyReducedPom>false</createDependencyReducedPom>
               <!-- See https://maven.apache.org/plugins/maven-shade-plugin/examples/resource-transformers.html
@@ -296,9 +296,13 @@
   </build>
 
   <dependencies>
-
     <dependency>
-      <groupId>org.nd4j</groupId>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-model-manager</artifactId>
+      <version>0.1.0-SNAPSHOT</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>samediff-import-onnx</artifactId>
       <version>${nd4j.version}</version>
     </dependency>
@@ -512,7 +516,7 @@
           <artifactId>spring-boot-starter-logging</artifactId>
         </exclusion>
       </exclusions>
-      </dependency>
+    </dependency>
     <!-- Apache Parquet Dependencies -->
     <dependency>
       <groupId>blue.strategic.parquet</groupId>
@@ -520,9 +524,9 @@
       <version>1.36</version>
     </dependency>
     <dependency>
-      <groupId>org.nd4j</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>samediff-import-onnx</artifactId>
-      <version>${nd4j.version}</version>
+      <version>1.0.0-SNAPSHOT</version>
     </dependency>
   </dependencies>
 </project>

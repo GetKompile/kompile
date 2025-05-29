@@ -16,14 +16,14 @@
 
 package ai.kompile.core.indexers;
 
-import org.springframework.ai.document.Document; // From spring-ai-commons
+import ai.kompile.core.retrievers.RetrievedDoc;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 public abstract class IndexerService {
-    public abstract void indexDocuments(List<Document> documents, String collectionNameParam);
+    public abstract void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam);
 
     public abstract void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
 
@@ -36,15 +36,15 @@ public abstract class IndexerService {
     public abstract long getApproxTotalDocCount(String collectionNameParam);
 
     /**
-     * Indexes the provided list of Spring AI documents.
+     * Indexes the provided list of RetrievedDoc documents.
      * Implementations will handle any necessary staging (e.g., to JSON) and the actual indexing logic.
      */
-    public abstract void indexDocuments(List<Document> documents) throws IOException;
+    public abstract void indexDocuments(List<RetrievedDoc> documents) throws IOException;
 
     /**
      * Triggers a full re-indexing process.
      * This typically involves using a DocumentLoadingService to fetch all documents
-     * and then passing them to the indexDocuments(List<Document> documents) method.
+     * and then passing them to the indexDocuments(List<RetrievedDoc> documents) method.
      */
     public abstract void reprocessAndIndexAllSources() throws IOException;
 

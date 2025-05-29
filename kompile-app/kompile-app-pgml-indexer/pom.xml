@@ -21,7 +21,7 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>ai.kompile</groupId>
-        <artifactId>rag-mcp-assistant-parent</artifactId>
+        <artifactId>kompile-app</artifactId>
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 

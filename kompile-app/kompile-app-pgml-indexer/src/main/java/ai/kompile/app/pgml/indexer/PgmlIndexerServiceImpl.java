@@ -22,6 +22,7 @@ import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.core.retrievers.RetrievedDoc;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,8 +81,6 @@ public class PgmlIndexerServiceImpl extends IndexerService {
 
     }
 
-
-
     private String getEffectiveCollectionName(String collectionNameFromParam) {
         return StringUtils.hasText(collectionNameFromParam) ? collectionNameFromParam : properties.getDefaultCollectionName();
     }
@@ -114,8 +113,39 @@ public class PgmlIndexerServiceImpl extends IndexerService {
         return null;
     }
 
+    /**
+     * Converts Spring AI Document to RetrievedDoc
+     */
+    private RetrievedDoc convertToRetrievedDoc(Document document) {
+        if (document == null) {
+            return null;
+        }
+        
+        RetrievedDoc.Builder builder = RetrievedDoc.builder()
+                .id(document.getId())
+                .text(document.getText())
+                .metadata(document.getMetadata());
+        
+        if (document.getScore() != null) {
+            builder.score(document.getScore());
+        }
+        
+        return builder.build();
+    }
+
+    /**
+     * Converts RetrievedDoc to Spring AI Document for vector store compatibility
+     */
+    private Document convertToDocument(RetrievedDoc retrievedDoc) {
+        if (retrievedDoc == null) {
+            return null;
+        }
+        
+        return new Document(retrievedDoc.getId(), retrievedDoc.getText(), retrievedDoc.getMetadata());
+    }
+
     @Override
-    public void indexDocuments(List<Document> documents, String collectionNameParam) {
+    public void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam) {
         String loggedCollectionName = getEffectiveCollectionName(collectionNameParam);
         if (CollectionUtils.isEmpty(documents)) {
             logger.warn("No documents provided for indexing. Target collection for logging: {}", loggedCollectionName);
@@ -126,7 +156,12 @@ public class PgmlIndexerServiceImpl extends IndexerService {
                         "VectorStore is expected to use its pre-configured default collection (logged as: {}).",
                 documents.size(), vectorStore.getClass().getSimpleName(), loggedCollectionName);
 
-        vectorStore.add(documents);
+        // Convert RetrievedDoc to Document for vector store compatibility
+        List<Document> springAiDocuments = documents.stream()
+                .map(this::convertToDocument)
+                .collect(Collectors.toList());
+
+        vectorStore.add(springAiDocuments);
 
         logger.info("Successfully submitted {} documents to VectorStore. Assumed target collection for logging: {}",
                 documents.size(), loggedCollectionName);
@@ -161,19 +196,25 @@ public class PgmlIndexerServiceImpl extends IndexerService {
                 .collectionName(effectiveCollectionName)
                 .build();
 
-        List<Document> documents;
+        List<Document> springAiDocuments;
         try {
-            documents = loader.load(sourceDescriptor);
+            springAiDocuments = loader.load(sourceDescriptor);
         } catch (Exception e) {
             logger.error("Failed to load documents from file: {} using loader: {}",
                     filePath, loader.getClass().getSimpleName(), e);
             throw new IOException("Failed to load documents from file: " + filePath, e);
         }
 
-        if (CollectionUtils.isEmpty(documents)) {
+        if (CollectionUtils.isEmpty(springAiDocuments)) {
             logger.warn("Loader {} produced no documents for file: {}", loader.getClass().getSimpleName(), filePath);
             return;
         }
+
+        // Convert to RetrievedDoc
+        List<RetrievedDoc> documents = springAiDocuments.stream()
+                .map(this::convertToRetrievedDoc)
+                .collect(Collectors.toList());
+
         indexDocuments(documents, effectiveCollectionName);
         logger.info("Successfully processed file: {} ({} documents). Target collection context for logging: {}.",
                 filePath, documents.size(), effectiveCollectionName);
@@ -196,7 +237,7 @@ public class PgmlIndexerServiceImpl extends IndexerService {
             throw new IOException(errorMsg);
         }
 
-        List<Document> batchDocuments = new ArrayList<>();
+        List<RetrievedDoc> batchDocuments = new ArrayList<>();
         try (Stream<Path> paths = Files.walk(directoryPath)) {
             List<Path> files = paths
                     .filter(Files::isRegularFile)
@@ -224,9 +265,13 @@ public class PgmlIndexerServiceImpl extends IndexerService {
 
                         logger.debug("Loading documents from file: {} with sourceId: {} using loader {}",
                                 filePath, fileSpecificSourceId, loader.getClass().getSimpleName());
-                        List<Document> loadedDocs = loader.load(sourceDescriptor);
+                        List<Document> springAiDocuments = loader.load(sourceDescriptor);
 
-                        if (!CollectionUtils.isEmpty(loadedDocs)) {
+                        if (!CollectionUtils.isEmpty(springAiDocuments)) {
+                            // Convert to RetrievedDoc
+                            List<RetrievedDoc> loadedDocs = springAiDocuments.stream()
+                                    .map(this::convertToRetrievedDoc)
+                                    .collect(Collectors.toList());
                             batchDocuments.addAll(loadedDocs);
                         } else {
                             logger.warn("Loader {} produced no documents for file: {}", loader.getClass().getSimpleName(), filePath);
@@ -296,7 +341,7 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     }
 
     @Override
-    public void indexDocuments(List<Document> documents) throws IOException {
+    public void indexDocuments(List<RetrievedDoc> documents) throws IOException {
         // Use default collection name for logging context if not specified
         indexDocuments(documents, properties.getDefaultCollectionName());
     }

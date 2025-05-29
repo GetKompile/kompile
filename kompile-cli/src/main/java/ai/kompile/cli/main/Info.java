@@ -102,7 +102,7 @@ public class Info implements Callable<Integer> {
     }
 
     /**
-     * Gets the version for Kompile App modules (e.g., rag-mcp-assistant-parent and its children).
+     * Gets the version for Kompile App modules (e.g., kompile-app and its children).
      * @return The version string.
      */
     public static String getKompileAppVersion() {

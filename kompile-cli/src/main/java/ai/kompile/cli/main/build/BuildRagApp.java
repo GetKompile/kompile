@@ -111,6 +111,15 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module")
     private boolean includeVectorstorePgvector = false;
 
+    @Option(names = {"--includeVectorStoreAnserini"}, description = "Include kompile-vectorstore-anserini module")
+    private boolean includeVectorStoreAnserini = false;
+
+    @CommandLine.Option(names = {"--javacppPlatform"},description = "Build for a specific specified platform. An example would be linux-x86_64 - this reduces binary size and prevents out of memories from trying to include binaries for too many platforms.")
+    private String javacppPlatform = "linux-x86_64";
+
+    @CommandLine.Option(names = {"--javacppExtension"},description = "An optional javacpp extension such as avx2 or cuda depending on the target set of dependencies.")
+    private String javacppExtension;
+
     // Tool Options
     @Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module", defaultValue = "true", negatable = true)
     private boolean includeToolFilesystem;
@@ -178,7 +187,8 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeLoaderMicrosoft=" + this.includeLoaderMicrosoft);
         ragPomCliArgs.add("--includeLoaderMail=" + this.includeLoaderMail);
         ragPomCliArgs.add("--includeLoaderPdfExtended=" + this.includeLoaderPdfExtended);
-
+        ragPomCliArgs.add("--javacppPlatform=" + javacppPlatform);
+        ragPomCliArgs.add("--javacppExtension=" + javacppExtension);
         // Chunker options
         ragPomCliArgs.add("--includeChunkerSentence=" + this.includeChunkerSentence);
         if (this.includeChunkerSentence && this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
@@ -193,7 +203,7 @@ public class BuildRagApp implements Callable<Integer> {
         ragPomCliArgs.add("--includeLlmOpenai=" + this.includeLlmOpenai);
         ragPomCliArgs.add("--includeLlmAnthropic=" + this.includeLlmAnthropic);
         ragPomCliArgs.add("--includeLlmGemini=" + this.includeLlmGemini);
-
+        ragPomCliArgs.add("--includeVectorStoreAnserini=" + this.includeVectorStoreAnserini);
         // Embedding options
         ragPomCliArgs.add("--includeEmbeddingOpenai=" + this.includeEmbeddingOpenai);
         ragPomCliArgs.add("--includeEmbeddingSentenceTransformer=" + this.includeEmbeddingSentenceTransformer);
@@ -224,14 +234,22 @@ public class BuildRagApp implements Callable<Integer> {
 
         InvocationRequest request = new DefaultInvocationRequest();
         request.setPomFile(instancePomFile);
-
         List<String> goals = new ArrayList<>();
-        if (cleanBuild) {
-            goals.add("clean");
-        }
-        goals.add("package");
 
-        request.setGoals(goals);
+        if(javacppPlatform != null && !javacppPlatform.isEmpty()) {
+            goals.add("-Djavacpp.platform=" + javacppPlatform);
+            if(javacppExtension != null && !javacppExtension.isEmpty())
+                goals.add("-Djavacpp.platform.extension=" + javacppExtension);
+            goals.add("-Dorg.eclipse.python4j.numpyimport=false");
+            goals.add("clean");
+            goals.add("package");
+            request.setGoals(goals);
+        }
+        else {
+            request.setGoals(Arrays.asList("clean","package"));
+
+        }
+
 
         Properties systemProperties = new Properties();
         if (skipTests) {
@@ -267,18 +285,15 @@ public class BuildRagApp implements Callable<Integer> {
             System.err.println("Please set M2_HOME, MAVEN_HOME, or specify --mavenHome.");
             return 1;
         }
+
+        request.setMavenOpts("-Dfile.encoding=UTF-8");
+
         invoker.setMavenHome(effectiveMavenHome);
         invoker.setWorkingDirectory(projectBuildDir);
 
-        final StringBuilder buildLogOutput = new StringBuilder();
-        invoker.setOutputHandler(line -> {
-            System.out.println(line);
-            buildLogOutput.append(line).append(System.lineSeparator());
-        });
-        invoker.setErrorHandler(line -> {
-            System.err.println(line);
-            buildLogOutput.append("ERROR: ").append(line).append(System.lineSeparator());
-        });
+        invoker.setOutputHandler(System.out::println);
+        invoker.setErrorHandler(System.err::println);
+
 
         System.out.println("Starting Maven build for RAG instance: " + configName);
         System.out.println("  Build Directory: " + projectBuildDir.getAbsolutePath());
@@ -395,9 +410,12 @@ public class BuildRagApp implements Callable<Integer> {
         List<String> vectorStores = new ArrayList<>();
         if (includeVectorstoreChroma) vectorStores.add("Chroma");
         if (includeVectorstorePgvector) vectorStores.add("pgvector");
+        if(includeVectorStoreAnserini) vectorStores.add("anserini");
+
         if (!vectorStores.isEmpty()) {
             System.out.println("    ✓ Vector Stores: " + String.join(", ", vectorStores));
         }
+
 
         // Tools
         List<String> tools = new ArrayList<>();

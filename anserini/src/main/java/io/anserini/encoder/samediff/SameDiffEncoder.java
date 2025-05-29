@@ -16,6 +16,9 @@
 
 package io.anserini.encoder.samediff;
 
+import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.modelmanager.ModelDescriptor;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertTokenizerPreProcessor;
 import io.anserini.encoder.samediff.tokenizer.SamediffBertVocabulary;
 import org.apache.logging.log4j.LogManager;
@@ -24,7 +27,6 @@ import org.jetbrains.annotations.NotNull;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,7 +45,96 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     protected final List<String> inputTensorNamesForModel;
     protected final List<String> outputTensorNamesFromModel;
     protected final String modelIdentifier;
+    protected final KompileModelManager modelManager;
 
+    /**
+     * Constructor that uses Kompile model management for downloading and caching models.
+     *
+     * @param modelIdentifier The identifier of the model (e.g., "bge-base-en-v1.5-onnx")
+     * @param inputTensorNamesForModel List of input tensor names expected by the model
+     * @param outputTensorNamesFromModel List of output tensor names from the model
+     * @param doLowerCaseAndStripAccents Whether to lowercase and strip accents in tokenization
+     * @param maxSequenceLength Maximum sequence length for tokenization
+     * @param addSpecialTokens Whether to add special tokens (CLS, SEP) during tokenization
+     * @throws IOException if model loading fails
+     */
+    public SameDiffEncoder(@NotNull String modelIdentifier,
+                           @NotNull List<String> inputTensorNamesForModel,
+                           @NotNull List<String> outputTensorNamesFromModel,
+                           boolean doLowerCaseAndStripAccents,
+                           int maxSequenceLength,
+                           boolean addSpecialTokens) throws IOException {
+        this.modelIdentifier = modelIdentifier;
+        this.inputTensorNamesForModel = Collections.unmodifiableList(inputTensorNamesForModel);
+        this.outputTensorNamesFromModel = Collections.unmodifiableList(outputTensorNamesFromModel);
+        this.modelManager = new KompileModelManager();
+
+        // Get model descriptor from ModelConstants
+        ModelDescriptor modelDescriptor = ModelConstants.getAnseriniEncoderModelDescriptor(modelIdentifier);
+        if (modelDescriptor == null) {
+            throw new IOException("No model descriptor found for model identifier: " + modelIdentifier + 
+                    ". Please ensure the model is defined in ModelConstants.getAnseriniEncoderModelDescriptor()");
+        }
+
+        // Ensure model is available through model manager
+        Path modelPath = modelManager.ensureModelAvailable(modelDescriptor);
+        
+        if (!Files.exists(modelPath) || !Files.isRegularFile(modelPath)) {
+            throw new IOException("Model file not found at expected path after download: " + modelPath);
+        }
+
+        LOG.info("[{}] Loading ONNX model from Kompile-managed path: {}", modelIdentifier, modelPath.toAbsolutePath());
+
+        // Load vocabulary - assume it's in the same directory as the model with standard name
+        Path vocabPath = modelPath.getParent().resolve("vocab.txt");
+        if (!Files.exists(vocabPath)) {
+            // Try alternative common vocab file names
+            Path[] vocabCandidates = {
+                modelPath.getParent().resolve("tokenizer.json"),
+                modelPath.getParent().resolve("vocabulary.txt"),
+                modelPath.getParent().resolve("vocab.json")
+            };
+            
+            for (Path candidate : vocabCandidates) {
+                if (Files.exists(candidate)) {
+                    vocabPath = candidate;
+                    break;
+                }
+            }
+            
+            if (!Files.exists(vocabPath)) {
+                throw new IOException("Vocabulary file not found. Expected vocab.txt, tokenizer.json, vocabulary.txt, or vocab.json in: " + modelPath.getParent());
+            }
+        }
+
+        LOG.info("[{}] Loading vocabulary from Kompile-managed path: {}", modelIdentifier, vocabPath.toAbsolutePath());
+        
+        // Load vocabulary
+        SamediffBertVocabulary vocabulary = new SamediffBertVocabulary(vocabPath.toFile(), SamediffBertVocabulary.DEFAULT_UNKNOWN_TOKEN);
+        this.tokenizerPreProcessor = new SamediffBertTokenizerPreProcessor(vocabulary, doLowerCaseAndStripAccents, addSpecialTokens, maxSequenceLength);
+
+        // Load ONNX model
+        try {
+            OnnxFrameworkImporter importer = new OnnxFrameworkImporter();
+            this.sameDiffModel = importer.runImport(modelPath.toFile().getAbsolutePath(), Collections.emptyMap(), true, true);
+
+            if (this.sameDiffModel == null) {
+                throw new IOException("Failed to import ONNX model to SameDiff from " + modelPath + ". Importer returned null.");
+            }
+            LOG.info("[{}] Successfully imported ONNX model to SameDiff from: {}", modelIdentifier, modelPath.toAbsolutePath());
+
+        } catch (Exception e) {
+            LOG.error("[{}] Failed to import ONNX model to SameDiff from path {}", modelIdentifier, modelPath, e);
+            throw new IOException("Failed to import ONNX model to SameDiff from " + modelPath + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Legacy constructor for backward compatibility - uses explicit paths managed by Kompile.
+     * 
+     * @deprecated Use the constructor with modelIdentifier instead for better model management
+     */
+    @Deprecated
     public SameDiffEncoder(@NotNull String modelIdentifier,
                            @NotNull String kompileManagedModelPath,
                            @NotNull String kompileManagedVocabPath,
@@ -55,6 +146,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         this.modelIdentifier = modelIdentifier;
         this.inputTensorNamesForModel = Collections.unmodifiableList(inputTensorNamesForModel);
         this.outputTensorNamesFromModel = Collections.unmodifiableList(outputTensorNamesFromModel);
+        this.modelManager = new KompileModelManager();
 
         Path vocabPath = Paths.get(kompileManagedVocabPath);
         LOG.info("[{}] Loading vocabulary from Kompile-managed path: {}", modelIdentifier, vocabPath.toAbsolutePath());

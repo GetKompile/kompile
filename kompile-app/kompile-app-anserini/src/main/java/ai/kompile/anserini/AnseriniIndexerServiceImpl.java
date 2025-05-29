@@ -23,6 +23,7 @@ import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentLoadingService;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.core.retrievers.RetrievedDoc;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -42,17 +43,16 @@ import org.apache.lucene.index.IndexNotFoundException;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.index.LeafReaderContext; // Correct import for LeafReaderContext
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.util.Bits; // Correct import for Bits
+import org.apache.lucene.util.Bits;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
-
 
 import java.io.File;
 import java.io.IOException;
@@ -77,11 +77,10 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     private final ObjectMapper objectMapper;
     private final DocumentLoadingService documentLoadingService;
     private final List<DocumentLoader> documentLoaders;
-    private  VectorStore vectorStore;
+    private VectorStore vectorStore;
 
     private static final int DEFAULT_BATCH_SIZE = 100;
     private static final String DEFAULT_ANSERINI_LOGGING_COLLECTION_NAME = "default_anserini_index";
-
 
     @Autowired
     public AnseriniIndexerServiceImpl(AnseriniConfig anseriniConfig,
@@ -101,7 +100,6 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     this.vectorStore = vectorStore1;
                 }
             }
-
         } else {
             this.vectorStore = vectorStore.get(0);
         }
@@ -115,6 +113,37 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
     private String getEffectiveLogCollectionName(String collectionNameParam) {
         return StringUtils.hasText(collectionNameParam) ? collectionNameParam : DEFAULT_ANSERINI_LOGGING_COLLECTION_NAME;
+    }
+
+    /**
+     * Converts Spring AI Document to RetrievedDoc
+     */
+    private RetrievedDoc convertToRetrievedDoc(Document document) {
+        if (document == null) {
+            return null;
+        }
+
+        RetrievedDoc.Builder builder = RetrievedDoc.builder()
+                .id(document.getId())
+                .text(document.getText())
+                .metadata(document.getMetadata());
+
+        if (document.getScore() != null) {
+            builder.score(document.getScore());
+        }
+
+        return builder.build();
+    }
+
+    /**
+     * Converts RetrievedDoc to Spring AI Document for vector store compatibility
+     */
+    private Document convertToDocument(RetrievedDoc retrievedDoc) {
+        if (retrievedDoc == null) {
+            return null;
+        }
+
+        return new Document(retrievedDoc.getId(), retrievedDoc.getText(), retrievedDoc.getMetadata());
     }
 
     @PostConstruct
@@ -136,20 +165,26 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     public void reprocessAndIndexAllSources() throws IOException {
         logger.info("Full re-processing and indexing of all configured sources triggered (Anserini Keyword Index + Vector Store).");
         List<Document> allLoadedDocs = documentLoadingService.loadAllConfiguredDocuments();
-        indexDocuments(allLoadedDocs);
+
+        // Convert to RetrievedDoc
+        List<RetrievedDoc> retrievedDocs = allLoadedDocs.stream()
+                .map(this::convertToRetrievedDoc)
+                .collect(Collectors.toList());
+
+        indexDocuments(retrievedDocs);
     }
 
     @Override
-    public void indexDocuments(List<Document> documents) throws IOException {
+    public void indexDocuments(List<RetrievedDoc> documents) throws IOException {
         indexDocumentsInternal(documents, DEFAULT_ANSERINI_LOGGING_COLLECTION_NAME);
     }
 
     @SneakyThrows
-    public void indexDocuments(List<Document> documents, String collectionNameParam)  {
+    public void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam) {
         indexDocumentsInternal(documents, collectionNameParam);
     }
 
-    private void indexDocumentsInternal(List<Document> documents, String collectionNameParamForLogging) throws IOException {
+    private void indexDocumentsInternal(List<RetrievedDoc> documents, String collectionNameParamForLogging) throws IOException {
         String logContextCollectionName = getEffectiveLogCollectionName(collectionNameParamForLogging);
 
         logger.info("Anserini keyword indexing and Vector Store population requested for {} documents. Anserini Index: '{}'. Logging Collection Context: '{}'",
@@ -162,7 +197,13 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 try {
                     logger.info("Populating Vector Store with {} documents (logging context: {})...",
                             documents.size(), logContextCollectionName);
-                    vectorStore.add(documents);
+
+                    // Convert RetrievedDoc to Document for vector store compatibility
+                    List<Document> springAiDocuments = documents.stream()
+                            .map(this::convertToDocument)
+                            .collect(Collectors.toList());
+
+                    vectorStore.add(springAiDocuments);
                     logger.info("Successfully submitted {} documents to Vector Store (logging context: {}).",
                             documents.size(), logContextCollectionName);
                 } catch (Exception e) {
@@ -224,19 +265,25 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 .collectionName(effectiveCollectionName)
                 .build();
 
-        List<Document> documents;
+        List<Document> springAiDocuments;
         try {
-            documents = loader.load(sourceDescriptor);
+            springAiDocuments = loader.load(sourceDescriptor);
         } catch (Exception e) {
             logger.error("Failed to load documents from file: {} using loader: '{}' ({}): {}",
                     filePath, loader.getName(), loader.getClass().getSimpleName(), e.getMessage(), e);
             throw new IOException("Failed to load documents from file: " + filePath, e);
         }
 
-        if (CollectionUtils.isEmpty(documents)) {
+        if (CollectionUtils.isEmpty(springAiDocuments)) {
             logger.warn("Loader '{}' produced no documents for file: {}", loader.getName(), filePath);
             return;
         }
+
+        // Convert to RetrievedDoc
+        List<RetrievedDoc> documents = springAiDocuments.stream()
+                .map(this::convertToRetrievedDoc)
+                .collect(Collectors.toList());
+
         indexDocuments(documents, effectiveCollectionName);
         logger.info("Successfully processed file: {} ({} documents). Anserini Index: '{}'. Logging Collection: {}.",
                 filePath, documents.size(), anseriniConfig.getIndexPath(), effectiveCollectionName);
@@ -258,7 +305,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             throw new IOException(errorMsg);
         }
 
-        List<Document> batchDocuments = new ArrayList<>();
+        List<RetrievedDoc> batchDocuments = new ArrayList<>();
         try (Stream<Path> paths = Files.walk(directoryPath)) {
             List<Path> files = paths
                     .filter(Files::isRegularFile)
@@ -285,9 +332,13 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
                     logger.debug("Loading documents from file: {} with sourceId: {} using loader '{}'",
                             filePath, fileSpecificSourceId, loader.getName());
-                    List<Document> loadedDocs = loader.load(sourceDescriptor);
+                    List<Document> springAiDocuments = loader.load(sourceDescriptor);
 
-                    if (!CollectionUtils.isEmpty(loadedDocs)) {
+                    if (!CollectionUtils.isEmpty(springAiDocuments)) {
+                        // Convert to RetrievedDoc
+                        List<RetrievedDoc> loadedDocs = springAiDocuments.stream()
+                                .map(this::convertToRetrievedDoc)
+                                .collect(Collectors.toList());
                         batchDocuments.addAll(loadedDocs);
                     } else {
                         logger.warn("Loader '{}' produced no documents for file: {}", loader.getName(), filePath);
@@ -343,7 +394,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     }
 
     @SneakyThrows
-    public boolean deleteAll(String collectionNameParam)  {
+    public boolean deleteAll(String collectionNameParam) {
         String loggedCollectionName = getEffectiveLogCollectionName(collectionNameParam);
         logger.info("deleteAll called. This will clear the entire Anserini index at {}. Logging collection context: {}.",
                 anseriniConfig.getIndexPath(), loggedCollectionName);
@@ -427,7 +478,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         return false;
     }
 
-    private void createOrClearAnseriniKeywordIndex(List<Document> springAiDocuments) throws IOException {
+    private void createOrClearAnseriniKeywordIndex(List<RetrievedDoc> retrievedDocuments) throws IOException {
         if (!StringUtils.hasText(anseriniConfig.getCorpusPath()) || !StringUtils.hasText(anseriniConfig.getIndexPath())) {
             String msg = "Anserini corpusPath (for staging JSONs) or indexPath is not configured. Cannot create keyword index.";
             logger.error(msg);
@@ -436,7 +487,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         Path stagingPath = Paths.get(anseriniConfig.getCorpusPath());
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
         logger.info("Preparing Anserini keyword index for {} documents. Staging JSON at: {}, Final index at: {}",
-                springAiDocuments == null ? 0 : springAiDocuments.size(), stagingPath, indexPath);
+                retrievedDocuments == null ? 0 : retrievedDocuments.size(), stagingPath, indexPath);
 
         if (Files.exists(stagingPath)) {
             try (Stream<Path> walk = Files.walk(stagingPath)) {
@@ -447,15 +498,15 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         logger.info("Anserini keyword index staging directory {} prepared.", stagingPath);
 
         int docCounter = 0;
-        if (!CollectionUtils.isEmpty(springAiDocuments)) {
-            for (Document springDoc : springAiDocuments) {
-                if (springDoc == null || !StringUtils.hasText(springDoc.getText())) {
+        if (!CollectionUtils.isEmpty(retrievedDocuments)) {
+            for (RetrievedDoc retrievedDoc : retrievedDocuments) {
+                if (retrievedDoc == null || !StringUtils.hasText(retrievedDoc.getText())) {
                     logger.warn("Skipping a null document or document with empty content for Anserini keyword index. Doc ID if available: {}",
-                            springDoc != null ? springDoc.getId() : "null document");
+                            retrievedDoc != null ? retrievedDoc.getId() : "null document");
                     continue;
                 }
                 ObjectNode anseriniJsonDoc = objectMapper.createObjectNode();
-                String docId = StringUtils.hasText(springDoc.getId()) ? springDoc.getId() : UUID.randomUUID().toString();
+                String docId = StringUtils.hasText(retrievedDoc.getId()) ? retrievedDoc.getId() : UUID.randomUUID().toString();
                 // Use the original docId for the 'id' field in JSON for Anserini if possible,
                 // ensure filenames are unique if staging multiple docs with potentially conflicting simple IDs
                 String anseriniStagingFileId = docId.replaceAll("[^a-zA-Z0-9_.-]", "_");
@@ -465,13 +516,12 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 // Ensure unique filenames if multiple docs might simplify to the same staging ID
                 anseriniStagingFileId = anseriniStagingFileId + "_" + docCounter;
 
-
-                anseriniJsonDoc.put(Constants.ID, docId); // Use original Spring AI doc ID as Anserini's 'id' field
-                anseriniJsonDoc.put(Constants.CONTENTS, springDoc.getText());
+                anseriniJsonDoc.put(Constants.ID, docId); // Use original RetrievedDoc ID as Anserini's 'id' field
+                anseriniJsonDoc.put(Constants.CONTENTS, retrievedDoc.getText());
 
                 ObjectNode metadataNode = objectMapper.createObjectNode();
-                if (springDoc.getMetadata() != null) {
-                    springDoc.getMetadata().forEach((key, value) -> {
+                if (retrievedDoc.getMetadata() != null) {
+                    retrievedDoc.getMetadata().forEach((key, value) -> {
                         if (value != null) {
                             // Convert common types to string or appropriate JSON types
                             if (value instanceof String || value instanceof Number || value instanceof Boolean) {
@@ -485,7 +535,6 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 if (metadataNode.size() > 0) {
                     anseriniJsonDoc.set("metadata", metadataNode);
                 }
-
 
                 Path jsonFile = stagingPath.resolve(anseriniStagingFileId + ".json");
                 try {
@@ -706,7 +755,6 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             // Also store in raw if that's your primary content field for Anserini
             newLuceneDoc.add(new TextField(Constants.RAW, newContent, Field.Store.YES));
 
-
             // Preserve other metadata fields
             Map<String, Object> metadata = (Map<String, Object>) existingDocMap.get("metadata");
             if (metadata != null) {
@@ -733,7 +781,6 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     newLuceneDoc.add(new TextField("metadata", objectMapper.writeValueAsString(metadataNode), Field.Store.YES));
                 }
             }
-
 
             writer.updateDocument(new Term(Constants.ID, docId), newLuceneDoc);
             writer.commit();

@@ -18,6 +18,9 @@ package ai.kompile.app.chunker.sentence;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.modelmanager.ModelDescriptor;
 import lombok.extern.slf4j.Slf4j;
 import opennlp.tools.sentdetect.SentenceDetectorFactory;
 import opennlp.tools.sentdetect.SentenceDetectorME;
@@ -26,7 +29,6 @@ import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.context.annotation.ImportRuntimeHints;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -40,8 +42,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Stream;
-
 
 @Slf4j
 @Component("openNLPSentenceChunker")
@@ -51,15 +51,17 @@ public class OpenNLPSentenceChunker implements TextChunker {
     private static final String CHUNKER_NAME = "opennlp_sentence";
     public static final String OPTION_LANGUAGE = "language";
     private static final String DEFAULT_LANGUAGE = "en";
-    private static final String MODEL_FILENAME_PATTERN = "%s-sent.bin";
-    private static final String OPENNLP_MODELS_DIR = "models";
 
     private final Map<String, SentenceDetectorME> sentenceDetectors = new ConcurrentHashMap<>();
     private final List<String> availableLanguages = new ArrayList<>();
+    private final KompileModelManager modelManager;
 
     public OpenNLPSentenceChunker() {
-        // Discover available models in the classpath (e.g., bundled by RagPomGenerator)
-        discoverAvailableModels();
+        this.modelManager = new KompileModelManager();
+        
+        // Discover available languages from ModelConstants
+        discoverAvailableLanguages();
+        
         // Attempt to load a default model if available, e.g., English
         if (availableLanguages.contains(DEFAULT_LANGUAGE)) {
             try {
@@ -70,7 +72,7 @@ public class OpenNLPSentenceChunker implements TextChunker {
         } else if (!availableLanguages.isEmpty()) {
             log.info("Default language model '{}' not found. Available models: {}", DEFAULT_LANGUAGE, availableLanguages);
         } else {
-            log.warn("No OpenNLP sentence models found in classpath under '{}'. Please ensure models are bundled or downloadable.", OPENNLP_MODELS_DIR);
+            log.warn("No OpenNLP sentence models available. Models will be downloaded on-demand when requested.");
         }
     }
 
@@ -91,25 +93,10 @@ public class OpenNLPSentenceChunker implements TextChunker {
         }
     }
 
-    private void discoverAvailableModels() {
-        try {
-            ClassPathResource modelsDirResource = new ClassPathResource(OPENNLP_MODELS_DIR);
-            if (modelsDirResource.exists() && modelsDirResource.isFile() && modelsDirResource.getFile().isDirectory()) {
-                try (Stream<Path> paths = Files.list(modelsDirResource.getFile().toPath())) {
-                    paths.filter(path -> path.toString().endsWith("-sent.bin"))
-                            .map(path -> path.getFileName().toString().replace("-sent.bin", ""))
-                            .forEach(availableLanguages::add);
-                    log.info("Discovered OpenNLP sentence models for languages: {}", availableLanguages);
-                }
-            } else {
-                // Fallback for when running from within a JAR where direct file listing might not work as expected
-                log.warn("Could not list models in classpath resource folder: {}. Relying on pre-loaded/configured models.", OPENNLP_MODELS_DIR);
-                // As a simple fallback, assume 'en' if nothing else is found and allow dynamic download
-                if(availableLanguages.isEmpty()) availableLanguages.add("en");
-            }
-        } catch (IOException e) {
-            log.warn("Error discovering available OpenNLP models: {}", e.getMessage());
-        }
+    private void discoverAvailableLanguages() {
+        // Use ModelConstants to discover supported languages
+        availableLanguages.addAll(ModelConstants.getSupportedOpenNLPLanguages());
+        log.info("Discovered supported OpenNLP sentence languages: {}", availableLanguages);
     }
 
     private SentenceDetectorME loadModel(String languageCode) throws IOException {
@@ -117,26 +104,36 @@ public class OpenNLPSentenceChunker implements TextChunker {
             return sentenceDetectors.get(languageCode);
         }
 
-        String modelFilename = String.format(MODEL_FILENAME_PATTERN, languageCode);
+        // Check if language is supported
+        if (!ModelConstants.isOpenNLPLanguageSupported(languageCode)) {
+            throw new IOException("Unsupported language code for OpenNLP sentence detection: " + languageCode);
+        }
+
+        // Create model descriptor for this language
+        ModelDescriptor descriptor = ModelConstants.createOpenNLPSentenceModelDescriptor(languageCode);
+
+        // Ensure model is available through model manager
+        Path modelPath = modelManager.ensureModelAvailable(descriptor);
+        
+        if (!Files.exists(modelPath) || !Files.isRegularFile(modelPath)) {
+            throw new IOException("Model file not found at expected path after download: " + modelPath);
+        }
+
+        log.info("Loading OpenNLP sentence model for language '{}' from: {}", languageCode, modelPath.toAbsolutePath());
+
         InputStream modelIn = null;
         try {
-            // Try loading from classpath first (e.g., if bundled)
-            ClassPathResource modelResource = new ClassPathResource(OPENNLP_MODELS_DIR + "/" + modelFilename);
-            if (modelResource.exists()) {
-                modelIn = modelResource.getInputStream();
-                log.info("Loading OpenNLP model for language '{}' from classpath: {}", languageCode, modelResource.getPath());
-            } else {
-                log.warn("OpenNLP model for language '{}' not found in classpath at '{}/{}'. Model should be bundled or pre-downloaded.",
-                        languageCode, OPENNLP_MODELS_DIR, modelFilename);
-                throw new IOException("Model for language '" + languageCode + "' not found in classpath and runtime download is disabled in this context.");
-            }
-
+            modelIn = Files.newInputStream(modelPath);
             SentenceModel model = new SentenceModel(modelIn);
             SentenceDetectorME detector = new SentenceDetectorME(model);
             sentenceDetectors.put(languageCode, detector);
+            
+            // Ensure language is in available list
             if (!availableLanguages.contains(languageCode)) {
                 availableLanguages.add(languageCode);
             }
+            
+            log.info("Successfully loaded OpenNLP sentence model for language: {}", languageCode);
             return detector;
         } finally {
             if (modelIn != null) {
@@ -193,6 +190,7 @@ public class OpenNLPSentenceChunker implements TextChunker {
                 metadata.put("chunk_number", chunkNumber++);
                 metadata.put("chunker", getName());
                 metadata.put("language", language);
+                metadata.put("chunk_type", "sentence");
                 
                 // Create RetrievedDoc using proper constructor
                 RetrievedDoc chunk;
@@ -217,10 +215,6 @@ public class OpenNLPSentenceChunker implements TextChunker {
 
     @Override
     public List<String> getSupportedLanguages() {
-        if (availableLanguages.isEmpty() && !sentenceDetectors.isEmpty()) {
-            // If discovery failed but models were loaded programmatically
-            return new ArrayList<>(sentenceDetectors.keySet());
-        }
         return Collections.unmodifiableList(new ArrayList<>(availableLanguages));
     }
 
@@ -229,6 +223,36 @@ public class OpenNLPSentenceChunker implements TextChunker {
         Map<String, Object> defaults = new HashMap<>();
         defaults.put(OPTION_LANGUAGE, DEFAULT_LANGUAGE);
         defaults.put("preserveParagraphs", false); // Sentence chunking doesn't preserve paragraphs by nature
+        defaults.put("chunkSize", Integer.MAX_VALUE); // Sentence chunking doesn't use character limits
+        defaults.put("overlap", 0); // Sentence chunking doesn't overlap by default
         return defaults;
+    }
+
+    @Override
+    public void validateDocument(RetrievedDoc document) {
+        // Use the default validation from the interface
+        TextChunker.super.validateDocument(document);
+        
+        // Add any OpenNLP-specific validation if needed
+        String text = document.getText();
+        if (text.length() > 1_000_000) { // 1MB text limit as example
+            log.warn("Document text is very large ({} characters). This may impact performance.", text.length());
+        }
+    }
+
+    @Override
+    public Map<String, Object> prepareOptions(Map<String, Object> options) {
+        // Use the default preparation from the interface
+        Map<String, Object> mergedOptions = TextChunker.super.prepareOptions(options);
+        
+        // Validate OpenNLP-specific options
+        String language = (String) mergedOptions.get(OPTION_LANGUAGE);
+        if (language != null && !ModelConstants.isOpenNLPLanguageSupported(language)) {
+            log.warn("Requested language '{}' is not supported by OpenNLP. Falling back to default '{}'.", 
+                    language, DEFAULT_LANGUAGE);
+            mergedOptions.put(OPTION_LANGUAGE, DEFAULT_LANGUAGE);
+        }
+        
+        return mergedOptions;
     }
 }
