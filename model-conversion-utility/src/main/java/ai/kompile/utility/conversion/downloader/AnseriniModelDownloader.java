@@ -108,12 +108,10 @@ public class AnseriniModelDownloader {
     }
     
     private final Path outputDirectory;
-    private final OnnxImporterService onnxImporter;
     private final boolean parallelProcessing;
     
     public AnseriniModelDownloader(String outputDir, boolean parallelProcessing) {
         this.outputDirectory = Paths.get(outputDir != null ? outputDir : "./anserini-models");
-        this.onnxImporter = new OnnxImporterService();
         this.parallelProcessing = parallelProcessing;
         
         try {
@@ -314,7 +312,8 @@ public class AnseriniModelDownloader {
     private void convertToSameDiff(Path onnxPath, Path sameDiffPath) throws IOException {
         try {
             // Use default conversion parameters - works for most Anserini models
-            onnxImporter.importModel(
+            OnnxImporterService onnxImporterService = new OnnxImporterService();
+            onnxImporterService.importModel(
                 onnxPath.toFile(),
                 sameDiffPath.toFile(),
                 new HashMap<>(), // Empty dynamic variables map

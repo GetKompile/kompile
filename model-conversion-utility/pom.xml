@@ -80,6 +80,12 @@
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
         </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-importer-onnx</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
