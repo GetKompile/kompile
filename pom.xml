@@ -35,6 +35,7 @@
     <module>kompile-model-importer-tensorflow</module>
     <module>kompile-model-importer-onnx</module>
     <module>kompile-model-importer-keras</module>
+    <module>model-conversion-utility</module>
   </modules>
 
 

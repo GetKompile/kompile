@@ -28,6 +28,8 @@ public class ModelConstants {
     public static final String ENV_KOMPILE_MODEL_CACHE_DIR = "KOMPILE_MODEL_CACHE_DIR";
     public static final String DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR = ".kompile" + File.separator + "models";
 
+    // Base URL for SameDiff encoder models
+    public static final String SAMEDIFF_ENCODER_BASE_URL = "https://github.com/GetKompile/kompile/releases/download/opennlp/";
 
     // OpenNLP Constants
     public static final String OPENNLP_MODEL_BASE_URL = "https://dlcdn.apache.org/opennlp/models/ud-models-1.2/";
@@ -146,55 +148,279 @@ public class ModelConstants {
         return ANSERINI_INDEX_DESCRIPTORS.get(indexId);
     }
 
+    // SameDiff Encoder Models - Dense Encoders
+    private static final Map<String, ModelDescriptor> SAMEDIFF_DENSE_ENCODER_DESCRIPTORS;
+    static {
+        Map<String, ModelDescriptor> denseEncoders = new HashMap<>();
+        
+        // BGE Base English v1.5
+        denseEncoders.put("bge-base-en-v1.5", new ModelDescriptor(
+                "samediff_encoder_bge-base-en-v1.5",
+                ModelType.SAMEDIFF_DENSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "bge-base-en-v1.5.sd",
+                "samediff/encoders/dense/bge-base-en-v1.5/bge-base-en-v1.5.sd",
+                "v1.5", null,
+                Map.of(
+                    "description", "BGE Base English v1.5 - Dense retrieval encoder",
+                    "framework", "samediff",
+                    "model_type", "dense",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "bge-base-en-v1.5-vocab.txt",
+                    "max_sequence_length", 512,
+                    "normalize_embeddings", true,
+                    "instruction_prefix", "Represent this sentence for searching relevant passages: ",
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "last_hidden_state"
+                )
+        ));
 
-    // Anserini Encoder Models (Neural network files like ONNX, TF, DL4J for encoders)
-    // These are distinct from Lucene Indexes.
+        // CosDPR Distil
+        denseEncoders.put("cosdpr-distil", new ModelDescriptor(
+                "samediff_encoder_cosdpr-distil",
+                ModelType.SAMEDIFF_DENSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "cosdpr-distil.sd",
+                "samediff/encoders/dense/cosdpr-distil/cosdpr-distil.sd",
+                "distil", null,
+                Map.of(
+                    "description", "CosDPR Distil - Dense passage retrieval encoder",
+                    "framework", "samediff",
+                    "model_type", "dense",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "cosdpr-distil-vocab.txt",
+                    "max_sequence_length", 512,
+                    "normalize_embeddings", false,
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "pooler_output"
+                )
+        ));
+
+        // Arctic Embed Large
+        denseEncoders.put("arctic-embed-l", new ModelDescriptor(
+                "samediff_encoder_arctic-embed-l",
+                ModelType.SAMEDIFF_DENSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "arctic-embed-l.sd",
+                "samediff/encoders/dense/arctic-embed-l/arctic-embed-l.sd",
+                "large", null,
+                Map.of(
+                    "description", "Snowflake Arctic Embed Large - Dense retrieval encoder",
+                    "framework", "samediff",
+                    "model_type", "dense",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "arctic-embed-l-vocab.txt",
+                    "max_sequence_length", 512,
+                    "normalize_embeddings", true,
+                    "instruction_prefix", "Represent this sentence for searching relevant passages: ",
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "last_hidden_state"
+                )
+        ));
+
+        SAMEDIFF_DENSE_ENCODER_DESCRIPTORS = Collections.unmodifiableMap(denseEncoders);
+    }
+
+    // SameDiff Encoder Models - Sparse Encoders
+    private static final Map<String, ModelDescriptor> SAMEDIFF_SPARSE_ENCODER_DESCRIPTORS;
+    static {
+        Map<String, ModelDescriptor> sparseEncoders = new HashMap<>();
+
+        // SPLADE++ EnsembleDistil
+        sparseEncoders.put("splade-pp-ed", new ModelDescriptor(
+                "samediff_encoder_splade-pp-ed",
+                ModelType.SAMEDIFF_SPARSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "splade-pp-ed.sd",
+                "samediff/encoders/sparse/splade-pp-ed/splade-pp-ed.sd",
+                "ensemble-distil", null,
+                Map.of(
+                    "description", "SPLADE++ EnsembleDistil - Sparse retrieval encoder",
+                    "framework", "samediff",
+                    "model_type", "sparse",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "splade-pp-ed-vocab.txt",
+                    "max_sequence_length", 256,
+                    "weight_range", 10,
+                    "quant_range", 256,
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "logits"
+                )
+        ));
+
+        // SPLADE++ SelfDistil
+        sparseEncoders.put("splade-pp-sd", new ModelDescriptor(
+                "samediff_encoder_splade-pp-sd",
+                ModelType.SAMEDIFF_SPARSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "splade-pp-sd.sd",
+                "samediff/encoders/sparse/splade-pp-sd/splade-pp-sd.sd",
+                "self-distil", null,
+                Map.of(
+                    "description", "SPLADE++ SelfDistil - Sparse retrieval encoder",
+                    "framework", "samediff",
+                    "model_type", "sparse",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "splade-pp-sd-vocab.txt",
+                    "max_sequence_length", 256,
+                    "weight_range", 10,
+                    "quant_range", 256,
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "logits"
+                )
+        ));
+
+        // UniCOIL
+        sparseEncoders.put("unicoil", new ModelDescriptor(
+                "samediff_encoder_unicoil",
+                ModelType.SAMEDIFF_SPARSE_ENCODER,
+                SAMEDIFF_ENCODER_BASE_URL + "unicoil.sd",
+                "samediff/encoders/sparse/unicoil/unicoil.sd",
+                "msmarco", null,
+                Map.of(
+                    "description", "UniCOIL - Universal Contextualized Inverted List sparse encoder",
+                    "framework", "samediff",
+                    "model_type", "sparse",
+                    "vocab_url", SAMEDIFF_ENCODER_BASE_URL + "unicoil-vocab.txt",
+                    "max_sequence_length", 512,
+                    "weight_range", 5,
+                    "quant_range", 255,
+                    "input_tensor_names", "input_ids,attention_mask,token_type_ids",
+                    "output_tensor_names", "logits"
+                )
+        ));
+
+        SAMEDIFF_SPARSE_ENCODER_DESCRIPTORS = Collections.unmodifiableMap(sparseEncoders);
+    }
+
+    // Accessor methods for SameDiff encoders
+    public static ModelDescriptor getSameDiffDenseEncoderDescriptor(String modelId) {
+        return SAMEDIFF_DENSE_ENCODER_DESCRIPTORS.get(modelId);
+    }
+
+    public static ModelDescriptor getSameDiffSparseEncoderDescriptor(String modelId) {
+        return SAMEDIFF_SPARSE_ENCODER_DESCRIPTORS.get(modelId);
+    }
+
+    public static Map<String, ModelDescriptor> getAllSameDiffDenseEncoders() {
+        return SAMEDIFF_DENSE_ENCODER_DESCRIPTORS;
+    }
+
+    public static Map<String, ModelDescriptor> getAllSameDiffSparseEncoders() {
+        return SAMEDIFF_SPARSE_ENCODER_DESCRIPTORS;
+    }
+
+    // Combined accessor for any SameDiff encoder
+    public static ModelDescriptor getSameDiffEncoderDescriptor(String modelId) {
+        ModelDescriptor descriptor = SAMEDIFF_DENSE_ENCODER_DESCRIPTORS.get(modelId);
+        if (descriptor == null) {
+            descriptor = SAMEDIFF_SPARSE_ENCODER_DESCRIPTORS.get(modelId);
+        }
+        return descriptor;
+    }
+
+    // Legacy ONNX/Anserini Encoder Models (kept for backward compatibility)
     private static final Map<String, ModelDescriptor> ANSERINI_ENCODER_MODEL_DESCRIPTORS;
     static {
         Map<String, ModelDescriptor> encoderModels = new HashMap<>();
-        // **IMPORTANT**: Replace placeholder URLs with actual downloadable URLs for these models.
-        // These might come from your Anserini fork's releases, HuggingFace, or other model repositories.
-
-        // Example for BGE ONNX model (user needs to provide actual URL)
+        
+        // BGE ONNX model (legacy)
         encoderModels.put("bge-base-en-v1.5-onnx", new ModelDescriptor(
                 "anserini_encoder_bge-base-en-v1.5-onnx",
                 ModelType.ANSERINI_ENCODER_MODEL,
-                "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx?download=true", // Placeholder, verify/update
-                "anserini/encoders/onnx/bge-base-en-v1.5/model.onnx", // Cache subpath
-                "v1.5", null, // Checksum if available
-                Map.of("description", "BGE Base English v1.5 ONNX model for Anserini dense encoding.", "framework", "onnx")
+                "https://rgw.cs.uwaterloo.ca/pyserini/data/bge-base-en-v1.5-optimized.onnx",
+                "anserini/encoders/onnx/bge-base-en-v1.5/model.onnx",
+                "v1.5", null,
+                Map.of("description", "BGE Base English v1.5 ONNX model (legacy)", "framework", "onnx")
         ));
 
-        // Example for SPLADE++ SelfDistil ONNX model (user needs to provide actual URL)
-        // Pyserini uses castorini/splade-pp-selfdistil from HuggingFace.
-        // The specific .onnx file path within that repo needs to be identified if not directly downloadable.
+        // SPLADE++ SelfDistil ONNX model (legacy)
         encoderModels.put("splade-pp-sd-onnx", new ModelDescriptor(
                 "anserini_encoder_splade-pp-sd-onnx",
                 ModelType.ANSERINI_ENCODER_MODEL,
-                "https://huggingface.co/castorini/splade-pp-selfdistil/resolve/main/splade-pp-self-distil.onnx?download=true", // Placeholder, verify/update
+                "https://rgw.cs.uwaterloo.ca/pyserini/data/splade-pp-sd-optimized.onnx",
                 "anserini/encoders/onnx/splade-pp-sd/splade-pp-self-distil.onnx",
-                "castorini-main", null,
-                Map.of("description", "SPLADE++ SelfDistil ONNX model for Anserini sparse encoding.", "framework", "onnx")
+                "self-distil", null,
+                Map.of("description", "SPLADE++ SelfDistil ONNX model (legacy)", "framework", "onnx")
         ));
-
-        // Example for UniCOIL (original from MS MARCO, typically Tile-optimized)
-        // This might be a DL4J zip or specific ONNX. Assuming an ONNX version for consistency.
-        encoderModels.put("unicoil-msmarco-passage-onnx", new ModelDescriptor(
-                "anserini_encoder_unicoil-msmarco-passage-onnx",
-                ModelType.ANSERINI_ENCODER_MODEL,
-                "http://your-model-host.com/path/to/unicoil_msmarco_passage.onnx", // Placeholder
-                "anserini/encoders/onnx/unicoil-msmarco-passage/model.onnx",
-                "msmarco-v1", null,
-                Map.of("description", "UniCOIL (MS MARCO Passage) ONNX model for Anserini sparse encoding.", "framework", "onnx")
-        ));
-
-        // Add other SameDiff/ONNX/DL4J encoder models your Anserini fork uses.
-        // For example, if ArcticEmbedSameDiffEncoder uses a specific downloadable DL4J model:
-        // encoderModels.put("arctic-embed-dl4j", new ModelDescriptor(...));
 
         ANSERINI_ENCODER_MODEL_DESCRIPTORS = Collections.unmodifiableMap(encoderModels);
     }
+
     public static ModelDescriptor getAnseriniEncoderModelDescriptor(String modelId) {
         return ANSERINI_ENCODER_MODEL_DESCRIPTORS.get(modelId);
+    }
+
+    // Helper methods for model configuration extraction
+    public static String getVocabUrl(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            return (String) descriptor.getMetadata().get("vocab_url");
+        }
+        return null;
+    }
+
+    public static int getMaxSequenceLength(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            Object maxSeq = descriptor.getMetadata().get("max_sequence_length");
+            if (maxSeq instanceof Integer) {
+                return (Integer) maxSeq;
+            }
+        }
+        return 512; // Default
+    }
+
+    public static boolean shouldNormalizeEmbeddings(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            Object normalize = descriptor.getMetadata().get("normalize_embeddings");
+            if (normalize instanceof Boolean) {
+                return (Boolean) normalize;
+            }
+        }
+        return false; // Default
+    }
+
+    public static String getInstructionPrefix(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            return (String) descriptor.getMetadata().get("instruction_prefix");
+        }
+        return null;
+    }
+
+    public static String[] getInputTensorNames(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            String tensorNames = (String) descriptor.getMetadata().get("input_tensor_names");
+            if (tensorNames != null) {
+                return tensorNames.split(",");
+            }
+        }
+        return new String[]{"input_ids", "attention_mask", "token_type_ids"}; // Default
+    }
+
+    public static String[] getOutputTensorNames(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            String tensorNames = (String) descriptor.getMetadata().get("output_tensor_names");
+            if (tensorNames != null) {
+                return tensorNames.split(",");
+            }
+        }
+        return new String[]{"last_hidden_state"}; // Default for dense models
+    }
+
+    public static int getWeightRange(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            Object weightRange = descriptor.getMetadata().get("weight_range");
+            if (weightRange instanceof Integer) {
+                return (Integer) weightRange;
+            }
+        }
+        return 10; // Default for sparse models
+    }
+
+    public static int getQuantRange(String modelId) {
+        ModelDescriptor descriptor = getSameDiffEncoderDescriptor(modelId);
+        if (descriptor != null && descriptor.getMetadata() != null) {
+            Object quantRange = descriptor.getMetadata().get("quant_range");
+            if (quantRange instanceof Integer) {
+                return (Integer) quantRange;
+            }
+        }
+        return 256; // Default for sparse models
     }
 }
