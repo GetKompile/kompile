@@ -34,9 +34,23 @@ public enum ModelType {
     /**
      * Anserini encoder model. These are typically neural network model files
      * (e.g., ONNX, TensorFlow SavedModel, DL4J zip) used by Anserini's
-     * dense or sparse encoders (like SameDiff encoders).
+     * dense or sparse encoders (legacy ONNX-based encoders).
      */
     ANSERINI_ENCODER_MODEL,
+
+    /**
+     * SameDiff dense encoder model. These are .sd files containing
+     * dense retrieval encoders converted to SameDiff format for use
+     * with BGE, Arctic Embed, CosDPR, etc.
+     */
+    SAMEDIFF_DENSE_ENCODER,
+
+    /**
+     * SameDiff sparse encoder model. These are .sd files containing
+     * sparse retrieval encoders converted to SameDiff format for use
+     * with SPLADE++, UniCOIL, etc.
+     */
+    SAMEDIFF_SPARSE_ENCODER,
 
     /**
      * Other generic NLP models not fitting specific categories above.
