@@ -16,7 +16,7 @@
 
 package ai.kompile.model.importer.onnx.config;
 
-import ai.kompile.model.importer.onnx.OnnxImporterService;
+import ai.kompile.model.onnx.OnnxFrameworkImporterService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -27,7 +27,7 @@ import org.springframework.context.annotation.Configuration;
 public class OnnxImporterConfig {
 
     @Bean
-    public OnnxImporterService onnxImporterService() {
-        return new OnnxImporterService();
+    public OnnxFrameworkImporterService onnxImporterService() {
+        return new OnnxFrameworkImporterService();
     }
 }

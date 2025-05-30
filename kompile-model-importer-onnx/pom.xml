@@ -109,13 +109,14 @@
                 <artifactId>maven-compiler-plugin</artifactId>
             </plugin>
 
-            <!-- Spring Boot plugin -->
+            <!-- Spring Boot plugin with classifier to preserve original JAR -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring-boot.version}</version>
                 <configuration>
                     <mainClass>ai.kompile.model.importer.onnx.OnnxImporterApplication</mainClass>
+                    <classifier>boot</classifier>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

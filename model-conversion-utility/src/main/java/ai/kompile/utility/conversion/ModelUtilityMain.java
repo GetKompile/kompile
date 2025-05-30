@@ -18,7 +18,7 @@ package ai.kompile.utility.conversion;
 
 import ai.kompile.utility.conversion.config.ConversionConfig;
 import ai.kompile.utility.conversion.config.ModelDefinition;
-import ai.kompile.utility.conversion.downloader.AnseriniModelDownloader;
+import ai.kompile.utility.conversion.downloader.EncoderModelDownloader;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import picocli.CommandLine;
@@ -279,7 +279,7 @@ public class ModelUtilityMain implements Callable<Integer> {
             }
 
             if (listModels) {
-                AnseriniModelDownloader.printAvailableModels();
+                EncoderModelDownloader.printAvailableModels();
                 return 0;
             }
 
@@ -290,7 +290,7 @@ public class ModelUtilityMain implements Callable<Integer> {
             }
 
             try {
-                AnseriniModelDownloader downloader = new AnseriniModelDownloader(outputDir, parallel);
+                EncoderModelDownloader downloader = new EncoderModelDownloader(outputDir, parallel);
                 
                 if (specificModel != null) {
                     // Download specific model
@@ -449,7 +449,7 @@ public class ModelUtilityMain implements Callable<Integer> {
         public Integer call() throws Exception {
             if (anseriniModels) {
                 // List Anserini models
-                AnseriniModelDownloader.printAvailableModels();
+                EncoderModelDownloader.printAvailableModels();
             } else if (conversionConfigFile != null) {
                 // List models from conversion config
                 try {
