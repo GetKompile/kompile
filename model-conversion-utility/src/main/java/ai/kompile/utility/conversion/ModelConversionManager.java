@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  * Main orchestrator for the model conversion process.
  * Coordinates downloading, converting, and uploading models.
  */
-public class ModelConversionManager {
+public class ModelConversionManager implements AutoCloseable {
     private static final Logger logger = LoggerFactory.getLogger(ModelConversionManager.class);
     
     private final ConversionConfig config;
