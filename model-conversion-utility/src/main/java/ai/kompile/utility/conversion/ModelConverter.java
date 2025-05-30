@@ -16,7 +16,7 @@
 
 package ai.kompile.utility.conversion;
 
-import ai.kompile.model.importer.onnx.OnnxImporterService;
+import ai.kompile.model.onnx.OnnxFrameworkImporterService;
 import ai.kompile.utility.conversion.config.ModelDefinition;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
@@ -36,12 +36,12 @@ import java.util.Map;
 public class ModelConverter {
     private static final Logger logger = LoggerFactory.getLogger(ModelConverter.class);
     
-    private final OnnxImporterService onnxImporter;
+    private final OnnxFrameworkImporterService onnxImporter;
     private final Path workingDirectory;
 
     public ModelConverter(Path workingDirectory) {
         this.workingDirectory = workingDirectory;
-        this.onnxImporter = new OnnxImporterService();
+        this.onnxImporter = new OnnxFrameworkImporterService();
     }
 
     /**
@@ -140,7 +140,7 @@ public class ModelConverter {
     /**
      * Get detailed information about an ONNX model.
      */
-    public OnnxImporterService.ModelInfo getModelInfo(Path onnxModelPath) throws IOException {
+    public OnnxFrameworkImporterService.ModelInfo getModelInfo(Path onnxModelPath) throws IOException {
         return onnxImporter.getModelInfo(onnxModelPath.toFile());
     }
 
@@ -223,10 +223,10 @@ public class ModelConverter {
         private final String errorMessage;
         private final int inputCount;
         private final int outputCount;
-        private final OnnxImporterService.ModelInfo modelInfo;
+        private final OnnxFrameworkImporterService.ModelInfo modelInfo;
 
         private ValidationResult(boolean success, String errorMessage, int inputCount, 
-                               int outputCount, OnnxImporterService.ModelInfo modelInfo) {
+                               int outputCount, OnnxFrameworkImporterService.ModelInfo modelInfo) {
             this.success = success;
             this.errorMessage = errorMessage;
             this.inputCount = inputCount;
@@ -235,7 +235,7 @@ public class ModelConverter {
         }
 
         public static ValidationResult success(int inputCount, int outputCount, 
-                                             OnnxImporterService.ModelInfo modelInfo) {
+                                             OnnxFrameworkImporterService.ModelInfo modelInfo) {
             return new ValidationResult(true, null, inputCount, outputCount, modelInfo);
         }
 
@@ -247,6 +247,6 @@ public class ModelConverter {
         public String getErrorMessage() { return errorMessage; }
         public int getInputCount() { return inputCount; }
         public int getOutputCount() { return outputCount; }
-        public OnnxImporterService.ModelInfo getModelInfo() { return modelInfo; }
+        public OnnxFrameworkImporterService.ModelInfo getModelInfo() { return modelInfo; }
     }
 }

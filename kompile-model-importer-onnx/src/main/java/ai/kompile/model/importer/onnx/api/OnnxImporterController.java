@@ -16,7 +16,7 @@
 
 package ai.kompile.model.importer.onnx.api;
 
-import ai.kompile.model.importer.onnx.OnnxImporterService;
+import ai.kompile.model.onnx.OnnxFrameworkImporterService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -45,7 +45,7 @@ import java.util.UUID;
 @Slf4j
 public class OnnxImporterController {
 
-    private final OnnxImporterService importerService;
+    private final OnnxFrameworkImporterService importerService;
 
     /**
      * Import an ONNX model from uploaded file.
@@ -277,12 +277,12 @@ public class OnnxImporterController {
     public static class AnalysisResponse {
         private boolean success;
         private String inputFile;
-        private List<OnnxImporterService.InputInfo> inputs;
+        private List<OnnxFrameworkImporterService.InputInfo> inputs;
         private List<String> outputs;
         private Map<String, long[]> suggestedDynamicVariables;
         private String error;
 
-        public static AnalysisResponse success(String inputFile, List<OnnxImporterService.InputInfo> inputs, 
+        public static AnalysisResponse success(String inputFile, List<OnnxFrameworkImporterService.InputInfo> inputs,
                                              List<String> outputs, Map<String, long[]> suggestions) {
             return AnalysisResponse.builder()
                 .success(true)

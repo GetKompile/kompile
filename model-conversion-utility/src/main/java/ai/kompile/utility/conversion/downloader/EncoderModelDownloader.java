@@ -16,11 +16,10 @@
 
 package ai.kompile.utility.conversion.downloader;
 
-import ai.kompile.model.importer.onnx.OnnxImporterService;
+import ai.kompile.model.onnx.OnnxFrameworkImporterService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -43,8 +42,8 @@ import java.util.concurrent.TimeUnit;
  * This utility downloads ONNX models from Pyserini/Anserini sources and converts them 
  * to SameDiff format for use with Kompile's SameDiff encoders.
  */
-public class AnseriniModelDownloader {
-    private static final Logger logger = LoggerFactory.getLogger(AnseriniModelDownloader.class);
+public class EncoderModelDownloader {
+    private static final Logger logger = LoggerFactory.getLogger(EncoderModelDownloader.class);
     
     // Model definitions with their download URLs
     private static final Map<String, ModelInfo> MODELS = new HashMap<>();
@@ -110,7 +109,7 @@ public class AnseriniModelDownloader {
     private final Path outputDirectory;
     private final boolean parallelProcessing;
     
-    public AnseriniModelDownloader(String outputDir, boolean parallelProcessing) {
+    public EncoderModelDownloader(String outputDir, boolean parallelProcessing) {
         this.outputDirectory = Paths.get(outputDir != null ? outputDir : "./anserini-models");
         this.parallelProcessing = parallelProcessing;
         
@@ -312,8 +311,8 @@ public class AnseriniModelDownloader {
     private void convertToSameDiff(Path onnxPath, Path sameDiffPath) throws IOException {
         try {
             // Use default conversion parameters - works for most Anserini models
-            OnnxImporterService onnxImporterService = new OnnxImporterService();
-            onnxImporterService.importModel(
+            OnnxFrameworkImporterService onnxFrameworkImporterService = new OnnxFrameworkImporterService();
+            onnxFrameworkImporterService.importModel(
                 onnxPath.toFile(),
                 sameDiffPath.toFile(),
                 new HashMap<>(), // Empty dynamic variables map

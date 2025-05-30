@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.kompile.model.importer.onnx;
+package ai.kompile.model.onnx;
 
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.autodiff.samediff.SameDiff;
@@ -35,11 +35,11 @@ import java.util.Map;
  * Provides programmatic access to ONNX import functionality.
  */
 @Slf4j
-public class OnnxImporterService {
+public class OnnxFrameworkImporterService {
 
     private final OnnxFrameworkImporter importer;
 
-    public OnnxImporterService() {
+    public OnnxFrameworkImporterService() {
         this.importer = new OnnxFrameworkImporter();
     }
 
