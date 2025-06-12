@@ -1,16 +1,16 @@
 /*
- *   Copyright 2025 Kompile Inc.
+ * Copyright 2025 Kompile Inc.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
  * limitations under the License.
  */
 
@@ -48,12 +48,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Callable;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
 @CommandLine.Command(name = "rag-pom-generate", mixinStandardHelpOptions = false,
         description = "Generates a pom.xml for a RAG MCP Assistant application instance.")
 public class RagPomGenerator implements Callable<Void> {
+
+    // ##################################################################################
+    // UPDATED: Default values for options are modified to match the target pom.xml
+    // ##################################################################################
 
     @CommandLine.Option(names = {"--databaseUrl"},
             description = "Database URL. Will auto-create database if it doesn't exist",
@@ -94,33 +100,29 @@ public class RagPomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--includeAppMain"}, description = "Include kompile-app-main module", defaultValue = "true", negatable = true)
     private boolean includeAppMain;
-    @CommandLine.Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeAppRFCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
     private boolean includeAppCore;
     @CommandLine.Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
 
-    // Original Tika loader (deprecated/heavy)
     @CommandLine.Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module (deprecated - use specialized loaders instead)")
     private boolean includeLoaderTika = false;
     @CommandLine.Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
     private boolean includeLoaderPdf = false;
-
-    // New specialized loader modules
     @CommandLine.Option(names = {"--includeLoaderMicrosoft"}, description = "Include kompile-loader-microsoft module for Office documents")
     private boolean includeLoaderMicrosoft = false;
     @CommandLine.Option(names = {"--includeLoaderMail"}, description = "Include kompile-loader-mail module for email parsing")
     private boolean includeLoaderMail = false;
-    @CommandLine.Option(names = {"--includeLoaderPdfExtended"}, description = "Include kompile-loader-pdf-extended module for advanced PDF processing")
-    private boolean includeLoaderPdfExtended = false;
+    @CommandLine.Option(names = {"--includeLoaderPdfExtended"}, description = "Include kompile-loader-pdf-extended module for advanced PDF processing", defaultValue = "true", negatable = true)
+    private boolean includeLoaderPdfExtended;
 
-    @CommandLine.Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module")
-    private boolean includeAnserini = false;
-
+    @CommandLine.Option(names = {"--includeAnserini"}, description = "Include kompile-app-anserini module", defaultValue = "true", negatable = true)
+    private boolean includeAnserini;
     @CommandLine.Option(names = {"--includeEmbeddingAnserini"}, description = "Include kompile-embedding-anserini module for BGE, Arctic Embed, and other SameDiff-based embeddings")
     private boolean includeEmbeddingAnserini = false;
+    @CommandLine.Option(names = {"--includeVectorStoreAnserini"}, description = "Include kompile-vectorstore-anserini", defaultValue = "true", negatable = true)
+    private boolean includeVectorStoreAnserini;
 
-    @CommandLine.Option(names = {"--includeVectorStoreAnserini"}, description = "Include kompile-vectorstore-anserini")
-    private boolean includeVectorStoreAnserini = false;
     @CommandLine.Option(names = {"--includeLlmOpenai"}, description = "Include kompile-app-openai-llm module", defaultValue = "true", negatable = true)
     private boolean includeLlmOpenai;
     @CommandLine.Option(names = {"--includeLlmAnthropic"}, description = "Include kompile-app-anthropic-llm module")
@@ -131,22 +133,24 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeEmbeddingOpenai;
     @CommandLine.Option(names = {"--includeEmbeddingSentenceTransformer"}, description = "Include kompile-embedding-sentence-transformer module")
     private boolean includeEmbeddingSentenceTransformer = false;
+
     @CommandLine.Option(names = {"--includeVectorstoreChroma"}, description = "Include kompile-vectorstore-chroma module")
     private boolean includeVectorstoreChroma = false;
-    @CommandLine.Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeVectorstorePgvector"}, description = "Include kompile-vectorstore-pgvector module", defaultValue = "false", negatable = true)
     private boolean includeVectorstorePgvector;
+
     @CommandLine.Option(names = {"--includeToolFilesystem"}, description = "Include kompile-tool-filesystem module", defaultValue = "true", negatable = true)
     private boolean includeToolFilesystem;
     @CommandLine.Option(names = {"--includeToolRag"}, description = "Include kompile-tool-rag module", defaultValue = "true", negatable = true)
     private boolean includeToolRag;
+
     @CommandLine.Option(names = {"--includeEmbeddingPostgresml"}, description = "Include kompile-embedding-postgresml module")
     private boolean includeEmbeddingPostgresml = false;
     @CommandLine.Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
     private boolean includePgmlIndexer = false;
 
-    // Chunker Options
-    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module.")
-    private boolean includeChunkerSentence = false;
+    @CommandLine.Option(names = {"--includeChunkerSentence"}, description = "Include kompile-chunker-sentence module.", defaultValue = "true", negatable = true)
+    private boolean includeChunkerSentence;
     @CommandLine.Option(names = {"--includeChunkerRecursiveCharacter"}, description = "Include kompile-chunker-recursivecharacter module")
     private boolean includeChunkerRecursiveCharacter = false;
     @CommandLine.Option(names = {"--includeChunkerMarkdown"}, description = "Include kompile-chunker-markdown module")
@@ -160,7 +164,6 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--javacppExtension"},description = "An optional javacpp extension such as avx2 or cuda depending on the target set of dependencies.")
     private String javacppExtension;
 
-    // RESTORED as the single language flag
     @CommandLine.Option(names = {"--supportedLanguages"},
             description = "Comma-separated list of ISO 639-1 language codes (e.g., en,de,es). " +
                     "Used to determine which OpenNLP sentence models to download if --includeChunkerSentence is active. "+
@@ -171,26 +174,20 @@ public class RagPomGenerator implements Callable<Void> {
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
 
-
     @CommandLine.Option(names = {"--anserini-indexes"},
             description = "Comma-separated list of Anserini prebuilt index IDs to ensure are available (e.g., msmarco-passage-v1). " +
                     "Requires --includeAnserini to be true. Consult ModelConstants.java for available IDs.",
             split = ",", arity = "0..*")
     private List<String> anseriniIndexIds = new ArrayList<>();
 
-
-
     private KompileModelManager modelManager;
-    private Map<String, Path> resolvedModelPaths = new HashMap<>(); // Stores modelId -> Path to cached model
+    private Map<String, Path> resolvedModelPaths = new HashMap<>();
 
     @CommandLine.Option(names = {"--anserini-encoders"},
             description = "Comma-separated list of Anserini encoder model IDs (e.g., bge-base-en-v1.5-onnx, splade-pp-sd-onnx). " +
                     "Requires --includeAnserini to be true. Consult ModelConstants.java for available IDs.",
             split = ",", arity = "0..*")
     private List<String> anseriniEncoderModelIds = new ArrayList<>();
-
-
-
 
     private Model model;
     private final List<Dependency> defaultDependencies = new ArrayList<>();
@@ -326,9 +323,6 @@ public class RagPomGenerator implements Callable<Void> {
         buildArgsDom.addChild(buildArgElement);
     }
 
-
-
-    // Method to download models for the languages specified in the --supportedLanguages list
     private List<String> downloadOpenNLPModelsForSupportedLanguages(File projectBaseDir, List<String> languagesToDownload) throws IOException {
         List<String> successfullyDownloadedLocalFilenames = new ArrayList<>();
         if (languagesToDownload == null || languagesToDownload.isEmpty()) {
@@ -407,7 +401,7 @@ public class RagPomGenerator implements Callable<Void> {
 
     @Override
     public Void call() throws Exception {
-        this.modelManager = new KompileModelManager(); // Initialize model manager
+        this.modelManager = new KompileModelManager();
 
         model = new Model();
         model.setModelVersion("4.0.0");
@@ -435,8 +429,6 @@ public class RagPomGenerator implements Callable<Void> {
             throw new IOException("Could not create project directory: " + projectDir.getAbsolutePath());
         }
 
-        // --- Model Management Integration ---
-        // 1. OpenNLP Models
         if (includeChunkerSentence) {
             if (this.supportedLanguages == null || this.supportedLanguages.isEmpty()) {
                 this.supportedLanguages = Collections.singletonList("en");
@@ -472,7 +464,6 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
 
-        // 2. Anserini Lucene Indexes
         if (includeAnserini && this.anseriniIndexIds != null && !this.anseriniIndexIds.isEmpty()) {
             for (String indexIdInput : this.anseriniIndexIds) {
                 String indexId = indexIdInput.trim();
@@ -492,7 +483,6 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
 
-        // 3. Anserini Encoder Models (e.g., ONNX, DL4J files for SameDiff encoders)
         if (includeAnserini && this.anseriniEncoderModelIds != null
                 && !this.anseriniEncoderModelIds.isEmpty() || includeVectorStoreAnserini) {
             for (String encoderModelIdInput : this.anseriniEncoderModelIds) {
@@ -513,11 +503,7 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
 
-
-        // --- End Model Management Integration ---
-
         Properties props = new Properties();
-        // Populate props from existing logic (versions, start-class, etc.)
         props.setProperty("java.version", "17");
         props.setProperty("start-class", CORE_APP_MAIN_CLASS_FQCN);
         props.setProperty("kompile.project.version", this.ragMcpVersion);
@@ -536,8 +522,6 @@ public class RagPomGenerator implements Callable<Void> {
         props.setProperty("native.image.name", this.instanceArtifactId + "-native");
         props.setProperty("embedded-postgres.version", DEFAULT_EMBEDDED_POSTGRES_VERSION);
 
-
-        // Set default OpenNLP language from CLI options
         String defaultRuntimeLangForOpenNLP = "en";
         if (this.supportedLanguages != null && !this.supportedLanguages.isEmpty()) {
             String firstSpecifiedLang = this.supportedLanguages.get(0).toLowerCase().trim();
@@ -550,7 +534,7 @@ public class RagPomGenerator implements Callable<Void> {
             }
         }
         props.setProperty("kompile.opennlp.sentence.language", defaultRuntimeLangForOpenNLP);
-        props.setProperty("instanceArtifactId", this.instanceArtifactId); // Used by generateApplicationPropertiesFile
+        props.setProperty("instanceArtifactId", this.instanceArtifactId);
 
         model.setProperties(props);
 
@@ -558,7 +542,7 @@ public class RagPomGenerator implements Callable<Void> {
         addApplicationBuild();
 
         if (buildNative) {
-            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, Collections.emptyList()); // Models not bundled
+            addNativeProfile(CORE_APP_MAIN_CLASS_FQCN, Collections.emptyList());
         }
 
         addSpringRepositories();
@@ -573,7 +557,6 @@ public class RagPomGenerator implements Callable<Void> {
 
         generateApplicationPropertiesFile(projectDir, props);
 
-        // Conditional generation of other config files (unchanged from your original logic)
         if (includeEmbeddingPostgresml || includePgmlIndexer) {
             generatePgmlSchemaFiles(projectDir);
         }
@@ -597,30 +580,27 @@ public class RagPomGenerator implements Callable<Void> {
         File appPropsFile = new File(resourcesDir, "application.properties");
 
         try (FileWriter writer = new FileWriter(appPropsFile)) {
-            writeApplicationPropertiesHeaderCustom(writer, pomProperties); // Uses instanceArtifactId from pomProperties
+            writeApplicationPropertiesHeaderCustom(writer, pomProperties);
 
             if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
                 writeDatabaseConfiguration(writer);
                 writeSchemaManagementConfiguration(writer);
             }
             writeAutoConfigurationExclusions(writer);
-            writeProviderEnablementFlags(writer); // These use RagPomGenerator's boolean fields
+            writeProviderEnablementFlags(writer);
 
-            // Write structural configurations, including model paths derived from the cache
-            writeStructuralCustom(writer, pomProperties); // Uses pomProperties for some defaults
+            writeStructuralCustom(writer, pomProperties);
 
-            // Instructional properties for runtime model cache path
             writer.write("\n# --- Runtime Model Cache Configuration ---\n");
             writer.write("# Your application will attempt to load models from a central cache.\n");
             writer.write("# Set the " + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + " environment variable to specify the cache location.\n");
             String defaultCachePath = Paths.get(System.getProperty("user.home"), ModelConstants.DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR).toAbsolutePath().toString().replace("\\", "\\\\");
             writer.write("# If not set, it defaults to: " + defaultCachePath + "\n");
             writer.write("# RagPomGenerator used this cache path during generation: " + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "\n");
-            // This property will be resolved at runtime (from ENV or to the generator-time default if ENV is not set)
             writer.write("kompile.model.cache.path=${" + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + ":" + modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "}\n\n");
 
 
-            writeConfigurationTemplate(writer); // Writes examples/templates for user to fill
+            writeConfigurationTemplate(writer);
         }
         System.out.println("Generated application.properties: " + appPropsFile.getAbsolutePath());
     }
@@ -634,10 +614,9 @@ public class RagPomGenerator implements Callable<Void> {
 
         writer.write("# Logging for model loading and general app behavior\n");
         writer.write("logging.level.ai.kompile.cli.main.models=INFO\n");
-        writer.write("logging.level.ai.kompile.app=INFO\n"); // General app logging
+        writer.write("logging.level.ai.kompile.app=INFO\n");
         writer.write("logging.level.io.anserini=INFO\n\n");
 
-        // Add automatic PostgresML error debugging if enabled
         if (includeEmbeddingPostgresml || includePgmlIndexer) {
             writer.write("# =============================================================================\n");
             writer.write("# AUTOMATIC PostgresML ERROR DEBUGGING\n");
@@ -654,19 +633,17 @@ public class RagPomGenerator implements Callable<Void> {
         }
     }
 
-    // Modified to use the runtime cache path for models.
-    // pomProperties here can be used to fetch defaults if they were set (e.g., instanceArtifactId)
     private void writeStructuralCustom(FileWriter writer, Properties pomProperties) throws IOException {
         writer.write("# =============================================================================\n");
         writer.write("# STRUCTURAL CONFIGURATION\n");
         writer.write("# =============================================================================\n");
 
         writer.write("spring.application.name=" + pomProperties.getProperty("instanceArtifactId", this.instanceArtifactId) + "\n");
-        writer.write("server.port=8080\n\n"); // Default server port
+        writer.write("server.port=8080\n\n");
 
         writer.write("# This property defines the base directory from which models will be loaded AT RUNTIME.\n");
         writer.write("# It defaults to the path used during generation if KOMPILE_MODEL_CACHE_DIR is not set.\n");
-        String runtimeCachePathProperty = "kompile.runtime.model.cache.path"; // Used by application code
+        String runtimeCachePathProperty = "kompile.runtime.model.cache.path";
         String runtimeCachePathValue = "${" + ModelConstants.ENV_KOMPILE_MODEL_CACHE_DIR + ":" +
                 modelManager.getBaseCachePath().toAbsolutePath().toString().replace("\\", "\\\\") + "}";
         writer.write(runtimeCachePathProperty + "=" + runtimeCachePathValue + "\n\n");
@@ -681,19 +658,12 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("# Anserini Configuration (runtime will load indexes/models from cache)\n");
             writer.write("kompile.anserini.models.basepath=${" + runtimeCachePathProperty + "}/anserini\n");
 
-            // Specific Lucene index paths (resolved to cache)
             if (this.anseriniIndexIds != null && !this.anseriniIndexIds.isEmpty()) {
                 for (String indexId : this.anseriniIndexIds) {
                     String trimmedIndexId = indexId.trim();
                     ModelDescriptor desc = ModelConstants.getAnseriniIndexDescriptor(trimmedIndexId);
                     if (desc != null && resolvedModelPaths.containsKey(desc.getModelId())) {
-                        // The actual value will be the absolute path from resolvedModelPaths
-                        // but for runtime, it's better if Anserini components can resolve it
-                        // relative to kompile.anserini.models.basepath or use a full path constructed at runtime.
-                        // Let's write the subpath relative to the anserini cache root.
                         writer.write("anserini.indexPath." + trimmedIndexId + "=${kompile.anserini.models.basepath}/indexes/" + trimmedIndexId + "\n");
-                        // Or, if anseriniDesc.getExpectedCacheSubpath() is anserini/indexes/indexId:
-                        // writer.write("anserini.indexPath." + trimmedIndexId + "=${kompile.runtime.model.cache.path}/" + desc.getExpectedCacheSubpath().replace("\\", "/") + "\n");
                     }
                 }
             } else {
@@ -702,21 +672,16 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("anserini.corpusPath=${kompile.anserini.models.basepath}/corpus/default_corpus\n");
             }
 
-            // Specific Anserini Encoder Model paths (resolved to cache)
             if (this.anseriniEncoderModelIds != null && !this.anseriniEncoderModelIds.isEmpty()) {
                 writer.write("\n# Anserini Encoder Model Paths (runtime will load from cache)\n");
                 for (String encoderModelId : this.anseriniEncoderModelIds) {
                     String trimmedEncoderId = encoderModelId.trim();
                     ModelDescriptor desc = ModelConstants.getAnseriniEncoderModelDescriptor(trimmedEncoderId);
                     if (desc != null && resolvedModelPaths.containsKey(desc.getModelId())) {
-                        // Path to the specific encoder model file within the cache
-                        // e.g., anserini/encoders/onnx/bge-base-en-v1.5/model.onnx
                         String encoderModelPathValue = "${kompile.runtime.model.cache.path}/" + desc.getExpectedCacheSubpath().replace("\\", "/");
                         writer.write("anserini.encoder." + trimmedEncoderId + ".model.path=" + encoderModelPathValue + "\n");
-                        // Associated vocabulary or config files might also need paths
-                        if ("bge-base-en-v1.5-onnx".equals(trimmedEncoderId)) { // Example
+                        if ("bge-base-en-v1.5-onnx".equals(trimmedEncoderId)) {
                             writer.write("anserini.encoder." + trimmedEncoderId + ".vocab.path=${kompile.runtime.model.cache.path}/anserini/encoders/onnx/bge-base-en-v1.5/tokenizer.json\n");
-                            // Assuming tokenizer.json is also managed or expected alongside model.onnx
                         }
                     }
                 }
@@ -731,14 +696,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("mcp.filesystem.roots.default.alias=default\n\n");
     }
 
-    /**
-     * COMPREHENSIVE FIX for PostgresML function signature issues
-     *
-     * This creates functions with ALL possible PostgreSQL string type combinations
-     * because PostgreSQL treats each type variation as a completely different signature.
-     *
-     * Replace the generatePgmlSchemaFiles() method in RagPomGenerator.java with this version.
-     */
     private void generatePgmlSchemaFiles(File projectDir) throws IOException {
         File resourcesDir = new File(projectDir, "src/main/resources");
         if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
@@ -780,7 +737,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("-- PostgreSQL treats these as completely different function signatures:\n");
             writer.write("-- character varying, text, varchar, char, etc. are all different types for function resolution\n\n");
 
-            // Determine return type based on vector extension availability
             String returnType;
             if (includeVectorstorePgvector) {
                 returnType = "vector";
@@ -820,7 +776,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("    END;\n");
             writer.write("    \n");
 
-            // Create all possible function signature combinations
             String[] firstParamTypes = {"character varying", "text", "varchar", "TEXT", "CHAR", "CHARACTER VARYING"};
             String[] secondParamTypes = {"text", "character varying", "varchar", "TEXT", "VARCHAR", "CHAR"};
             String[] thirdParamTypes = {"jsonb", "JSONB", "json", "JSON"};
@@ -884,7 +839,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("    RAISE NOTICE '✓ Created comprehensive stub functions for PostgresML';\n");
             writer.write("END $create_stubs$;\n\n");
 
-            // Add indexer tables if needed
             if (includePgmlIndexer) {
                 writer.write("-- Step 3: Create PGML Indexer tables\n");
                 writer.write("CREATE TABLE IF NOT EXISTS pgml.indexer_jobs (\n");
@@ -966,10 +920,6 @@ public class RagPomGenerator implements Callable<Void> {
         System.out.println("COMPREHENSIVE FIX: Created " + (6 * 6 * 4) + " function signature combinations to handle all PostgreSQL string type variations");
     }
 
-    /**
-     * Generate a custom configuration class that properly configures the selected providers
-     * This replaces the problematic auto-configurations with explicit bean creation
-     */
     private void generateProviderConfigurationClass(File projectDir) throws IOException {
         File javaDir = new File(projectDir, "src/main/java/" + instanceGroupId.replace('.', '/') + "/config");
         if (!javaDir.exists() && !javaDir.mkdirs()) {
@@ -1004,7 +954,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("@Configuration(proxyBeanMethods = false)\n");
             writer.write("public class ProviderConfiguration {\n\n");
 
-            // Add automatic PostgresML error detector that runs on startup
             if (includeEmbeddingPostgresml || includePgmlIndexer) {
                 writer.write("    /**\n");
                 writer.write("     * Automatic PostgresML error detector - runs immediately on startup\n");
@@ -1026,7 +975,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("        public void onApplicationEvent(ApplicationReadyEvent event) {\n");
                 writer.write("            log.info(\"Application ready - testing PostgresML function...\");\n");
                 writer.write("            \n");
-                writer.write("            // Test the exact function that Spring AI calls\n");
                 writer.write("            try {\n");
                 writer.write("                jdbcTemplate.queryForObject(\n");
                 writer.write("                    \"SELECT pgml.embed('startup-test'::character varying, 'test'::text, '{}'::jsonb)\", \n");
@@ -1037,14 +985,10 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("            } catch (Exception e) {\n");
                 writer.write("                log.error(\"✗ PostgresML function test FAILED - this will cause upload errors\", e);\n");
                 writer.write("                \n");
-                writer.write("                // Show debug info immediately\n");
                 writer.write("                debugPostgresMLError(e);\n");
                 writer.write("            }\n");
                 writer.write("        }\n\n");
 
-                writer.write("        /**\n");
-                writer.write("         * Debug PostgresML error and show immediate fix\n");
-                writer.write("         */\n");
                 writer.write("        private void debugPostgresMLError(Exception originalError) {\n");
                 writer.write("            System.err.println(\"\\n\" + \"=\".repeat(100));\n");
                 writer.write("            System.err.println(\"AUTOMATIC PostgresML DEBUG - Error detected on startup\");\n");
@@ -1053,7 +997,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("            \n");
                 writer.write("            try (Connection conn = dataSource.getConnection()) {\n");
                 writer.write("                \n");
-                writer.write("                // Check schema\n");
                 writer.write("                System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
                 writer.write("                try (Statement stmt = conn.createStatement()) {\n");
                 writer.write("                    ResultSet rs = stmt.executeQuery(\n");
@@ -1067,7 +1010,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("                    }\n");
                 writer.write("                }\n");
                 writer.write("                \n");
-                writer.write("                // Check function\n");
                 writer.write("                System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
                 writer.write("                try (Statement stmt = conn.createStatement()) {\n");
                 writer.write("                    ResultSet rs = stmt.executeQuery(\n");
@@ -1079,7 +1021,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("                    if (funcCount > 0) {\n");
                 writer.write("                        System.err.println(\"   ✓ pgml.embed function EXISTS (\" + funcCount + \" variants)\");\n");
                 writer.write("                        \n");
-                writer.write("                        // Check specific signature\n");
                 writer.write("                        checkFunctionSignature(conn);\n");
                 writer.write("                        \n");
                 writer.write("                    } else {\n");
@@ -1092,7 +1033,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("                System.err.println(\"Debug connection failed: \" + debugError.getMessage());\n");
                 writer.write("            }\n");
                 writer.write("            \n");
-                writer.write("            // Show immediate fix\n");
                 writer.write("            System.err.println(\"\\n\" + \"-\".repeat(80));\n");
                 writer.write("            System.err.println(\"IMMEDIATE FIX - Run this SQL in your database:\");\n");
                 writer.write("            System.err.println(\"-\".repeat(80));\n");
@@ -1150,9 +1090,6 @@ public class RagPomGenerator implements Callable<Void> {
         System.out.println("Generated ProviderConfiguration.java with automatic PostgresML debugging: " + configFile.getAbsolutePath());
     }
 
-
-
-
     private void writeProviderConfigurationClass(FileWriter writer) throws IOException {
         String packageName = instanceGroupId + ".config";
 
@@ -1196,25 +1133,17 @@ public class RagPomGenerator implements Callable<Void> {
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-api", "${log4j.version}");
         addDependency(defaultDependencies, "org.apache.logging.log4j", "log4j-core", "${log4j.version}");
 
-        // Add database dependencies for PostgreSQL
         if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
-            // PostgreSQL driver
             addDependency(defaultDependencies, "org.postgresql", "postgresql", "${postgres.version}", "compile", null, false);
-
-            // Spring JDBC for database operations
             addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-jdbc", "${spring-boot.version}");
         }
 
-        // ... rest of existing dependencies remain the same
         if (includeAppMain) addDependency(defaultDependencies, "ai.kompile", "kompile-app-main", "${kompile.project.version}");
         if (includeAppCore) addDependency(defaultDependencies, "ai.kompile", "kompile-app-core", "${kompile.project.version}");
         if (includeLoadersOrchestrator) addDependency(defaultDependencies, "ai.kompile", "kompile-app-loaders-orchestrator", "${kompile.project.version}");
 
-        // Original loaders
         if (includeLoaderTika) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-tika", "${kompile.project.version}");
         if (includeLoaderPdf) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf", "${kompile.project.version}");
-
-        // New specialized loaders
         if (includeLoaderMicrosoft) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-microsoft", "${kompile.project.version}");
         if (includeLoaderMail) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-mail", "${kompile.project.version}");
         if (includeLoaderPdfExtended) addDependency(defaultDependencies, "ai.kompile", "kompile-loader-pdf-extended", "${kompile.project.version}");
@@ -1225,11 +1154,10 @@ public class RagPomGenerator implements Callable<Void> {
         if (includeChunkerToken) addDependency(defaultDependencies, "ai.kompile", "kompile-chunker-token", "${kompile.project.version}");
 
         if (includeAnserini) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anserini", "${kompile.project.version}");
-       if(includeEmbeddingAnserini) addDependency(defaultDependencies,"ai.kompile","kompile-embedding-anserini","${kompile.project.version}");
+        if(includeEmbeddingAnserini) addDependency(defaultDependencies,"ai.kompile","kompile-embedding-anserini","${kompile.project.version}");
         if(includeVectorStoreAnserini) {
             addDependency(defaultDependencies,"ai.kompile","kompile-vectorstore-anserini","${kompile.project.version}");
         }
-
 
         if (includeLlmOpenai) addDependency(defaultDependencies, "ai.kompile", "kompile-app-openai-llm", "${kompile.project.version}");
         if (includeLlmAnthropic) addDependency(defaultDependencies, "ai.kompile", "kompile-app-anthropic-llm", "${kompile.project.version}");
@@ -1251,10 +1179,6 @@ public class RagPomGenerator implements Callable<Void> {
         model.setDependencies(defaultDependencies);
     }
 
-    /**
-     * Generate application.properties with ONLY auto-configuration exclusions
-     * No API keys, no runtime configuration - just structural decisions
-     */
     private void generateApplicationProperties(File projectDir) throws IOException {
         File resourcesDir = new File(projectDir, "src/main/resources");
         if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
@@ -1293,7 +1217,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("spring.datasource.driver-class-name=org.postgresql.Driver\n");
         writer.write("\n");
 
-        // Connection pool configuration
         writer.write("# Connection Pool Configuration\n");
         writer.write("spring.datasource.type=com.zaxxer.hikari.HikariDataSource\n");
         writer.write("spring.datasource.hikari.maximum-pool-size=10\n");
@@ -1320,10 +1243,7 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("spring.sql.init.enabled=true\n");
             writer.write("spring.sql.init.mode=always\n");
 
-            // Build the schema locations list with PROPER ORDER
             List<String> schemaLocations = new ArrayList<>();
-
-            // CRITICAL: pgml schema MUST come first
             if (includeEmbeddingPostgresml || includePgmlIndexer) {
                 schemaLocations.add("classpath:pgml-schema.sql");
             }
@@ -1331,12 +1251,11 @@ public class RagPomGenerator implements Callable<Void> {
 
             writer.write("spring.sql.init.schema-locations=" + String.join(",", schemaLocations) + "\n");
             writer.write("spring.sql.init.data-locations=classpath:data.sql\n");
-            writer.write("spring.sql.init.continue-on-error=true\n");  // Important for graceful failure
+            writer.write("spring.sql.init.continue-on-error=true\n");
             writer.write("spring.sql.init.separator=;\n");
             writer.write("spring.sql.init.encoding=UTF-8\n");
         }
 
-        // Disable JPA/Hibernate schema management
         writer.write("\n# Disable JPA/Hibernate Schema Management\n");
         writer.write("spring.jpa.hibernate.ddl-auto=none\n");
         writer.write("spring.jpa.generate-ddl=false\n");
@@ -1352,7 +1271,6 @@ public class RagPomGenerator implements Callable<Void> {
             throw new IOException("Could not create resources directory: " + resourcesDir.getAbsolutePath());
         }
 
-        // Generate schema.sql with proper PostgreSQL syntax
         File schemaFile = new File(resourcesDir, "schema.sql");
         try (FileWriter writer = new FileWriter(schemaFile)) {
             writer.write("-- Schema initialization for Kompile RAG application\n");
@@ -1429,7 +1347,7 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("    -- JSONB metadata index (FIXED: proper syntax for JSONB)\n");
             writer.write("    BEGIN\n");
             writer.write("        CREATE INDEX IF NOT EXISTS idx_vector_store_metadata \n");
-            writer.write("            ON vector_store USING GIN (metadata jsonb_ops);\n");  // FIXED: added jsonb_ops
+            writer.write("            ON vector_store USING GIN (metadata jsonb_ops);\n");
             writer.write("        RAISE NOTICE 'JSONB metadata index created successfully';\n");
             writer.write("    EXCEPTION WHEN OTHERS THEN\n");
             writer.write("        RAISE WARNING 'Could not create JSONB metadata index: %', SQLERRM;\n");
@@ -1459,7 +1377,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("END $;\n");
         }
 
-        // Generate data.sql
         File dataFile = new File(resourcesDir, "data.sql");
         try (FileWriter writer = new FileWriter(dataFile)) {
             writer.write("-- Initial data for Kompile RAG application\n");
@@ -1485,22 +1402,6 @@ public class RagPomGenerator implements Callable<Void> {
         System.out.println("  - " + dataFile.getAbsolutePath());
     }
 
-    /**
-     * Complete the addDebugToErrorHandling method and integration
-     * Add these methods to your RagPomGenerator.java class
-     */
-
-    /**
-     * SIMPLE SOLUTION: Just add debug calls to your existing error handling
-     *
-     * In your RagPomGenerator, modify the generateDatabaseConfiguration method
-     * to add debug calls right where the PostgresML errors already occur
-     */
-
-    /**
-     * Enhanced DatabaseSetup class with simple debug integration
-     * Replace your existing DatabaseSetup generation with this
-     */
     private void generateDatabaseConfiguration(File projectDir) throws IOException {
         if (!(includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer)) {
             return;
@@ -1546,7 +1447,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("    @Value(\"${spring.datasource.password}\")\n");
             writer.write("    private String password;\n\n");
 
-            // Standard DataSource method with debug integration
             writer.write("    @Bean\n");
             writer.write("    public DataSource dataSource() {\n");
             writer.write("        log.info(\"Setting up database connection...\");\n");
@@ -1568,7 +1468,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        } catch (Exception e) {\n");
             writer.write("            log.error(\"Database setup failed\", e);\n");
             writer.write("            \n");
-            writer.write("            // DEBUG: Check if this is a PostgresML issue\n");
             writer.write("            if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
             writer.write("                debugPostgresMLIssue(e);\n");
             writer.write("            }\n");
@@ -1577,7 +1476,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        }\n");
             writer.write("    }\n\n");
 
-            // Database creation method with debug integration
             writer.write("    private void ensureDatabaseExists() {\n");
             writer.write("        try {\n");
             writer.write("            String dbName = extractDatabaseName(databaseUrl);\n");
@@ -1603,17 +1501,12 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        } catch (SQLException e) {\n");
             writer.write("            log.error(\"Failed to ensure database exists: {}\", e.getMessage());\n");
             writer.write("            \n");
-            writer.write("            // DEBUG: Check for PostgresML issues right here\n");
             writer.write("            debugPostgresMLIssue(e);\n");
             writer.write("            \n");
             writer.write("            throw new RuntimeException(\"Database setup failed\", e);\n");
             writer.write("        }\n");
             writer.write("    }\n\n");
 
-            // Simple inline debug method - no external dependencies
-            writer.write("    /**\n");
-            writer.write("     * Simple debug method - called right where errors occur\n");
-            writer.write("     */\n");
             writer.write("    private void debugPostgresMLIssue(Exception originalError) {\n");
             writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
             writer.write("        System.err.println(\"PostgresML ERROR DEBUG\");\n");
@@ -1622,7 +1515,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        \n");
             writer.write("        try (Connection conn = DriverManager.getConnection(databaseUrl, username, password)) {\n");
             writer.write("            \n");
-            writer.write("            // Check 1: Does pgml schema exist?\n");
             writer.write("            System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
             writer.write("            try (Statement stmt = conn.createStatement()) {\n");
             writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -1638,7 +1530,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("                }\n");
             writer.write("            }\n");
             writer.write("            \n");
-            writer.write("            // Check 2: Does pgml.embed function exist?\n");
             writer.write("            System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
             writer.write("            try (Statement stmt = conn.createStatement()) {\n");
             writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -1655,7 +1546,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("                }\n");
             writer.write("            }\n");
             writer.write("            \n");
-            writer.write("            // Check 3: Test the exact function call Spring AI makes\n");
             writer.write("            System.err.println(\"\\n3. FUNCTION CALL TEST:\");\n");
             writer.write("            try (Statement stmt = conn.createStatement()) {\n");
             writer.write("                System.err.println(\"   Testing: pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)\");\n");
@@ -1692,18 +1582,13 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
             writer.write("    }\n\n");
 
-            // Add startup event listener that tests PostgresML immediately
             if (includeEmbeddingPostgresml || includePgmlIndexer) {
-                writer.write("    /**\n");
-                writer.write("     * Test PostgresML immediately on startup\n");
-                writer.write("     */\n");
                 writer.write("    @EventListener(ApplicationReadyEvent.class)\n");
                 writer.write("    public void testPostgresMLOnStartup() {\n");
                 writer.write("        log.info(\"Testing PostgresML function on startup...\");\n");
                 writer.write("        \n");
                 writer.write("        try (Connection conn = DriverManager.getConnection(databaseUrl, username, password)) {\n");
                 writer.write("            try (Statement stmt = conn.createStatement()) {\n");
-                writer.write("                // Test the exact function Spring AI calls\n");
                 writer.write("                ResultSet rs = stmt.executeQuery(\n");
                 writer.write("                    \"SELECT pgml.embed('startup-test'::character varying, 'test'::text, '{}'::jsonb)\");\n");
                 writer.write("                \n");
@@ -1714,7 +1599,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("            } catch (SQLException e) {\n");
                 writer.write("                log.error(\"✗ PostgresML function test FAILED on startup: {}\", e.getMessage());\n");
                 writer.write("                \n");
-                writer.write("                // Debug immediately when the error occurs\n");
                 writer.write("                debugPostgresMLIssue(e);\n");
                 writer.write("            }\n");
                 writer.write("        } catch (SQLException e) {\n");
@@ -1723,7 +1607,6 @@ public class RagPomGenerator implements Callable<Void> {
                 writer.write("    }\n\n");
             }
 
-            // Helper methods
             writer.write("    private String extractDatabaseName(String url) {\n");
             writer.write("        Pattern pattern = Pattern.compile(\".*/([^?]+)\");\n");
             writer.write("        Matcher matcher = pattern.matcher(url);\n");
@@ -1746,13 +1629,6 @@ public class RagPomGenerator implements Callable<Void> {
 
         System.out.println("Generated DatabaseSetup with inline PostgresML debugging: " + configFile.getAbsolutePath());
     }
-
-    /**
-     * The error is happening in Spring AI's PostgresML code, not our DatabaseSetup
-     * We need to catch it at the Spring framework level
-     *
-     * Add this to your RagPomGenerator to create a global exception handler
-     */
 
     private void generateGlobalExceptionHandler(File projectDir) throws IOException {
         File javaDir = new File(projectDir, "src/main/java/" + instanceGroupId.replace('.', '/') + "/config");
@@ -1779,9 +1655,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("import java.sql.ResultSet;\n");
             writer.write("import javax.sql.DataSource;\n\n");
 
-            writer.write("/**\n");
-            writer.write(" * Catches PostgresML errors exactly where they occur in Spring AI\n");
-            writer.write(" */\n");
             writer.write("@ControllerAdvice\n");
             writer.write("@Slf4j\n");
             writer.write("public class PostgresMLErrorCatcher {\n\n");
@@ -1792,9 +1665,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("    @Autowired(required = false)\n");
             writer.write("    private JdbcTemplate jdbcTemplate;\n\n");
 
-            writer.write("    /**\n");
-            writer.write("     * Catch BadSqlGrammarException - this is what Spring AI throws\n");
-            writer.write("     */\n");
             writer.write("    @ExceptionHandler(BadSqlGrammarException.class)\n");
             writer.write("    public ResponseEntity<String> handleBadSqlGrammar(BadSqlGrammarException e) {\n");
             writer.write("        log.error(\"BadSqlGrammarException caught\", e);\n");
@@ -1811,9 +1681,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        return ResponseEntity.status(500).body(\"Database function error: \" + e.getMessage());\n");
             writer.write("    }\n\n");
 
-            writer.write("    /**\n");
-            writer.write("     * Also catch general DataAccessException\n");
-            writer.write("     */\n");
             writer.write("    @ExceptionHandler(DataAccessException.class)\n");
             writer.write("    public ResponseEntity<String> handleDataAccess(DataAccessException e) {\n");
             writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
@@ -1828,9 +1695,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        return ResponseEntity.status(500).body(\"Database access error\");\n");
             writer.write("    }\n\n");
 
-            writer.write("    /**\n");
-            writer.write("     * Catch any SQLException that mentions pgml\n");
-            writer.write("     */\n");
             writer.write("    @ExceptionHandler(SQLException.class)\n");
             writer.write("    public ResponseEntity<String> handleSQLException(SQLException e) {\n");
             writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml\")) {\n");
@@ -1845,9 +1709,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        return ResponseEntity.status(500).body(\"SQL error\");\n");
             writer.write("    }\n\n");
 
-            writer.write("    /**\n");
-            writer.write("     * Catch generic RuntimeException that might wrap PostgresML errors\n");
-            writer.write("     */\n");
             writer.write("    @ExceptionHandler(RuntimeException.class)\n");
             writer.write("    public ResponseEntity<String> handleRuntimeException(RuntimeException e) {\n");
             writer.write("        if (e.getMessage() != null && e.getMessage().contains(\"pgml.embed\")) {\n");
@@ -1859,12 +1720,9 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("            debugPostgresMLError();\n");
             writer.write("        }\n");
             writer.write("        \n");
-            writer.write("        throw e; // Re-throw non-PostgresML errors\n");
+            writer.write("        throw e;\n");
             writer.write("    }\n\n");
 
-            writer.write("    /**\n");
-            writer.write("     * The actual debug method - runs immediately when PostgresML error occurs\n");
-            writer.write("     */\n");
             writer.write("    private void debugPostgresMLError() {\n");
             writer.write("        System.err.println(\"\\n\" + \"=\".repeat(80));\n");
             writer.write("        System.err.println(\"IMMEDIATE PostgresML DEBUG\");\n");
@@ -1878,7 +1736,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("        \n");
             writer.write("        try (Connection conn = dataSource.getConnection()) {\n");
             writer.write("            \n");
-            writer.write("            // Check 1: pgml schema\n");
             writer.write("            System.err.println(\"\\n1. SCHEMA CHECK:\");\n");
             writer.write("            try (Statement stmt = conn.createStatement()) {\n");
             writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -1892,7 +1749,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("                }\n");
             writer.write("            }\n");
             writer.write("            \n");
-            writer.write("            // Check 2: pgml.embed function\n");
             writer.write("            System.err.println(\"\\n2. FUNCTION CHECK:\");\n");
             writer.write("            try (Statement stmt = conn.createStatement()) {\n");
             writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -1904,7 +1760,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("                if (funcCount > 0) {\n");
             writer.write("                    System.err.println(\"   ✓ pgml.embed function EXISTS (\" + funcCount + \" variants)\");\n");
             writer.write("                    \n");
-            writer.write("                    // Check specific signature\n");
             writer.write("                    checkFunctionSignatures(conn);\n");
             writer.write("                    \n");
             writer.write("                } else {\n");
@@ -1913,7 +1768,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("                }\n");
             writer.write("            }\n");
             writer.write("            \n");
-            writer.write("            // Check 3: Test exact function call\n");
             writer.write("            System.err.println(\"\\n3. EXACT FUNCTION TEST:\");\n");
             writer.write("            testExactFunctionCall(conn);\n");
             writer.write("            \n");
@@ -2007,22 +1861,14 @@ public class RagPomGenerator implements Callable<Void> {
     }
 
 
-    /**
-     * Write the standard DataSource method
-     */
     private void writeDataSourceMethod(FileWriter writer) throws IOException {
-        writer.write("    /**\n");
-        writer.write("     * Create DataSource with enhanced error handling\n");
-        writer.write("     */\n");
         writer.write("    @Bean\n");
         writer.write("    public DataSource dataSource() {\n");
         writer.write("        log.info(\"Setting up database connection with PostgresML error detection...\");\n");
         writer.write("        \n");
         writer.write("        try {\n");
-        writer.write("            // Ensure database exists before creating DataSource\n");
         writer.write("            ensureDatabaseExists();\n");
         writer.write("            \n");
-        writer.write("            // Create HikariCP DataSource\n");
         writer.write("            HikariDataSource dataSource = new HikariDataSource();\n");
         writer.write("            dataSource.setJdbcUrl(databaseUrl);\n");
         writer.write("            dataSource.setUsername(username);\n");
@@ -2042,13 +1888,7 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("    }\n\n");
     }
 
-    /**
-     * Write database creation helper methods
-     */
     private void writeDatabaseCreationMethods(FileWriter writer) throws IOException {
-        writer.write("    /**\n");
-        writer.write("     * Ensure the target database exists, create if it doesn't\n");
-        writer.write("     */\n");
         writer.write("    private void ensureDatabaseExists() {\n");
         writer.write("        try {\n");
         writer.write("            String dbName = extractDatabaseName(databaseUrl);\n");
@@ -2096,13 +1936,7 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("    }\n\n");
     }
 
-    /**
-     * Write the complete debug methods
-     */
     private void writeCompleteDebugMethods(FileWriter writer) throws IOException {
-        writer.write("    /**\n");
-        writer.write("     * Comprehensive PostgresML diagnostics - safe to call multiple times\n");
-        writer.write("     */\n");
         writer.write("    public void debugPostgresMLIssues() {\n");
         writer.write("        System.out.println(\"\\n\" + \"=\".repeat(80));\n");
         writer.write("        System.out.println(\"PostgresML SCHEMA DIAGNOSTICS\");\n");
@@ -2110,7 +1944,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("        \n");
         writer.write("        try (Connection conn = dataSource().getConnection()) {\n");
         writer.write("            \n");
-        writer.write("            // 1. Check if pgml schema exists\n");
         writer.write("            System.out.println(\"\\n1. SCHEMA CHECK:\");\n");
         writer.write("            try (Statement stmt = conn.createStatement()) {\n");
         writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -2125,7 +1958,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("                }\n");
         writer.write("            }\n");
         writer.write("            \n");
-        writer.write("            // 2. Check extensions\n");
         writer.write("            System.out.println(\"\\n2. EXTENSION CHECK:\");\n");
         writer.write("            try (Statement stmt = conn.createStatement()) {\n");
         writer.write("                ResultSet rs = stmt.executeQuery(\n");
@@ -2152,13 +1984,10 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("                }\n");
         writer.write("            }\n");
         writer.write("            \n");
-        writer.write("            // 3. Check pgml functions - THE CRITICAL CHECK\n");
         writer.write("            checkPgmlFunctions(conn);\n");
         writer.write("            \n");
-        writer.write("            // 4. Test the actual function call\n");
         writer.write("            testPgmlFunctionCall(conn);\n");
         writer.write("            \n");
-        writer.write("            // 5. Provide quick fix\n");
         writer.write("            provideQuickFix();\n");
         writer.write("            \n");
         writer.write("        } catch (SQLException e) {\n");
@@ -2170,7 +1999,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("        System.out.println(\"=\".repeat(80));\n");
         writer.write("    }\n\n");
 
-        // Add helper methods for diagnostics
         writer.write("    private void checkPgmlFunctions(Connection conn) throws SQLException {\n");
         writer.write("        System.out.println(\"\\n3. FUNCTION CHECK (CRITICAL):\");\n");
         writer.write("        try (Statement stmt = conn.createStatement()) {\n");
@@ -2265,14 +2093,7 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("    }\n\n");
     }
 
-    /**
-     * Write the enhanced error handling method - COMPLETE VERSION
-     */
     private void writeEnhancedErrorHandling(FileWriter writer) throws IOException {
-        writer.write("    /**\n");
-        writer.write("     * Enhanced error handling with PostgresML debugging\n");
-        writer.write("     * Call this method whenever PostgresML-related exceptions occur\n");
-        writer.write("     */\n");
         writer.write("    public void handlePostgresMLError(Exception originalException) {\n");
         writer.write("        if (originalException.getMessage() != null && \n");
         writer.write("            originalException.getMessage().contains(\"pgml.embed\") && \n");
@@ -2285,11 +2106,9 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("            System.err.println(\"Original error: \" + originalException.getMessage());\n");
         writer.write("            System.err.println(\"!\".repeat(80));\n");
         writer.write("            \n");
-        writer.write("            // Run comprehensive diagnostics\n");
         writer.write("            try {\n");
         writer.write("                debugPostgresMLIssues();\n");
         writer.write("                \n");
-        writer.write("                // Provide specific guidance\n");
         writer.write("                System.err.println(\"\\nSPECIFIC SOLUTION FOR YOUR ERROR:\");\n");
         writer.write("                System.err.println(\"1. The pgml.embed function with the required signature is missing\");\n");
         writer.write("                System.err.println(\"2. Spring AI needs: pgml.embed(character varying, text, jsonb)\");\n");
@@ -2299,7 +2118,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("            } catch (Exception debugException) {\n");
         writer.write("                log.error(\"Failed to run debug diagnostics\", debugException);\n");
         writer.write("                \n");
-        writer.write("                // Fallback: provide basic fix instructions\n");
         writer.write("                System.err.println(\"\\nFALLBACK SOLUTION:\");\n");
         writer.write("                System.err.println(\"Run this SQL in your database:\");\n");
         writer.write("                System.err.println(\"CREATE SCHEMA IF NOT EXISTS pgml;\");\n");
@@ -2309,7 +2127,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("            System.err.println(\"\\n\" + \"!\".repeat(80));\n");
         writer.write("            \n");
         writer.write("        } else {\n");
-        writer.write("            // Handle other types of database errors\n");
         writer.write("            log.error(\"Database error occurred\", originalException);\n");
         writer.write("            \n");
         writer.write("            if (originalException.getMessage() != null) {\n");
@@ -2332,22 +2149,14 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("    }\n\n");
     }
 
-    /**
-     * Write startup diagnostics method
-     */
     private void writeStartupDiagnostics(FileWriter writer) throws IOException {
-        writer.write("    /**\n");
-        writer.write("     * Automatically run PostgresML diagnostics on application startup\n");
-        writer.write("     */\n");
         writer.write("    @EventListener(ApplicationReadyEvent.class)\n");
         writer.write("    public void runPostgresMLDiagnosticsOnStartup() {\n");
         writer.write("        try {\n");
         if (includeEmbeddingPostgresml || includePgmlIndexer) {
-            writer.write("            // PostgresML modules are enabled - run diagnostics\n");
             writer.write("            log.info(\"PostgresML modules detected - running schema diagnostics...\");\n");
             writer.write("            debugPostgresMLIssues();\n");
         } else {
-            writer.write("            // PostgresML modules not enabled - skip diagnostics\n");
             writer.write("            log.info(\"PostgresML modules not enabled - skipping diagnostics\");\n");
         }
         writer.write("        } catch (Exception e) {\n");
@@ -2364,14 +2173,12 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("# Configured providers: " + getProviderSummary() + "\n");
         writer.write("\n");
 
-        // Add automatic PostgresML error debugging
         if (includeEmbeddingPostgresml || includePgmlIndexer) {
             writer.write("# =============================================================================\n");
             writer.write("# AUTOMATIC PostgresML ERROR DEBUGGING\n");
             writer.write("# These settings will automatically show PostgresML debug info when errors occur\n");
             writer.write("# =============================================================================\n");
             writer.write("\n");
-            writer.write("# Enable detailed SQL logging to catch PostgresML errors\n");
             writer.write("logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG\n");
             writer.write("logging.level.org.springframework.jdbc.core.StatementCreatorUtils=TRACE\n");
             writer.write("logging.level.org.springframework.ai.postgresml=DEBUG\n");
@@ -2379,11 +2186,9 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("logging.level.ai.kompile.app.pgml.indexer=DEBUG\n");
             writer.write("logging.level.ai.kompile.vectorstore=DEBUG\n");
             writer.write("\n");
-            writer.write("# Show full exception stack traces\n");
             writer.write("logging.level.org.springframework.jdbc.support.SQLErrorCodeSQLExceptionTranslator=DEBUG\n");
             writer.write("logging.level.org.springframework.dao=DEBUG\n");
             writer.write("\n");
-            writer.write("# Custom PostgresML error handler (automatically loaded)\n");
             writer.write("logging.level." + instanceGroupId + ".config=DEBUG\n");
             writer.write("\n");
         }
@@ -2421,21 +2226,18 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("# These flags explicitly control which providers are active\n");
         writer.write("# =============================================================================\n");
 
-        // Embedding provider flags
         writer.write("# Embedding Providers\n");
         writer.write("spring.ai.openai.embedding.enabled=" + includeEmbeddingOpenai + "\n");
         writer.write("spring.ai.postgresml.embedding.enabled=" + includeEmbeddingPostgresml + "\n");
         writer.write("spring.ai.transformers.embedding.enabled=" + includeEmbeddingSentenceTransformer + "\n");
         writer.write("\n");
 
-        // Chat provider flags
         writer.write("# Chat Providers\n");
         writer.write("spring.ai.openai.chat.enabled=" + includeLlmOpenai + "\n");
         writer.write("spring.ai.anthropic.chat.enabled=" + includeLlmAnthropic + "\n");
         writer.write("spring.ai.vertex.ai.gemini.chat.enabled=" + includeLlmGemini + "\n");
         writer.write("\n");
 
-        // Vector store flags
         writer.write("# Vector Stores\n");
         writer.write("spring.ai.vectorstore.pgvector.enabled=" + (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) + "\n");
         writer.write("spring.ai.vectorstore.chroma.enabled=" + includeVectorstoreChroma + "\n");
@@ -2448,19 +2250,16 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("# These are build-time decisions that don't change at runtime\n");
         writer.write("# =============================================================================\n");
 
-        // Application basics
         writer.write("spring.application.name=" + instanceArtifactId + "\n");
         writer.write("server.port=8080\n");
         writer.write("\n");
 
-        // Logging structure
         writer.write("# Logging Configuration\n");
         writer.write("logging.level.ai.kompile=INFO\n");
         writer.write("logging.level.org.springframework.ai=INFO\n");
         writer.write("logging.level.org.springframework.boot.autoconfigure=INFO\n");
         writer.write("\n");
 
-        // Vector store structural settings (dimensions, table names, etc.)
         if (includeVectorstorePgvector || includeEmbeddingPostgresml || includePgmlIndexer) {
             writer.write("# PgVector Structural Configuration\n");
             writer.write("spring.ai.vectorstore.pgvector.table-name=vector_store\n");
@@ -2479,7 +2278,6 @@ public class RagPomGenerator implements Callable<Void> {
             writer.write("\n");
         }
 
-        // Application-specific paths and settings
         writer.write("# Kompile Application Structure\n");
         writer.write("anserini.indexPath=./data/index\n");
         writer.write("anserini.corpusPath=./data/anserini_corpus_json_staging\n");
@@ -2488,7 +2286,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("mcp.filesystem.roots.default.path=./data/shared_files\n");
         writer.write("mcp.filesystem.roots.default.alias=default\n\n");
 
-        // OpenNLP configuration (only if sentence chunker is selected)
         if (includeChunkerSentence) {
             writer.write("# OpenNLP Configuration\n");
             writer.write("kompile.opennlp.sentence.language=" +
@@ -2503,7 +2300,6 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("# Copy and customize these settings in your environment-specific config\n");
         writer.write("# =============================================================================\n\n");
 
-        // Provider-specific runtime config templates (commented out)
         if (includeEmbeddingOpenai || includeLlmOpenai) {
             writer.write("# OpenAI Configuration (set via environment variables or external config)\n");
             writer.write("# spring.ai.openai.api-key=${OPENAI_API_KEY}\n");
@@ -2618,21 +2414,16 @@ public class RagPomGenerator implements Callable<Void> {
     }
 
     private void addNativeProfile(String nativeImageMainClassFqcn, List<String> modelFilesToIncludePreviously) {
-        // MODIFIED: modelFilesToIncludePreviously is now an empty list passed from call(),
-        // as we are not bundling these model files (OpenNLP, Anserini indexes/encoders) into the native image.
-        // The GraalVM -H:IncludeResources arguments for specific model files are removed.
-
         Profile nativeProfile = new Profile();
         nativeProfile.setId("native");
         Build nativeProfileBuild = new Build();
 
-        // Spring Boot Plugin for AOT processing and repackaging (remains important)
         Plugin springBootPluginNative = createPlugin("org.springframework.boot", "spring-boot-maven-plugin", "${spring-boot.version}");
         try {
             Xpp3Dom springBootNativeConfig = Xpp3DomBuilder.build(new StringReader(
                     "<configuration>" +
                             "  <mainClass>" + (nativeImageMainClassFqcn != null ? nativeImageMainClassFqcn : CORE_APP_MAIN_CLASS_FQCN) + "</mainClass>" +
-                            "  <classifier>exec</classifier>" + // Ensures the fat jar has a unique classifier
+                            "  <classifier>exec</classifier>" +
                             "  <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>" +
                             "</configuration>"
             ));
@@ -2640,18 +2431,18 @@ public class RagPomGenerator implements Callable<Void> {
         } catch (XmlPullParserException | IOException e) {
             throw new RuntimeException("Error configuring spring-boot-maven-plugin in native profile", e);
         }
+
         PluginExecution processAotExecution = new PluginExecution();
         processAotExecution.setId("process-aot");
         processAotExecution.addGoal("process-aot");
         springBootPluginNative.addExecution(processAotExecution);
 
         PluginExecution repackageExecutionNative = new PluginExecution();
-        repackageExecutionNative.setId("repackage-native-profile"); // Ensure ID is unique if called elsewhere
+        repackageExecutionNative.setId("repackage-native-profile");
         repackageExecutionNative.addGoal("repackage");
         springBootPluginNative.addExecution(repackageExecutionNative);
         nativeProfileBuild.addPlugin(springBootPluginNative);
 
-        // Build Helper Maven Plugin for adding AOT generated sources/resources (remains important)
         Plugin buildHelperPlugin = createPlugin("org.codehaus.mojo", "build-helper-maven-plugin", "${build-helper-maven-plugin.version}");
         PluginExecution addAotSourcesExecution = new PluginExecution();
         addAotSourcesExecution.setId("add-spring-aot-sources");
@@ -2682,7 +2473,6 @@ public class RagPomGenerator implements Callable<Void> {
         buildHelperPlugin.addExecution(addAotResourcesExecution);
         nativeProfileBuild.addPlugin(buildHelperPlugin);
 
-        // GraalVM Native Maven Plugin
         Plugin nativeMavenPlugin = createPlugin("org.graalvm.buildtools", "native-maven-plugin", "${native-maven-plugin.version}");
         nativeMavenPlugin.setExtensions(true);
 
@@ -2696,24 +2486,32 @@ public class RagPomGenerator implements Callable<Void> {
         addChild(metadataRepoElement, "enabled", "true");
 
         Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
-        // Common build args from your original file
+
         addBuildArg(buildArgsDom, "-J-Xmx16g");
         addBuildArg(buildArgsDom, "--verbose");
         addBuildArg(buildArgsDom, "--no-fallback");
         addBuildArg(buildArgsDom, "--allow-incomplete-classpath");
         addBuildArg(buildArgsDom, "-H:+ReportExceptionStackTraces");
         addBuildArg(buildArgsDom, "-Dspring.native.remove-unused-autoconfig=true");
-        addBuildArg(buildArgsDom, "-H:+AddAllFileSystemProviders"); // Crucial for FS access to models
-        addBuildArg(buildArgsDom, "--enable-url-protocols=http,https"); // For KompileModelManager if it needs to download
+        addBuildArg(buildArgsDom, "-H:+AddAllFileSystemProviders");
+        addBuildArg(buildArgsDom, "--enable-url-protocols=http,https");
         addBuildArg(buildArgsDom, "-Djava.awt.headless=true");
+        addBuildArg(buildArgsDom, "-H:+UnlockExperimentalVMOptions");
+        addBuildArg(buildArgsDom, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
+        addBuildArg(buildArgsDom, "-H:+ReportUnsupportedElementsAtRuntime");
 
-        // Initialization args from your original file
-        String initializeAtBuildTimeArg = "org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder";
-        addBuildArg(buildArgsDom, "--initialize-at-build-time=" + initializeAtBuildTimeArg);
-        String initializeAtRunTimeArg = "sun.nio.ch.FileChannelImpl,org.apache.lucene.util.ScalarQuantizer,org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.openblas.global.openblas,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.springframework.ai.chat.client.advisor,reactor.core.scheduler,java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory";
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=" + initializeAtRunTimeArg);
-        addBuildArg(buildArgsDom,"--trace-class-initialization=sun.nio.ch.FileChannelImpl,org.apache.lucene.util.ScalarQuantizer,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.jline.nativ.JLineLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.mkldnn.global.mklml,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.springframework.ai.chat.client.advisor.api.BaseAdvisor,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler$BoundedState,reactor.core.scheduler.BoundedElasticSchedulerSupplier,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices$1,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices");
-        // Include essential resources (Log4j config, Spring specific files, SQL schemas, etc.)
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.bytedeco.javacpp.indexer.UnsafeRaw");
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.nd4j.shade.protobuf.UnsafeUtil");
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=com.google.protobuf.UnsafeUtil");
+
+        addBuildArg(buildArgsDom, "-H:+AddAllFileSystemProviders");
+        addBuildArg(buildArgsDom, "-H:+EnableAllSecurityServices");
+        addBuildArg(buildArgsDom, "--enable-all-security-services");
+
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=java.rmi.server.Operation,org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.nd4j.autodiff.samediff,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.bytedeco.javacpp.indexer,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.apache.lucene.util.ScalarQuantizer,org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.openblas.global.openblas,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.springframework.ai.chat.client.advisor,reactor.core.scheduler,java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory");
+        addBuildArg(buildArgsDom, "--trace-class-initialization=org.apache.tomcat.util.compat.Jre12Compat,java.lang.ref.WeakReference,java.lang.ref.SoftReference,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,java.rmi.server.Operation,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,sun.nio.ch.FileChannelImpl,org.apache.lucene.util.ScalarQuantizer,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.jline.nativ.JLineLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.mkldnn.global.mklml,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.springframework.ai.chat.client.advisor.api.BaseAdvisor,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler$BoundedState,reactor.core.scheduler.BoundedElasticSchedulerSupplier,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices$1,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices");
+
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2-spring.xml");
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.component.properties");
@@ -2727,25 +2525,19 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring\\.components");
         addBuildArg(buildArgsDom, "-H:DeadlockWatchdogInterval=30");
         addBuildArg(buildArgsDom, "-H:+DeadlockWatchdogExitOnTimeout");
-
-        if(includePgmlIndexer || includeVectorstorePgvector) {
-            addBuildArg(buildArgsDom, "-H:IncludeResources=schema.sql");
-            addBuildArg(buildArgsDom, "-H:IncludeResources=data.sql");
-            addBuildArg(buildArgsDom, "-H:IncludeResources=pgml-schema.sql");
-        }
-        if(includeLoaderPdfExtended) {
-            addBuildArg(buildArgsDom, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
-        }
-
-        addBuildArg(buildArgsDom,"--trace-object-instantiation=org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread");
-
+        addBuildArg(buildArgsDom, "-H:IncludeResources=org/apache/pdfbox/resources/afm/.*");
+        addBuildArg(buildArgsDom, "--trace-object-instantiation=org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread");
+        addBuildArg(buildArgsDom, "-H:+ReportUnsupportedElementsAtRuntime");
+        addBuildArg(buildArgsDom, "-H:+AllowVMInspection");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer$NativeDeallocator");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.PointerScope");
 
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);
 
         PluginExecution nativeBuildExecution = new PluginExecution();
         nativeBuildExecution.setId("build-native");
-        nativeBuildExecution.addGoal("compile-no-fork"); // Using "compile-no-fork" as per original
+        nativeBuildExecution.addGoal("compile-no-fork");
         nativeBuildExecution.setPhase("package");
         nativeMavenPlugin.addExecution(nativeBuildExecution);
 

@@ -96,14 +96,14 @@ public class EncoderModelDownloader {
             30522
         ));
         
-        MODELS.put("unicoil", new ModelInfo(
+       /* MODELS.put("unicoil", new ModelInfo(
             "unicoil",
             "https://rgw.cs.uwaterloo.ca/pyserini/data/unicoil-optimized.onnx",
             "https://rgw.cs.uwaterloo.ca/pyserini/data/wordpiece-vocab.txt",
             "Sparse encoder - UniCOIL for universal contextualized sparse retrieval",
             ModelType.SPARSE,
             30522
-        ));
+        ));*/
     }
     
     private final Path outputDirectory;

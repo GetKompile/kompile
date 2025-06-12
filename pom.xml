@@ -33,11 +33,11 @@
 
     <!-- Model importers (dependencies) -->
     <module>kompile-model-importer-tensorflow</module>
-    <module>kompile-model-importer-onnx</module>  <!-- MUST come before model-conversion-utility -->
+    <module>kompile-model-importer-onnx</module>
     <module>kompile-model-importer-keras</module>
 
     <!-- Utilities that depend on importers -->
-    <module>model-conversion-utility</module>     <!-- AFTER the importer modules -->
+    <module>model-conversion-utility</module>
 
     <!-- Applications -->
     <module>kompile-pipelines-framework</module>

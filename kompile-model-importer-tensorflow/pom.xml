@@ -216,7 +216,7 @@
                             <mainClass>ai.kompile.model.importer.tensorflow.TensorFlowImporterApplication</mainClass>
                             <imageName>tensorflow-importer</imageName>
                             <buildArgs>
-                                <buildArg>-J-Xmx8g</buildArg>
+                                <buildArg>-J-Xmx12g</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>
