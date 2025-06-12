@@ -16,27 +16,84 @@
 
 package ai.kompile.app.config;
 
-import ai.kompile.app.MainApplication; // Import to access constants
+import ai.kompile.app.MainApplication;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import jakarta.servlet.MultipartConfigElement;
+import org.apache.tomcat.util.compat.Jre12Compat;
+import org.apache.tomcat.util.compat.JreCompat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.aot.hint.MemberCategory;
+import org.springframework.aot.hint.RuntimeHints;
+import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.web.servlet.MultipartConfigFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.env.Environment;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestTemplate;
 
+import java.lang.invoke.VarHandle;
+import java.lang.reflect.Field;
+
 @Configuration(proxyBeanMethods = false)
+@ImportRuntimeHints({AppConfig.VarConfigRegister.class})
 public class AppConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(AppConfig.class);
 
     @Autowired
     private Environment environment;
+
+
+
+
+
+    public static class VarConfigRegister implements RuntimeHintsRegistrar {
+
+        @Override
+        public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+            // Only register what's absolutely necessary to avoid hosted API conflicts
+
+            // Register Field class for basic reflection
+            hints.reflection().registerType(Field.class,
+                    MemberCategory.DECLARED_FIELDS,
+                    MemberCategory.INVOKE_DECLARED_METHODS);
+
+            // Register FileSystem for the useCanonCaches field
+            try {
+                Class<?> fileSystemClass = Class.forName("java.io.FileSystem");
+                hints.reflection().registerType(fileSystemClass,
+                        MemberCategory.DECLARED_FIELDS);
+            } catch (ClassNotFoundException e) {
+                // Ignore if not available
+            }
+
+            hints.reflection().registerType(VarHandle.class);
+            // Register Tomcat compatibility classes with minimal reflection
+            hints.reflection().registerType(JreCompat.class,
+                    MemberCategory.INTROSPECT_PUBLIC_METHODS,
+                    MemberCategory.INTROSPECT_DECLARED_CONSTRUCTORS,
+                    MemberCategory.PUBLIC_FIELDS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
+                    MemberCategory.INVOKE_DECLARED_METHODS);
+
+            hints.reflection().registerType(Jre12Compat.class,
+
+                    MemberCategory.INTROSPECT_PUBLIC_METHODS,
+                    MemberCategory.INTROSPECT_DECLARED_CONSTRUCTORS,
+                    MemberCategory.PUBLIC_FIELDS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
+                    MemberCategory.INVOKE_DECLARED_METHODS);
+
+        }
+    }
+
+
+
 
     @Bean
     public RestTemplate restTemplate() {
