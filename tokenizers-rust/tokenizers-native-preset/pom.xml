@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.tokenizers</groupId>
+        <artifactId>tokenizers-rust</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tokenizers-native-preset</artifactId>
+    <packaging>jar</packaging>
+
+    <name>tokenizers-native-preset</name>
+    <description>JavaCPP presets for tokenizers native library</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+        </dependency>
+        
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        
+        <!-- Test dependencies -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- JavaCPP plugin for preset compilation -->
+            <plugin>
+                <groupId>org.bytedeco</groupId>
+                <artifactId>javacpp</artifactId>
+                <version>${javacpp.version}</version>
+                <configuration>
+                    <properties>${javacpp.platform}</properties>
+                    <propertyKeysAndValues>
+                        <property>
+                            <name>platform.root</name>
+                            <value>${javacpp.platform.root}</value>
+                        </property>
+                        <property>
+                            <name>platform.compiler</name>
+                            <value>${javacpp.platform.compiler}</value>
+                        </property>
+                    </propertyKeysAndValues>
+                    <classPath>${project.build.outputDirectory}</classPath>
+                    <!-- FIX: Add proper include paths for our C header -->
+                    <includePaths>
+                        <includePath>${project.basedir}/../libtokenizers/target/native/include</includePath>
+                        <includePath>${project.basedir}/../libtokenizers/target/native/include/tokenizers</includePath>
+                        <includePath>${project.basedir}/../libtokenizers/include</includePath>
+                    </includePaths>
+                    <linkPaths>
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/lib</linkPath>
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/lib64</linkPath>
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/linux-x86_64</linkPath>
+                    </linkPaths>
+                    <preloadPaths>
+                        <preloadPath>${project.basedir}/../libtokenizers/target/native/lib</preloadPath>
+                        <preloadPath>${project.basedir}/../libtokenizers/target/native/lib64</preloadPath>
+                        <preloadPath>${project.basedir}/../libtokenizers/target/native/linux-x86_64</preloadPath>
+                    </preloadPaths>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>javacpp-parser</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>parse</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>javacpp-compiler</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Generate platform-specific JARs -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <executions>
+                    <!-- Main JAR (no natives) -->
+                    <execution>
+                        <id>default-jar</id>
+                        <configuration>
+                            <excludes>
+                                <exclude>**/*.so</exclude>
+                                <exclude>**/*.dll</exclude>
+                                <exclude>**/*.dylib</exclude>
+                                <exclude>**/*.jnilib</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                    
+                    <!-- Platform-specific JAR -->
+                    <execution>
+                        <id>platform-jar</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>${javacpp.platform}</classifier>
+                            <includes>
+                                <include>**/*.so</include>
+                                <include>**/*.dll</include>
+                                <include>**/*.dylib</include>
+                                <include>**/*.jnilib</include>
+                                <include>META-INF/**</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Platform-specific profiles matching parent -->
+        <profile>
+            <id>linux-x86_64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>linux</name>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>linux-x86_64</javacpp.platform>
+                <javacpp.platform.root>/usr</javacpp.platform.root>
+                <javacpp.platform.compiler>g++</javacpp.platform.compiler>
+            </properties>
+        </profile>
+        
+        <profile>
+            <id>windows-x86_64</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>windows-x86_64</javacpp.platform>
+                <javacpp.platform.compiler>cl.exe</javacpp.platform.compiler>
+            </properties>
+        </profile>
+        
+        <profile>
+            <id>macosx-x86_64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>macosx-x86_64</javacpp.platform>
+                <javacpp.platform.compiler>clang++</javacpp.platform.compiler>
+            </properties>
+        </profile>
+        
+        <profile>
+            <id>macosx-arm64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <javacpp.platform>macosx-arm64</javacpp.platform>
+                <javacpp.platform.compiler>clang++</javacpp.platform.compiler>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>

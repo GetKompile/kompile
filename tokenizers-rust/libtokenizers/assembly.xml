@@ -1,0 +1,46 @@
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.0.0 http://maven.apache.org/xsd/assembly-2.0.0.xsd">
+    
+    <id>native</id>
+    <formats>
+        <format>jar</format>
+    </formats>
+    
+    <includeBaseDirectory>false</includeBaseDirectory>
+    
+    <fileSets>
+        <!-- Include native libraries -->
+        <fileSet>
+            <directory>target/native</directory>
+            <outputDirectory>/</outputDirectory>
+            <includes>
+                <include>**/*.so</include>
+                <include>**/*.so.*</include>
+                <include>**/*.dll</include>
+                <include>**/*.dylib</include>
+                <include>**/*.jnilib</include>
+            </includes>
+        </fileSet>
+        
+        <!-- Include build manifest -->
+        <fileSet>
+            <directory>target/native</directory>
+            <outputDirectory>META-INF</outputDirectory>
+            <includes>
+                <include>manifest.properties</include>
+            </includes>
+        </fileSet>
+        
+        <!-- Include headers for development -->
+        <fileSet>
+            <directory>target/native</directory>
+            <outputDirectory>include</outputDirectory>
+            <includes>
+                <include>**/*.h</include>
+                <include>**/*.hpp</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+    
+</assembly>
