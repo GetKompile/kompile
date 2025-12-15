@@ -43,30 +43,32 @@
     <module>kompile-pipelines-framework</module>
     <module>kompile-cli</module>
     <module>kompile-app</module>
+    <module>tokenizers-rust</module>
   </modules>
-
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
+    <maven.compiler.release>17</maven.compiler.release>
+    <java.version>17</java.version>
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
 
     <project.version>0.1.0-SNAPSHOT</project.version>
 
     <jackson.version>2.15.3</jackson.version>
+    <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
     <pico.version>4.7.7</pico.version>
+    <picocli.version>4.7.6</picocli.version>
     <lombok.version>1.18.38</lombok.version>
     <slf4j.version>2.0.9</slf4j.version>
     <logback.version>1.4.14</logback.version>
     <junit.jupiter.version>5.10.1</junit.jupiter.version>
     <graalvm.sdk.version>24.0.1</graalvm.sdk.version>
     <native-maven-plugin.version>0.10.1</native-maven-plugin.version>
+    <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
     <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
-
-
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
 
     <javacpp.version>1.5.11</javacpp.version>
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
@@ -87,34 +89,36 @@
     <guava.version>32.1.3-jre</guava.version>
     <vertx.version>4.5.7</vertx.version>
 
-
-    <maven.compiler.release>17</maven.compiler.release>
-    <java.version>17</java.version>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-
     <spring-boot.version>3.2.5</spring-boot.version>
     <spring-ai.version>1.0.0</spring-ai.version>
-    <anserini.version>1.0.1-SNAPSHOT</anserini.version>
+    <anserini.version>0.1.0-SNAPSHOT</anserini.version>
     <log4j2.version>2.21.1</log4j2.version>
     <jsoup.version>1.17.2</jsoup.version>
-    <jackson.version>2.15.3</jackson.version>
-    <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
-    <picocli.version>4.7.6</picocli.version>
     <frontend-maven-plugin.version>1.15.0</frontend-maven-plugin.version>
     <node.version>v20.11.1</node.version>
     <npm.version>10.2.4</npm.version>
 
-    <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
     <maven-jar-plugin.version>3.3.0</maven-jar-plugin.version>
     <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
     <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
     <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
-    <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
     <hibernate.version>6.4.4.Final</hibernate.version>
-  </properties>
 
+    <!-- Platform-specific native resource configurations -->
+    <javacpp.platform.extension></javacpp.platform.extension>
+
+    <!-- Default exclusions (will be overridden by profiles) -->
+    <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
+    <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
+    <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
+    <native.exclude.linux.arm>org/bytedeco/.*/linux-arm.*</native.exclude.linux.arm>
+    <native.exclude.linux.ppc>org/bytedeco/.*/linux-ppc.*</native.exclude.linux.ppc>
+    <native.exclude.linux.x86>org/bytedeco/.*/linux-x86_64/.*</native.exclude.linux.x86>
+    <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+    <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+    <javacpp.platform></javacpp.platform>
+  </properties>
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -274,7 +278,6 @@
             <compilerArgs>
               <arg>-parameters</arg>
             </compilerArgs>
-
             <source>${maven.compiler.source}</source>
             <target>${maven.compiler.target}</target>
             <annotationProcessorPaths>
@@ -291,6 +294,7 @@
             </annotationProcessorPaths>
           </configuration>
         </plugin>
+
         <plugin>
           <groupId>org.jetbrains.kotlin</groupId>
           <artifactId>kotlin-maven-plugin</artifactId>
@@ -314,17 +318,367 @@
             </dependency>
           </dependencies>
         </plugin>
+
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-shade-plugin</artifactId>
           <version>${maven-shade-plugin.version}</version>
+          <configuration>
+            <filters>
+              <filter>
+                <artifact>*:*</artifact>
+                <excludes>
+                  <exclude>org/datanucleus/**</exclude>
+                  <exclude>META-INF/*.SF</exclude>
+                  <exclude>META-INF/*.DSA</exclude>
+                  <exclude>META-INF/*.RSA</exclude>
+                  <exclude>${native.exclude.windows}</exclude>
+                  <exclude>${native.exclude.macosx}</exclude>
+                  <exclude>${native.exclude.linux.arm}</exclude>
+                  <exclude>${native.exclude.linux.ppc}</exclude>
+                  <exclude>${native.exclude.linux.x86}</exclude>
+                  <exclude>${native.exclude.android}</exclude>
+                  <exclude>${native.exclude.ios}</exclude>
+                  <exclude>**/javacpp.jar</exclude>
+                  <exclude>**/lib/jna.jar</exclude>
+                  <exclude>**/lib/test-classes</exclude>
+                  <exclude>**/test-classes/**</exclude>
+                </excludes>
+              </filter>
+            </filters>
+          </configuration>
         </plugin>
+
         <plugin>
           <groupId>org.graalvm.buildtools</groupId>
           <artifactId>native-maven-plugin</artifactId>
           <version>${native-maven-plugin.version}</version>
+          <configuration>
+            <buildArgs>
+              <buildArg>-J-Xmx32g</buildArg>
+              <buildArg>--verbose</buildArg>
+              <buildArg>--no-fallback</buildArg>
+              <buildArg>--allow-incomplete-classpath</buildArg>
+              <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+              <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.factory.Nd4j</buildArg>
+              <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder</buildArg>
+              <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader</buildArg>
+              <buildArg>-H:Log=registerResource:3</buildArg>
+              <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+              <buildArg>-H:IncludeResources=org/nd4j/linalg/factory/.*</buildArg>
+              <buildArg>-H:IncludeResources=org/nd4j/config/.*</buildArg>
+              <buildArg>-H:IncludeResources=${native.include.pattern}</buildArg>
+              <arg>--parallelism=8</arg>
+              <arg>-H:LargeArrayThreshold=8192</arg>
+              <arg>--enable-preview</arg>
+
+              <buildArg>-H:ExcludeResources=${native.exclude.windows}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.macosx}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.linux.arm}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.linux.ppc}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.linux.x86}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.android}</buildArg>
+              <buildArg>-H:ExcludeResources=${native.exclude.ios}</buildArg>
+
+              <buildArg>-H:ExcludeResources=.*/javacpp\.jar</buildArg>
+              <buildArg>-H:ExcludeResources=.*/lib/jna\.jar</buildArg>
+              <buildArg>-H:ExcludeResources=.*/lib/test-classes</buildArg>
+              <buildArg>-H:ExcludeResources=.*/\.jar$</buildArg>
+              <buildArg>-H:ExcludeResources=.*/\.zip$</buildArg>
+            </buildArgs>
+          </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
   </build>
+
+  <profiles>
+
+    <profile>
+      <id>linux</id>
+      <activation>
+        <os>
+          <name>linux</name>
+        </os>
+      </activation>
+      <properties>
+        <os.kernel>linux</os.kernel>
+        <os.name>linux</os.name>
+      </properties>
+    </profile>
+    <profile>
+      <id>macosx</id>
+      <activation>
+        <os>
+          <name>mac os x</name>
+        </os>
+      </activation>
+      <properties>
+        <os.kernel>darwin</os.kernel>
+        <os.name>macosx</os.name>
+      </properties>
+    </profile>
+    <profile>
+      <id>windows</id>
+      <activation>
+        <os>
+          <family>windows</family>
+        </os>
+      </activation>
+      <properties>
+        <os.kernel>windows</os.kernel>
+        <os.name>windows</os.name>
+      </properties>
+    </profile>
+    <profile>
+      <id>arm</id>
+      <activation>
+        <os>
+          <arch>arm</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>armhf</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>android</id>
+      <activation>
+        <os><name>android</name></os>
+      </activation>
+      <properties>
+        <os.kernel>linux</os.kernel>
+        <os.name>android</os.name>
+        <os.arch>arm</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>aarch64</id>
+      <activation>
+        <os>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>arm64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>armv8</id>
+      <activation>
+        <os>
+          <arch>armv8</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>arm64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>i386</id>
+      <activation>
+        <os>
+          <arch>i386</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>i486</id>
+      <activation>
+        <os>
+          <arch>i486</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>i586</id>
+      <activation>
+        <os>
+          <arch>i586</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>i686</id>
+      <activation>
+        <os>
+          <arch>i686</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>x86</id>
+      <activation>
+        <os>
+          <arch>x86</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>amd64</id>
+      <activation>
+        <os>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>x86-64</id>
+      <activation>
+        <os>
+          <arch>x86-64</arch>
+        </os>
+      </activation>
+      <properties>
+        <os.arch>x86_64</os.arch>
+      </properties>
+    </profile>
+
+
+    <profile>
+      <id>platform-linux-x86_64</id>
+      <activation>
+        <os>
+          <family>unix</family>
+          <name>!mac os x</name>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
+        <native.exclude.linux.x86></native.exclude.linux.x86>
+        <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
+        <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
+        <native.exclude.linux.arm>org/bytedeco/.*/linux-arm.*</native.exclude.linux.arm>
+        <native.exclude.linux.ppc>org/bytedeco/.*/linux-ppc.*</native.exclude.linux.ppc>
+        <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+        <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>platform-linux-arm64</id>
+      <activation>
+        <os>
+          <family>unix</family>
+          <name>!mac os x</name>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <native.include.pattern>org/bytedeco/.*/linux-arm64/.*</native.include.pattern>
+        <native.exclude.linux.arm></native.exclude.linux.arm>
+        <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
+        <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
+        <native.exclude.linux.x86>org/bytedeco/.*/linux-x86_64/.*</native.exclude.linux.x86>
+        <native.exclude.linux.ppc>org/bytedeco/.*/linux-ppc.*</native.exclude.linux.ppc>
+        <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+        <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>platform-macosx-x86_64</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>x86_64</arch>
+        </os>
+      </activation>
+      <properties>
+        <native.include.pattern>org/bytedeco/.*/macosx-x86_64/.*</native.include.pattern>
+        <native.exclude.macosx></native.exclude.macosx>
+        <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
+        <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
+        <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
+        <native.exclude.linux.ppc>org/bytedeco/.*/linux-.*</native.exclude.linux.ppc>
+        <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+        <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>platform-macosx-arm64</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <native.include.pattern>org/bytedeco/.*/macosx-arm64/.*</native.include.pattern>
+        <native.exclude.macosx></native.exclude.macosx>
+        <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
+        <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
+        <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
+        <native.exclude.linux.ppc>org/bytedeco/.*/linux-.*</native.exclude.linux.ppc>
+        <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+        <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>platform-windows-x86_64</id>
+      <activation>
+        <os>
+          <family>windows</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <native.include.pattern>org/bytedeco/.*/windows-x86_64/.*</native.include.pattern>
+        <native.exclude.windows></native.exclude.windows>
+        <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>
+        <native.exclude.linux.arm>org/bytedeco/.*/linux-.*</native.exclude.linux.arm>
+        <native.exclude.linux.x86>org/bytedeco/.*/linux-.*</native.exclude.linux.x86>
+        <native.exclude.linux.ppc>org/bytedeco/.*/linux-.*</native.exclude.linux.ppc>
+        <native.exclude.android>org/bytedeco/.*/android-.*</native.exclude.android>
+        <native.exclude.ios>org/bytedeco/.*/ios-.*</native.exclude.ios>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>avx2</id>
+      <activation>
+        <property>
+          <name>libnd4j.extension</name>
+          <value>avx2</value>
+        </property>
+      </activation>
+      <properties>
+        <javacpp.platform.extension>-avx2</javacpp.platform.extension>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>avx512</id>
+      <activation>
+        <property>
+          <name>libnd4j.extension</name>
+          <value>avx512</value>
+        </property>
+      </activation>
+      <properties>
+        <javacpp.platform.extension>-avx512</javacpp.platform.extension>
+      </properties>
+    </profile>
+  </profiles>
 </project>

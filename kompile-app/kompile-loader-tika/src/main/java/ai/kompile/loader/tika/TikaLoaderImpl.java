@@ -16,22 +16,25 @@
 
 package ai.kompile.loader.tika;
 
-// ... other imports
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
-import org.apache.tika.Tika; // Import Tika
+import org.apache.tika.Tika;
+import org.apache.tika.exception.TikaException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
-
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 
-@Component // Ensure it's a Spring component
+@Component
 public class TikaLoaderImpl implements DocumentLoader {
 
+    private static final Logger logger = LoggerFactory.getLogger(TikaLoaderImpl.class);
     private final Tika tika = new Tika();
 
     @Override
@@ -61,19 +64,28 @@ public class TikaLoaderImpl implements DocumentLoader {
         String content;
         try (InputStream stream = new FileInputStream(file)) {
             content = tika.parseToString(stream);
+        } catch (TikaException | IOException e) {
+            // Handle corrupted or invalid files gracefully
+            String errorMessage = e.getMessage();
+            logger.warn("Unable to parse file '{}' with Tika: {}. The file may be corrupted or in an unsupported format.",
+                       file.getName(), errorMessage);
+
+            // Return an error document so the caller knows what happened
+            Document errorDoc = new Document("[Error: Unable to parse file. The file may be corrupted, truncated, or in an unsupported format.]");
+            errorDoc.getMetadata().put("source", file.getAbsolutePath());
+            errorDoc.getMetadata().put("fileName", file.getName());
+            errorDoc.getMetadata().put("fileSize", file.length());
+            errorDoc.getMetadata().put("lastModified", file.lastModified());
+            errorDoc.getMetadata().put("loader", getName());
+            errorDoc.getMetadata().put("parseError", true);
+            errorDoc.getMetadata().put("errorMessage", errorMessage != null ? errorMessage : "Unknown error");
+            return List.of(errorDoc);
         }
 
         Document springDoc = new Document(content);
         springDoc.getMetadata().put("source", file.getAbsolutePath());
         springDoc.getMetadata().put("fileName", file.getName());
-        // You might want to add more metadata from Tika if available
-        // org.apache.tika.metadata.Metadata tikaMetadata = new org.apache.tika.metadata.Metadata();
-        // try (InputStream streamMeta = new FileInputStream(file)) {
-        //    tika.parse(streamMeta, tikaMetadata); // Fills metadata
-        // }
-        // for(String name : tikaMetadata.names()) {
-        //    springDoc.getMetadata().put(name, tikaMetadata.get(name));
-        // }
+        springDoc.getMetadata().put("loader", getName());
         return List.of(springDoc);
     }
 }

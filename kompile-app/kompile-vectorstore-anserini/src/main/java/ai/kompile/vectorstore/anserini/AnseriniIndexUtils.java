@@ -35,31 +35,120 @@ import java.io.IOException;
 @Slf4j
 public class AnseriniIndexUtils {
 
+    // ========== BATCH MODE CONFIGURATION ==========
+    // These constants optimize Lucene for bulk indexing scenarios
+
     /**
-     * Creates an IndexWriterConfig based on the provided properties.
+     * Maximum number of documents to buffer before auto-flush.
+     * Higher values = better throughput but more memory.
+     * -1 disables document-count-based flushing (use RAM buffer instead).
+     */
+    private static final int MAX_BUFFERED_DOCS = -1; // Disabled, use RAM buffer
+
+    /**
+     * Number of threads for concurrent merging during indexing.
+     * More threads = faster merges but higher CPU usage.
+     */
+    private static final int MERGE_THREADS = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+
+    /**
+     * Creates an IndexWriterConfig optimized for batch/bulk indexing.
+     *
+     * <p>Optimizations applied:</p>
+     * <ul>
+     *   <li>Large RAM buffer to reduce flush frequency</li>
+     *   <li>Disabled document-count flushing (RAM-based only)</li>
+     *   <li>Concurrent merge scheduler for parallel segment merging</li>
+     *   <li>Compound files disabled for faster indexing</li>
+     * </ul>
      *
      * @param properties Anserini vector store properties
-     * @return Configured IndexWriterConfig
+     * @return Configured IndexWriterConfig optimized for batch operations
      */
     public static IndexWriterConfig createIndexWriterConfig(AnseriniVectorStoreProperties properties) {
         IndexWriterConfig config = new IndexWriterConfig();
-        
+
+        // NOTE: Lock factory should be set on the Directory object when opening it,
+        // not on IndexWriterConfig (Lucene 9.x API change). Ensure callers use
+        // FSDirectory.open(path, NoLockFactory.INSTANCE) to prevent lock conflicts.
+
         // Configure codec based on indexing strategy and quantization
         if (properties.getHnsw().isEnabled()) {
             config.setCodec(createHnswCodec(properties));
         } else {
             config.setCodec(createFlatCodec(properties));
         }
-        
+
+        // Basic configuration
         config.setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
-        config.setRAMBufferSizeMB(properties.getMemoryBufferSizeMb());
         config.setUseCompoundFile(properties.isUseCompoundFile());
-        
-        log.info("Created IndexWriterConfig - HNSW: {}, Quantization: {}, RAM Buffer: {}MB", 
-                properties.getHnsw().isEnabled(), 
+
+        // ========== BATCH MODE OPTIMIZATIONS ==========
+
+        // 1. Large RAM buffer - key optimization for bulk indexing
+        // Documents are buffered in memory until this limit is reached
+        // Higher = fewer flushes = better throughput
+        config.setRAMBufferSizeMB(properties.getMemoryBufferSizeMb());
+
+        // 2. Disable document-count based flushing
+        // Let RAM buffer size control flushing instead
+        // This prevents premature flushes during bulk operations
+        config.setMaxBufferedDocs(MAX_BUFFERED_DOCS);
+
+        // 3. Configure concurrent merge scheduler for parallel segment merging
+        // This allows merges to happen in background while indexing continues
+        org.apache.lucene.index.ConcurrentMergeScheduler mergeScheduler =
+                new org.apache.lucene.index.ConcurrentMergeScheduler();
+        mergeScheduler.setMaxMergesAndThreads(MERGE_THREADS + 1, MERGE_THREADS);
+        config.setMergeScheduler(mergeScheduler);
+
+        // 4. Use TieredMergePolicy for better segment management
+        // This policy is optimized for mixed small/large segment scenarios
+        org.apache.lucene.index.TieredMergePolicy mergePolicy =
+                new org.apache.lucene.index.TieredMergePolicy();
+        // Increase max merge size for bulk indexing (default is 5GB)
+        mergePolicy.setMaxMergedSegmentMB(10 * 1024); // 10GB max segment
+        // Reduce merge at to delay merging until more segments exist
+        mergePolicy.setSegmentsPerTier(10.0);
+        config.setMergePolicy(mergePolicy);
+
+        log.info("Created IndexWriterConfig (batch-optimized) - HNSW: {}, Quantization: {}, " +
+                        "RAM Buffer: {}MB, Merge Threads: {}, Compound Files: {}",
+                properties.getHnsw().isEnabled(),
                 properties.isQuantizeInt8(),
-                properties.getMemoryBufferSizeMb());
-        
+                properties.getMemoryBufferSizeMb(),
+                MERGE_THREADS,
+                properties.isUseCompoundFile());
+
+        return config;
+    }
+
+    /**
+     * Creates an IndexWriterConfig for high-throughput bulk loading scenarios.
+     * This configuration prioritizes indexing speed over search performance.
+     *
+     * <p>Use this for initial data loading, then consider force-merging.</p>
+     *
+     * @param properties Anserini vector store properties
+     * @param ramBufferMB Override RAM buffer size (use larger values for bulk loads)
+     * @return Configured IndexWriterConfig for bulk loading
+     */
+    public static IndexWriterConfig createBulkLoadConfig(AnseriniVectorStoreProperties properties, double ramBufferMB) {
+        IndexWriterConfig config = createIndexWriterConfig(properties);
+
+        // Override RAM buffer for bulk loading
+        config.setRAMBufferSizeMB(Math.max(ramBufferMB, properties.getMemoryBufferSizeMb()));
+
+        // For bulk loading, use LogByteSizeMergePolicy which is more predictable
+        // and better for scenarios where we'll force-merge at the end
+        org.apache.lucene.index.LogByteSizeMergePolicy bulkMergePolicy =
+                new org.apache.lucene.index.LogByteSizeMergePolicy();
+        bulkMergePolicy.setMaxMergeMB(5 * 1024); // 5GB max merge
+        bulkMergePolicy.setMergeFactor(10); // Merge 10 segments at a time
+        config.setMergePolicy(bulkMergePolicy);
+
+        log.info("Created bulk-load IndexWriterConfig - RAM Buffer: {}MB", ramBufferMB);
+
         return config;
     }
 

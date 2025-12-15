@@ -24,6 +24,7 @@ import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.llm.memory.KompileChatMemory; // <-- IMPORT CHANGE
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.nd4j.linalg.api.ndarray.INDArray;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
@@ -62,7 +63,25 @@ public class Neo4jGraphRagService implements GraphRagService {
         log.info("Original Query: '{}', Refined Query: '{}'", query.getQuery(), refinedQuery);
 
         // 2. Embed the (potentially refined) query
-        List<Float> queryVector = embeddingModel.embed(refinedQuery);
+        // Wrap in try-catch to handle native pointer errors from ND4J
+        INDArray queryVector;
+        try {
+            queryVector = embeddingModel.embed(refinedQuery);
+        } catch (NullPointerException e) {
+            // This catches JavaCPP "Pointer address of argument X is NULL" errors
+            log.warn("Native pointer error during query embedding generation: {}", e.getMessage());
+            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+        } catch (RuntimeException e) {
+            // Catch other runtime exceptions from native operations
+            log.warn("Runtime error during query embedding generation: {}", e.getMessage());
+            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+        }
+
+        // Handle empty/null embeddings
+        if (queryVector == null || queryVector.isEmpty() || queryVector.length() == 0) {
+            log.warn("Empty query embedding generated for query: {}", refinedQuery);
+            return new GraphRagResult("Error generating query embedding. Please try again.", "");
+        }
 
         // 3. Retrieve context from the graph using vector search
         String context = retrieveContext(queryVector, query.getK());
@@ -110,7 +129,7 @@ public class Neo4jGraphRagService implements GraphRagService {
         return llmChat.prompt().user(prompt).call().content();
     }
 
-    private String retrieveContext(List<Float> queryVector, int topK) {
+    private String retrieveContext(INDArray queryVector, int topK) {
         try (Session session = neo4jDriver.session()) {
             List<Record> records = session.run(VECTOR_SEARCH_QUERY,
                     Values.parameters("topK", topK, "queryVector", queryVector)).list();

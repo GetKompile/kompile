@@ -147,6 +147,9 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--skipTests"}, description = "Skip Maven tests during the build (-DskipTests=true)", defaultValue = "true", negatable = true)
     private boolean skipTests;
 
+    @Option(names = {"--appTitle"}, description = "Application title displayed in the UI banner", defaultValue = "Kompile RAG Console")
+    private String appTitle;
+
     @Override
     public Integer call() throws Exception {
         File buildInstanceDir = new File(outputDirBase, configName);
@@ -224,6 +227,9 @@ public class BuildRagApp implements Callable<Integer> {
         // Additional options
         ragPomCliArgs.add("--includePgmlIndexer=" + this.includePgmlIndexer);
         ragPomCliArgs.add("--buildNative=" + this.buildNative);
+
+        // UI customization
+        ragPomCliArgs.add("--appTitle=" + this.appTitle);
 
         int pomGenExitCode = new CommandLine(new RagPomGenerator()).execute(ragPomCliArgs.toArray(new String[0]));
 

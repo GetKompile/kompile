@@ -16,6 +16,9 @@
 
 package ai.kompile.core.embeddings;
 
+import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -26,7 +29,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * No-op implementation of EmbeddingModel that serves as a fallback when no real
+ * embedding model is configured. This bean is only created when no other EmbeddingModel
+ * implementation is available.
+ */
 @Service
+@ConditionalOnMissingBean(value = EmbeddingModel.class, ignored = NoOpEmbeddingModelImpl.class)
 public class NoOpEmbeddingModelImpl implements EmbeddingModel {
 
     private static final Logger logger = LoggerFactory.getLogger(NoOpEmbeddingModelImpl.class);
@@ -37,21 +46,21 @@ public class NoOpEmbeddingModelImpl implements EmbeddingModel {
     }
 
     @Override
-    public List<Float> embed(String text) {
+    public INDArray embed(String text) {
         logger.warn("NoOpEmbeddingModel: embed(String) called for text: '{}'. Returning dummy embedding.", text.substring(0, Math.min(text.length(), 30)));
-        return Collections.nCopies(dimensions(), 0.0f);
+        return Nd4j.empty(DataType.FLOAT);
     }
 
     @Override
-    public List<List<Float>> embed(List<String> texts) {
+    public INDArray embed(List<String> texts) {
         logger.warn("NoOpEmbeddingModel: embed(List<String>) called for {} texts. Returning dummy embeddings.", texts.size());
-        return texts.stream().map(text -> Collections.nCopies(dimensions(), 0.0f)).collect(Collectors.toList());
+        return Nd4j.empty(DataType.FLOAT);
     }
 
     @Override
-    public List<List<Float>> embedDocuments(List<Document> documents) {
+    public INDArray embedDocuments(List<Document> documents) {
         logger.warn("NoOpEmbeddingModel: embedDocuments called for {} documents. Returning dummy embeddings.", documents.size());
-        return documents.stream().map(doc -> Collections.nCopies(dimensions(), 0.0f)).collect(Collectors.toList());
+        return Nd4j.empty(DataType.FLOAT);
     }
 
     @Override

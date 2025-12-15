@@ -105,7 +105,7 @@
 }
 
 .implementation-name {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-family-monospace);
   background: #f5f5f5;
   padding: 2px 6px;
   border-radius: 3px;
@@ -257,7 +257,7 @@
 
 /* Table Cell Content */
 .doc-id {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-family-monospace);
   font-size: 12px;
   color: #666;
 }
@@ -387,7 +387,7 @@
 }
 
 .content-textarea textarea {
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-family-monospace);
   font-size: 13px;
   line-height: 1.5;
 }

@@ -81,9 +81,6 @@ public class SameDiffRunner implements PipelineStepRunner {
         List<String> actualOutputNames = sd.outputs();
 
 
-        // Set ND4J executioner modes
-        Nd4j.getExecutioner().enableDebugMode(debugMode);
-        Nd4j.getExecutioner().enableVerboseMode(verboseMode);
 
         this.initialized = true;
     }
@@ -96,26 +93,26 @@ public class SameDiffRunner implements PipelineStepRunner {
         Objects.requireNonNull(input, "Input Data cannot be null.");
 
         Map<String, INDArray> placeholderMap = new HashMap<>();
+        Map<String, INDArray> outputMap = null;
 
-        // Prepare inputs based on actual model input names
-        for (String modelInputName : this.actualModelInputNames) {
-            if (!input.has(modelInputName)) {
-                throw new IllegalArgumentException("Input Data is missing required NDArray for model input key: '" + modelInputName + "'. Available keys: " + input.keySet());
-            }
-            NDArray kompileInput = input.getNDArray(modelInputName);
-            if (kompileInput == null) {
-                throw new IllegalArgumentException("Input Data contains null NDArray for model input key: '" + modelInputName + "'.");
-            }
-            try {
-                placeholderMap.put(modelInputName, SameDiffDataUtils.convertToINDArray(kompileInput, modelInputName));
-            } catch (Exception e) {
-                throw new RuntimeException("Error converting input NDArray '" + modelInputName + "'", e);
-            }
-        }
-
-        // Execute the model
-        Map<String, INDArray> outputMap;
         try {
+            // Prepare inputs based on actual model input names
+            for (String modelInputName : this.actualModelInputNames) {
+                if (!input.has(modelInputName)) {
+                    throw new IllegalArgumentException("Input Data is missing required NDArray for model input key: '" + modelInputName + "'. Available keys: " + input.keySet());
+                }
+                NDArray kompileInput = input.getNDArray(modelInputName);
+                if (kompileInput == null) {
+                    throw new IllegalArgumentException("Input Data contains null NDArray for model input key: '" + modelInputName + "'.");
+                }
+                try {
+                    placeholderMap.put(modelInputName, SameDiffDataUtils.convertToINDArray(kompileInput, modelInputName));
+                } catch (Exception e) {
+                    throw new RuntimeException("Error converting input NDArray '" + modelInputName + "'", e);
+                }
+            }
+
+            // Execute the model
             // Filter requested outputs to only those that actually exist in the model
             List<String> validRequestedOutputs = new ArrayList<>();
             List<String> modelOutputs = sd.outputs();
@@ -129,25 +126,48 @@ public class SameDiffRunner implements PipelineStepRunner {
             }
 
             outputMap = sd.output(placeholderMap, validRequestedOutputs.toArray(new String[0]));
-        } catch (Exception e) {
-            throw e;
-        }
 
-        // Prepare output Data
-        Data outputData = Data.empty();
-        for (Map.Entry<String, INDArray> entry : outputMap.entrySet()) {
-            String outputName = entry.getKey();
-            if (configuredOutputNames.contains(outputName)) { // Ensure we only return what was requested
-                try {
-                    outputData.put(outputName, SameDiffDataUtils.convertFromINDArray(entry.getValue(), outputName));
-                } catch (Exception e) {
-                    // Decide how to handle: throw, skip, put error marker? Throwing for now.
-                    throw new RuntimeException("Error converting output INDArray '" + outputName + "'", e);
+            // Prepare output Data
+            Data outputData = Data.empty();
+            for (Map.Entry<String, INDArray> entry : outputMap.entrySet()) {
+                String outputName = entry.getKey();
+                if (configuredOutputNames.contains(outputName)) { // Ensure we only return what was requested
+                    try {
+                        outputData.put(outputName, SameDiffDataUtils.convertFromINDArray(entry.getValue(), outputName));
+                    } catch (Exception e) {
+                        // Decide how to handle: throw, skip, put error marker? Throwing for now.
+                        throw new RuntimeException("Error converting output INDArray '" + outputName + "'", e);
+                    }
+                }
+            }
+
+            return outputData;
+        } finally {
+            // CRITICAL: Close all input arrays to prevent off-heap memory leaks
+            // These are created fresh on each exec() call and must be released
+            for (INDArray arr : placeholderMap.values()) {
+                if (arr != null) {
+                    try {
+                        arr.close();
+                    } catch (Exception e) {
+                        // Ignore close errors
+                    }
+                }
+            }
+            // CRITICAL: Close all output arrays in the outputMap
+            // The outputMap may contain multiple tensors that need cleanup
+            if (outputMap != null) {
+                for (INDArray arr : outputMap.values()) {
+                    if (arr != null) {
+                        try {
+                            arr.close();
+                        } catch (Exception e) {
+                            // Ignore close errors
+                        }
+                    }
                 }
             }
         }
-
-        return outputData;
     }
 
     @Override
@@ -157,9 +177,22 @@ public class SameDiffRunner implements PipelineStepRunner {
 
     @Override
     public void close() throws Exception {
-        // SameDiff object itself doesn't have a close method.
-        // Underlying resources are typically managed by ND4J's lifecycle.
-        sd = null; // Release reference
+        // SameDiff implements AutoCloseable - calling close() releases all OpContexts
+        // cached in InferenceSessions, preventing native memory leaks.
+        // We use reflection to call close() to maintain compatibility with nd4j-api versions
+        // that may not have the close() method yet (avoids compile-time dependency).
+        if (sd != null) {
+            try {
+                // Use reflection to call close() for compatibility with different nd4j-api versions
+                java.lang.reflect.Method closeMethod = sd.getClass().getMethod("close");
+                closeMethod.invoke(sd);
+            } catch (NoSuchMethodException e) {
+                // SameDiff.close() not available in this nd4j-api version - skipping cleanup
+            } catch (Exception e) {
+                // Log but don't rethrow - we still want to clean up other resources
+            }
+            sd = null;
+        }
         initialized = false;
         URIUtils.deleteTempFileQuietly(modelFileRef); // Clean up temp file if created
     }

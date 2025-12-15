@@ -17,6 +17,54 @@
 /* src/styles.scss or src/styles.css */
 @use '@angular/material' as mat;
 
+/* ==========================================================================
+   Global Font Configuration
+   ========================================================================== */
+
+/*
+ * Standardized font families for the entire application.
+ * - Primary: Roboto (loaded from Google Fonts)
+ * - Monospace: Source Code Pro (loaded from Google Fonts)
+ *
+ * Use CSS custom properties (variables) for consistency across all components.
+ */
+:root {
+  /* Primary font stack - Roboto with system fallbacks */
+  --font-family-base: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+
+  /* Monospace font stack - Source Code Pro with fallbacks */
+  --font-family-monospace: 'Source Code Pro', 'Fira Code', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+
+  /* Font weights */
+  --font-weight-light: 300;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+}
+
+/* ==========================================================================
+   Global Element Styles
+   ========================================================================== */
+
+/* Apply consistent fonts to code elements throughout the app */
+code, pre, kbd, samp, .code, .monospace {
+  font-family: var(--font-family-monospace) !important;
+}
+
+/* Ensure textarea and input inherit proper fonts */
+textarea, input {
+  font-family: inherit;
+}
+
+/* Code-specific textarea styling */
+textarea.code-input,
+textarea[class*="code"],
+textarea[class*="json"],
+textarea[class*="yaml"],
+textarea[class*="config"] {
+  font-family: var(--font-family-monospace) !important;
+}
+
   /* Snackbar custom styles */
 .snackbar-success {
   background-color: #4CAF50 !important; /* Green */
@@ -42,4 +90,4 @@
 }
 
 html, body { height: 100%; }
-body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+body { margin: 0; font-family: var(--font-family-base); }

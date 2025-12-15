@@ -28,8 +28,10 @@ import java.util.Set;
  */
 public class ModelConstants {
 
-    // OpenNLP Constants
+    // OpenNLP Constants (existing code remains unchanged)
     public static final String OPENNLP_MODEL_BASE_URL = "https://dlcdn.apache.org/opennlp/models/ud-models-1.2/";
+    public static final String DEFAULT_KOMPILE_MODEL_CACHE_SUBDIR = ".kompile/models";
+    public static final String ENV_KOMPILE_MODEL_CACHE_DIR = "KOMPILE_MODEL_CACHE_DIR";
     private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_REMOTE_FILENAME_MAP;
     private static final Map<String, String> LANGUAGE_TO_OPENNLP_SENTENCE_MODEL_LOCAL_FILENAME_MAP;
 
@@ -135,12 +137,12 @@ public class ModelConstants {
         if (!isOpenNLPLanguageSupported(languageCode)) {
             throw new IllegalArgumentException("Unsupported language code for OpenNLP sentence detection: " + languageCode);
         }
-        
+
         String remoteFilename = getOpenNLPModelRemoteFilename(languageCode);
         String localFilename = getOpenNLPModelLocalFilename(languageCode);
         String downloadUrl = OPENNLP_MODEL_BASE_URL + remoteFilename;
         String cacheSubpath = "opennlp/sentence/" + localFilename;
-        
+
         return new ModelDescriptor(
                 "opennlp-sentence-" + languageCode,
                 ModelType.OPENNLP_SENTENCE,
@@ -149,14 +151,14 @@ public class ModelConstants {
                 "1.2-2.5.0", // Version from the URL pattern
                 null, // No checksum provided in constants
                 Map.of(
-                    "language", languageCode, 
-                    "description", "OpenNLP sentence detection model for " + languageCode,
-                    "framework", "opennlp"
+                        "language", languageCode,
+                        "description", "OpenNLP sentence detection model for " + languageCode,
+                        "framework", "opennlp"
                 )
         );
     }
 
-    // Anserini Prebuilt Lucene Indexes
+    // Anserini Prebuilt Lucene Indexes (existing code remains unchanged)
     private static final Map<String, ModelDescriptor> ANSERINI_INDEX_DESCRIPTORS;
     static {
         Map<String, ModelDescriptor> anseriniIndexes = new HashMap<>();
@@ -178,30 +180,204 @@ public class ModelConstants {
         ));
         ANSERINI_INDEX_DESCRIPTORS = Collections.unmodifiableMap(anseriniIndexes);
     }
-    
+
     public static ModelDescriptor getAnseriniIndexDescriptor(String indexId) {
         return ANSERINI_INDEX_DESCRIPTORS.get(indexId);
     }
 
-    // Anserini Encoder Models (Neural network files like ONNX, TF, DL4J for encoders)
+    // Anserini Encoder Models - UPDATED WITH NEW MODELS AND TOKENIZER METADATA
+    private static final String KOMPILE_MODEL_BASE_URL = "https://github.com/GetKompile/kompile/releases/download/opennlp/";
     private static final Map<String, ModelDescriptor> ANSERINI_ENCODER_MODEL_DESCRIPTORS;
+    private static final Map<String, ModelDescriptor> ANSERINI_ENCODER_VOCAB_DESCRIPTORS;
+
     static {
         Map<String, ModelDescriptor> encoderModels = new HashMap<>();
-        
-        // Example for BGE ONNX model (placeholder URL - update with actual URLs)
-        encoderModels.put("bge-base-en-v1.5-onnx", new ModelDescriptor(
-                "anserini_encoder_bge-base-en-v1.5-onnx",
+        Map<String, ModelDescriptor> vocabModels = new HashMap<>();
+
+        // BGE Base English v1.5 - Based on BERT-style tokenization with 512 max length
+        encoderModels.put("bge-base-en-v1.5", new ModelDescriptor(
+                "bge-base-en-v1.5",
                 ModelType.ANSERINI_ENCODER_MODEL,
-                "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx?download=true", // Placeholder
-                "anserini/encoders/onnx/bge-base-en-v1.5/model.onnx",
+                KOMPILE_MODEL_BASE_URL + "bge-base-en-v1.5.sdz",
+                "anserini/encoders/bge-base-en-v1.5/bge-base-en-v1.5.sdz",
                 "v1.5", null,
-                Map.of("description", "BGE Base English v1.5 ONNX model for Anserini dense encoding.", "framework", "onnx")
+                Map.of(
+                        "description", "BGE Base English v1.5 SameDiff model",
+                        "framework", "samediff",
+                        "model_type", "dense",
+                        "embedding_dim", 768,
+                        "tokenizer_do_lower_case", true,
+                        "tokenizer_add_special_tokens", true,
+                        "tokenizer_max_sequence_length", 512,
+                        "tokenizer_strip_accents", true
+                )
+        ));
+
+        vocabModels.put("bge-base-en-v1.5", new ModelDescriptor(
+                "bge-base-en-v1.5-vocab",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "bge-base-en-v1.5-vocab.txt",
+                "anserini/encoders/bge-base-en-v1.5/vocab.txt",
+                "v1.5", null,
+                Map.of("description", "BGE Base English v1.5 vocabulary file")
+        ));
+
+        // Arctic Embed Large - Based on XLM-RoBERTa with 8192 max length support
+        encoderModels.put("arctic-embed-l", new ModelDescriptor(
+                "arctic-embed-l",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "arctic-embed-l.sdz",
+                "anserini/encoders/arctic-embed-l/arctic-embed-l.sdz",
+                "latest", null,
+                Map.of(
+                        "description", "Arctic Embed Large SameDiff model",
+                        "framework", "samediff",
+                        "model_type", "dense",
+                        "embedding_dim", 1024,
+                        "tokenizer_do_lower_case", false, // XLM-RoBERTa typically doesn't lowercase
+                        "tokenizer_add_special_tokens", true,
+                        "tokenizer_max_sequence_length", 8192, // Arctic supports 8k context
+                        "tokenizer_strip_accents", false // RoBERTa-style models typically don't strip accents
+                )
+        ));
+
+        vocabModels.put("arctic-embed-l", new ModelDescriptor(
+                "arctic-embed-l-vocab",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "arctic-embed-l-vocab.txt",
+                "anserini/encoders/arctic-embed-l/vocab.txt",
+                "latest", null,
+                Map.of("description", "Arctic Embed Large vocabulary file")
+        ));
+
+        // CosDPR Distilled - Based on DPR architecture with BERT-style tokenization
+        encoderModels.put("cosdpr-distil", new ModelDescriptor(
+                "cosdpr-distil",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "cosdpr-distil.sdz",
+                "anserini/encoders/cosdpr-distil/cosdpr-distil.sdz",
+                "latest", null,
+                Map.of(
+                        "description", "CosDPR Distilled SameDiff model",
+                        "framework", "samediff",
+                        "model_type", "dense",
+                        "embedding_dim", 768,
+                        "tokenizer_do_lower_case", true, // DPR typically uses BERT-style tokenization
+                        "tokenizer_add_special_tokens", true,
+                        "tokenizer_max_sequence_length", 512,
+                        "tokenizer_strip_accents", true
+                )
+        ));
+
+        vocabModels.put("cosdpr-distil", new ModelDescriptor(
+                "cosdpr-distil-vocab",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "cosdpr-distil-vocab.txt",
+                "anserini/encoders/cosdpr-distil/vocab.txt",
+                "latest", null,
+                Map.of("description", "CosDPR Distilled vocabulary file")
+        ));
+
+        // SPLADE++ EfficientDistil - Based on BERT with MLM head, uses BERT vocabulary (30522 tokens)
+        encoderModels.put("splade-pp-ed", new ModelDescriptor(
+                "splade-pp-ed",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "splade-pp-ed.sdz",
+                "anserini/encoders/splade-pp-ed/splade-pp-ed.sdz",
+                "latest", null,
+                Map.of(
+                        "description", "SPLADE++ EfficientDistil SameDiff model",
+                        "framework", "samediff",
+                        "model_type", "sparse",
+                        "embedding_dim", 30522, // BERT vocabulary size
+                        "tokenizer_do_lower_case", true, // SPLADE typically uses BERT-style tokenization
+                        "tokenizer_add_special_tokens", true,
+                        "tokenizer_max_sequence_length", 512, // Standard BERT max length
+                        "tokenizer_strip_accents", true
+                )
+        ));
+
+        vocabModels.put("splade-pp-ed", new ModelDescriptor(
+                "splade-pp-ed-vocab",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "splade-pp-ed-vocab.txt",
+                "anserini/encoders/splade-pp-ed/vocab.txt",
+                "latest", null,
+                Map.of("description", "SPLADE++ EfficientDistil vocabulary file")
+        ));
+
+        // SPLADE++ SelfDistil - Same as EfficientDistil but self-distilled variant
+        encoderModels.put("splade-pp-sd", new ModelDescriptor(
+                "splade-pp-sd",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "splade-pp-sd.sdz",
+                "anserini/encoders/splade-pp-sd/splade-pp-sd.sdz",
+                "latest", null,
+                Map.of(
+                        "description", "SPLADE++ SelfDistil SameDiff model",
+                        "framework", "samediff",
+                        "model_type", "sparse",
+                        "embedding_dim", 30522, // BERT vocabulary size
+                        "tokenizer_do_lower_case", true, // SPLADE typically uses BERT-style tokenization
+                        "tokenizer_add_special_tokens", true,
+                        "tokenizer_max_sequence_length", 512, // Standard BERT max length
+                        "tokenizer_strip_accents", true
+                )
+        ));
+
+        vocabModels.put("splade-pp-sd", new ModelDescriptor(
+                "splade-pp-sd-vocab",
+                ModelType.ANSERINI_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "splade-pp-sd-vocab.txt",
+                "anserini/encoders/splade-pp-sd/vocab.txt",
+                "latest", null,
+                Map.of("description", "SPLADE++ SelfDistil vocabulary file")
         ));
 
         ANSERINI_ENCODER_MODEL_DESCRIPTORS = Collections.unmodifiableMap(encoderModels);
+        ANSERINI_ENCODER_VOCAB_DESCRIPTORS = Collections.unmodifiableMap(vocabModels);
     }
-    
+
     public static ModelDescriptor getAnseriniEncoderModelDescriptor(String modelId) {
         return ANSERINI_ENCODER_MODEL_DESCRIPTORS.get(modelId);
+    }
+
+    public static ModelDescriptor getAnseriniEncoderVocabDescriptor(String modelId) {
+        return ANSERINI_ENCODER_VOCAB_DESCRIPTORS.get(modelId);
+    }
+
+    public static Set<String> getAvailableEncoderModelIds() {
+        return ANSERINI_ENCODER_MODEL_DESCRIPTORS.keySet();
+    }
+
+    public static boolean isEncoderModelAvailable(String modelId) {
+        return ANSERINI_ENCODER_MODEL_DESCRIPTORS.containsKey(modelId);
+    }
+
+    public static String getModelType(String modelId) {
+        ModelDescriptor descriptor = getAnseriniEncoderModelDescriptor(modelId);
+        return descriptor != null ? descriptor.getMetadataString("model_type") : "unknown";
+    }
+
+    public static Integer getEmbeddingDimension(String modelId) {
+        ModelDescriptor descriptor = getAnseriniEncoderModelDescriptor(modelId);
+        if (descriptor != null) {
+            Object dim = descriptor.getMetadata().get("embedding_dim");
+            return dim instanceof Integer ? (Integer) dim : null;
+        }
+        return null;
+    }
+
+    /**
+     * Get tokenizer configuration for a specific model.
+     * @param modelId The model identifier
+     * @return TokenizerConfig for the model, or default config if model not found
+     */
+    public static TokenizerConfig getTokenizerConfig(String modelId) {
+        ModelDescriptor descriptor = getAnseriniEncoderModelDescriptor(modelId);
+        if (descriptor != null) {
+            return TokenizerConfig.fromMetadata(descriptor.getMetadata());
+        }
+        return TokenizerConfig.defaultConfig();
     }
 }

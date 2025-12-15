@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 @Slf4j
 @Component("openNLPSentenceChunker")
@@ -146,17 +147,33 @@ public class OpenNLPSentenceChunker implements TextChunker {
         }
     }
 
+    // Segment size for processing large documents - process in ~50KB chunks for better performance
+    private static final int SEGMENT_SIZE = 50_000;
+    // Overlap to avoid cutting sentences at segment boundaries
+    private static final int SEGMENT_OVERLAP = 500;
+
     @Override
     public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
+        return chunk(document, options, null);
+    }
+
+    @Override
+    public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options,
+                                     Consumer<ChunkingProgress> progressCallback) {
         // Validate document using the interface method
         validateDocument(document);
-        
+
         // Prepare options with defaults
         Map<String, Object> mergedOptions = prepareOptions(options);
-        
+
         String text = document.getText();
         String language = (String) mergedOptions.getOrDefault(OPTION_LANGUAGE, DEFAULT_LANGUAGE);
-        
+        int totalChars = text.length();
+
+        // Report initial progress
+        reportProgress(progressCallback, "initializing", 0, 0, 0, totalChars,
+                "Loading OpenNLP model for " + language);
+
         SentenceDetectorME detector;
         try {
             detector = sentenceDetectors.get(language);
@@ -173,39 +190,145 @@ public class OpenNLPSentenceChunker implements TextChunker {
                 throw new RuntimeException("Failed to initialize OpenNLPSentenceChunker for language: " + language, e);
             }
         }
-        
+
         if (detector == null) {
             log.error("OpenNLP SentenceDetector is null for language '{}' even after attempting load/fallback. Cannot proceed.", language);
             throw new RuntimeException("Sentence detector could not be initialized for language: " + language);
         }
 
-        String[] sentences = detector.sentDetect(text);
+        reportProgress(progressCallback, "processing", 5, 0, 0, totalChars,
+                "Model loaded, starting sentence detection");
+
         List<RetrievedDoc> chunks = new ArrayList<>();
         int chunkNumber = 0;
-        
-        for (String sentence : sentences) {
-            if (!sentence.isBlank()) {
-                Map<String, Object> metadata = new HashMap<>(document.getMetadata());
-                metadata.put("original_document_id", document.getId());
-                metadata.put("chunk_number", chunkNumber++);
-                metadata.put("chunker", getName());
-                metadata.put("language", language);
-                metadata.put("chunk_type", "sentence");
-                
-                // Create RetrievedDoc using proper constructor
-                RetrievedDoc chunk;
-                if (document.getScore() != null) {
-                    chunk = new RetrievedDoc(UUID.randomUUID().toString(), sentence.trim(), metadata, document.getScore());
-                } else {
-                    chunk = new RetrievedDoc(UUID.randomUUID().toString(), sentence.trim(), metadata);
+
+        // For small documents, process directly (faster)
+        if (text.length() <= SEGMENT_SIZE) {
+            reportProgress(progressCallback, "detecting", 10, 0, 0, totalChars,
+                    "Detecting sentences in document (" + totalChars + " chars)");
+
+            String[] sentences = detector.sentDetect(text);
+
+            reportProgress(progressCallback, "creating_chunks", 80, 0, totalChars, totalChars,
+                    "Found " + sentences.length + " sentences, creating chunks");
+
+            for (String sentence : sentences) {
+                if (!sentence.isBlank()) {
+                    chunks.add(createChunk(document, sentence.trim(), chunkNumber++, language));
                 }
-                
-                chunks.add(chunk);
             }
+
+            reportProgress(progressCallback, "complete", 100, chunks.size(), totalChars, totalChars,
+                    "Created " + chunks.size() + " chunks");
+        } else {
+            // For large documents, process in segments to improve performance and allow interruption
+            log.info("Processing large document ({} chars) in segments for better performance", text.length());
+            long startTime = System.currentTimeMillis();
+
+            int processedChars = 0;
+            String lastSentenceFragment = "";
+            int segmentCount = 0;
+            int totalSegments = (int) Math.ceil((double) text.length() / SEGMENT_SIZE);
+
+            reportProgress(progressCallback, "segmenting", 10, 0, 0, totalChars,
+                    String.format("Processing %d chars in %d segments", totalChars, totalSegments));
+
+            while (processedChars < text.length()) {
+                // Check for thread interruption to allow cancellation
+                if (Thread.currentThread().isInterrupted()) {
+                    log.warn("Chunking interrupted after processing {} chars", processedChars);
+                    break;
+                }
+
+                segmentCount++;
+                int segmentEnd = Math.min(processedChars + SEGMENT_SIZE, text.length());
+
+                // Extend to include overlap to avoid cutting sentences
+                int extendedEnd = Math.min(segmentEnd + SEGMENT_OVERLAP, text.length());
+                String segment = lastSentenceFragment + text.substring(processedChars, extendedEnd);
+
+                String[] sentences = detector.sentDetect(segment);
+
+                // Process all sentences except potentially the last incomplete one
+                int sentencesToProcess = (extendedEnd < text.length()) ? sentences.length - 1 : sentences.length;
+
+                for (int i = 0; i < sentencesToProcess && i < sentences.length; i++) {
+                    String sentence = sentences[i];
+                    if (!sentence.isBlank()) {
+                        chunks.add(createChunk(document, sentence.trim(), chunkNumber++, language));
+                    }
+                }
+
+                // Keep the last sentence fragment for the next segment (may be incomplete)
+                if (sentences.length > 0 && extendedEnd < text.length()) {
+                    lastSentenceFragment = sentences[sentences.length - 1];
+                } else {
+                    lastSentenceFragment = "";
+                }
+
+                processedChars = segmentEnd;
+
+                // Calculate progress (10-95% range for segmented processing)
+                int progressPercent = 10 + (int) ((processedChars / (double) totalChars) * 85);
+                long elapsed = System.currentTimeMillis() - startTime;
+                double charsPerSec = elapsed > 0 ? (processedChars * 1000.0 / elapsed) : 0;
+
+                // Report progress on every segment
+                reportProgress(progressCallback, "detecting", progressPercent, chunks.size(), processedChars, totalChars,
+                        String.format("Segment %d/%d: %d sentences (%.0f chars/sec)",
+                                segmentCount, totalSegments, chunks.size(), charsPerSec));
+
+                // Log progress for large documents
+                if (segmentCount % 10 == 0 || processedChars >= text.length()) {
+                    double progress = (double) processedChars / text.length() * 100;
+                    log.debug("OpenNLP chunking progress: {}/{} segments ({:.1f}%), {} sentences found, {}ms elapsed",
+                            segmentCount, totalSegments, progress, chunks.size(), elapsed);
+                }
+            }
+
+            // Process any remaining fragment
+            if (!lastSentenceFragment.isBlank() && !Thread.currentThread().isInterrupted()) {
+                chunks.add(createChunk(document, lastSentenceFragment.trim(), chunkNumber++, language));
+            }
+
+            long totalTime = System.currentTimeMillis() - startTime;
+            log.info("Completed OpenNLP chunking of {} chars in {}ms ({} sentences, {:.1f} chars/ms)",
+                    text.length(), totalTime, chunks.size(), (double) text.length() / totalTime);
+
+            reportProgress(progressCallback, "complete", 100, chunks.size(), totalChars, totalChars,
+                    String.format("Created %d sentences in %dms", chunks.size(), totalTime));
         }
-        
+
         log.debug("Split document {} into {} chunks using OpenNLP for language {}.", document.getId(), chunks.size(), language);
         return chunks;
+    }
+
+    /**
+     * Helper to report progress if callback is provided.
+     */
+    private void reportProgress(Consumer<ChunkingProgress> callback, String phase, int percent,
+                                 int chunks, int processed, int total, String message) {
+        if (callback != null) {
+            callback.accept(ChunkingProgress.of(phase, percent, chunks, processed, total, message));
+        }
+    }
+
+    /**
+     * Creates a chunk RetrievedDoc with proper metadata.
+     */
+    private RetrievedDoc createChunk(RetrievedDoc document, String sentenceText, int chunkNumber, String language) {
+        Map<String, Object> metadata = new HashMap<>(document.getMetadata());
+        metadata.put("original_document_id", document.getId());
+        metadata.put("chunk_number", chunkNumber);
+        metadata.put("chunker", getName());
+        metadata.put("language", language);
+        metadata.put("chunk_type", "sentence");
+
+        if (document.getScore() != null) {
+            return new RetrievedDoc(UUID.randomUUID().toString(), sentenceText, metadata, document.getScore());
+        } else {
+            return new RetrievedDoc(UUID.randomUUID().toString(), sentenceText, metadata);
+        }
     }
 
     @Override

@@ -25,10 +25,16 @@
 
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.tokenizers</groupId>
+    <groupId>ai.kompile</groupId>
     <artifactId>tokenizers-rust</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>0.1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
 
     <name>tokenizers-rust</name>
     <description>Tokenizers library with Rust backend and JavaCPP bindings</description>

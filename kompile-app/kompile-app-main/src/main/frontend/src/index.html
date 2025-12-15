@@ -18,10 +18,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>RagFrontend</title>
+  <title>Kompile RAG Console</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <!-- Polyfill for Node.js globals required by sockjs-client (must load before any modules) -->
+  <script>
+    window.global = window;
+    window.process = window.process || { env: {}, nextTick: function(fn) { setTimeout(fn, 0); } };
+    window.Buffer = window.Buffer || { isBuffer: function() { return false; } };
+  </script>
+  <!-- Local fonts: Roboto for UI, Source Code Pro for monospace, Material Icons -->
+  <link rel="stylesheet" href="assets/fonts/fonts.css">
 </head>
 <body>
   <app-root></app-root>

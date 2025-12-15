@@ -16,16 +16,16 @@
 
 package ai.kompile.embedding.anserini.config;
 
-import ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl;
 import lombok.Data;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Configuration for Anserini-based embedding models.
@@ -33,6 +33,8 @@ import java.util.List;
 @Configuration
 @ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true")
 public class AnseriniEmbeddingConfiguration {
+
+
 
     /**
      * Configuration properties for Anserini embedding.
@@ -90,31 +92,205 @@ public class AnseriniEmbeddingConfiguration {
          * Whether to normalize the output embeddings.
          */
         private boolean normalizeOutput = true;
+
+        // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
+        // These settings control how batch sizes are calculated based on sequence length.
+        // The encoder uses: batch_size = base_batch × (512/seqLen)² × memoryScale
+
+        /**
+         * Base optimal batch size for 512-token sequences.
+         * Actual batch size scales inversely with sequence length squared.
+         *
+         * <p>Recommended values by hardware:
+         * <ul>
+         *   <li>CPU (low memory): 4-8</li>
+         *   <li>CPU (high memory): 8-16</li>
+         *   <li>GPU: 32-64</li>
+         * </ul>
+         *
+         * Default: 8 (conservative for CPU inference)
+         */
+        private int baseOptimalBatchSize = 8;
+
+        /**
+         * Base maximum batch size for 512-token sequences.
+         * Actual maximum scales inversely with sequence length squared.
+         *
+         * Default: 16 (conservative for CPU inference)
+         */
+        private int baseMaxBatchSize = 16;
+
+        /**
+         * Memory scale factor for batch size calculation.
+         * Applied as multiplier to the calculated batch size.
+         *
+         * <ul>
+         *   <li>0.5 = halve batch sizes (for low-memory systems)</li>
+         *   <li>1.0 = use calculated sizes</li>
+         *   <li>2.0 = double batch sizes (for high-memory systems)</li>
+         * </ul>
+         *
+         * Default: -1 (auto-detect based on heap size)
+         */
+        private double memoryScaleFactor = -1.0;
+
+        /**
+         * Absolute maximum batch size, regardless of sequence length.
+         * Prevents OOM on systems with very short sequences.
+         *
+         * Default: 128
+         */
+        private int absoluteMaxBatchSize = 128;
+
+        /**
+         * Enable verbose logging for dynamic batch sizing decisions.
+         * Useful for tuning batch size parameters.
+         *
+         * Default: false
+         */
+        private boolean verboseBatchSizing = false;
+
+        // ========== RUNTIME OVERRIDE SUPPORT ==========
+
+        /**
+         * Per-model batch size overrides (modelId -> override config).
+         * These take precedence over global settings.
+         */
+        private final Map<String, BatchSizeOverride> modelOverrides = new ConcurrentHashMap<>();
+
+        /**
+         * Gets the effective optimal batch size for a model.
+         * Checks for per-model override first, then falls back to global setting.
+         *
+         * @param modelId the model identifier
+         * @return effective optimal batch size
+         */
+        public int getEffectiveOptimalBatchSize(String modelId) {
+            BatchSizeOverride override = modelOverrides.get(modelId);
+            if (override != null && override.optimalBatchSize() != null) {
+                return override.optimalBatchSize();
+            }
+            return baseOptimalBatchSize;
+        }
+
+        /**
+         * Gets the effective max batch size for a model.
+         * Checks for per-model override first, then falls back to global setting.
+         *
+         * @param modelId the model identifier
+         * @return effective max batch size
+         */
+        public int getEffectiveMaxBatchSize(String modelId) {
+            BatchSizeOverride override = modelOverrides.get(modelId);
+            if (override != null && override.maxBatchSize() != null) {
+                return override.maxBatchSize();
+            }
+            return baseMaxBatchSize;
+        }
+
+        /**
+         * Gets the effective memory scale factor for a model.
+         * Checks for per-model override first, then falls back to global setting.
+         *
+         * @param modelId the model identifier
+         * @return effective memory scale factor
+         */
+        public double getEffectiveMemoryScaleFactor(String modelId) {
+            BatchSizeOverride override = modelOverrides.get(modelId);
+            if (override != null && override.memoryScaleFactor() != null) {
+                return override.memoryScaleFactor();
+            }
+            return memoryScaleFactor;
+        }
+
+        /**
+         * Sets a per-model batch size override.
+         *
+         * @param modelId the model identifier
+         * @param override the override configuration
+         */
+        public void setModelOverride(String modelId, BatchSizeOverride override) {
+            if (override == null) {
+                modelOverrides.remove(modelId);
+            } else {
+                modelOverrides.put(modelId, override);
+            }
+        }
+
+        /**
+         * Gets a per-model batch size override.
+         *
+         * @param modelId the model identifier
+         * @return the override, or null if none set
+         */
+        public BatchSizeOverride getModelOverride(String modelId) {
+            return modelOverrides.get(modelId);
+        }
+
+        /**
+         * Checks if a model has a runtime override.
+         *
+         * @param modelId the model identifier
+         * @return true if override exists
+         */
+        public boolean hasModelOverride(String modelId) {
+            return modelOverrides.containsKey(modelId);
+        }
+
+        /**
+         * Clears the override for a model.
+         *
+         * @param modelId the model identifier
+         */
+        public void clearModelOverride(String modelId) {
+            modelOverrides.remove(modelId);
+        }
+
+        /**
+         * Gets all model overrides.
+         *
+         * @return unmodifiable map of overrides
+         */
+        public Map<String, BatchSizeOverride> getAllModelOverrides() {
+            return Map.copyOf(modelOverrides);
+        }
     }
 
     /**
-     * Creates the Anserini embedding model bean.
+     * Record for per-model batch size override.
+     * All fields are optional - null means use global default.
      */
-    @Bean
-    @ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true")
-    public AnseriniEmbeddingModelImpl anseriniEmbeddingModel(AnseriniEmbeddingProperties properties) throws IOException {
-        
-        // If explicit paths are provided, use the detailed constructor
-        if (properties.getModelPath() != null && properties.getVocabPath() != null) {
-            return new AnseriniEmbeddingModelImpl(
-                properties.getModelIdentifier(),
-                properties.getModelPath(),
-                properties.getVocabPath(),
-                properties.getInputTensorNames(),
-                properties.getOutputTensorName(),
-                properties.isDoLowerCase(),
-                properties.getMaxSequenceLength(),
-                properties.isAddSpecialTokens(),
-                properties.isNormalizeOutput()
-            );
-        } else {
-            // Use the simplified constructor that relies on model management
-            return new AnseriniEmbeddingModelImpl(properties.getModelIdentifier());
+    public record BatchSizeOverride(
+            Integer optimalBatchSize,
+            Integer maxBatchSize,
+            Double memoryScaleFactor
+    ) {
+        /**
+         * Creates an override with only optimal batch size.
+         */
+        public static BatchSizeOverride ofOptimal(int optimalBatchSize) {
+            return new BatchSizeOverride(optimalBatchSize, null, null);
+        }
+
+        /**
+         * Creates an override with only max batch size.
+         */
+        public static BatchSizeOverride ofMax(int maxBatchSize) {
+            return new BatchSizeOverride(null, maxBatchSize, null);
+        }
+
+        /**
+         * Creates an override with both batch sizes.
+         */
+        public static BatchSizeOverride of(int optimalBatchSize, int maxBatchSize) {
+            return new BatchSizeOverride(optimalBatchSize, maxBatchSize, null);
+        }
+
+        /**
+         * Creates a full override.
+         */
+        public static BatchSizeOverride of(int optimalBatchSize, int maxBatchSize, double memoryScaleFactor) {
+            return new BatchSizeOverride(optimalBatchSize, maxBatchSize, memoryScaleFactor);
         }
     }
 

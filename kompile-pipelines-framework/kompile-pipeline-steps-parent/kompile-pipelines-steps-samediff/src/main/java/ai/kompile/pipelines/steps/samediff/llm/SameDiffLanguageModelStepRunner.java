@@ -166,6 +166,9 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
         INDArray currentSequenceIds = encoded.get("input_ids");
         INDArray attentionMask = encoded.get("attention_mask");
 
+        // Track arrays for cleanup - stored for proper closing at the end
+        List<INDArray> arraysToClose = new ArrayList<>();
+
         int maxNewTokens = ((Number) config.getGenerationParameters().getOrDefault("maxNewTokens", 128)).intValue();
         float temperature = ((Number) config.getGenerationParameters().getOrDefault("temperature", 0.7f)).floatValue();
         int topK = ((Number) config.getGenerationParameters().getOrDefault("topK", 0)).intValue();
@@ -197,12 +200,22 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 Map<String, INDArray> outputMap = sameDiffModel.output(placeholderMap, logitsName);
                 INDArray logits = outputMap.get(logitsName);
 
+                // Track output arrays for cleanup
+                if (outputMap != null) {
+                    for (INDArray arr : outputMap.values()) {
+                        if (arr != null && !arraysToClose.contains(arr)) {
+                            arraysToClose.add(arr);
+                        }
+                    }
+                }
+
                 if (logits == null || logits.isEmpty()) {
                     log.warn("SameDiff model (step '{}') produced null or empty logits. Stopping generation.", config.getName());
                     break;
                 }
 
                 INDArray nextTokenLogits = logits.get(NDArrayIndex.point(0), NDArrayIndex.point(logits.shape()[1] - 1), NDArrayIndex.all());
+                arraysToClose.add(nextTokenLogits);
 
                 long nextTokenId = sampleNextToken(nextTokenLogits, temperature, topK);
 
@@ -212,9 +225,23 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 }
                 allGeneratedTokenIdsThisTurn.add(nextTokenId);
 
-                currentSequenceIds = Nd4j.concat(1, currentSequenceIds, Nd4j.scalar(nextTokenId).reshape(1, 1));
+                // Create new sequence with appended token - track old for cleanup
+                INDArray oldSequenceIds = currentSequenceIds;
+                INDArray nextTokenArr = Nd4j.scalar(nextTokenId).reshape(1, 1);
+                arraysToClose.add(nextTokenArr);
+                currentSequenceIds = Nd4j.concat(1, currentSequenceIds, nextTokenArr);
+                if (oldSequenceIds != null && !arraysToClose.contains(oldSequenceIds)) {
+                    arraysToClose.add(oldSequenceIds);
+                }
+
                 if (attentionMask != null) {
-                    attentionMask = Nd4j.concat(1, attentionMask, Nd4j.scalar(1L).reshape(1, 1));
+                    INDArray oldMask = attentionMask;
+                    INDArray oneArr = Nd4j.scalar(1L).reshape(1, 1);
+                    arraysToClose.add(oneArr);
+                    attentionMask = Nd4j.concat(1, attentionMask, oneArr);
+                    if (oldMask != null && !arraysToClose.contains(oldMask)) {
+                        arraysToClose.add(oldMask);
+                    }
                 }
 
                 List<Long> newlyGeneratedPortion = allGeneratedTokenIdsThisTurn.subList(promptTokenIds.size(), allGeneratedTokenIdsThisTurn.size());
@@ -239,6 +266,24 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
             log.debug("SameDiff LLM (step '{}') generated response. Context ID: {}", config.getName(), context.executionId().orElse("N/A"));
         } finally {
+            // CRITICAL: Close all tracked arrays to prevent off-heap memory leaks
+            // Also close the final currentSequenceIds and attentionMask if not already tracked
+            if (currentSequenceIds != null && !arraysToClose.contains(currentSequenceIds)) {
+                arraysToClose.add(currentSequenceIds);
+            }
+            if (attentionMask != null && !arraysToClose.contains(attentionMask)) {
+                arraysToClose.add(attentionMask);
+            }
+            // Close initial encoded arrays
+            for (INDArray arr : encoded.values()) {
+                if (arr != null && !arraysToClose.contains(arr)) {
+                    arraysToClose.add(arr);
+                }
+            }
+            // Close all tracked arrays
+            for (INDArray arr : arraysToClose) {
+                closeArraySafely(arr);
+            }
             context.profiler().stopEvent(); // Corrected: context.profiler()
         }
         return resultData;
@@ -255,47 +300,74 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             throw new IllegalStateException("Tokenizer not initialized for sampling in step '" + config.getName() + "'.");
         }
         if (temperature <= 0.0f || topKParam == 1) {
-            return Nd4j.argMax(nextTokenLogits, 0).getLong(0);
-        }
-
-        INDArray probabilities = Nd4j.nn().softmax(nextTokenLogits.div(temperature), 0);
-
-        int kValue = (topKParam <= 0 || topKParam > probabilities.length()) ? (int) probabilities.length() : topKParam;
-        if (kValue == 0 && probabilities.length() > 0) kValue = (int) probabilities.length();
-        else if (kValue == 0) return tokenizer.getUnkTokenId();
-
-
-        List<Pair<Integer, Double>> tokenProbs = new ArrayList<>();
-        for (int k_idx = 0; k_idx < probabilities.length(); k_idx++) {
-            tokenProbs.add(Pair.of(k_idx, probabilities.getDouble(k_idx)));
-        }
-        tokenProbs.sort((p1, p2) -> Double.compare(p2.getRight(), p1.getRight()));
-
-        List<Pair<Integer, Double>> topKTokens = tokenProbs.subList(0, Math.min(kValue, tokenProbs.size()));
-
-        if (topKTokens.isEmpty()) {
-            return tokenizer.getUnkTokenId();
-        }
-
-        double sumTopKProbs = topKTokens.stream().mapToDouble(Pair::getRight).sum();
-        if (sumTopKProbs == 0.0) {
-            return topKTokens.get(0).getLeft();
-        }
-
-        List<Double> cumulativeProbs = new ArrayList<>();
-        double currentSum = 0;
-        for (Pair<Integer, Double> topKToken : topKTokens) {
-            currentSum += (topKToken.getRight() / sumTopKProbs);
-            cumulativeProbs.add(currentSum);
-        }
-
-        double randomVal = this.random.nextDouble();
-        for (int k_idx = 0; k_idx < cumulativeProbs.size(); k_idx++) {
-            if (randomVal < cumulativeProbs.get(k_idx)) {
-                return topKTokens.get(k_idx).getLeft();
+            INDArray argMax = null;
+            try {
+                argMax = Nd4j.argMax(nextTokenLogits, 0);
+                return argMax.getLong(0);
+            } finally {
+                closeArraySafely(argMax);
             }
         }
-        return topKTokens.get(topKTokens.size() - 1).getLeft();
+
+        INDArray tempDiv = null;
+        INDArray probabilities = null;
+        try {
+            tempDiv = nextTokenLogits.div(temperature);
+            probabilities = Nd4j.nn().softmax(tempDiv, 0);
+
+            int kValue = (topKParam <= 0 || topKParam > probabilities.length()) ? (int) probabilities.length() : topKParam;
+            if (kValue == 0 && probabilities.length() > 0) kValue = (int) probabilities.length();
+            else if (kValue == 0) return tokenizer.getUnkTokenId();
+
+
+            List<Pair<Integer, Double>> tokenProbs = new ArrayList<>();
+            for (int k_idx = 0; k_idx < probabilities.length(); k_idx++) {
+                tokenProbs.add(Pair.of(k_idx, probabilities.getDouble(k_idx)));
+            }
+            tokenProbs.sort((p1, p2) -> Double.compare(p2.getRight(), p1.getRight()));
+
+            List<Pair<Integer, Double>> topKTokens = tokenProbs.subList(0, Math.min(kValue, tokenProbs.size()));
+
+            if (topKTokens.isEmpty()) {
+                return tokenizer.getUnkTokenId();
+            }
+
+            double sumTopKProbs = topKTokens.stream().mapToDouble(Pair::getRight).sum();
+            if (sumTopKProbs == 0.0) {
+                return topKTokens.get(0).getLeft();
+            }
+
+            List<Double> cumulativeProbs = new ArrayList<>();
+            double currentSum = 0;
+            for (Pair<Integer, Double> topKToken : topKTokens) {
+                currentSum += (topKToken.getRight() / sumTopKProbs);
+                cumulativeProbs.add(currentSum);
+            }
+
+            double randomVal = this.random.nextDouble();
+            for (int k_idx = 0; k_idx < cumulativeProbs.size(); k_idx++) {
+                if (randomVal < cumulativeProbs.get(k_idx)) {
+                    return topKTokens.get(k_idx).getLeft();
+                }
+            }
+            return topKTokens.get(topKTokens.size() - 1).getLeft();
+        } finally {
+            closeArraySafely(tempDiv);
+            closeArraySafely(probabilities);
+        }
+    }
+
+    /**
+     * Safely close an INDArray, catching any exceptions.
+     */
+    private void closeArraySafely(INDArray arr) {
+        if (arr != null && !arr.wasClosed()) {
+            try {
+                arr.close();
+            } catch (Exception e) {
+                // Ignore close errors
+            }
+        }
     }
 
     private PipelineToolCallRequest parseToolCall(String llmOutputText) {
@@ -379,8 +451,23 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
 
     @Override
     public void close() throws Exception {
-        sameDiffModel = null;
+        // SameDiff implements AutoCloseable - calling close() releases all OpContexts
+        // cached in InferenceSessions, preventing native memory leaks.
+        // We use reflection to call close() to maintain compatibility with nd4j-api versions
+        // that may not have the close() method yet (avoids compile-time dependency).
+        if (sameDiffModel != null) {
+            try {
+                // Use reflection to call close() for compatibility with different nd4j-api versions
+                java.lang.reflect.Method closeMethod = sameDiffModel.getClass().getMethod("close");
+                closeMethod.invoke(sameDiffModel);
+            } catch (NoSuchMethodException e) {
+                log.debug("SameDiff.close() not available in this nd4j-api version - skipping cleanup");
+            } catch (Exception e) {
+                log.warn("Error closing SameDiff model for step '{}': {}", config != null ? config.getName() : "UNKNOWN", e.getMessage());
+            }
+            sameDiffModel = null;
+        }
         initialized = false;
-        log.info("SameDiffLanguageModelStepRunner for step '{}' closed and model set to null.", config != null ? config.getName() : "UNKNOWN");
+        log.info("SameDiffLanguageModelStepRunner for step '{}' closed.", config != null ? config.getName() : "UNKNOWN");
     }
 }

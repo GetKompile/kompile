@@ -28,6 +28,8 @@ import org.apache.james.mime4j.dom.address.Mailbox;
 import org.apache.james.mime4j.dom.address.MailboxList;
 import org.apache.james.mime4j.dom.field.ContentTypeField;
 import org.apache.james.mime4j.message.DefaultMessageBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
@@ -42,6 +44,8 @@ import java.util.Set;
 
 @Component
 public class MailLoaderImpl implements DocumentLoader {
+
+    private static final Logger logger = LoggerFactory.getLogger(MailLoaderImpl.class);
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
         "eml", "msg", "mbox"
@@ -74,15 +78,33 @@ public class MailLoaderImpl implements DocumentLoader {
         }
 
         String filename = file.getName().toLowerCase();
-        
-        if (filename.endsWith(".eml")) {
-            return loadEmlFile(file);
-        } else if (filename.endsWith(".mbox")) {
-            return loadMboxFile(file);
-        } else if (filename.endsWith(".msg")) {
-            return loadMsgFile(file);
+
+        try {
+            if (filename.endsWith(".eml")) {
+                return loadEmlFile(file);
+            } else if (filename.endsWith(".mbox")) {
+                return loadMboxFile(file);
+            } else if (filename.endsWith(".msg")) {
+                return loadMsgFile(file);
+            }
+        } catch (Exception e) {
+            // Handle corrupted or invalid mail files gracefully
+            String errorMessage = e.getMessage();
+            logger.warn("Unable to parse mail file '{}': {}. The file may be corrupted or in an unsupported format.",
+                       file.getName(), errorMessage);
+
+            // Return an error document so the caller knows what happened
+            Document errorDoc = new Document("[Error: Unable to parse mail file. The file may be corrupted or in an unsupported format.]");
+            errorDoc.getMetadata().put("source", file.getAbsolutePath());
+            errorDoc.getMetadata().put("fileName", file.getName());
+            errorDoc.getMetadata().put("fileSize", file.length());
+            errorDoc.getMetadata().put("lastModified", file.lastModified());
+            errorDoc.getMetadata().put("loader", getName());
+            errorDoc.getMetadata().put("parseError", true);
+            errorDoc.getMetadata().put("errorMessage", errorMessage != null ? errorMessage : "Unknown error");
+            return List.of(errorDoc);
         }
-        
+
         throw new IllegalArgumentException("Unsupported mail file type: " + filename);
     }
 

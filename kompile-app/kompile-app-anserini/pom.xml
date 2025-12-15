@@ -35,7 +35,11 @@
             <artifactId>kompile-app-core</artifactId>
         </dependency>
 
-
+        <dependency>
+            <groupId>org.bytedeco</groupId>
+            <artifactId>javacpp</artifactId>
+            <version>${javacpp.version}</version>
+        </dependency>
         <dependency>
             <groupId>io.anserini</groupId>
             <artifactId>anserini</artifactId>

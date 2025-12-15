@@ -99,24 +99,6 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
-
-        <!-- Test dependencies -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <version>${spring-boot.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
 
     <build>
@@ -149,47 +131,6 @@
                     </execution>
                 </executions>
             </plugin>
-
-            <!-- Shade plugin for creating standalone JAR -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <configuration>
-                    <shadedArtifactAttached>true</shadedArtifactAttached>
-                    <shadedClassifierName>cli</shadedClassifierName>
-                    <createDependencyReducedPom>true</createDependencyReducedPom>
-                    <filters>
-                        <filter>
-                            <artifact>*:*</artifact>
-                            <excludes>
-                                <exclude>org/datanucleus/**</exclude>
-                                <exclude>META-INF/*.SF</exclude>
-                                <exclude>META-INF/*.DSA</exclude>
-                                <exclude>META-INF/*.RSA</exclude>
-                            </excludes>
-                        </filter>
-                    </filters>
-                </configuration>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
-                                    <resource>reference.conf</resource>
-                                </transformer>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>ai.kompile.model.importer.tensorflow.TensorFlowImporterCLI</mainClass>
-                                </transformer>
-                            </transformers>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
     </build>
 
@@ -215,19 +156,6 @@
                         <configuration>
                             <mainClass>ai.kompile.model.importer.tensorflow.TensorFlowImporterApplication</mainClass>
                             <imageName>tensorflow-importer</imageName>
-                            <buildArgs>
-                                <buildArg>-J-Xmx12g</buildArg>
-                                <buildArg>--verbose</buildArg>
-                                <buildArg>--no-fallback</buildArg>
-                                <buildArg>--allow-incomplete-classpath</buildArg>
-                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
-                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.linalg.factory.Nd4j</buildArg>
-                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder</buildArg>
-                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp.Loader</buildArg>
-                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
-                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
-                            </buildArgs>
                         </configuration>
                     </plugin>
                 </plugins>

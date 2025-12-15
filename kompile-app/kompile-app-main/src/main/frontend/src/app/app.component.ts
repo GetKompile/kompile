@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
-import { Component } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { environment } from '../environments/environment';
+import { ConfigService } from './services/config.service';
 
 // Define a type for the possible tab values
-export type ActiveTabType = 'chat' | 'documents' | 'mcpTools' | 'indexBrowser'; // <-- MODIFIED
+export type ActiveTabType = 'unifiedChat' | 'search' | 'mcp' | 'orchestrator' | 'modelDebug' | 'batchConfig' | 'subprocessConfig';
 
 @Component({
   standalone: false,
@@ -25,7 +28,23 @@ export type ActiveTabType = 'chat' | 'documents' | 'mcpTools' | 'indexBrowser'; 
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
 })
-export class AppComponent {
-  title = 'Kompile RAG MCP Anserini Console';
-  activeTab: ActiveTabType = 'chat'; // <-- MODIFIED to use the new type
+export class AppComponent implements OnInit, OnDestroy {
+  title = environment.appTitle; // Default from environment, will be updated from backend
+  activeTab: ActiveTabType = 'unifiedChat'; // Use unified chat by default
+  private configSubscription?: Subscription;
+
+  constructor(private configService: ConfigService) {}
+
+  ngOnInit(): void {
+    // Subscribe to config updates from the backend
+    this.configSubscription = this.configService.config$.subscribe(config => {
+      this.title = config.appTitle;
+    });
+  }
+
+  ngOnDestroy(): void {
+    if (this.configSubscription) {
+      this.configSubscription.unsubscribe();
+    }
+  }
 }

@@ -45,7 +45,22 @@ public class PlatformDetector {
             return String.format("PlatformInfo{osName='%s', osKernel='%s', osArch='%s', osFamily='%s'}",
                     osName, osKernel, osArch, osFamily);
         }
+
+        public String getIdentifier() {
+            return osName + "-" + osArch;
+        }
+
+        public String getFileExtension() {
+            switch(osName.toLowerCase()) {
+                case "linux": return ".so";
+                case "windows": return ".dll";
+                case "mac" : return ".dylib";
+                default: return ".so";
+            }
+        }
     }
+
+
 
     /**
      * Detects the current platform and returns normalized OS and architecture information

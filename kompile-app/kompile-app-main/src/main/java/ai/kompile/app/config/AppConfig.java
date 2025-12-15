@@ -33,6 +33,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.env.Environment;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestTemplate;
 
@@ -40,6 +43,7 @@ import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 
 @Configuration(proxyBeanMethods = false)
+@EnableAsync
 @ImportRuntimeHints({AppConfig.VarConfigRegister.class})
 public class AppConfig {
 
@@ -47,10 +51,6 @@ public class AppConfig {
 
     @Autowired
     private Environment environment;
-
-
-
-
 
     public static class VarConfigRegister implements RuntimeHintsRegistrar {
 
@@ -92,8 +92,21 @@ public class AppConfig {
         }
     }
 
-
-
+    @Bean(name = "taskExecutor")
+    public TaskExecutor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        // Increased pool size to support concurrent batch indexing
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("async-indexing-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
+        executor.initialize();
+        logger.info("Configured async TaskExecutor for background indexing tasks (core={}, max={})",
+                executor.getCorePoolSize(), executor.getMaxPoolSize());
+        return executor;
+    }
 
     @Bean
     public RestTemplate restTemplate() {
@@ -104,6 +117,9 @@ public class AppConfig {
     public ObjectMapper objectMapper() {
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.registerModule(new JavaTimeModule());
+        // Serialize Instant/LocalDateTime as ISO-8601 strings instead of epoch timestamps
+        // This ensures frontend JavaScript correctly parses dates
+        objectMapper.configure(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
         return objectMapper;
     }
 

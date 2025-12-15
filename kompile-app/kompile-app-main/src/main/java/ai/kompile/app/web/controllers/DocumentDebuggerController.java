@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -203,6 +204,77 @@ public class DocumentDebuggerController {
                 chunkerName.contains("none") ||
                 (fullClassName.contains(".core.") &&
                         (fullClassName.contains("noop") || fullClassName.contains("default")));
+    }
+
+    /**
+     * Mapping of UI chunker strategy IDs to backend chunker names.
+     * This handles the mismatch between frontend naming conventions and backend getName() values.
+     * Key = UI name (from CHUNKER_STRATEGIES in api-models.ts)
+     * Value = Backend chunker getName() return value
+     */
+    private static final Map<String, String> CHUNKER_ALIASES = Map.ofEntries(
+            // UI "spring_recursive_character" -> backend "recursive-character" (RecursiveCharacterTextChunker)
+            Map.entry("spring_recursive_character", "recursive-character"),
+            Map.entry("custom_recursive_character", "recursive-character"),
+            Map.entry("recursive-character", "recursive-character"),
+            // UI "opennlp_sentence" -> backend "opennlp_sentence" (OpenNLPSentenceChunker)
+            Map.entry("opennlp_sentence", "opennlp_sentence"),
+            // UI "sentence" -> backend "sentence" (SentenceTextChunker)
+            Map.entry("sentence", "sentence"),
+            // Token chunker
+            Map.entry("spring_token", "spring_token"),
+            // Markdown chunkers
+            Map.entry("custom_markdown", "custom_markdown"),
+            Map.entry("spring_markdown", "spring_markdown")
+    );
+
+    /**
+     * Finds a chunker by name, supporting both exact matches and UI alias mappings.
+     *
+     * @param requestedName the chunker name requested (from UI or API)
+     * @return the matching TextChunker, or null if not found
+     */
+    private TextChunker findChunkerByName(String requestedName) {
+        if (requestedName == null || requestedName.isEmpty() || textChunkers == null) {
+            return null;
+        }
+
+        // First try exact match
+        Optional<TextChunker> exactMatch = textChunkers.stream()
+                .filter(chunker -> requestedName.equals(chunker.getName()))
+                .findFirst();
+        if (exactMatch.isPresent()) {
+            return exactMatch.get();
+        }
+
+        // Try alias mapping (UI name -> backend name)
+        String mappedName = CHUNKER_ALIASES.get(requestedName);
+        if (mappedName != null) {
+            Optional<TextChunker> aliasMatch = textChunkers.stream()
+                    .filter(chunker -> mappedName.equals(chunker.getName()))
+                    .findFirst();
+            if (aliasMatch.isPresent()) {
+                logger.info("Resolved chunker: UI name '{}' -> backend name '{}' ({})",
+                        requestedName, mappedName, aliasMatch.get().getClass().getSimpleName());
+                return aliasMatch.get();
+            }
+        }
+
+        // Try partial/contains match as fallback
+        String normalizedRequest = requestedName.toLowerCase().replace("_", "-").replace("spring-", "");
+        Optional<TextChunker> partialMatch = textChunkers.stream()
+                .filter(chunker -> {
+                    String chunkerName = chunker.getName().toLowerCase();
+                    return chunkerName.contains(normalizedRequest) || normalizedRequest.contains(chunkerName);
+                })
+                .findFirst();
+        if (partialMatch.isPresent()) {
+            logger.debug("Found chunker via partial match: requested='{}', found='{}'",
+                    requestedName, partialMatch.get().getName());
+            return partialMatch.get();
+        }
+
+        return null;
     }
 
     /**
@@ -415,13 +487,10 @@ public class DocumentDebuggerController {
                 chunkerInfos.add(info);
             }
 
-            // Select chunker
+            // Select chunker (using flexible name matching for UI compatibility)
             TextChunker selectedChunker = null;
             if (chunkerName != null && !chunkerName.isEmpty()) {
-                selectedChunker = textChunkers.stream()
-                        .filter(c -> chunkerName.equals(c.getName()))
-                        .findFirst()
-                        .orElse(null);
+                selectedChunker = findChunkerByName(chunkerName);
             }
             if (selectedChunker == null) {
                 selectedChunker = selectBestChunker();
@@ -535,8 +604,21 @@ public class DocumentDebuggerController {
                 return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path"));
             }
 
-            try (InputStream inputStream = file.getInputStream()) {
-                Files.copy(inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING);
+            // Use REPLACE_EXISTING for atomic file replacement (avoids race condition with delete-then-copy)
+            // Handle edge case where destination might be a directory
+            if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+                logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
+                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(java.util.Comparator.reverseOrder())
+                        .map(Path::toFile)
+                        .forEach(java.io.File::delete);
+                }
+            }
+            // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
+            try (InputStream inputStream = file.getInputStream();
+                 OutputStream outputStream = Files.newOutputStream(destinationFile,
+                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                inputStream.transferTo(outputStream);
             }
 
             return ResponseEntity.ok(Map.of(

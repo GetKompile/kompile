@@ -16,7 +16,7 @@
 
 .mcp-tools-viewer-container {
   padding: 20px;
-  font-family: sans-serif;
+  font-family: var(--font-family-base);
 }
 .tool-item {
   border: 1px solid #ddd;

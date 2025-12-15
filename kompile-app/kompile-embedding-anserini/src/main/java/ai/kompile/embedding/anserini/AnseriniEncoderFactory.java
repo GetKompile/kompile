@@ -1,19 +1,3 @@
-/*
- *   Copyright 2025 Kompile Inc.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package ai.kompile.embedding.anserini;
 
 import io.anserini.encoder.samediff.ArcticEmbedSameDiffEncoder;
@@ -21,16 +5,12 @@ import io.anserini.encoder.samediff.BgeSameDiffEncoder;
 import io.anserini.encoder.samediff.CosDprDistilSameDiffEncoder;
 import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
 import io.anserini.encoder.samediff.SameDiffEncoder;
-import ai.kompile.modelmanager.KompileModelManager;
 import ai.kompile.modelmanager.ModelConstants;
-import ai.kompile.modelmanager.ModelDescriptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
+import java.util.Set;
 
 /**
  * Factory for creating different types of Anserini SameDiff encoders.
@@ -46,185 +26,253 @@ public class AnseriniEncoderFactory {
         GENERIC_DENSE,
         BGE,
         ARCTIC_EMBED,
-        COS_DPR_DISTIL
+        COS_DPR_DISTIL,
+        SPLADE_PP_ED,
+        SPLADE_PP_SD
     }
 
     /**
-     * Creates an encoder based on the model identifier.
-     * 
+     * Creates an encoder based on the model identifier using automatic model management.
+     * This is the recommended approach that automatically handles model and vocabulary downloads.
+     *
      * @param modelIdentifier The model identifier
-     * @return The appropriate encoder type
+     * @return The appropriate encoder
+     */
+    public static SameDiffEncoder<float[]> createEncoder(String modelIdentifier) throws IOException {
+        if (!ModelConstants.isEncoderModelAvailable(modelIdentifier)) {
+            throw new IOException("Model not available: " + modelIdentifier +
+                    ". Available models: " + ModelConstants.getAvailableEncoderModelIds());
+        }
+
+        EncoderType encoderType = getEncoderTypeFromModelId(modelIdentifier);
+        logger.info("Creating {} encoder for model: {} (using automatic model management)", encoderType, modelIdentifier);
+
+        return createEncoder(encoderType, modelIdentifier);
+    }
+
+    /**
+     * Creates an encoder with custom tokenizer settings.
+     *
+     * @param modelIdentifier The model identifier
+     * @param doLowerCaseAndStripAccents Whether to lowercase and strip accents
+     * @param maxSequenceLength Maximum sequence length
+     * @param addSpecialTokens Whether to add special tokens
+     * @return The appropriate encoder
+     */
+    public static SameDiffEncoder<float[]> createEncoder(String modelIdentifier,
+                                                         boolean doLowerCaseAndStripAccents,
+                                                         int maxSequenceLength,
+                                                         boolean addSpecialTokens) throws IOException {
+        if (!ModelConstants.isEncoderModelAvailable(modelIdentifier)) {
+            throw new IOException("Model not available: " + modelIdentifier +
+                    ". Available models: " + ModelConstants.getAvailableEncoderModelIds());
+        }
+
+        EncoderType encoderType = getEncoderTypeFromModelId(modelIdentifier);
+        logger.info("Creating {} encoder for model: {} with custom settings", encoderType, modelIdentifier);
+
+        return createEncoder(encoderType, modelIdentifier, doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
+    }
+
+    /**
+     * Maps model identifier to encoder type.
      */
     public static EncoderType getEncoderTypeFromModelId(String modelIdentifier) {
         if (modelIdentifier == null) {
             return EncoderType.GENERIC_DENSE;
         }
-        
-        String lowerModelId = modelIdentifier.toLowerCase();
-        
-        if (lowerModelId.contains("bge")) {
+        String lower = modelIdentifier.toLowerCase();
+        if (lower.contains("bge")) {
             return EncoderType.BGE;
-        } else if (lowerModelId.contains("arctic") || lowerModelId.contains("embed")) {
+        } else if (lower.contains("arctic") || lower.contains("embed")) {
             return EncoderType.ARCTIC_EMBED;
-        } else if (lowerModelId.contains("cos-dpr") || lowerModelId.contains("distil")) {
+        } else if (lower.contains("cos-dpr") || lower.contains("distil")) {
             return EncoderType.COS_DPR_DISTIL;
-        } else {
-            return EncoderType.GENERIC_DENSE;
+        } else if (lower.contains("splade-pp-ed")) {
+            return EncoderType.SPLADE_PP_ED;
+        } else if (lower.contains("splade-pp-sd")) {
+            return EncoderType.SPLADE_PP_SD;
         }
+        return EncoderType.GENERIC_DENSE;
     }
 
     /**
-     * Creates a SameDiff encoder using model management for automatic model downloading.
-     * This method resolves the model and vocabulary paths automatically.
+     * Creates a SameDiff encoder using the new simplified constructors with default settings.
      */
     public static SameDiffEncoder<float[]> createEncoder(
             EncoderType encoderType,
             String modelIdentifier) throws IOException {
-        
-        logger.info("Creating {} encoder for model: {} (using model management)", encoderType, modelIdentifier);
-        
-        // Use model management to get the model and vocab paths
-        KompileModelManager modelManager = new KompileModelManager();
-        ModelDescriptor modelDescriptor = ModelConstants.getAnseriniEncoderModelDescriptor(modelIdentifier);
-        
-        if (modelDescriptor == null) {
-            throw new IOException("No model descriptor found for model identifier: " + modelIdentifier + 
-                    ". Please ensure the model is defined in ModelConstants.getAnseriniEncoderModelDescriptor()");
+
+        logger.info("Creating {} encoder for model: {} (using automatic model bundle management)", encoderType, modelIdentifier);
+
+        // Use the new simplified constructors that handle model management automatically
+        switch (encoderType) {
+            case BGE:
+                // BGE typically uses normalization and may have instruction prefix
+                String instruction = getBgeInstructionForModel(modelIdentifier);
+                return new BgeSameDiffEncoder(modelIdentifier, instruction, true);
+
+            case ARCTIC_EMBED:
+                return new ArcticEmbedSameDiffEncoder(modelIdentifier);
+
+            case COS_DPR_DISTIL:
+                return new CosDprDistilSameDiffEncoder(modelIdentifier);
+
+            case SPLADE_PP_ED:
+            case SPLADE_PP_SD:
+            case GENERIC_DENSE:
+            default:
+                return new GenericDenseSameDiffEncoder(modelIdentifier);
         }
-        
-        // Ensure model is available through model manager
-        Path modelPath = modelManager.ensureModelAvailable(modelDescriptor);
-        
-        if (!Files.exists(modelPath) || !Files.isRegularFile(modelPath)) {
-            throw new IOException("Model file not found at expected path after download: " + modelPath);
-        }
-        
-        // Find vocabulary file - try common names
-        Path vocabPath = modelPath.getParent().resolve("vocab.txt");
-        if (!Files.exists(vocabPath)) {
-            Path[] vocabCandidates = {
-                modelPath.getParent().resolve("tokenizer.json"),
-                modelPath.getParent().resolve("vocabulary.txt"),
-                modelPath.getParent().resolve("vocab.json")
-            };
-            
-            for (Path candidate : vocabCandidates) {
-                if (Files.exists(candidate)) {
-                    vocabPath = candidate;
-                    break;
-                }
-            }
-            
-            if (!Files.exists(vocabPath)) {
-                throw new IOException("Vocabulary file not found. Expected vocab.txt, tokenizer.json, vocabulary.txt, or vocab.json in: " + modelPath.getParent());
-            }
-        }
-        
-        logger.info("Using model path: {}", modelPath);
-        logger.info("Using vocab path: {}", vocabPath);
-        
-        // Create encoder with resolved paths
-        return createEncoderWithPaths(encoderType, modelIdentifier, 
-                                    modelPath.toString(), vocabPath.toString());
     }
 
     /**
-     * Creates a SameDiff encoder with explicit paths.
+     * Creates a SameDiff encoder using the new constructors with custom tokenizer settings.
      */
     public static SameDiffEncoder<float[]> createEncoder(
             EncoderType encoderType,
             String modelIdentifier,
-            String modelPath,
-            String vocabPath,
-            List<String> inputTensorNames,
-            String outputTensorName,
-            boolean doLowerCase,
+            boolean doLowerCaseAndStripAccents,
             int maxSequenceLength,
-            boolean addSpecialTokens,
-            boolean normalizeOutput) throws IOException {
-        
-        logger.info("Creating {} encoder for model: {} with explicit paths", encoderType, modelIdentifier);
-        
+            boolean addSpecialTokens) throws IOException {
+
+        logger.info("Creating {} encoder for model: {} with custom tokenizer settings", encoderType, modelIdentifier);
+
+        // Use the new constructors with custom settings
         switch (encoderType) {
             case BGE:
-                return createBgeEncoder(modelIdentifier, modelPath, vocabPath, 
-                                      doLowerCase, maxSequenceLength, addSpecialTokens, normalizeOutput);
-            
+                String instruction = getBgeInstructionForModel(modelIdentifier);
+                return new BgeSameDiffEncoder(modelIdentifier, instruction, true, 
+                        doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
+
             case ARCTIC_EMBED:
-                return createArcticEmbedEncoder(modelIdentifier, modelPath, vocabPath, 
-                                              doLowerCase, maxSequenceLength, addSpecialTokens);
-            
+                return new ArcticEmbedSameDiffEncoder(modelIdentifier,
+                        doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
+
             case COS_DPR_DISTIL:
-                return createCosDprDistilEncoder(modelIdentifier, modelPath, vocabPath,
-                                               doLowerCase, maxSequenceLength, addSpecialTokens);
-            
+                return new CosDprDistilSameDiffEncoder(modelIdentifier,
+                        doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens);
+
+            case SPLADE_PP_ED:
+            case SPLADE_PP_SD:
             case GENERIC_DENSE:
             default:
-                return new GenericDenseSameDiffEncoder(
-                    modelIdentifier, modelPath, vocabPath, inputTensorNames, outputTensorName,
-                    doLowerCase, maxSequenceLength, addSpecialTokens, normalizeOutput);
+                return new GenericDenseSameDiffEncoder(modelIdentifier,
+                        doLowerCaseAndStripAccents, maxSequenceLength, addSpecialTokens, true);
         }
     }
 
     /**
-     * Helper method to create encoders with resolved paths using default parameters.
+     * Get the appropriate instruction prefix for BGE models.
+     * Different BGE models may have different instruction requirements.
      */
-    private static SameDiffEncoder<float[]> createEncoderWithPaths(
+    private static String getBgeInstructionForModel(String modelIdentifier) {
+        String lower = modelIdentifier.toLowerCase();
+        
+        // Common BGE instruction patterns
+        if (lower.contains("query") || lower.contains("retrieval")) {
+            return "Represent this sentence for searching relevant passages:";
+        } else if (lower.contains("reranker")) {
+            return null; // Rerankers typically don't use instructions
+        } else if (lower.contains("base") || lower.contains("small") || lower.contains("large")) {
+            return "Represent this sentence for searching relevant passages:";
+        }
+        
+        // Default instruction for most BGE models
+        return "Represent this sentence for searching relevant passages:";
+    }
+
+    /**
+     * Creates an encoder with BGE-specific instruction override.
+     */
+    public static SameDiffEncoder<float[]> createBgeEncoder(String modelIdentifier,
+                                                            String customInstruction,
+                                                            boolean normalizeEmbeddings) throws IOException {
+        if (!ModelConstants.isEncoderModelAvailable(modelIdentifier)) {
+            throw new IOException("Model not available: " + modelIdentifier);
+        }
+
+        logger.info("Creating BGE encoder for model: {} with custom instruction: '{}'", 
+                modelIdentifier, customInstruction);
+
+        return new BgeSameDiffEncoder(modelIdentifier, customInstruction, normalizeEmbeddings);
+    }
+
+    /**
+     * Legacy method for backward compatibility - creates encoder with explicit paths.
+     * 
+     * @deprecated Use createEncoder(String modelIdentifier) instead for automatic model management
+     */
+    @Deprecated
+    public static SameDiffEncoder<float[]> createEncoderLegacy(
             EncoderType encoderType,
             String modelIdentifier,
             String modelPath,
             String vocabPath) throws IOException {
-        
+
+        logger.warn("Using legacy encoder creation method. Consider using createEncoder(modelIdentifier) for automatic model management.");
+
+        // Use the deprecated legacy constructors
         switch (encoderType) {
             case BGE:
-                return new BgeSameDiffEncoder(modelIdentifier, modelPath, vocabPath, 
-                                            null, // instruction
-                                            BgeSameDiffEncoder.DEFAULT_NORMALIZE);
-            
+                return new BgeSameDiffEncoder(modelIdentifier, modelPath, vocabPath,
+                        getBgeInstructionForModel(modelIdentifier), true, true, 512, true);
+
             case ARCTIC_EMBED:
-                return new ArcticEmbedSameDiffEncoder(modelIdentifier, modelPath, vocabPath);
-            
+                return new ArcticEmbedSameDiffEncoder(modelIdentifier, modelPath, vocabPath, true, 512, true);
+
             case COS_DPR_DISTIL:
-                return new CosDprDistilSameDiffEncoder(modelIdentifier, modelPath, vocabPath);
-            
+                return new CosDprDistilSameDiffEncoder(modelIdentifier, modelPath, vocabPath, true, 512, true);
+
+            case SPLADE_PP_ED:
+            case SPLADE_PP_SD:
             case GENERIC_DENSE:
             default:
-                return new GenericDenseSameDiffEncoder(modelIdentifier, modelPath, vocabPath);
+                return new GenericDenseSameDiffEncoder(modelIdentifier, modelPath, vocabPath,
+                        null, null, true, 512, true, true);
         }
     }
 
-    private static BgeSameDiffEncoder createBgeEncoder(
-            String modelIdentifier, String modelPath, String vocabPath,
-            boolean doLowerCase, int maxSequenceLength, 
-            boolean addSpecialTokens, boolean normalizeOutput) throws IOException {
-        
-        // BGE encoder has specific constructor parameters
-        return new BgeSameDiffEncoder(
-            modelIdentifier, modelPath, vocabPath, 
-            null, // instruction - can be null for BGE
-            normalizeOutput, // BGE supports normalization
-            doLowerCase, maxSequenceLength, addSpecialTokens);
+    /**
+     * Check if a model uses the new automatic model management
+     */
+    public static boolean usesAutoModelManagement(String modelIdentifier) {
+        return ModelConstants.isEncoderModelAvailable(modelIdentifier);
     }
 
-    private static ArcticEmbedSameDiffEncoder createArcticEmbedEncoder(
-            String modelIdentifier, String modelPath, String vocabPath,
-            boolean doLowerCase, int maxSequenceLength, 
-            boolean addSpecialTokens) throws IOException {
-        
-        // Arctic Embed encoder constructor
-        return new ArcticEmbedSameDiffEncoder(
-            modelIdentifier, modelPath, vocabPath,
-            doLowerCase, maxSequenceLength, addSpecialTokens);
+    /**
+     * Get the model type (dense/sparse)
+     */
+    public static String getModelType(String modelIdentifier) {
+        return ModelConstants.getModelType(modelIdentifier);
     }
 
-    private static CosDprDistilSameDiffEncoder createCosDprDistilEncoder(
-            String modelIdentifier, String modelPath, String vocabPath,
-            boolean doLowerCase, int maxSequenceLength, 
-            boolean addSpecialTokens) throws IOException {
-        
-        // CosDprDistil encoder constructor
-        return new CosDprDistilSameDiffEncoder(
-            modelIdentifier, modelPath, vocabPath,
-            doLowerCase, maxSequenceLength, addSpecialTokens);
+    /**
+     * Get the embedding dimension for a model
+     */
+    public static Integer getEmbeddingDimension(String modelIdentifier) {
+        return ModelConstants.getEmbeddingDimension(modelIdentifier);
+    }
+
+    /**
+     * Utility methods for model metadata
+     */
+    public static boolean isModelAvailable(String modelIdentifier) {
+        return ModelConstants.isEncoderModelAvailable(modelIdentifier);
+    }
+
+    public static Set<String> getAvailableModelIds() {
+        return ModelConstants.getAvailableEncoderModelIds();
+    }
+
+    public static String getModelInfo(String modelIdentifier) {
+        if (!isModelAvailable(modelIdentifier)) {
+            return "Model not available: " + modelIdentifier;
+        }
+        String type = getModelType(modelIdentifier);
+        Integer dim = getEmbeddingDimension(modelIdentifier);
+        EncoderType enc = getEncoderTypeFromModelId(modelIdentifier);
+        return String.format("Model: %s, Type: %s, Encoder: %s, Dimension: %d",
+                modelIdentifier, type, enc, dim != null ? dim : -1);
     }
 }

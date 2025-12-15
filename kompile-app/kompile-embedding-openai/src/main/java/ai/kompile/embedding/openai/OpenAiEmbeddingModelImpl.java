@@ -17,6 +17,9 @@
 package ai.kompile.embedding.openai;
 
 import ai.kompile.core.embeddings.EmbeddingModel; // Your core interface
+import org.nd4j.linalg.api.buffer.DataType;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -69,10 +72,10 @@ public class OpenAiEmbeddingModelImpl implements EmbeddingModel {
     }
 
     @Override
-    public List<Float> embed(String text) {
+    public INDArray embed(String text) {
         if (text == null || text.trim().isEmpty()) {
             logger.warn("Received null or empty text for embedding, returning empty list.");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
         }
         logger.debug("Embedding single text string using OpenAI...");
 
@@ -81,52 +84,41 @@ public class OpenAiEmbeddingModelImpl implements EmbeddingModel {
 
         if (floatArrayEmbedding == null) {
             logger.error("OpenAI embedding returned null for text: {}", text.substring(0, Math.min(text.length(), 70)) + "...");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
         }
 
-        List<Float> result = new ArrayList<>(floatArrayEmbedding.length);
-        for (float f : floatArrayEmbedding) {
-            result.add(f);
-        }
-        return result;
+        return Nd4j.create(floatArrayEmbedding );
     }
 
     @Override
-    public List<List<Float>> embed(List<String> texts) {
+    public INDArray embed(List<String> texts) {
         if (texts == null || texts.isEmpty() || texts.stream().allMatch(t -> t == null || t.trim().isEmpty())) {
             logger.warn("Received null, empty, or all-empty list of texts for embedding, returning empty list.");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
         }
         logger.debug("Embedding {} text strings using OpenAI...", texts.size());
 
-        // ASSUMPTION: springAiEmbeddingModel.embed(List<String>) returns List<float[]>
         List<float[]> listOfFloatArrayEmbeddings = this.springAiEmbeddingModel.embed(texts);
+
+        float[][] arr = new float[listOfFloatArrayEmbeddings.size()][springAiEmbeddingModel.dimensions()];
+        for(int i = 0; i < arr.length; i++) {
+            arr[i] = listOfFloatArrayEmbeddings.get(i);
+        }
 
         if (listOfFloatArrayEmbeddings == null) {
             logger.error("OpenAI embedding returned null for a list of texts.");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
+
         }
 
-        return listOfFloatArrayEmbeddings.stream()
-                .map(floatArray -> {
-                    if (floatArray == null) {
-                        logger.warn("A null embedding was returned for one of the texts in the batch.");
-                        return Collections.<Float>emptyList();
-                    }
-                    List<Float> floatList = new ArrayList<>(floatArray.length);
-                    for (float f : floatArray) {
-                        floatList.add(f);
-                    }
-                    return floatList;
-                })
-                .collect(Collectors.toList());
+        return Nd4j.create(arr);
     }
 
     @Override
-    public List<List<Float>> embedDocuments(List<Document> documents) {
+    public INDArray embedDocuments(List<Document> documents) {
         if (documents == null || documents.isEmpty()) {
             logger.warn("Received null or empty list of documents for embedding, returning empty list.");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
         }
         logger.debug("Embedding {} documents using OpenAI...", documents.size());
 
@@ -137,7 +129,7 @@ public class OpenAiEmbeddingModelImpl implements EmbeddingModel {
 
         if (contents.isEmpty()) {
             logger.warn("All documents had null or empty content. Nothing to embed.");
-            return Collections.emptyList();
+            return Nd4j.empty(DataType.FLOAT);
         }
 
         // This now calls the corrected embed(List<String>) which expects List<float[]> from Spring AI

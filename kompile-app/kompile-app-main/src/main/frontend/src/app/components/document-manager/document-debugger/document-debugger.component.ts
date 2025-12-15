@@ -80,8 +80,8 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
   @ViewChild('chunksPaginator') chunksPaginator!: MatPaginator;
   @ViewChild('chunksSort') chunksSort!: MatSort;
 
-  // Backend URL
-  protected backendUrl = 'http://localhost:8080/api';
+  // Backend URL - dynamically determined
+  protected backendUrl: string;
 
   // Data source for chunks table (simplified)
   chunksDataSource = new MatTableDataSource<ChunkDebugInfo>();
@@ -106,13 +106,14 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef
   ) {
+    // Dynamically determine backend URL based on current location
     if (typeof window !== 'undefined' && window.location) {
       const protocol = window.location.protocol;
       const hostname = window.location.hostname;
       const port = window.location.port;
-      this.backendUrl = (hostname === 'localhost' || hostname === '127.0.0.1')
-        ? `${protocol}//${hostname}:8080/api`
-        : `${protocol}//${hostname}${port ? ':' + port : ''}/api`;
+      this.backendUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api`;
+    } else {
+      this.backendUrl = '/api';
     }
   }
 

@@ -1,1 +1,7 @@
-ai.kompile.vectorstore.anserini.config.AnseriniVectorStoreConfiguration
+# Anserini VectorStore auto-configuration
+# The AnseriniVectorStoreImpl is configured via @Service annotation with
+# @ConditionalOnProperty(name = "kompile.vectorstore.anserini.enabled", havingValue = "true", matchIfMissing = false)
+
+# Enable Reranker configuration when kompile.reranker.enabled=true
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+ai.kompile.vectorstore.anserini.reranking.RerankerConfiguration

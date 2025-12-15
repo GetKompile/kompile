@@ -620,161 +620,62 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
 
         @SuppressWarnings("unchecked")
         private SameDiffEncoder<?> initializeEncoder(Args args) throws Exception {
-            String encoderTypeIdentifier = args.encoder;
-            if (encoderTypeIdentifier == null || encoderTypeIdentifier.trim().isEmpty()) {
+            String modelIdentifier = args.encoder;
+            if (modelIdentifier == null || modelIdentifier.trim().isEmpty()) {
                 return null;
             }
-            LOG.info("Attempting to initialize query encoder: {}", encoderTypeIdentifier);
+            LOG.info("Attempting to initialize query encoder with model identifier: {}", modelIdentifier);
 
-            String kompileModelPath = args.encoderModelPath;
-            String kompileVocabPath = args.encoderVocabPath;
+            String lowerModelId = modelIdentifier.toLowerCase();
 
-            if (kompileModelPath == null || kompileModelPath.trim().isEmpty()) {
-                throw new IllegalArgumentException(
-                        String.format("Encoder model path (-encoderModelPath) must be provided for encoder '%s'.", encoderTypeIdentifier));
-            }
-            if (kompileVocabPath == null || kompileVocabPath.trim().isEmpty()) {
-                throw new IllegalArgumentException(
-                        String.format("Encoder vocabulary path (-encoderVocabPath) must be provided for encoder '%s'.", encoderTypeIdentifier));
-            }
+            if (lowerModelId.contains("bge")) {
+                String instruction = args.encoderBgeInstruction;
+                boolean normalize = args.encoderBgeNormalize != null ? args.encoderBgeNormalize : true;
 
-            String modelInstanceIdentifier = args.encoderKompileModelId != null && !args.encoderKompileModelId.trim().isEmpty()
-                    ? args.encoderKompileModelId
-                    : encoderTypeIdentifier; // Fallback to short name if Kompile ID not given
-
-            // Resolve tokenizer settings: CLI args take precedence over encoder-specific defaults
-            Boolean cliDoLowerCase = args.encoderDoLowerCase;
-            int cliMaxSeqLen = args.encoderMaxSeqLength; // if <=0, encoder default will be used
-            Boolean cliAddSpecialTokens = args.encoderAddSpecialTokens;
-
-            if (encoderTypeIdentifier.equalsIgnoreCase("Bge")) {
-                // Assuming BgeSameDiffEncoder defines these static defaults
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : BgeSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : BgeSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : BgeSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                boolean normalize = args.encoderBgeNormalize != null ? args.encoderBgeNormalize : BgeSameDiffEncoder.DEFAULT_NORMALIZE;
-                String instruction = args.encoderBgeInstruction; // Can be null, BGE encoder should handle
-                return new BgeSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, instruction, normalize, doLowerCase, maxSeqLen, addSpecialTokens);
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("CosDprDistil")) {
-                // Assuming CosDprDistilSameDiffEncoder defines these static defaults
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : CosDprDistilSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : CosDprDistilSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : CosDprDistilSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                return new CosDprDistilSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens);
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("ArcticEmbed")) {
-                // Assuming ArcticEmbedSameDiffEncoder defines these static defaults
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : ArcticEmbedSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : ArcticEmbedSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : ArcticEmbedSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                // ArcticEmbedSameDiffEncoder's constructor will internally handle its specific tensor names when calling super()
-                return new ArcticEmbedSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens);
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("SpladePlusPlusSelfDistil")) {
-                // Assuming SpladePlusPlusSameDiffEncoder contains shared defaults
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : SpladePlusPlusSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : SpladePlusPlusSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : SpladePlusPlusSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE;
-                int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE;
-                return new SpladePlusPlusSelfDistilSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens, weightRange, quantRange);
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("SpladePlusPlusEnsembleDistil")) {
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : SpladePlusPlusSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : SpladePlusPlusSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : SpladePlusPlusSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE;
-                int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE;
-
-                return new SpladePlusPlusEnsembleDistilSameDiffEncoder(
-                        modelInstanceIdentifier, // Pass the resolved model identifier
-                        kompileModelPath,
-                        kompileVocabPath,
-                        doLowerCase, maxSeqLen, addSpecialTokens,
-                        weightRange, quantRange
-                );
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("UniCoil")) {
-                // Assuming UniCoilSameDiffEncoder defines these static defaults
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : UniCoilSameDiffEncoder.DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : UniCoilSameDiffEncoder.DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : UniCoilSameDiffEncoder.DEFAULT_ADD_SPECIAL_TOKENS;
-                int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE; // Assuming UniCoil has these
-                int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : UniCoilSameDiffEncoder.DEFAULT_QUANT_RANGE;   // Assuming UniCoil has these
-                return new UniCoilSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath, doLowerCase, maxSeqLen, addSpecialTokens, weightRange, quantRange);
-
-            } else if (encoderTypeIdentifier.equalsIgnoreCase("GenericDense")) {
-                boolean normalize = args.encoderGenericDenseNormalize != null ? args.encoderGenericDenseNormalize : GenericDenseSameDiffEncoder.DEFAULT_NORMALIZE;
-
-                List<String> inputNames;
-                if (args.encoderGenericDenseInputNames != null && args.encoderGenericDenseInputNames.length > 0) {
-                    inputNames = Arrays.asList(args.encoderGenericDenseInputNames);
+                if (args.encoderDoLowerCase != null || args.encoderMaxSeqLength > 0 || args.encoderAddSpecialTokens != null) {
+                    boolean doLowerCase = args.encoderDoLowerCase != null ? args.encoderDoLowerCase : true;
+                    int maxSeqLength = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512;
+                    boolean addSpecialTokens = args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : true;
+                    return new BgeSameDiffEncoder(modelIdentifier, instruction, normalize,
+                            doLowerCase, maxSeqLength, addSpecialTokens);
                 } else {
-                    // Use defaults from GenericDenseSameDiffEncoder class
-                    inputNames = List.of(GenericDenseSameDiffEncoder.DEFAULT_INPUT_IDS_NAME,
-                            GenericDenseSameDiffEncoder.DEFAULT_ATTENTION_MASK_NAME,
-                            GenericDenseSameDiffEncoder.DEFAULT_TOKEN_TYPE_IDS_NAME);
+                    return new BgeSameDiffEncoder(modelIdentifier, instruction, normalize);
                 }
 
-                String outputName;
-                if (args.encoderGenericDenseOutputName != null && !args.encoderGenericDenseOutputName.isEmpty()) {
-                    outputName = args.encoderGenericDenseOutputName;
+            } else if (lowerModelId.contains("arctic") || lowerModelId.contains("embed")) {
+                if (args.encoderDoLowerCase != null || args.encoderMaxSeqLength > 0 || args.encoderAddSpecialTokens != null) {
+                    boolean doLowerCase = args.encoderDoLowerCase != null ? args.encoderDoLowerCase : true;
+                    int maxSeqLength = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512;
+                    boolean addSpecialTokens = args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : true;
+                    return new ArcticEmbedSameDiffEncoder(modelIdentifier, doLowerCase, maxSeqLength, addSpecialTokens);
                 } else {
-                    outputName = GenericDenseSameDiffEncoder.DEFAULT_OUTPUT_NAME;
+                    return new ArcticEmbedSameDiffEncoder(modelIdentifier);
                 }
 
-                boolean doLowerCase = cliDoLowerCase != null ? cliDoLowerCase : DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                int maxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : DEFAULT_MAX_SEQUENCE_LENGTH;
-                boolean addSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : DEFAULT_ADD_SPECIAL_TOKENS;
-
-                // GenericDenseSameDiffEncoder takes explicit tensor names in its constructor
-                return new GenericDenseSameDiffEncoder(modelInstanceIdentifier, kompileModelPath, kompileVocabPath,
-                        inputNames, outputName, // Constructor expects List<String> inputs, String output
-                        doLowerCase, maxSeqLen, addSpecialTokens, normalize);
-            }
-            else { // FQN Loading
-                if (encoderTypeIdentifier.contains(".")) {
-                    LOG.info("Attempting to load encoder as FQN: {}", encoderTypeIdentifier);
-                    Class<?> encoderClazz = Class.forName(encoderTypeIdentifier);
-
-                    boolean fqnDoLowerCase = cliDoLowerCase != null ? cliDoLowerCase : Args.FALLBACK_DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS;
-                    int fqnMaxSeqLen = cliMaxSeqLen > 0 ? cliMaxSeqLen : Args.FALLBACK_DEFAULT_MAX_SEQUENCE_LENGTH;
-                    boolean fqnAddSpecialTokens = cliAddSpecialTokens != null ? cliAddSpecialTokens : Args.FALLBACK_DEFAULT_ADD_SPECIAL_TOKENS;
-
-                    try {
-                        // Attempt 1: Constructor for dense-like encoders (modelId, modelPath, vocabPath, tokenizerParams)
-                        Constructor<?> constructor = encoderClazz.getConstructor(
-                                String.class, String.class, String.class,
-                                boolean.class, int.class, boolean.class);
-                        return (SameDiffEncoder<?>) constructor.newInstance(
-                                modelInstanceIdentifier, kompileModelPath, kompileVocabPath,
-                                fqnDoLowerCase, fqnMaxSeqLen, fqnAddSpecialTokens);
-                    } catch (NoSuchMethodException e1) {
-                        LOG.warn("Standard dense constructor not found for FQN {}. Trying sparse variant.", encoderTypeIdentifier);
-                        try {
-                            // Attempt 2: Constructor for sparse-like encoders (..., int weightRange, int quantRange)
-                            int weightRange = args.encoderSpladeWeightRange > 0 ? args.encoderSpladeWeightRange : FALLBACK_FQN_SPARSE_WEIGHT_RANGE;
-                            int quantRange = args.encoderSpladeQuantRange > 0 ? args.encoderSpladeQuantRange : FALLBACK_FQN_SPARSE_QUANT_RANGE;
-                            Constructor<?> constructor = encoderClazz.getConstructor(
-                                    String.class, String.class, String.class,
-                                    boolean.class, int.class, boolean.class,
-                                    int.class, int.class);
-                            return (SameDiffEncoder<?>) constructor.newInstance(
-                                    modelInstanceIdentifier, kompileModelPath, kompileVocabPath,
-                                    fqnDoLowerCase, fqnMaxSeqLen, fqnAddSpecialTokens,
-                                    weightRange, quantRange);
-                        } catch (NoSuchMethodException e2) {
-                            LOG.error("No suitable Kompile-style constructor found for FQN encoder {}. It must have a constructor matching " +
-                                    "(String, String, String, boolean, int, boolean) or (String, String, String, boolean, int, boolean, int, int). Error: {}", encoderTypeIdentifier, e2.getMessage());
-                            throw new IllegalArgumentException("Unable to instantiate FQN encoder: " + encoderTypeIdentifier + ". No matching Kompile-style constructor.", e2);
-                        }
-                    }
+            } else if (lowerModelId.contains("cos") && lowerModelId.contains("dpr")) {
+                if (args.encoderDoLowerCase != null || args.encoderMaxSeqLength > 0 || args.encoderAddSpecialTokens != null) {
+                    boolean doLowerCase = args.encoderDoLowerCase != null ? args.encoderDoLowerCase : true;
+                    int maxSeqLength = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512;
+                    boolean addSpecialTokens = args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : true;
+                    return new CosDprDistilSameDiffEncoder(modelIdentifier, doLowerCase, maxSeqLength, addSpecialTokens);
+                } else {
+                    return new CosDprDistilSameDiffEncoder(modelIdentifier);
                 }
-                LOG.error("Unknown encoder short name: {} and not a recognized FQN or FQN constructor mismatch.", encoderTypeIdentifier);
-                throw new IllegalArgumentException("Unknown encoder: " + encoderTypeIdentifier);
+
+            } else {
+                boolean normalize = args.encoderGenericDenseNormalize != null ? args.encoderGenericDenseNormalize : true;
+
+                if (args.encoderDoLowerCase != null || args.encoderMaxSeqLength > 0 || args.encoderAddSpecialTokens != null) {
+                    boolean doLowerCase = args.encoderDoLowerCase != null ? args.encoderDoLowerCase : true;
+                    int maxSeqLength = args.encoderMaxSeqLength > 0 ? args.encoderMaxSeqLength : 512;
+                    boolean addSpecialTokens = args.encoderAddSpecialTokens != null ? args.encoderAddSpecialTokens : true;
+                    return new GenericDenseSameDiffEncoder(modelIdentifier, doLowerCase, maxSeqLength, addSpecialTokens, normalize);
+                } else {
+                    return new GenericDenseSameDiffEncoder(modelIdentifier);
+                }
             }
         }
+
 
         public SearcherThread(IndexReader reader,
                               SortedMap<T, Map<String, String>> topics,
@@ -970,6 +871,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                         this.queryEncoder.close();
                     } catch (Exception e) {
                         LOG.error("[Thread: {}] Error closing queryEncoder in SearcherThread for {}", getName(), this.outputPath, e);
+                        Thread.currentThread().interrupt();
                     }
                 }
             }
@@ -1058,15 +960,7 @@ public final class SearchCollection<K extends Comparable<K>> implements Runnable
                 LOG.info("  BGE Instruction: {}", args.encoderBgeInstruction != null ? "'" + args.encoderBgeInstruction + "'" : "None (uses BGE default if any)");
                 LOG.info("  BGE Normalize: {}", args.encoderBgeNormalize != null ? args.encoderBgeNormalize : BgeSameDiffEncoder.DEFAULT_NORMALIZE);
             }
-            if(args.encoder.equalsIgnoreCase("GenericDense")){
-                LOG.info("  GenericDense Normalize: {}", args.encoderGenericDenseNormalize != null ? args.encoderGenericDenseNormalize : GenericDenseSameDiffEncoder.DEFAULT_NORMALIZE);
-                String defaultInputNames = "Uses GenericDenseSameDiffEncoder defaults: " +
-                        List.of(GenericDenseSameDiffEncoder.DEFAULT_INPUT_IDS_NAME,
-                                GenericDenseSameDiffEncoder.DEFAULT_ATTENTION_MASK_NAME,
-                                GenericDenseSameDiffEncoder.DEFAULT_TOKEN_TYPE_IDS_NAME);
-                LOG.info("  GenericDense Input Names: {}", args.encoderGenericDenseInputNames != null ? Arrays.toString(args.encoderGenericDenseInputNames) : defaultInputNames);
-                LOG.info("  GenericDense Output Name: {}", args.encoderGenericDenseOutputName != null ? args.encoderGenericDenseOutputName : "Encoder Default (" + GenericDenseSameDiffEncoder.DEFAULT_OUTPUT_NAME +")");
-            }
+
             if(args.encoder.toLowerCase().contains("splade") || args.encoder.toLowerCase().contains("coil")){
                 int wRangeDefault = args.encoder.toLowerCase().contains("splade") ? SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_WEIGHT_RANGE : UniCoilSameDiffEncoder.DEFAULT_WEIGHT_RANGE;
                 int qRangeDefault = args.encoder.toLowerCase().contains("splade") ? SpladePlusPlusSameDiffEncoder.DEFAULT_SPLADE_QUANT_RANGE : UniCoilSameDiffEncoder.DEFAULT_QUANT_RANGE;

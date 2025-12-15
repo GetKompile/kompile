@@ -17,6 +17,7 @@
 package ai.kompile.core.indexers;
 
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.springframework.ai.document.Document;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 
@@ -60,7 +61,12 @@ public class NoOpIndexerService extends IndexerService {
 
     @Override
     public void indexDocuments(List<RetrievedDoc> documents) throws IOException {
+        // No-op
+    }
 
+    @Override
+    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException {
+        // No-op
     }
 
     @Override

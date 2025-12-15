@@ -347,6 +347,23 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     }
 
     @Override
+    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException {
+        if (documents == null || documents.isEmpty()) {
+            return;
+        }
+        logger.info("Indexing {} documents with pre-computed embeddings", documents.size());
+        // Use vectorStore.add with pre-computed embeddings if supported
+        if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
+            try {
+                vectorStore.add(documents, embeddings);
+                logger.info("Successfully indexed {} documents with embeddings", documents.size());
+            } catch (Exception e) {
+                logger.error("Failed to index with embeddings: {}", e.getMessage(), e);
+            }
+        }
+    }
+
+    @Override
     public void reprocessAndIndexAllSources() throws IOException {
         // This is a significant simplification.
         // A true reprocess would involve fetching sources from a DocumentLoadingService.

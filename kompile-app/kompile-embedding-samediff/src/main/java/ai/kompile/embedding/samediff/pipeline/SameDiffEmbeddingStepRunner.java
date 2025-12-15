@@ -77,6 +77,15 @@ public class SameDiffEmbeddingStepRunner implements PipelineStepRunner {
 
     @Override
     public void close() throws Exception {
-        // Should clean up 'embeddingModel' and reset 'initialized' state.
+        // Clean up embedding model to release native resources (SameDiff OpContexts, etc.)
+        if (embeddingModel != null) {
+            try {
+                embeddingModel.close();
+            } catch (Exception e) {
+                // Log but don't propagate to ensure cleanup continues
+            }
+            embeddingModel = null;
+        }
+        config = null;
     }
 }

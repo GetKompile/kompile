@@ -66,6 +66,8 @@
     <module>kompile-postgres-common</module>
     <module>kompile-graph-neo4j</module>
     <module>kompile-vectorstore-anserini</module>
+    <module>kompile-chat-history</module>
+    <module>kompile-orchestrator</module>
 
   </modules>
 
@@ -324,6 +326,16 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-embedding-postgresml</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chat-history</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-orchestrator</artifactId>
         <version>${project.version}</version>
       </dependency>
 

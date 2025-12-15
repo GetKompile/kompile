@@ -85,6 +85,7 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
   }
 
   private final IndexReader reader;
+  private final FSDirectory directory;  // Store directory reference for proper cleanup
   private final VectorQueryGenerator generator;
   private final SameDiffEncoder<float[]> encoder;
   private final Args searchArgsHnsw;
@@ -108,7 +109,8 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
     }
 
     try {
-      this.reader = DirectoryReader.open(FSDirectory.open(indexPath));
+      this.directory = FSDirectory.open(indexPath);
+      this.reader = DirectoryReader.open(this.directory);
     } catch (IOException e) {
       throw new IllegalArgumentException(String.format("\"%s\" does not appear to be a valid index.", args.index), e);
     }
@@ -238,9 +240,18 @@ public class HnswDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
 
   @Override
   public void close() throws IOException {
-    reader.close();
-    if (encoder != null) {
-      encoder.close();
+    try {
+      reader.close();
+    } finally {
+      try {
+        if (directory != null) {
+          directory.close();
+        }
+      } finally {
+        if (encoder != null) {
+          encoder.close();
+        }
+      }
     }
   }
 }
