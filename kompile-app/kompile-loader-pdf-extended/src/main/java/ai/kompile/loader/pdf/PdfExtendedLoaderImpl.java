@@ -38,6 +38,9 @@ import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -48,6 +51,7 @@ import java.util.Set;
 @ImportRuntimeHints(PdfExtendedLoaderImpl.PdfReaderHints.class)
 public class PdfExtendedLoaderImpl implements DocumentLoader {
 
+    private static final Logger logger = LoggerFactory.getLogger(PdfExtendedLoaderImpl.class);
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("pdf");
 
     // Configuration options
@@ -97,7 +101,7 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
             return false;
         }
 
-        String path = sourceDescriptor.getPathOrUrl().toLowerCase();
+        String path = sourceDescriptor.getPathOrUrl() != null ? sourceDescriptor.getPathOrUrl().toLowerCase() : "";
         return SUPPORTED_EXTENSIONS.stream().anyMatch(path::endsWith);
     }
 
@@ -141,6 +145,37 @@ public class PdfExtendedLoaderImpl implements DocumentLoader {
                 if (bookmarksDoc != null) {
                     documents.add(bookmarksDoc);
                 }
+            }
+        } catch (IOException e) {
+            // Handle corrupted or invalid PDF files gracefully
+            String errorMessage = e.getMessage();
+            if (errorMessage != null && (
+                    errorMessage.contains("Missing root object") ||
+                    errorMessage.contains("trailer") ||
+                    errorMessage.contains("Expected a long type") ||
+                    errorMessage.contains("Could not find") ||
+                    errorMessage.contains("Invalid") ||
+                    errorMessage.contains("Malformed") ||
+                    errorMessage.contains("not a PDF") ||
+                    errorMessage.contains("startxref"))) {
+                // This is a corrupted or invalid PDF file
+                logger.warn("Unable to parse PDF file '{}': {}. The file may be corrupted or not a valid PDF.",
+                           file.getName(), errorMessage);
+
+                // Return an error document so the caller knows what happened
+                Document errorDoc = new Document("[Error: Unable to parse PDF file. The file may be corrupted, truncated, or not a valid PDF document.]");
+                errorDoc.getMetadata().put("source", file.getAbsolutePath());
+                errorDoc.getMetadata().put("fileName", file.getName());
+                errorDoc.getMetadata().put("fileSize", file.length());
+                errorDoc.getMetadata().put("lastModified", file.lastModified());
+                errorDoc.getMetadata().put("documentType", "PDF Document (Error)");
+                errorDoc.getMetadata().put("loader", getName());
+                errorDoc.getMetadata().put("parseError", true);
+                errorDoc.getMetadata().put("errorMessage", errorMessage);
+                documents.add(errorDoc);
+            } else {
+                // Re-throw other IOExceptions that aren't related to PDF parsing
+                throw e;
             }
         }
 

@@ -159,6 +159,10 @@
             <artifactId>oshi-core</artifactId>
             <version>5.2.0</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
     </dependencies>
 
     <profiles>

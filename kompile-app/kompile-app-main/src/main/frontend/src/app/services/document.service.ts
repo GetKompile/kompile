@@ -28,7 +28,13 @@ import {
   BatchProcessResponse,
   DebugAnalysisResult,
   DebuggerStatus,
-  TestUploadResponse
+  TestUploadResponse,
+  AsyncUploadResponse,
+  IngestProgressUpdate,
+  BatchAsyncUploadResponse,
+  UploadedFileInfo,
+  CancelTaskResponse,
+  ProcessingModeInfo
 } from '../models/api-models';
 import { BaseService } from './base.service';
 
@@ -46,8 +52,8 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  getUploadedFiles(): Observable<{uploaded_files_location: string, files: string[]}> {
-    return this.http.get<{uploaded_files_location: string, files: string[]}>(`${this.backendUrl}/documents/uploaded-files`)
+  getUploadedFiles(): Observable<{uploaded_files_location: string, files: UploadedFileInfo[]}> {
+    return this.http.get<{uploaded_files_location: string, files: UploadedFileInfo[]}>(`${this.backendUrl}/documents/uploaded-files`)
       .pipe(catchError(this.handleError));
   }
 
@@ -106,6 +112,90 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
+  /**
+   * Upload a file asynchronously. Returns immediately with a task ID.
+   * Subscribe to WebSocket topic for real-time progress updates.
+   *
+   * @param file The file to upload
+   * @param loaderName Optional loader name
+   * @param chunkerName Optional chunker name
+   * @param processingMode Optional processing mode: 'auto', 'subprocess', or 'inprocess'
+   */
+  uploadFileAsync(file: File, loaderName?: string, chunkerName?: string, processingMode?: string): Observable<AsyncUploadResponse> {
+    const formData: FormData = new FormData();
+    formData.append('file', file, file.name);
+    if (loaderName) {
+      formData.append('loader', loaderName);
+    }
+    if (chunkerName) {
+      formData.append('chunkerName', chunkerName);
+    }
+    if (processingMode) {
+      formData.append('processingMode', processingMode);
+    }
+    return this.http.post<AsyncUploadResponse>(`${this.backendUrl}/documents/upload-async`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Upload multiple files asynchronously for batch processing.
+   * All files are processed concurrently. Subscribe to WebSocket for progress updates.
+   *
+   * @param files The files to upload
+   * @param loaderName Optional loader name
+   * @param chunkerName Optional chunker name
+   * @param processingMode Optional processing mode: 'auto', 'subprocess', or 'inprocess'
+   */
+  uploadFilesAsync(files: File[], loaderName?: string, chunkerName?: string, processingMode?: string): Observable<BatchAsyncUploadResponse> {
+    const formData: FormData = new FormData();
+    files.forEach(file => {
+      formData.append('files', file, file.name);
+    });
+    if (loaderName) {
+      formData.append('loader', loaderName);
+    }
+    if (chunkerName) {
+      formData.append('chunkerName', chunkerName);
+    }
+    if (processingMode) {
+      formData.append('processingMode', processingMode);
+    }
+    return this.http.post<BatchAsyncUploadResponse>(`${this.backendUrl}/documents/upload-batch-async`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get available processing modes for document ingestion
+   */
+  getProcessingModes(): Observable<{modes: ProcessingModeInfo[], default: string}> {
+    return this.http.get<{modes: ProcessingModeInfo[], default: string}>(`${this.backendUrl}/documents/processing-modes`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get the status of an async ingest task
+   */
+  getIngestStatus(taskId: string): Observable<IngestProgressUpdate> {
+    return this.http.get<IngestProgressUpdate>(`${this.backendUrl}/documents/ingest-status/${taskId}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get all active ingest tasks
+   */
+  getAllIngestTasks(): Observable<IngestProgressUpdate[]> {
+    return this.http.get<IngestProgressUpdate[]>(`${this.backendUrl}/documents/ingest-tasks`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Cancel an async ingest task.
+   * The task will be stopped as soon as possible and marked as CANCELLED.
+   */
+  cancelIngestTask(taskId: string): Observable<CancelTaskResponse> {
+    return this.http.post<CancelTaskResponse>(`${this.backendUrl}/documents/ingest-cancel/${taskId}`, {})
+      .pipe(catchError(this.handleError));
+  }
 
   private handleError(error: HttpErrorResponse) {
     let errorMessage = 'Unknown error!';
@@ -123,5 +213,13 @@ export class DocumentService extends BaseService {
     }
     console.error(errorMessage);
     return throwError(() => new Error(errorMessage));
+  }
+
+  /**
+   * Get the warmup status of the system (embedding model, chunker).
+   */
+  getWarmupStatus(): Observable<any> {
+    return this.http.get<any>(`${this.backendUrl}/system/warmup`)
+      .pipe(catchError(this.handleError));
   }
 }

@@ -16,6 +16,9 @@
 
 package ai.kompile.anserini.config; // New package for this module's config
 
+import ai.kompile.bindings.TokenizersNative;
+import ai.kompile.cli.main.util.PlatformDetector;
+import ai.kompile.presets.TokenizersHelper;
 import io.anserini.collection.JsonCollection;
 import io.anserini.index.generator.DefaultLuceneDocumentGenerator;
 import lombok.Data;
@@ -25,6 +28,7 @@ import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.ImportRuntimeHints;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 @Data
@@ -43,21 +47,91 @@ public class AnseriniConfig {
      */
     private String corpusPath; // This was used as the staging path for JSONs
 
-
     public static class AnseriniReflectionHints implements RuntimeHintsRegistrar {
 
         @Override
         public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
-          for(Class<?> clazz : new Class[] {
-                  JsonCollection.class,
-                  KeywordAttributeImpl.class,
-                  DefaultLuceneDocumentGenerator.class
-          }) {
-              for(MemberCategory memberCategory : MemberCategory.values()) {
-                  hints.reflection().registerType(clazz, memberCategory);
-              }
-          }
+            // Register reflection hints for required classes
+            for (Class<?> clazz : new Class[]{
+                    JsonCollection.class,
+                    KeywordAttributeImpl.class,
+                    DefaultLuceneDocumentGenerator.class,
+                    TokenizersNative.class,
+                    TokenizersHelper.class
+            }) {
+                for (MemberCategory memberCategory : MemberCategory.values()) {
+                    hints.reflection().registerType(clazz, memberCategory);
+                }
+            }
 
+            // Register JNI hints
+            hints.jni().registerType(TokenizersHelper.class,
+                    MemberCategory.PUBLIC_FIELDS,
+                    MemberCategory.DECLARED_FIELDS,
+                    MemberCategory.DECLARED_CLASSES,
+                    MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
+            hints.jni().registerType(TokenizersNative.class,
+                    MemberCategory.PUBLIC_FIELDS,
+                    MemberCategory.DECLARED_FIELDS,
+                    MemberCategory.DECLARED_CLASSES,
+                    MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
+
+            // Register native library resources
+            registerNativeLibraryResources(hints);
+        }
+
+        private void registerNativeLibraryResources(RuntimeHints hints) {
+            PlatformDetector.PlatformInfo platformInfo = PlatformDetector.detectPlatform();
+
+            // Define all possible native library resource paths
+            String[] resourcePaths = {
+                    // Primary tokenizers library
+                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so",
+                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1",
+                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1.0.0",
+
+                    // Alternative lib64 location
+                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so",
+                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1",
+                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1.0.0",
+
+                    // JNI bindings library
+                    "/ai/kompile/bindings/" + platformInfo.getIdentifier() + "/libjnitokenizers.so",
+
+                    // Include manifest files that might be needed
+                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/manifest.properties",
+                    "/ai/kompile/tokenizers/lib64/manifest.properties"
+            };
+
+            System.out.println("=== Registering Native Library Resources ===");
+            System.out.println("Platform: " + platformInfo.getIdentifier());
+            System.out.println("File Extension: " + platformInfo.getFileExtension());
+
+            for (String resourcePath : resourcePaths) {
+                try {
+                    // Force creation of ClassPathResource (not FileSystemResource)
+                    ClassPathResource resource = new ClassPathResource(resourcePath);
+
+                    if (resource.exists()) {
+                        hints.resources().registerResource(resource);
+                        System.out.println("✓ Registered ClassPathResource: " + resourcePath);
+
+                        // Verify the resource is readable
+                        try {
+                            long size = resource.contentLength();
+                            System.out.println("  Size: " + size + " bytes");
+                        } catch (Exception e) {
+                            System.out.println("  Warning: Could not read size - " + e.getMessage());
+                        }
+                    } else {
+                        System.out.println("✗ Resource not found: " + resourcePath);
+                    }
+                } catch (Exception e) {
+                    System.out.println("✗ Failed to register: " + resourcePath + " - " + e.getMessage());
+                }
+            }
+
+            System.out.println("=== Native Library Resource Registration Complete ===");
         }
     }
 }

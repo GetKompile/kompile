@@ -203,7 +203,7 @@
                             <mainClass>ai.kompile.model.importer.keras.KerasImporterApplication</mainClass>
                             <imageName>keras-importer</imageName>
                             <buildArgs>
-                                <buildArg>-J-Xmx12g</buildArg>
+                                <buildArg>-J-Xmx16g</buildArg>
                                 <buildArg>--verbose</buildArg>
                                 <buildArg>--no-fallback</buildArg>
                                 <buildArg>--allow-incomplete-classpath</buildArg>

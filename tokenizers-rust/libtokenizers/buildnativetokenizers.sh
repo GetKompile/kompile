@@ -5,6 +5,7 @@
 # Native build script for tokenizers Rust library with C++ wrapper
 # Based on the nd4j buildnativeoperations.sh pattern
 # Updated to work with externalized HuggingFace tokenizers project
+# Updated to use JavaCPP directory structure
 ################################################################################
 
 set -e  # Exit on any error
@@ -21,19 +22,50 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${SCRIPT_DIR}/build"
 OUTPUT_DIR="${SCRIPT_DIR}/target/native"
 
+# JavaCPP platform naming - use environment variable if set by Maven
+if [[ -n "${JAVACPP_PLATFORM}" ]]; then
+    echo "Using JAVACPP_PLATFORM from environment: ${JAVACPP_PLATFORM}"
+else
+    case "${PLATFORM}" in
+        linux)
+            if [[ "${ARCH}" == "aarch64" || "${ARCH}" == "arm64" ]]; then
+                JAVACPP_PLATFORM="linux-arm64"
+            else
+                JAVACPP_PLATFORM="linux-x86_64"
+            fi
+            ;;
+        darwin)
+            if [[ "${ARCH}" == "arm64" ]]; then
+                JAVACPP_PLATFORM="macosx-arm64"
+            else
+                JAVACPP_PLATFORM="macosx-x86_64"
+            fi
+            ;;
+        mingw*|cygwin*|msys*|windows*)
+            JAVACPP_PLATFORM="windows-x86_64"
+            ;;
+        *)
+            echo "Unsupported platform: ${PLATFORM}"
+            exit 1
+            ;;
+    esac
+fi
+
 echo "==============================================="
 echo "Building tokenizers native library"
 echo "==============================================="
 echo "Platform: ${PLATFORM}"
 echo "Architecture: ${ARCH}"
+echo "JavaCPP Platform: ${JAVACPP_PLATFORM}"
 echo "Build type: ${BUILD_TYPE}"
 echo "Build directory: ${BUILD_DIR}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "==============================================="
 
-# Create directories
+# Create directories using JavaCPP structure
 mkdir -p "${BUILD_DIR}"
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}/ai/kompile/tokenizers/${JAVACPP_PLATFORM}"
+mkdir -p "${OUTPUT_DIR}/ai/kompile/tokenizers/include"
 
 # Function to check if command exists
 command_exists() {
@@ -59,6 +91,26 @@ if ! command_exists git; then
 fi
 
 echo "All dependencies found."
+
+# CRITICAL: Detect and use linuxbrew compiler if available to match JavaCPP's ABI
+# JavaCPP uses linuxbrew's GCC on Linux, so we must use the same compiler
+# to avoid C++ ABI mismatches that cause SIGSEGV crashes
+if [[ "${PLATFORM}" == "linux" ]]; then
+    LINUXBREW_GCC="/home/linuxbrew/.linuxbrew/bin/gcc"
+    LINUXBREW_GXX="/home/linuxbrew/.linuxbrew/bin/g++"
+
+    if [[ -x "${LINUXBREW_GXX}" ]]; then
+        echo "Found linuxbrew compiler, using it to match JavaCPP ABI..."
+        export CC="${LINUXBREW_GCC}"
+        export CXX="${LINUXBREW_GXX}"
+        echo "CC=${CC}"
+        echo "CXX=${CXX}"
+    else
+        echo "WARNING: Linuxbrew compiler not found at ${LINUXBREW_GXX}"
+        echo "WARNING: Using system compiler may cause ABI mismatch with JavaCPP!"
+        echo "WARNING: This can lead to SIGSEGV crashes at runtime!"
+    fi
+fi
 
 # Platform-specific configuration
 case "${PLATFORM}" in
@@ -92,81 +144,143 @@ echo "Building for target: ${TARGET}"
 echo "Building with CMake (including external tokenizers project)..."
 cd "${BUILD_DIR}"
 
-# Configure CMake
-cmake "${SCRIPT_DIR}" \
-    -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-    -DCMAKE_INSTALL_PREFIX="${OUTPUT_DIR}" \
-    -DPLATFORM="${PLATFORM}" \
-    -DARCH="${ARCH}"
+# Check if we need to reconfigure due to compiler change
+CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
+NEED_RECONFIGURE=false
+
+if [[ -f "${CMAKE_CACHE}" ]]; then
+    CACHED_CXX=$(grep "CMAKE_CXX_COMPILER:FILEPATH=" "${CMAKE_CACHE}" 2>/dev/null | cut -d= -f2)
+    if [[ -n "${CXX}" && "${CACHED_CXX}" != "${CXX}" ]]; then
+        echo "Compiler changed from ${CACHED_CXX} to ${CXX}, forcing reconfigure..."
+        rm -f "${CMAKE_CACHE}"
+        NEED_RECONFIGURE=true
+    fi
+fi
+
+# Build CMake command with compiler settings
+CMAKE_ARGS=(
+    "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+    "-DCMAKE_INSTALL_PREFIX=${OUTPUT_DIR}/ai/kompile/tokenizers"
+    "-DPLATFORM=${PLATFORM}"
+    "-DARCH=${ARCH}"
+    "-DJAVACPP_PLATFORM=${JAVACPP_PLATFORM}"
+)
+
+# Explicitly pass compiler if set (critical for ABI compatibility)
+if [[ -n "${CC}" ]]; then
+    CMAKE_ARGS+=("-DCMAKE_C_COMPILER=${CC}")
+fi
+if [[ -n "${CXX}" ]]; then
+    CMAKE_ARGS+=("-DCMAKE_CXX_COMPILER=${CXX}")
+fi
+
+# Configure CMake with JavaCPP-aware install prefix
+cmake "${SCRIPT_DIR}" "${CMAKE_ARGS[@]}"
 
 # Build everything (CMake will handle cloning, building Rust, generating bindings, and building C++ wrapper)
 cmake --build . --config "${BUILD_TYPE}" -j$(nproc 2>/dev/null || echo 4)
 
-# Install to output directory
+# Install to JavaCPP structure
 cmake --install . --config "${BUILD_TYPE}"
 
-# Platform-specific library organization
-echo "Organizing platform-specific libraries..."
+# Platform-specific library organization in JavaCPP structure
+echo "Organizing platform-specific libraries in JavaCPP structure..."
 
-PLATFORM_DIR="${OUTPUT_DIR}/${PLATFORM}-${ARCH}"
-mkdir -p "${PLATFORM_DIR}"
+JAVACPP_PLATFORM_DIR="${OUTPUT_DIR}/ai/kompile/tokenizers/${JAVACPP_PLATFORM}"
 
-# Copy libraries to platform-specific directory
-case "${PLATFORM}" in
-    linux)
-        find "${BUILD_DIR}" -name "*.so" -exec cp {} "${PLATFORM_DIR}/" \; 2>/dev/null || true
-        find "${BUILD_DIR}" -name "*.so.*" -exec cp {} "${PLATFORM_DIR}/" \; 2>/dev/null || true
-        ;;
-    darwin)
-        find "${BUILD_DIR}" -name "*.dylib" -exec cp {} "${PLATFORM_DIR}/" \; 2>/dev/null || true
-        find "${BUILD_DIR}" -name "*.jnilib" -exec cp {} "${PLATFORM_DIR}/" \; 2>/dev/null || true
-        ;;
-    mingw*|cygwin*|msys*|windows*)
-        find "${BUILD_DIR}" -name "*.dll" -exec cp {} "${PLATFORM_DIR}/" \; 2>/dev/null || true
-        ;;
-esac
+# Function to copy essential runtime libraries only
+copy_essential_libraries() {
+    local source_dir="$1"
+    local dest_dir="$2"
+    
+    echo "Copying essential libraries from ${source_dir} to ${dest_dir}"
+    
+    # Copy our wrapper library (the main one we built)
+    case "${PLATFORM}" in
+        linux)
+            find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.so*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            ;;
+        darwin)
+            find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.dylib*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.jnilib*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            ;;
+        mingw*|cygwin*|msys*|windows*)
+            find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.dll*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            ;;
+    esac
+    
+    # Note: We do NOT copy the Rust proc-macro libraries as they are only needed at compile time
+    # The main tokenizers library is built as a static library (.rlib) and is linked into our wrapper
+}
 
-# Copy generated headers to include directory
-INCLUDE_DIR="${OUTPUT_DIR}/include"
-mkdir -p "${INCLUDE_DIR}"
+# Copy only essential runtime libraries
+copy_essential_libraries "${BUILD_DIR}" "${JAVACPP_PLATFORM_DIR}"
+
+# Copy generated headers to JavaCPP include directory
+JAVACPP_INCLUDE_DIR="${OUTPUT_DIR}/ai/kompile/tokenizers/include"
 
 # Copy generated C headers
 if [[ -f "${BUILD_DIR}/tokenizers-build/bindings/include/tokenizers.h" ]]; then
-    cp "${BUILD_DIR}/tokenizers-build/bindings/include/tokenizers.h" "${INCLUDE_DIR}/tokenizers_c.h"
+    cp "${BUILD_DIR}/tokenizers-build/bindings/include/tokenizers.h" "${JAVACPP_INCLUDE_DIR}/tokenizers_c.h"
 fi
 
 # Copy wrapper headers
 if [[ -d "${SCRIPT_DIR}/include" ]]; then
-    cp "${SCRIPT_DIR}/include"/*.h "${INCLUDE_DIR}/" 2>/dev/null || true
+    cp "${SCRIPT_DIR}/include"/*.h "${JAVACPP_INCLUDE_DIR}/" 2>/dev/null || true
 fi
 
-# Create manifest file
-MANIFEST_FILE="${OUTPUT_DIR}/manifest.properties"
+# Create platform-specific manifest file
+MANIFEST_FILE="${JAVACPP_PLATFORM_DIR}/manifest.properties"
 cat > "${MANIFEST_FILE}" << EOF
 # Tokenizers Native Library Manifest
 build.timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 build.platform=${PLATFORM}
 build.arch=${ARCH}
+build.javacpp.platform=${JAVACPP_PLATFORM}
 build.type=${BUILD_TYPE}
 build.target=${TARGET}
 rust.version=$(cargo --version)
 cmake.version=$(cmake --version | head -n1)
 tokenizers.repo=https://github.com/huggingface/tokenizers.git
+library.names=libtokenizers_wrapper.${LIB_EXT}
+javacpp.platform.root=ai/kompile/tokenizers/${JAVACPP_PLATFORM}
+# Note: Rust static libraries (.rlib) are statically linked into the wrapper
+# Note: Proc-macro libraries are not included as they are compile-time only
 EOF
+
+# For backward compatibility, also create legacy structure (but only with essential libraries)
+echo "Creating backward compatibility structure..."
+LEGACY_PLATFORM_DIR="${OUTPUT_DIR}/${JAVACPP_PLATFORM}"
+mkdir -p "${LEGACY_PLATFORM_DIR}"
+
+# Copy essential libraries to legacy structure
+copy_essential_libraries "${BUILD_DIR}" "${LEGACY_PLATFORM_DIR}"
+
+# Copy manifest to legacy location
+cp "${MANIFEST_FILE}" "${LEGACY_PLATFORM_DIR}/" 2>/dev/null || true
 
 echo "==============================================="
 echo "Build completed successfully!"
-echo "Output directory: ${OUTPUT_DIR}"
-echo "Platform directory: ${PLATFORM_DIR}"
-echo "Include directory: ${INCLUDE_DIR}"
+echo "JavaCPP Output directory: ${OUTPUT_DIR}/ai/kompile/tokenizers"
+echo "JavaCPP Platform directory: ${JAVACPP_PLATFORM_DIR}"
+echo "JavaCPP Include directory: ${JAVACPP_INCLUDE_DIR}"
+echo "Legacy Platform directory: ${LEGACY_PLATFORM_DIR}"
 echo "==============================================="
 
 # List built artifacts
 echo "Built artifacts:"
-echo "Libraries:"
-find "${OUTPUT_DIR}" -type f \( -name "*.so" -o -name "*.dll" -o -name "*.dylib" -o -name "*.jnilib" \) | sort
+echo "JavaCPP Platform Libraries:"
+find "${JAVACPP_PLATFORM_DIR}" -type f \( -name "*.so" -o -name "*.dll" -o -name "*.dylib" -o -name "*.jnilib" \) | sort
 
-echo "Headers:"
-find "${OUTPUT_DIR}" -type f -name "*.h" | sort
+echo "JavaCPP Headers:"
+find "${JAVACPP_INCLUDE_DIR}" -type f -name "*.h" | sort
+
+echo "Legacy Libraries:"
+find "${LEGACY_PLATFORM_DIR}" -type f \( -name "*.so" -o -name "*.dll" -o -name "*.dylib" -o -name "*.jnilib" \) | sort
+
+echo ""
+echo "Note: Rust proc-macro libraries are not included in the final package"
+echo "as they are only needed at compile time. The tokenizers Rust library"
+echo "is statically linked into the C++ wrapper (libtokenizers_wrapper)."
 
 echo "Build script completed."

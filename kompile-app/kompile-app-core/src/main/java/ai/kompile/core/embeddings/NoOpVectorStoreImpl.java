@@ -31,6 +31,7 @@ import java.util.List;
  * allowing the application to start but with vector store functionality disabled.
  */
 @Service("noOpVectorStore") // Give it a specific bean name
+@ConditionalOnMissingBean(VectorStore.class)
 public class NoOpVectorStoreImpl implements VectorStore {
 
     private static final Logger logger = LoggerFactory.getLogger(NoOpVectorStoreImpl.class);

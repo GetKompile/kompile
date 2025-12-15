@@ -17,6 +17,7 @@
 package ai.kompile.core.indexers;
 
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.springframework.ai.document.Document;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
@@ -24,6 +25,121 @@ import java.util.Map;
 
 public abstract class IndexerService {
     public abstract void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam);
+
+    /**
+     * Indexes documents with pre-computed embeddings.
+     * This allows the embedding step to be separated from the indexing step for better parallelization.
+     *
+     * @param documents  The documents to index
+     * @param embeddings Pre-computed embeddings for each document (same order as documents)
+     * @throws IOException if there is an error during indexing
+     */
+    public abstract void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException;
+
+    /**
+     * Indexes RetrievedDoc documents with pre-computed float[] embeddings.
+     * This is the most efficient method for bulk indexing as it avoids boxing overhead.
+     * <p>
+     * The embedding and indexing stages can run in parallel when using this method,
+     * as embeddings are computed ahead of time by a separate worker.
+     *
+     * @param documents  The documents to index
+     * @param embeddings Pre-computed embeddings as float[] arrays (same order as documents)
+     * @throws IOException if there is an error during indexing
+     */
+    public void indexDocumentsWithFloatEmbeddings(List<RetrievedDoc> documents, List<float[]> embeddings) throws IOException {
+        // Default implementation converts to List<Float> for backward compatibility
+        if (documents == null || documents.isEmpty()) {
+            return;
+        }
+
+        List<Document> springDocs = new java.util.ArrayList<>(documents.size());
+        List<List<Float>> floatEmbeddings = embeddings != null ? new java.util.ArrayList<>(embeddings.size()) : null;
+
+        for (int i = 0; i < documents.size(); i++) {
+            RetrievedDoc doc = documents.get(i);
+            springDocs.add(new Document(doc.getId(), doc.getText(), doc.getMetadata()));
+
+            if (embeddings != null && i < embeddings.size() && embeddings.get(i) != null) {
+                float[] emb = embeddings.get(i);
+                List<Float> floatList = new java.util.ArrayList<>(emb.length);
+                for (float f : emb) {
+                    floatList.add(f);
+                }
+                floatEmbeddings.add(floatList);
+            }
+        }
+
+        if (floatEmbeddings != null && !floatEmbeddings.isEmpty()) {
+            indexDocumentsWithEmbeddings(springDocs, floatEmbeddings);
+        } else {
+            indexDocuments(documents);
+        }
+    }
+
+    /**
+     * Indexes documents to the keyword index only (no vector store).
+     * This method enables parallel indexing where keyword and vector stores
+     * are updated independently by separate workers.
+     *
+     * @param documents The documents to index
+     * @throws IOException if there is an error during indexing
+     */
+    public void indexToKeywordIndexOnly(List<RetrievedDoc> documents) throws IOException {
+        // Default: delegates to full indexDocuments (implementations should override)
+        indexDocuments(documents);
+    }
+
+    /**
+     * Indexes documents to the vector store only (no keyword index).
+     * This method enables parallel indexing where keyword and vector stores
+     * are updated independently by separate workers.
+     *
+     * @param documents  The documents to index
+     * @param embeddings Pre-computed embeddings as float[] arrays
+     * @throws IOException if there is an error during indexing
+     */
+    public void indexToVectorStoreOnly(List<RetrievedDoc> documents, List<float[]> embeddings) throws IOException {
+        // Default: delegates to full indexDocumentsWithFloatEmbeddings (implementations should override)
+        indexDocumentsWithFloatEmbeddings(documents, embeddings);
+    }
+
+    /**
+     * Indexes documents in parallel to both keyword index and vector store.
+     * This is the most efficient method for bulk indexing as it:
+     * 1. Accepts pre-computed float[] embeddings (no re-embedding)
+     * 2. Updates keyword index and vector store concurrently
+     * 3. Returns a future that completes when both indexes are updated
+     *
+     * @param documents  The documents to index
+     * @param embeddings Pre-computed embeddings as float[] arrays
+     * @return A CompletableFuture that completes when both indexes are updated
+     */
+    public java.util.concurrent.CompletableFuture<Void> indexDocumentsParallel(
+            List<RetrievedDoc> documents, List<float[]> embeddings) {
+        // Default implementation runs keyword and vector indexing in parallel
+        if (documents == null || documents.isEmpty()) {
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+
+        java.util.concurrent.CompletableFuture<Void> keywordFuture = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                indexToKeywordIndexOnly(documents);
+            } catch (IOException e) {
+                throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
+            }
+        });
+
+        java.util.concurrent.CompletableFuture<Void> vectorFuture = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                indexToVectorStoreOnly(documents, embeddings);
+            } catch (IOException e) {
+                throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
+            }
+        });
+
+        return java.util.concurrent.CompletableFuture.allOf(keywordFuture, vectorFuture);
+    }
 
     public abstract void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
 

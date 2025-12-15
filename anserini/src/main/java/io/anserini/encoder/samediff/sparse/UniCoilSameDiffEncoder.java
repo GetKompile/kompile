@@ -78,38 +78,104 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
     public Map<String, Float> encode(@NotNull String query) {
         SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(query);
 
-        INDArray inputIdsArr = Nd4j.create(new long[][]{encoding.inputIds}).castTo(DataType.INT64);
-        INDArray attentionMaskArr = Nd4j.create(new long[][]{encoding.attentionMask}).castTo(DataType.INT64);
-        INDArray tokenTypeIdsArr = Nd4j.create(new long[][]{encoding.tokenTypeIds}).castTo(DataType.INT64);
-
-        Map<String, INDArray> placeholderMap = new HashMap<>();
-        placeholderMap.put(this.inputTensorNamesForModel.get(0), inputIdsArr);
-        placeholderMap.put(this.inputTensorNamesForModel.get(1), attentionMaskArr);
-        placeholderMap.put(this.inputTensorNamesForModel.get(2), tokenTypeIdsArr);
+        // Track all arrays that need cleanup to prevent off-heap memory leaks
+        INDArray inputIdsArr = null;
+        INDArray attentionMaskArr = null;
+        INDArray tokenTypeIdsArr = null;
+        Map<String, INDArray> outputMap = null;
+        INDArray computedLogits = null;
 
         try {
+            // CRITICAL: Create 2D array directly to avoid intermediate array leak from castTo()
+            inputIdsArr = Nd4j.createFromArray(new long[][]{encoding.inputIds});
+            attentionMaskArr = Nd4j.createFromArray(new long[][]{encoding.attentionMask});
+            tokenTypeIdsArr = Nd4j.createFromArray(new long[][]{encoding.tokenTypeIds});
+
+            Map<String, INDArray> placeholderMap = new HashMap<>();
+            placeholderMap.put(this.inputTensorNamesForModel.get(0), inputIdsArr);
+            placeholderMap.put(this.inputTensorNamesForModel.get(1), attentionMaskArr);
+            placeholderMap.put(this.inputTensorNamesForModel.get(2), tokenTypeIdsArr);
+
             String outputName = this.outputTensorNamesFromModel.get(0);
-            Map<String, INDArray> outputMap = this.sameDiffModel.output(placeholderMap, outputName);
-            INDArray computedLogits = outputMap.get(outputName);
+            outputMap = this.sameDiffModel.output(placeholderMap, outputName);
+            computedLogits = outputMap.get(outputName);
 
             if (computedLogits == null) {
                 LOG.warn("[{}] Output tensor '{}' not found for UniCOIL. Query: '{}'", this.modelIdentifier, outputName, query);
                 return Collections.emptyMap();
             }
 
+            return processActivations(computedLogits, encoding, query);
+        } catch (Exception e) {
+            LOG.error("[{}] Error during UniCOIL encoding for query: '{}'", this.modelIdentifier, query, e);
+            return Collections.emptyMap();
+        } finally {
+            // CRITICAL: Close all input arrays to prevent off-heap memory leaks
+            // These are created fresh on every encode() call and must be released
+            if (inputIdsArr != null) {
+                try {
+                    inputIdsArr.close();
+                } catch (Exception e) {
+                    LOG.debug("[{}] Error closing inputIdsArr: {}", this.modelIdentifier, e.getMessage());
+                }
+            }
+            if (attentionMaskArr != null) {
+                try {
+                    attentionMaskArr.close();
+                } catch (Exception e) {
+                    LOG.debug("[{}] Error closing attentionMaskArr: {}", this.modelIdentifier, e.getMessage());
+                }
+            }
+            if (tokenTypeIdsArr != null) {
+                try {
+                    tokenTypeIdsArr.close();
+                } catch (Exception e) {
+                    LOG.debug("[{}] Error closing tokenTypeIdsArr: {}", this.modelIdentifier, e.getMessage());
+                }
+            }
+            // CRITICAL: Close ALL output arrays in the outputMap, not just the one we used
+            // The outputMap may contain multiple tensors from intermediate computations
+            if (outputMap != null) {
+                for (Map.Entry<String, INDArray> entry : outputMap.entrySet()) {
+                    INDArray arr = entry.getValue();
+                    if (arr != null) {
+                        try {
+                            arr.close();
+                        } catch (Exception e) {
+                            LOG.debug("[{}] Error closing output array '{}': {}",
+                                    this.modelIdentifier, entry.getKey(), e.getMessage());
+                        }
+                    }
+                }
+            }
+            // Note: computedLogits is already closed above as part of outputMap iteration
+
+            // CRITICAL: Trigger periodic workspace cleanup for single-encode path
+            maybeCleanupWorkspaces();
+        }
+    }
+
+    private Map<String, Float> processActivations(INDArray computedLogits, SamediffBertTokenizerPreProcessor.BertEncoding encoding, String query) {
+        // Track all intermediate arrays to prevent off-heap memory leaks
+        INDArray reshapedActivations = null;
+        INDArray reluOutput = null;
+
+        try {
             INDArray tokenActivations = computedLogits;
             if (tokenActivations.rank() == 3 && tokenActivations.shape()[0] == 1 && tokenActivations.shape()[2] == 1) {
-                tokenActivations = tokenActivations.reshape(tokenActivations.shape()[0], tokenActivations.shape()[1]);
+                reshapedActivations = tokenActivations.reshape(tokenActivations.shape()[0], tokenActivations.shape()[1]);
+                tokenActivations = reshapedActivations;
             } else if (tokenActivations.rank() == 2 && tokenActivations.shape()[0] == 1) {
-                // Correct shape
+                // Correct shape - no reshape needed
             } else if (tokenActivations.rank() == 1 && tokenActivations.shape()[0] == encoding.inputIds.length) {
-                tokenActivations = tokenActivations.reshape(1, tokenActivations.shape()[0]);
+                reshapedActivations = tokenActivations.reshape(1, tokenActivations.shape()[0]);
+                tokenActivations = reshapedActivations;
             } else {
                 LOG.warn("[{}] Unexpected UniCOIL output tensor shape: {}. Query: '{}'", this.modelIdentifier, Arrays.toString(tokenActivations.shape()), query);
                 return Collections.emptyMap();
             }
 
-            INDArray reluOutput = Transforms.relu(tokenActivations, true);
+            reluOutput = Transforms.relu(tokenActivations, true);
             Map<String, Float> tokenWeightMap = new LinkedHashMap<>();
             SamediffBertVocabulary vocab = this.tokenizerPreProcessor.getVocabulary();
 
@@ -118,14 +184,14 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
                 if (id == vocab.getTokenId(SamediffBertVocabulary.PAD_TOKEN)) break;
                 actualLength++;
             }
-            int iterLength = Math.min(actualLength, (int)reluOutput.columns());
+            int iterLength = Math.min(actualLength, (int) reluOutput.columns());
 
             for (int i = 0; i < iterLength; ++i) {
                 String token = vocab.getToken((int) encoding.inputIds[i]);
                 if (token.equals(SamediffBertVocabulary.CLS_TOKEN) ||
                         token.equals(SamediffBertVocabulary.SEP_TOKEN) ||
                         token.equals(SamediffBertVocabulary.PAD_TOKEN) ||
-                        token.equals(vocab.getUnknownTokenValue())) { // Use instance's UNK
+                        token.equals(vocab.getUnknownTokenValue())) {
                     continue;
                 }
                 float weight = reluOutput.getFloat(0, i);
@@ -135,8 +201,22 @@ public class UniCoilSameDiffEncoder extends SameDiffSparseEncoder {
             }
             return tokenWeightMap;
         } catch (Exception e) {
-            LOG.error("[{}] Error during UniCOIL encoding for query: '{}'", this.modelIdentifier, query, e);
+            LOG.error("[{}] Error processing UniCOIL activations for query: '{}'", this.modelIdentifier, query, e);
             return Collections.emptyMap();
+        } finally {
+            // CRITICAL: Close all intermediate arrays to prevent off-heap memory leaks
+            closeArraySafely(reshapedActivations);
+            closeArraySafely(reluOutput);
+        }
+    }
+
+    private void closeArraySafely(INDArray arr) {
+        if (arr != null) {
+            try {
+                arr.close();
+            } catch (Exception e) {
+                LOG.debug("[{}] Error closing array: {}", this.modelIdentifier, e.getMessage());
+            }
         }
     }
 }

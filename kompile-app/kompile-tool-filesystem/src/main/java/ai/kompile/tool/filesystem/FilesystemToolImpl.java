@@ -27,7 +27,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -43,6 +45,9 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
     // Input DTOs are inner records, which is fine.
     public record ListFilesInput(String rootAlias, String subPath) {}
     public record ReadFileInput(String rootAlias, String filePath) {}
+    public record WriteFileInput(String rootAlias, String filePath, String content, Boolean append) {}
+    public record DeleteFileInput(String rootAlias, String filePath) {}
+    public record CreateDirectoryInput(String rootAlias, String directoryPath) {}
 
     public FilesystemToolImpl(FilesystemToolProperties properties) {
         this.properties = properties;
@@ -200,6 +205,193 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
             return Map.of("error", e.getMessage());
         } catch (IOException e) {
             logger.error("IO error in read_file for input {}: {}", input, e.getMessage(), e);
+            return Map.of("error", "IO Error: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "write_file",
+            description = "Writes content to a file in a configured filesystem root. Provide rootAlias (e.g., 'default'), relative filePath, and content. " +
+                    "Set append=true to append to existing file, otherwise it overwrites. Returns the previous content for undo capability.")
+    public Map<String, Object> writeFile(WriteFileInput input) {
+        logger.info("FilesystemTool: Executing write_file with input: rootAlias={}, filePath={}, contentLength={}, append={}",
+                input.rootAlias(), input.filePath(),
+                input.content() != null ? input.content().length() : 0,
+                input.append());
+
+        if (input.rootAlias() == null || input.rootAlias().trim().isEmpty() ||
+                input.filePath() == null || input.filePath().trim().isEmpty()) {
+            return Map.of("error", "rootAlias and filePath cannot be empty.");
+        }
+
+        if (input.content() == null) {
+            return Map.of("error", "content cannot be null. Use empty string to create empty file.");
+        }
+
+        try {
+            Path targetFile = resolvePath(input.rootAlias(), input.filePath());
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("file_path", targetFile.toString());
+
+            // Store previous content for undo capability
+            String previousContent = null;
+            boolean fileExisted = Files.exists(targetFile);
+            if (fileExisted && Files.isRegularFile(targetFile)) {
+                try {
+                    long fileSize = Files.size(targetFile);
+                    if (fileSize <= 10 * 1024 * 1024) { // Only store if <= 10MB
+                        previousContent = Files.readString(targetFile);
+                        result.put("previousContentLength", previousContent.length());
+                        result.put("previousContent", previousContent);
+                    } else {
+                        result.put("previousContentLength", fileSize);
+                        result.put("previousContentTooLarge", true);
+                    }
+                } catch (IOException e) {
+                    logger.warn("Could not read previous content for undo: {}", e.getMessage());
+                }
+            }
+            result.put("fileExistedBefore", fileExisted);
+
+            // Create parent directories if needed
+            Path parent = targetFile.getParent();
+            if (parent != null && !Files.exists(parent)) {
+                Files.createDirectories(parent);
+                result.put("createdParentDirectories", true);
+            }
+
+            // Write the file
+            boolean append = input.append() != null && input.append();
+            if (append && fileExisted) {
+                Files.writeString(targetFile, input.content(), StandardOpenOption.APPEND);
+                result.put("operation", "appended");
+            } else {
+                Files.writeString(targetFile, input.content());
+                result.put("operation", fileExisted ? "overwritten" : "created");
+            }
+
+            result.put("status", "success");
+            result.put("bytesWritten", input.content().length());
+
+            return result;
+
+        } catch (SecurityException | IllegalArgumentException e) {
+            logger.warn("Access or argument error in write_file for input {}: {}", input, e.getMessage());
+            return Map.of("error", e.getMessage());
+        } catch (IOException e) {
+            logger.error("IO error in write_file for input {}: {}", input, e.getMessage(), e);
+            return Map.of("error", "IO Error: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "delete_file",
+            description = "Deletes a file or empty directory from a configured filesystem root. Provide rootAlias (e.g., 'default') and relative filePath. " +
+                    "Returns the previous content for undo capability if it was a file.")
+    public Map<String, Object> deleteFile(DeleteFileInput input) {
+        logger.info("FilesystemTool: Executing delete_file with input: {}", input);
+
+        if (input.rootAlias() == null || input.rootAlias().trim().isEmpty() ||
+                input.filePath() == null || input.filePath().trim().isEmpty()) {
+            return Map.of("error", "rootAlias and filePath cannot be empty.");
+        }
+
+        try {
+            Path targetPath = resolvePath(input.rootAlias(), input.filePath());
+
+            if (!Files.exists(targetPath)) {
+                return Map.of("error", "Path does not exist: " + targetPath.toString());
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("deleted_path", targetPath.toString());
+
+            boolean wasDirectory = Files.isDirectory(targetPath);
+            result.put("wasDirectory", wasDirectory);
+
+            // Store previous content for undo capability (only for files)
+            if (!wasDirectory) {
+                try {
+                    long fileSize = Files.size(targetPath);
+                    if (fileSize <= 10 * 1024 * 1024) { // Only store if <= 10MB
+                        String previousContent = Files.readString(targetPath);
+                        result.put("previousContent", previousContent);
+                        result.put("previousContentLength", previousContent.length());
+                    } else {
+                        result.put("previousContentLength", fileSize);
+                        result.put("previousContentTooLarge", true);
+                        result.put("warning", "File content was too large to backup for undo");
+                    }
+                } catch (IOException e) {
+                    logger.warn("Could not read previous content for undo: {}", e.getMessage());
+                    result.put("warning", "Could not backup content for undo: " + e.getMessage());
+                }
+            }
+
+            // Delete the file/directory
+            if (wasDirectory) {
+                try (Stream<Path> entries = Files.list(targetPath)) {
+                    if (entries.findAny().isPresent()) {
+                        return Map.of("error", "Cannot delete non-empty directory: " + targetPath.toString());
+                    }
+                }
+            }
+
+            Files.delete(targetPath);
+            result.put("status", "success");
+
+            return result;
+
+        } catch (SecurityException | IllegalArgumentException e) {
+            logger.warn("Access or argument error in delete_file for input {}: {}", input, e.getMessage());
+            return Map.of("error", e.getMessage());
+        } catch (IOException e) {
+            logger.error("IO error in delete_file for input {}: {}", input, e.getMessage(), e);
+            return Map.of("error", "IO Error: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "create_directory",
+            description = "Creates a directory in a configured filesystem root. Provide rootAlias (e.g., 'default') and relative directoryPath. " +
+                    "Creates parent directories as needed.")
+    public Map<String, Object> createDirectory(CreateDirectoryInput input) {
+        logger.info("FilesystemTool: Executing create_directory with input: {}", input);
+
+        if (input.rootAlias() == null || input.rootAlias().trim().isEmpty() ||
+                input.directoryPath() == null || input.directoryPath().trim().isEmpty()) {
+            return Map.of("error", "rootAlias and directoryPath cannot be empty.");
+        }
+
+        try {
+            Path targetDir = resolvePath(input.rootAlias(), input.directoryPath());
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("directory_path", targetDir.toString());
+
+            if (Files.exists(targetDir)) {
+                if (Files.isDirectory(targetDir)) {
+                    result.put("status", "success");
+                    result.put("message", "Directory already exists");
+                    result.put("alreadyExisted", true);
+                    return result;
+                } else {
+                    return Map.of("error", "Path exists but is not a directory: " + targetDir.toString());
+                }
+            }
+
+            // Create the directory and any necessary parent directories
+            Files.createDirectories(targetDir);
+
+            result.put("status", "success");
+            result.put("message", "Directory created successfully");
+            result.put("alreadyExisted", false);
+
+            return result;
+
+        } catch (SecurityException | IllegalArgumentException e) {
+            logger.warn("Access or argument error in create_directory for input {}: {}", input, e.getMessage());
+            return Map.of("error", e.getMessage());
+        } catch (IOException e) {
+            logger.error("IO error in create_directory for input {}: {}", input, e.getMessage(), e);
             return Map.of("error", "IO Error: " + e.getMessage());
         }
     }

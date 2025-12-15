@@ -131,6 +131,12 @@ public abstract class AbstractIndexer implements Runnable {
         int batch = 0;
 
         for (SourceDocument d : segment) {
+          // Check for interruption at the start of each document processing
+          if (Thread.currentThread().isInterrupted()) {
+            LOG.info("Indexing thread interrupted, stopping gracefully for file: {}", inputFile.getFileName());
+            break;
+          }
+
           if (!d.indexable()) {
             counters.unindexable.incrementAndGet();
             continue;
@@ -177,21 +183,22 @@ public abstract class AbstractIndexer implements Runnable {
         if (skipped > 0) {
           counters.skipped.addAndGet(skipped);
           LOG.warn(inputFile.getParent().getFileName().toString() + File.separator +
-              inputFile.getFileName().toString() + ": " + skipped + " docs skipped.");
+                  inputFile.getFileName().toString() + ": " + skipped + " docs skipped.");
         }
 
         if (segment.getErrorStatus()) {
           counters.errors.incrementAndGet();
           LOG.error(inputFile.getParent().getFileName().toString() + File.separator +
-              inputFile.getFileName().toString() + ": error iterating through segment.");
+                  inputFile.getFileName().toString() + ": error iterating through segment.");
         }
 
         // Log at the debug level because this can be quite noisy if there are lots of file segments.
         LOG.debug(inputFile.getParent().getFileName().toString() + File.separator +
-            inputFile.getFileName().toString() + ": " + cnt + " docs added.");
+                inputFile.getFileName().toString() + ": " + cnt + " docs added.");
       } catch (Exception e) {
         e.printStackTrace();
         LOG.error(Thread.currentThread().getName() + ": Unexpected Exception:", e.getMessage());
+        Thread.currentThread().interrupt();
       }
     }
   }
@@ -229,7 +236,7 @@ public abstract class AbstractIndexer implements Runnable {
 
     try {
       Class<? extends DocumentCollection<?>> collectionClass = (Class<? extends DocumentCollection<?>>)
-          Class.forName("io.anserini.collection." + args.collectionClass);
+              Class.forName("io.anserini.collection." + args.collectionClass);
       this.collection = collectionClass.getConstructor(Path.class).newInstance(collectionPath);
     } catch (Exception e) {
       throw new IllegalArgumentException(String.format("Unable to load collection class \"%s\".", args.collectionClass));
@@ -262,7 +269,7 @@ public abstract class AbstractIndexer implements Runnable {
           LOG.info(String.format("%,d documents indexed", counters.indexed.get()));
         } else {
           LOG.info(String.format("%.2f%% of files completed, %,d documents indexed",
-              (double) executor.getCompletedTaskCount() / segmentCnt * 100.0d, counters.indexed.get()));
+                  (double) executor.getCompletedTaskCount() / segmentCnt * 100.0d, counters.indexed.get()));
         }
       }
     } catch (InterruptedException ie) {
@@ -274,7 +281,7 @@ public abstract class AbstractIndexer implements Runnable {
 
     if (segmentCnt != executor.getCompletedTaskCount()) {
       throw new RuntimeException("totalFiles = " + segmentCnt +
-          " is not equal to completedTaskCount =  " + executor.getCompletedTaskCount());
+              " is not equal to completedTaskCount =  " + executor.getCompletedTaskCount());
     }
 
     long numIndexed = writer.getDocStats().maxDoc;
@@ -284,7 +291,7 @@ public abstract class AbstractIndexer implements Runnable {
       // (i.e., same docid), with -uniqueDocid we're going to update the doc in the index in place, leading
       // to differences between the counts.
       LOG.warn(String.format("Unexpected difference between number of indexed documents (%d) and index maxDoc (%d).",
-          numIndexed, counters.indexed.get()));
+              numIndexed, counters.indexed.get()));
     }
 
     // Do a final commit.
@@ -317,7 +324,7 @@ public abstract class AbstractIndexer implements Runnable {
 
     final long durationMillis = TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS);
     LOG.info(String.format("Total %,d documents indexed in %s", numIndexed,
-        DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss")));
+            DurationFormatUtils.formatDuration(durationMillis, "HH:mm:ss")));
   }
 
   // Default method to process the segments; subclasses can override this method if desired.

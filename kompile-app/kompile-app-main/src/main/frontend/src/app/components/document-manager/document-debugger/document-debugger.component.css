@@ -20,7 +20,7 @@
   padding: 20px;
   max-width: 1200px;
   margin: 0 auto;
-  font-family: 'Roboto', sans-serif;
+  font-family: var(--font-family-base);
 }
 
 /* Header Section */
@@ -205,7 +205,7 @@
 }
 
 .content-display {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: var(--font-family-monospace);
   font-size: 13px;
   line-height: 1.5;
   resize: vertical;
@@ -262,7 +262,7 @@
 }
 
 .preview-text {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: var(--font-family-monospace);
   font-size: 12px;
   line-height: 1.4;
   color: #666;
@@ -301,7 +301,7 @@
 }
 
 .chunk-content-display {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: var(--font-family-monospace);
   font-size: 12px;
   line-height: 1.5;
   resize: vertical;

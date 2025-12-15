@@ -10,36 +10,73 @@
     <includeBaseDirectory>false</includeBaseDirectory>
     
     <fileSets>
-        <!-- Include native libraries -->
+        <!-- Include platform-specific native libraries in JavaCPP expected location -->
         <fileSet>
-            <directory>target/native</directory>
-            <outputDirectory>/</outputDirectory>
+            <directory>target/native/ai/kompile/tokenizers/${javacpp.platform}</directory>
+            <outputDirectory>ai/kompile/tokenizers/${javacpp.platform}</outputDirectory>
             <includes>
-                <include>**/*.so</include>
-                <include>**/*.so.*</include>
-                <include>**/*.dll</include>
-                <include>**/*.dylib</include>
-                <include>**/*.jnilib</include>
+                <!-- Only include our wrapper library, not Rust proc-macro libraries -->
+                <include>**/libtokenizers_wrapper.so*</include>
+                <include>**/libtokenizers_wrapper.dll*</include>
+                <include>**/libtokenizers_wrapper.dylib*</include>
+                <include>**/libtokenizers_wrapper.jnilib*</include>
+                <include>manifest.properties</include>
+            </includes>
+            <excludes>
+                <!-- Explicitly exclude Rust proc-macro libraries -->
+                <exclude>**/libdarling_macro-*.so</exclude>
+                <exclude>**/libderive_builder_macro-*.so</exclude>
+                <exclude>**/libmacro_rules_attribute_proc_macro-*.so</exclude>
+                <exclude>**/libmonostate_impl-*.so</exclude>
+                <exclude>**/libpaste-*.so</exclude>
+                <exclude>**/librustversion-*.so</exclude>
+                <exclude>**/libserde_derive-*.so</exclude>
+                <exclude>**/libthiserror_impl-*.so</exclude>
+            </excludes>
+        </fileSet>
+        
+        <!-- Include shared headers in JavaCPP expected location -->
+        <fileSet>
+            <directory>target/native/ai/kompile/tokenizers/include</directory>
+            <outputDirectory>ai/kompile/tokenizers/include</outputDirectory>
+            <includes>
+                <include>**/*.h</include>
+                <include>**/*.hpp</include>
             </includes>
         </fileSet>
         
-        <!-- Include build manifest -->
+        <!-- Include general manifest in META-INF for library discovery -->
         <fileSet>
-            <directory>target/native</directory>
+            <directory>target/native/ai/kompile/tokenizers/${javacpp.platform}</directory>
             <outputDirectory>META-INF</outputDirectory>
             <includes>
                 <include>manifest.properties</include>
             </includes>
         </fileSet>
         
-        <!-- Include headers for development -->
+        <!-- Fallback: Include essential libraries from legacy locations for backward compatibility -->
         <fileSet>
-            <directory>target/native</directory>
-            <outputDirectory>include</outputDirectory>
+            <directory>target/native/${javacpp.platform}</directory>
+            <outputDirectory>ai/kompile/tokenizers/${javacpp.platform}</outputDirectory>
             <includes>
-                <include>**/*.h</include>
-                <include>**/*.hpp</include>
+                <!-- Only include our wrapper library -->
+                <include>**/libtokenizers_wrapper.so*</include>
+                <include>**/libtokenizers_wrapper.dll*</include>
+                <include>**/libtokenizers_wrapper.dylib*</include>
+                <include>**/libtokenizers_wrapper.jnilib*</include>
             </includes>
+            <excludes>
+                <!-- Explicitly exclude all Rust proc-macro libraries -->
+                <exclude>**/libdarling_macro-*.so</exclude>
+                <exclude>**/libderive_builder_macro-*.so</exclude>
+                <exclude>**/libmacro_rules_attribute_proc_macro-*.so</exclude>
+                <exclude>**/libmonostate_impl-*.so</exclude>
+                <exclude>**/libpaste-*.so</exclude>
+                <exclude>**/librustversion-*.so</exclude>
+                <exclude>**/libserde_derive-*.so</exclude>
+                <exclude>**/libthiserror_impl-*.so</exclude>
+                <exclude>**/manifest.properties</exclude>
+            </excludes>
         </fileSet>
     </fileSets>
     

@@ -17,6 +17,11 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.app.services.DocumentIngestService;
+import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.web.dto.AsyncUploadResponse;
+import ai.kompile.app.web.dto.BatchAsyncUploadResponse;
+import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
@@ -39,10 +44,12 @@ import org.springframework.web.multipart.MultipartFile;
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.Collection;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -58,39 +65,66 @@ public class DocumentManagementController {
     private final List<DocumentLoader> documentLoaders;
     private final DocumentLoadingService documentLoadingService;
     private final List<TextChunker> textChunkers;
-    private  IndexerService indexerService;
+    private IndexerService indexerService;
+    private final DocumentIngestService documentIngestService;
+    private final IngestProgressTracker progressTracker;
 
     @Autowired
     public DocumentManagementController(
-            @Autowired AppDocumentSourceProperties appDocumentSourceProperties,
-            @Autowired RestTemplate restTemplate,
-            @Autowired List<DocumentLoader> documentLoaders,
-            @Autowired DocumentLoadingService documentLoadingService,
-            @Autowired List<TextChunker> textChunkers,
-            @Autowired  List<IndexerService> indexerService
+            @Autowired(required = false) AppDocumentSourceProperties appDocumentSourceProperties,
+            @Autowired(required = false) RestTemplate restTemplate,
+            @Autowired(required = false) List<DocumentLoader> documentLoaders,
+            @Autowired(required = false) DocumentLoadingService documentLoadingService,
+            @Autowired(required = false) List<TextChunker> textChunkers,
+            @Autowired(required = false) List<IndexerService> indexerService,
+            @Autowired(required = false) DocumentIngestService documentIngestService,
+            @Autowired(required = false) IngestProgressTracker progressTracker
     ) {
         this.sourceProperties = appDocumentSourceProperties;
         this.restTemplate = restTemplate;
-        this.documentLoaders = documentLoaders;
+        this.documentLoaders = documentLoaders != null ? documentLoaders : List.of();
         this.documentLoadingService = documentLoadingService;
-        this.textChunkers = textChunkers;
-        if(indexerService.size() > 1) {
-            for (IndexerService indexerService1 : indexerService) {
-                if (indexerService1 instanceof NoOpIndexerService) {
-                    continue;
-                } else {
-                    this.indexerService = indexerService1;
-                    break;
-                }
-            }
-        } else {
-            this.indexerService = indexerService.get(0);
+        this.textChunkers = textChunkers != null ? textChunkers : List.of();
+        this.documentIngestService = documentIngestService;
+        this.progressTracker = progressTracker;
+
+        // Log which dependencies are not available
+        if (documentIngestService == null) {
+            logger.warn("DocumentManagementController: DocumentIngestService is not available");
+        }
+        if (progressTracker == null) {
+            logger.warn("DocumentManagementController: IngestProgressTracker is not available");
+        }
+        if (documentLoaders == null || documentLoaders.isEmpty()) {
+            logger.warn("DocumentManagementController: No DocumentLoaders available");
+        }
+        if (textChunkers == null || textChunkers.isEmpty()) {
+            logger.warn("DocumentManagementController: No TextChunkers available");
         }
 
-        if (appDocumentSourceProperties.getUploadsPath() == null ||
+        if (indexerService != null && !indexerService.isEmpty()) {
+            if (indexerService.size() > 1) {
+                for (IndexerService indexerService1 : indexerService) {
+                    if (indexerService1 instanceof NoOpIndexerService) {
+                        continue;
+                    } else {
+                        this.indexerService = indexerService1;
+                        break;
+                    }
+                }
+            } else {
+                this.indexerService = indexerService.get(0);
+            }
+        } else {
+            this.indexerService = null;
+            logger.warn("DocumentManagementController: No IndexerService available");
+        }
+
+        if (appDocumentSourceProperties == null ||
+                appDocumentSourceProperties.getUploadsPath() == null ||
                 appDocumentSourceProperties.getUploadsPath().trim().isEmpty()) {
-            logger.error("CRITICAL: 'app.document.uploads-path' is not configured in application.properties. Document upload/add URL functionality will be impaired.");
-            this.uploadsPath = Paths.get("./error_uploads_path_not_configured");
+            logger.warn("'app.document.uploads-path' is not configured in application.properties. Using default uploads path.");
+            this.uploadsPath = Paths.get("./uploads").toAbsolutePath();
         } else {
             this.uploadsPath = Paths.get(appDocumentSourceProperties.getUploadsPath()).toAbsolutePath();
         }
@@ -154,6 +188,37 @@ public class DocumentManagementController {
             String contentPreview
     ) {}
 
+    /**
+     * Base path handler - returns API overview and available endpoints
+     * This handles GET /api/documents requests
+     */
+    @GetMapping
+    public ResponseEntity<?> getDocumentsApiInfo() {
+        logger.debug("Received request to base /api/documents endpoint");
+        Map<String, Object> apiInfo = new LinkedHashMap<>();
+        apiInfo.put("message", "Document Management API");
+        apiInfo.put("version", "1.0");
+        apiInfo.put("endpoints", Map.of(
+            "GET /api/documents", "This endpoint - API overview",
+            "GET /api/documents/loaders", "List available document loaders",
+            "GET /api/documents/chunkers", "List available text chunkers",
+            "GET /api/documents/sources", "List configured document sources",
+            "GET /api/documents/uploaded-files", "List uploaded files",
+            "GET /api/documents/processing-status", "Get processing status",
+            "POST /api/documents/upload", "Upload a file for processing",
+            "POST /api/documents/add-url", "Add a URL for processing"
+        ));
+
+        // Add status info
+        boolean uploadsDirectoryReady = this.uploadsPath != null &&
+                !"error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString());
+        apiInfo.put("uploadsDirectoryConfigured", uploadsDirectoryReady);
+        apiInfo.put("loadersAvailable", documentLoaders != null ? documentLoaders.size() : 0);
+        apiInfo.put("chunkersAvailable", textChunkers != null ? textChunkers.size() : 0);
+
+        return ResponseEntity.ok(apiInfo);
+    }
+
     @GetMapping("/loaders")
     public ResponseEntity<List<LoaderInfo>> listAvailableLoaders() {
         if (documentLoaders == null || documentLoaders.isEmpty()) {
@@ -176,6 +241,114 @@ public class DocumentManagementController {
                 .map(chunker -> new ChunkerInfo(chunker.getName(), chunker.getClass().getName()))
                 .collect(Collectors.toList());
         return ResponseEntity.ok(chunkerInfos);
+    }
+
+    /**
+     * Debug endpoint to trace chunker resolution from UI name to backend chunker.
+     * This tests the resolution logic in DocumentManagementController.
+     *
+     * @param requestedName the chunker name as sent from the UI
+     * @return detailed debug info about chunker resolution
+     */
+    @GetMapping("/debug/chunker-resolution")
+    public ResponseEntity<Map<String, Object>> debugChunkerResolution(
+            @RequestParam(name = "name", required = false) String requestedName) {
+
+        Map<String, Object> debug = new LinkedHashMap<>();
+        debug.put("requestedName", requestedName);
+        debug.put("timestamp", System.currentTimeMillis());
+
+        // List all available chunkers
+        List<Map<String, String>> availableChunkers = new ArrayList<>();
+        if (textChunkers != null) {
+            for (TextChunker chunker : textChunkers) {
+                Map<String, String> info = new LinkedHashMap<>();
+                info.put("getName", chunker.getName());
+                info.put("className", chunker.getClass().getName());
+                info.put("simpleClassName", chunker.getClass().getSimpleName());
+                info.put("isNoOp", String.valueOf(isNoOpChunker(chunker)));
+                availableChunkers.add(info);
+            }
+        }
+        debug.put("availableChunkers", availableChunkers);
+        debug.put("chunkerCount", availableChunkers.size());
+
+        // Show alias mapping
+        debug.put("aliasMap", CHUNKER_ALIASES);
+
+        if (requestedName != null && !requestedName.isEmpty()) {
+            // Trace resolution step by step
+            Map<String, Object> resolution = new LinkedHashMap<>();
+
+            // Step 1: Exact match
+            TextChunker exactMatch = textChunkers.stream()
+                    .filter(chunker -> requestedName.equals(chunker.getName()))
+                    .findFirst()
+                    .orElse(null);
+            resolution.put("step1_exactMatch", exactMatch != null ? exactMatch.getName() : null);
+
+            // Step 2: Alias lookup
+            String mappedName = CHUNKER_ALIASES.get(requestedName);
+            resolution.put("step2_aliasLookup", mappedName);
+
+            TextChunker aliasMatch = null;
+            if (mappedName != null) {
+                aliasMatch = textChunkers.stream()
+                        .filter(chunker -> mappedName.equals(chunker.getName()))
+                        .findFirst()
+                        .orElse(null);
+            }
+            resolution.put("step2_aliasMatch", aliasMatch != null ? aliasMatch.getName() : null);
+
+            // Step 3: Partial match
+            String normalizedRequest = requestedName.toLowerCase().replace("_", "-").replace("spring-", "");
+            resolution.put("step3_normalizedName", normalizedRequest);
+
+            TextChunker partialMatch = textChunkers.stream()
+                    .filter(chunker -> {
+                        String name = chunker.getName().toLowerCase();
+                        return name.contains(normalizedRequest) || normalizedRequest.contains(name);
+                    })
+                    .findFirst()
+                    .orElse(null);
+            resolution.put("step3_partialMatch", partialMatch != null ? partialMatch.getName() : null);
+
+            // Final result using findChunkerByName
+            TextChunker finalResult = findChunkerByName(requestedName);
+            resolution.put("finalResult", finalResult != null ? finalResult.getName() : null);
+            resolution.put("finalResultClass", finalResult != null ? finalResult.getClass().getSimpleName() : null);
+
+            // What selectBestChunker would return (fallback)
+            TextChunker fallback = selectBestChunker();
+            resolution.put("fallbackChunker", fallback != null ? fallback.getName() : null);
+            resolution.put("fallbackChunkerClass", fallback != null ? fallback.getClass().getSimpleName() : null);
+
+            debug.put("resolution", resolution);
+        }
+
+        return ResponseEntity.ok(debug);
+    }
+
+    /**
+     * Debug endpoint to trace chunker resolution via DocumentIngestService.
+     * This tests the ACTUAL resolution logic used during document processing.
+     *
+     * @param requestedName the chunker name as sent from the UI
+     * @return detailed debug info about chunker resolution in the ingest service
+     */
+    @GetMapping("/debug/ingest-chunker-resolution")
+    public ResponseEntity<Map<String, Object>> debugIngestChunkerResolution(
+            @RequestParam(name = "name", required = false) String requestedName) {
+        if (documentIngestService == null) {
+            return ResponseEntity.ok(Map.of(
+                    "error", "DocumentIngestService not available",
+                    "endpoint", "ingest-service-resolution"
+            ));
+        }
+        Map<String, Object> result = documentIngestService.debugChunkerResolution(requestedName);
+        result.put("endpoint", "ingest-service-resolution");
+        result.put("note", "This tests the chunker resolution logic in DocumentIngestService.findChunker()");
+        return ResponseEntity.ok(result);
     }
 
     /**
@@ -269,13 +442,8 @@ public class DocumentManagementController {
                 List<RetrievedDoc> finalDocs = convertToRetrievedDocs(loadedDocs);
 
                 if (chunkerNameToUse != null && !chunkerNameToUse.isEmpty()) {
-                    TextChunker selectedChunker = null;
-                    if (this.textChunkers != null) {
-                        selectedChunker = this.textChunkers.stream()
-                                .filter(c -> chunkerNameToUse.equals(c.getName()))
-                                .findFirst()
-                                .orElse(null);
-                    }
+                    // Use flexible name matching for UI compatibility
+                    TextChunker selectedChunker = findChunkerByName(chunkerNameToUse);
 
                     if (selectedChunker != null) {
                         Map<String, Object> effectiveChunkerOptions = new HashMap<>();
@@ -385,14 +553,13 @@ public class DocumentManagementController {
             // Test all available chunkers or specific one
             List<TextChunker> chunkersToTest = new ArrayList<>();
             if (chunkerName != null && !chunkerName.isEmpty()) {
-                TextChunker specific = textChunkers.stream()
-                        .filter(c -> c.getName().equals(chunkerName))
-                        .findFirst()
-                        .orElse(null);
+                // Use flexible name matching for UI compatibility
+                TextChunker specific = findChunkerByName(chunkerName);
                 if (specific != null) {
                     chunkersToTest.add(specific);
                 } else {
-                    return ResponseEntity.badRequest().body(Map.of("error", "Chunker not found: " + chunkerName));
+                    return ResponseEntity.badRequest().body(Map.of("error", "Chunker not found: " + chunkerName +
+                            ". Available: " + textChunkers.stream().map(TextChunker::getName).collect(Collectors.joining(", "))));
                 }
             } else {
                 chunkersToTest.addAll(textChunkers);
@@ -534,6 +701,78 @@ public class DocumentManagementController {
                         fullClassName.contains("stub"));
 
         return isNoOpClass || isNoOpName || isCorePackage;
+    }
+
+    /**
+     * Mapping of UI chunker strategy IDs to backend chunker names.
+     * This handles the mismatch between frontend naming conventions and backend getName() values.
+     * Key = UI name (from CHUNKER_STRATEGIES in api-models.ts)
+     * Value = Backend chunker getName() return value
+     */
+    private static final Map<String, String> CHUNKER_ALIASES = Map.ofEntries(
+            // UI "spring_recursive_character" -> backend "recursive-character" (RecursiveCharacterTextChunker)
+            Map.entry("spring_recursive_character", "recursive-character"),
+            Map.entry("custom_recursive_character", "recursive-character"),
+            Map.entry("recursive-character", "recursive-character"),
+            // UI "opennlp_sentence" -> backend "opennlp_sentence" (OpenNLPSentenceChunker)
+            Map.entry("opennlp_sentence", "opennlp_sentence"),
+            // UI "sentence" -> backend "sentence" (SentenceTextChunker)
+            Map.entry("sentence", "sentence"),
+            // Token chunker
+            Map.entry("spring_token", "spring_token"),
+            // Markdown chunkers
+            Map.entry("custom_markdown", "custom_markdown"),
+            Map.entry("spring_markdown", "spring_markdown")
+    );
+
+    /**
+     * Finds a chunker by name, supporting both exact matches and UI alias mappings.
+     * This allows the UI to use different naming conventions than the backend.
+     *
+     * @param requestedName the chunker name requested (from UI or API)
+     * @return the matching TextChunker, or null if not found
+     */
+    private TextChunker findChunkerByName(String requestedName) {
+        if (requestedName == null || requestedName.isEmpty() || textChunkers == null) {
+            return null;
+        }
+
+        // First try exact match
+        Optional<TextChunker> exactMatch = textChunkers.stream()
+                .filter(chunker -> requestedName.equals(chunker.getName()))
+                .findFirst();
+        if (exactMatch.isPresent()) {
+            return exactMatch.get();
+        }
+
+        // Try alias mapping (UI name -> backend name)
+        String mappedName = CHUNKER_ALIASES.get(requestedName);
+        if (mappedName != null) {
+            Optional<TextChunker> aliasMatch = textChunkers.stream()
+                    .filter(chunker -> mappedName.equals(chunker.getName()))
+                    .findFirst();
+            if (aliasMatch.isPresent()) {
+                logger.info("Resolved chunker: UI name '{}' -> backend name '{}' ({})",
+                        requestedName, mappedName, aliasMatch.get().getClass().getSimpleName());
+                return aliasMatch.get();
+            }
+        }
+
+        // Try partial/contains match as fallback (e.g., "recursive" matches "recursive-character")
+        String normalizedRequest = requestedName.toLowerCase().replace("_", "-").replace("spring-", "");
+        Optional<TextChunker> partialMatch = textChunkers.stream()
+                .filter(chunker -> {
+                    String chunkerName = chunker.getName().toLowerCase();
+                    return chunkerName.contains(normalizedRequest) || normalizedRequest.contains(chunkerName);
+                })
+                .findFirst();
+        if (partialMatch.isPresent()) {
+            logger.debug("Found chunker via partial match: requested='{}', found='{}'",
+                    requestedName, partialMatch.get().getName());
+            return partialMatch.get();
+        }
+
+        return null;
     }
 
     /**
@@ -758,9 +997,41 @@ public class DocumentManagementController {
     }
 
     /**
-     * Processes an uploaded file through the complete workflow: loading, chunking, and indexing
+     * Processes an uploaded file through the complete workflow: loading, chunking, and indexing.
+     * This overload does not track progress via WebSocket.
      */
     private DocumentProcessingResult processUploadedFile(Path filePath, String loaderName, String chunkerName) throws Exception {
+        return processUploadedFileWithTracking(filePath, loaderName, chunkerName, null);
+    }
+
+    /**
+     * Processes an uploaded file through the complete workflow: loading, chunking, and indexing.
+     * If taskId is provided, sends real-time progress updates via WebSocket.
+     */
+    private DocumentProcessingResult processUploadedFileWithTracking(Path filePath, String loaderName, String chunkerName, String taskId) throws Exception {
+        String fileName = filePath.getFileName().toString();
+        IngestProgressTracker.TaskProgressContext progressContext = null;
+
+        // Initialize progress tracking if taskId is provided and tracker is available
+        if (taskId != null && progressTracker != null) {
+            progressContext = progressTracker.createContext(taskId, fileName);
+        }
+
+        try {
+            return doProcessUploadedFile(filePath, loaderName, chunkerName, progressContext);
+        } catch (Exception e) {
+            if (progressContext != null) {
+                progressContext.fail(IngestProgressUpdate.IngestPhase.FAILED, e.getMessage());
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Internal method that performs the actual file processing with optional progress tracking.
+     */
+    private DocumentProcessingResult doProcessUploadedFile(Path filePath, String loaderName, String chunkerName,
+                                                            IngestProgressTracker.TaskProgressContext progress) throws Exception {
         logger.info("Starting end-to-end processing for uploaded file: {} with loader: '{}', chunker: '{}'",
                 filePath, loaderName, chunkerName);
 
@@ -800,6 +1071,13 @@ public class DocumentManagementController {
 
         logger.info("Selected loader: {} ({})", selectedLoader.getName(), selectedLoader.getClass().getSimpleName());
 
+        // Send progress update: Loading phase started
+        if (progress != null) {
+            progress.setLoaderUsed(selectedLoader.getName());
+            progress.updateProgress(IngestProgressUpdate.IngestPhase.LOADING, 10,
+                    "Loading document", "Using loader: " + selectedLoader.getName());
+        }
+
         // Step 2: Load documents
         DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
                 .type(DocumentSourceDescriptor.SourceType.FILE)
@@ -815,6 +1093,13 @@ public class DocumentManagementController {
         List<Document> loadedDocuments = selectedLoader.load(sourceDescriptor);
         logger.info("Loaded {} documents from file: {} using loader: '{}'",
                 loadedDocuments.size(), filePath, selectedLoader.getName());
+
+        // Send progress update: Documents loaded
+        if (progress != null) {
+            progress.setDocumentsLoaded(loadedDocuments.size());
+            progress.updateProgress(IngestProgressUpdate.IngestPhase.LOADING, 25,
+                    "Documents loaded", String.format("Loaded %d documents from file", loadedDocuments.size()));
+        }
 
         // Enhanced debugging: Log detailed document content analysis
         if (loadedDocuments.isEmpty()) {
@@ -897,11 +1182,8 @@ public class DocumentManagementController {
         TextChunker selectedChunker = null;
 
         if (chunkerName != null && !chunkerName.isEmpty()) {
-            // User specified a chunker - try to use it
-            selectedChunker = textChunkers.stream()
-                    .filter(chunker -> chunkerName.equals(chunker.getName()))
-                    .findFirst()
-                    .orElse(null);
+            // User specified a chunker - try to use it (with flexible name matching)
+            selectedChunker = findChunkerByName(chunkerName);
 
             if (selectedChunker == null) {
                 logger.warn("Specified chunker '{}' not found. Available chunkers: {}. Will attempt auto-selection.",
@@ -931,6 +1213,14 @@ public class DocumentManagementController {
         if (selectedChunker != null) {
             logger.info("Applying chunker '{}' ({}) to {} loaded documents",
                     selectedChunker.getName(), selectedChunker.getClass().getSimpleName(), loadedDocuments.size());
+
+            // Send progress update: Chunking phase started
+            if (progress != null) {
+                progress.setChunkerUsed(selectedChunker.getName());
+                progress.updateProgress(IngestProgressUpdate.IngestPhase.CHUNKING, 35,
+                        "Starting chunking", "Using chunker: " + selectedChunker.getName());
+            }
+
             finalDocuments.clear();
 
             // Use configurable chunking options with sensible defaults
@@ -1016,6 +1306,13 @@ public class DocumentManagementController {
             actualChunkerUsed = selectedChunker.getName();
             logger.info("Chunking completed with '{}'. {} original documents became {} chunks (total created: {})",
                     selectedChunker.getName(), loadedDocuments.size(), finalDocuments.size(), totalChunksCreated);
+
+            // Send progress update: Chunking complete
+            if (progress != null) {
+                progress.setChunksCreated(finalDocuments.size());
+                progress.updateProgress(IngestProgressUpdate.IngestPhase.CHUNKING, 60,
+                        "Chunking complete", String.format("Created %d chunks from %d documents", finalDocuments.size(), loadedDocuments.size()));
+            }
         } else {
             logger.info("No suitable chunker available (only no-op/stub chunkers found). Using documents as-is without chunking. Available chunkers: {}",
                     textChunkers.stream().map(c -> c.getName() + "(" + c.getClass().getSimpleName() + (isNoOpChunker(c) ? "-NOOP" : "-REAL") + ")")
@@ -1026,6 +1323,12 @@ public class DocumentManagementController {
         boolean indexingSuccessful = false;
         logger.info("Indexing {} processed documents", finalDocuments.size());
 
+        // Send progress update: Indexing phase started
+        if (progress != null) {
+            progress.updateProgress(IngestProgressUpdate.IngestPhase.INDEXING, 70,
+                    "Indexing documents", String.format("Indexing %d documents", finalDocuments.size()));
+        }
+
         // Debug: Log final document details before indexing
         for (int i = 0; i < Math.min(finalDocuments.size(), 5); i++) { // Log first 5 documents
             RetrievedDoc doc = finalDocuments.get(i);
@@ -1034,15 +1337,32 @@ public class DocumentManagementController {
                     i, doc.getId(), content != null ? content.length() : 0);
         }
 
-        indexerService.indexDocuments(finalDocuments);
-        indexingSuccessful = true;
-        logger.info("Successfully indexed {} documents", finalDocuments.size());
+        if (indexerService != null) {
+            indexerService.indexDocuments(finalDocuments);
+            indexingSuccessful = true;
+            logger.info("Successfully indexed {} documents", finalDocuments.size());
+        } else {
+            logger.warn("IndexerService not available - skipping indexing phase");
+        }
+
+        // Send progress update: Indexing complete
+        if (progress != null) {
+            progress.setDocumentsIndexed(finalDocuments.size());
+            progress.updateProgress(IngestProgressUpdate.IngestPhase.INDEXING, 95,
+                    "Indexing complete", String.format("Indexed %d documents successfully", finalDocuments.size()));
+        }
 
         // Collect document IDs
         List<String> processedDocumentIds = finalDocuments.stream()
                 .map(RetrievedDoc::getId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
+
+        // Send final completion update
+        if (progress != null) {
+            progress.setProcessedDocumentIds(processedDocumentIds);
+            progress.complete();
+        }
 
         String processingDetails = String.format(
                 "Successfully processed file through complete pipeline. Loader: %s, Chunker: %s, Original docs: %d, Final chunks: %d, Indexed: %s. " +
@@ -1067,7 +1387,8 @@ public class DocumentManagementController {
     public ResponseEntity<?> handleFileUpload(@RequestParam("file") MultipartFile file,
                                               @RequestParam(name = "loader", required = false) String loaderName,
                                               @RequestParam(name = "chunkerName", required = false) String chunkerName,
-                                              @RequestParam(name = "processImmediately", required = false, defaultValue = "true") boolean processImmediately) {
+                                              @RequestParam(name = "processImmediately", required = false, defaultValue = "true") boolean processImmediately,
+                                              @RequestParam(name = "trackProgress", required = false, defaultValue = "true") boolean trackProgress) {
         if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server. Cannot save file."));
@@ -1091,9 +1412,22 @@ public class DocumentManagementController {
                 return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path (directory traversal attempt)."));
             }
 
-            // Save the file
-            try (InputStream inputStream = file.getInputStream()) {
-                Files.copy(inputStream, destinationFile, StandardCopyOption.REPLACE_EXISTING);
+            // Save the file - use REPLACE_EXISTING to handle concurrent uploads atomically
+            // Handle edge case where destination might be a directory (can't replace with REPLACE_EXISTING)
+            if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+                logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
+                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(java.util.Comparator.reverseOrder())
+                        .map(Path::toFile)
+                        .forEach(java.io.File::delete);
+                }
+            }
+            // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
+            // (Files.copy with REPLACE_EXISTING has a non-atomic delete-then-create pattern)
+            try (InputStream inputStream = file.getInputStream();
+                 OutputStream outputStream = Files.newOutputStream(destinationFile,
+                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                inputStream.transferTo(outputStream);
             }
             logger.info("File uploaded successfully to: {}", destinationFile);
 
@@ -1104,11 +1438,18 @@ public class DocumentManagementController {
             response.put("selectedLoader", loaderName != null ? loaderName : "Auto-detect");
             response.put("selectedChunkerName", chunkerName != null ? chunkerName : "None");
 
+            // Generate task ID for progress tracking (only if progress tracker is available)
+            String taskId = (trackProgress && progressTracker != null) ? progressTracker.generateTaskId() : null;
+            if (taskId != null) {
+                response.put("taskId", taskId);
+                response.put("websocketTopic", "/topic/ingest/" + taskId);
+            }
+
             // Step 5: Process the file immediately if requested (default behavior)
             if (processImmediately) {
                 try {
-                    logger.info("Processing uploaded file immediately: {}", sanitizedFileName);
-                    DocumentProcessingResult processingResult = processUploadedFile(destinationFile, loaderName, chunkerName);
+                    logger.info("Processing uploaded file immediately: {} (taskId: {})", sanitizedFileName, taskId);
+                    DocumentProcessingResult processingResult = processUploadedFileWithTracking(destinationFile, loaderName, chunkerName, taskId);
 
                     response.put("processingCompleted", true);
                     response.put("originalDocumentCount", processingResult.originalDocumentCount());
@@ -1249,6 +1590,308 @@ public class DocumentManagementController {
         }
     }
 
+    /**
+     * Async file upload endpoint that returns immediately with a task ID.
+     * Progress can be tracked via WebSocket subscription to /topic/ingest/{taskId}
+     *
+     * @param file the file to upload
+     * @param loaderName optional loader name (auto-detected if not provided)
+     * @param chunkerName optional chunker name (default chunker used if not provided)
+     * @param processingMode optional processing mode: "auto" (default, use global config),
+     *                       "subprocess" (force isolated JVM), or "inprocess" (force same JVM)
+     */
+    @PostMapping("/upload-async")
+    public ResponseEntity<AsyncUploadResponse> handleAsyncFileUpload(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(name = "loader", required = false) String loaderName,
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode) {
+
+        if (documentIngestService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(AsyncUploadResponse.error(file.getOriginalFilename(), "Document ingest service is not available."));
+        }
+        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(AsyncUploadResponse.error(file.getOriginalFilename(), "Uploads directory is not configured correctly on the server."));
+        }
+        if (file.isEmpty()) {
+            return ResponseEntity.badRequest()
+                    .body(AsyncUploadResponse.error(file.getOriginalFilename(), "File cannot be empty."));
+        }
+
+        // Parse processing mode
+        DocumentIngestService.ProcessingMode mode = parseProcessingMode(processingMode);
+
+        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
+        String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (sanitizedFileName.isEmpty()) {
+            sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0, 8);
+        }
+
+        try {
+            Path destinationFile = this.uploadsPath.resolve(sanitizedFileName).normalize();
+
+            if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
+                logger.warn("Attempt to save file outside designated uploads directory: {}", destinationFile);
+                return ResponseEntity.badRequest()
+                        .body(AsyncUploadResponse.error(sanitizedFileName, "Invalid file path (directory traversal attempt)."));
+            }
+
+            // Save the file - handle edge case where destination might be a directory
+            if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+                logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
+                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(java.util.Comparator.reverseOrder())
+                        .map(Path::toFile)
+                        .forEach(java.io.File::delete);
+                }
+            }
+            // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
+            try (InputStream inputStream = file.getInputStream();
+                 OutputStream outputStream = Files.newOutputStream(destinationFile,
+                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                inputStream.transferTo(outputStream);
+            }
+            logger.info("File uploaded successfully to: {}", destinationFile);
+
+            // Generate task ID and queue for async processing
+            String taskId = UUID.randomUUID().toString();
+
+            // Start async processing with specified mode
+            documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode);
+
+            logger.info("File {} queued for async processing with task ID: {} (mode={})", sanitizedFileName, taskId, mode);
+
+            return ResponseEntity.accepted()
+                    .body(AsyncUploadResponse.accepted(taskId, sanitizedFileName));
+
+        } catch (Exception e) {
+            logger.error("Failed to store uploaded file {}: {}", sanitizedFileName, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(AsyncUploadResponse.error(sanitizedFileName, "Failed to store uploaded file: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Batch async file upload endpoint that accepts multiple files.
+     * All files are processed concurrently. Progress can be tracked via WebSocket.
+     *
+     * @param files the files to upload
+     * @param loaderName optional loader name (auto-detected if not provided)
+     * @param chunkerName optional chunker name (default chunker used if not provided)
+     * @param processingMode optional processing mode: "auto" (default, use global config),
+     *                       "subprocess" (force isolated JVM), or "inprocess" (force same JVM)
+     */
+    @PostMapping("/upload-batch-async")
+    public ResponseEntity<BatchAsyncUploadResponse> handleBatchAsyncFileUpload(
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(name = "loader", required = false) String loaderName,
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode) {
+
+        if (documentIngestService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(BatchAsyncUploadResponse.error("Document ingest service is not available."));
+        }
+        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(BatchAsyncUploadResponse.error("Uploads directory is not configured correctly on the server."));
+        }
+
+        if (files == null || files.length == 0) {
+            return ResponseEntity.badRequest()
+                    .body(BatchAsyncUploadResponse.error("No files provided for upload."));
+        }
+
+        // Parse processing mode
+        DocumentIngestService.ProcessingMode mode = parseProcessingMode(processingMode);
+
+        List<AsyncUploadResponse> results = new ArrayList<>();
+        int acceptedCount = 0;
+        int rejectedCount = 0;
+
+        for (MultipartFile file : files) {
+            if (file.isEmpty()) {
+                results.add(AsyncUploadResponse.error(
+                        file.getOriginalFilename() != null ? file.getOriginalFilename() : "unknown",
+                        "File is empty"));
+                rejectedCount++;
+                continue;
+            }
+
+            String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
+            String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (sanitizedFileName.isEmpty()) {
+                sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0, 8);
+            }
+
+            try {
+                Path destinationFile = this.uploadsPath.resolve(sanitizedFileName).normalize();
+
+                if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
+                    logger.warn("Attempt to save file outside designated uploads directory: {}", destinationFile);
+                    results.add(AsyncUploadResponse.error(sanitizedFileName, "Invalid file path (directory traversal attempt)."));
+                    rejectedCount++;
+                    continue;
+                }
+
+                // Save the file - handle edge case where destination might be a directory
+                if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+                    logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
+                    try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
+                        walk.sorted(java.util.Comparator.reverseOrder())
+                            .map(Path::toFile)
+                            .forEach(java.io.File::delete);
+                    }
+                }
+                // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
+                try (InputStream inputStream = file.getInputStream();
+                     OutputStream outputStream = Files.newOutputStream(destinationFile,
+                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                    inputStream.transferTo(outputStream);
+                }
+                logger.info("File uploaded successfully to: {}", destinationFile);
+
+                // Generate task ID and queue for async processing
+                String taskId = UUID.randomUUID().toString();
+
+                // Start async processing with specified mode (runs concurrently with other files)
+                documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode);
+
+                logger.info("File {} queued for async processing with task ID: {} (mode={})", sanitizedFileName, taskId, mode);
+                results.add(AsyncUploadResponse.accepted(taskId, sanitizedFileName));
+                acceptedCount++;
+
+            } catch (Exception e) {
+                logger.error("Failed to store uploaded file {}: {}", sanitizedFileName, e.getMessage(), e);
+                results.add(AsyncUploadResponse.error(sanitizedFileName, "Failed to store file: " + e.getMessage()));
+                rejectedCount++;
+            }
+        }
+
+        BatchAsyncUploadResponse response = new BatchAsyncUploadResponse(
+                results,
+                acceptedCount,
+                rejectedCount,
+                String.format("%d file(s) queued for processing, %d rejected", acceptedCount, rejectedCount),
+                "/topic/ingest/all"
+        );
+
+        return ResponseEntity.accepted().body(response);
+    }
+
+    /**
+     * Get the current status of an async ingest task.
+     */
+    @GetMapping("/ingest-status/{taskId}")
+    public ResponseEntity<?> getIngestStatus(@PathVariable String taskId) {
+        if (documentIngestService == null && progressTracker == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Document ingest status is not available."));
+        }
+
+        Optional<IngestProgressUpdate> status = Optional.empty();
+        if (documentIngestService != null) {
+            status = documentIngestService.getTaskStatus(taskId);
+        }
+        if (status.isEmpty() && progressTracker != null) {
+            status = progressTracker.getTaskStatus(taskId);
+        }
+
+        return status.map(s -> ResponseEntity.ok((Object) s))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Cancel an async ingest task.
+     * The task will be stopped as soon as possible and marked as CANCELLED.
+     */
+    @PostMapping("/ingest-cancel/{taskId}")
+    public ResponseEntity<?> cancelIngestTask(@PathVariable String taskId) {
+        if (documentIngestService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Document ingest service is not available."));
+        }
+
+        logger.info("Received cancel request for task: {}", taskId);
+
+        boolean cancelled = documentIngestService.cancelTask(taskId);
+
+        if (cancelled) {
+            logger.info("Task {} marked for cancellation", taskId);
+            return ResponseEntity.ok(Map.of(
+                    "taskId", taskId,
+                    "cancelled", true,
+                    "message", "Task has been marked for cancellation. It will stop at the next checkpoint."
+            ));
+        } else {
+            // Task not found or already completed
+            Optional<IngestProgressUpdate> status = documentIngestService.getTaskStatus(taskId);
+            if (status.isEmpty() && progressTracker != null) {
+                status = progressTracker.getTaskStatus(taskId);
+            }
+
+            return status
+                    .map(s -> {
+                        String reason;
+                        if (s.status() == IngestProgressUpdate.IngestStatus.COMPLETED) {
+                            reason = "Task has already completed successfully.";
+                        } else if (s.status() == IngestProgressUpdate.IngestStatus.FAILED) {
+                            reason = "Task has already failed.";
+                        } else if (s.status() == IngestProgressUpdate.IngestStatus.CANCELLED) {
+                            reason = "Task has already been cancelled.";
+                        } else {
+                            reason = "Task could not be cancelled (unknown reason).";
+                        }
+                        return ResponseEntity.ok(Map.of(
+                                "taskId", taskId,
+                                "cancelled", false,
+                                "message", reason
+                        ));
+                    })
+                    .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                            "taskId", taskId,
+                            "cancelled", false,
+                            "message", "Task not found."
+                    )));
+        }
+    }
+
+    /**
+     * Get all active ingest tasks from both async (DocumentIngestService) and sync (IngestProgressTracker) flows.
+     */
+    @GetMapping("/ingest-tasks")
+    public ResponseEntity<Collection<IngestProgressUpdate>> getAllIngestTasks() {
+        // Combine tasks from both async and sync upload flows
+        Map<String, IngestProgressUpdate> allTasks = new HashMap<>();
+
+        // Add tasks from async flow (DocumentIngestService)
+        if (documentIngestService != null) {
+            for (IngestProgressUpdate task : documentIngestService.getAllActiveTasks()) {
+                allTasks.put(task.taskId(), task);
+            }
+        }
+
+        // Add tasks from sync flow (IngestProgressTracker) - may override if same taskId
+        if (progressTracker != null) {
+            for (IngestProgressUpdate task : progressTracker.getAllTasks()) {
+                allTasks.put(task.taskId(), task);
+            }
+        }
+
+        // Log for debugging
+        if (!allTasks.isEmpty()) {
+            logger.debug("getAllIngestTasks returning {} tasks", allTasks.size());
+            for (IngestProgressUpdate task : allTasks.values()) {
+                logger.debug("  Task {}: phase={}, progress={}%, status={}",
+                            task.taskId(), task.phase(), task.progressPercent(), task.status());
+            }
+        }
+
+        return ResponseEntity.ok(allTasks.values());
+    }
+
     @PostMapping("/add-url")
     public ResponseEntity<?> handleAddUrl(@RequestBody AddUrlRequest request) {
         if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
@@ -1297,6 +1940,15 @@ public class DocumentManagementController {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Failed to fetch content from URL (received null): " + urlString));
             }
 
+            // Handle edge case where destination might be a directory
+            if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
+                logger.warn("Destination path exists as a directory, deleting before writing: {}", destinationFile);
+                try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
+                    walk.sorted(java.util.Comparator.reverseOrder())
+                        .map(Path::toFile)
+                        .forEach(java.io.File::delete);
+                }
+            }
             Files.writeString(destinationFile, content, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
             logger.info("Content from URL {} saved successfully to: {}", urlString, destinationFile);
 
@@ -1489,5 +2141,59 @@ public class DocumentManagementController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to get processing status: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Parse a processing mode string into a ProcessingMode enum.
+     *
+     * @param modeString the mode string (case-insensitive): "auto", "subprocess", or "inprocess"
+     * @return the corresponding ProcessingMode enum value, defaults to AUTO for unrecognized values
+     */
+    private DocumentIngestService.ProcessingMode parseProcessingMode(String modeString) {
+        if (modeString == null || modeString.isBlank()) {
+            return DocumentIngestService.ProcessingMode.AUTO;
+        }
+        switch (modeString.toLowerCase().trim()) {
+            case "subprocess":
+                return DocumentIngestService.ProcessingMode.SUBPROCESS;
+            case "inprocess":
+            case "in-process":
+            case "in_process":
+                return DocumentIngestService.ProcessingMode.INPROCESS;
+            case "auto":
+            default:
+                return DocumentIngestService.ProcessingMode.AUTO;
+        }
+    }
+
+    /**
+     * Get the list of available processing modes for document ingestion.
+     * Useful for frontend UI to present options to the user.
+     */
+    @GetMapping("/processing-modes")
+    public ResponseEntity<Map<String, Object>> getProcessingModes() {
+        Map<String, Object> response = new LinkedHashMap<>();
+
+        List<Map<String, String>> modes = new ArrayList<>();
+        modes.add(Map.of(
+                "value", "auto",
+                "label", "Auto (Use Global Setting)",
+                "description", "Use the global subprocess configuration to decide processing mode"
+        ));
+        modes.add(Map.of(
+                "value", "inprocess",
+                "label", "In-Process (Same JVM)",
+                "description", "Process in the same JVM - faster startup, easier debugging, but crashes affect main app"
+        ));
+        modes.add(Map.of(
+                "value", "subprocess",
+                "label", "Subprocess (Isolated JVM)",
+                "description", "Process in a separate JVM - better isolation, crashes don't affect main app"
+        ));
+
+        response.put("modes", modes);
+        response.put("default", "auto");
+
+        return ResponseEntity.ok(response);
     }
 }

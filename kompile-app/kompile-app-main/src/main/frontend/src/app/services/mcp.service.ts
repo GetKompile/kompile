@@ -21,6 +21,60 @@ import { catchError } from 'rxjs/operators';
 import { McpToolInfo } from '../models/api-models';
 import { BaseService } from './base.service';
 
+export interface ToolInvocationRequest {
+  toolName: string;
+  arguments: { [key: string]: any };
+}
+
+export interface ToolInvocationResponse {
+  toolName: string;
+  result: any;
+  error?: string;
+}
+
+export interface ActionLogEntry {
+  id: number;
+  toolName: string;
+  toolCategory: string;
+  arguments: { [key: string]: any };
+  timestamp: string;
+  actionType: string;
+  undoable: boolean;
+  undone: boolean;
+  undoResult?: string;
+  undoTimestamp?: string;
+  hasResult: boolean;
+  sessionId?: string;
+  userId?: string;
+}
+
+export interface ActionLogStats {
+  totalActions: number;
+  maxEntries: number;
+  retentionHours: number;
+  byActionType: { [key: string]: number };
+  undoableTotal: number;
+  undoablePending: number;
+  undone: number;
+  topToolsByUsage: { [key: string]: number };
+  registeredUndoHandlers: string[];
+}
+
+export interface UndoResult {
+  status: string;
+  actionId?: number;
+  toolName?: string;
+  undoResult?: any;
+  message?: string;
+  error?: string;
+  entriesCleared?: number;
+}
+
+export interface UndoResponse {
+  toolName: string;
+  result: UndoResult;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -35,10 +89,61 @@ export class McpService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  // invokeToolDirectly might be added if needed, similar to other post requests
+  invokeTool(request: ToolInvocationRequest): Observable<ToolInvocationResponse> {
+    return this.http.post<ToolInvocationResponse>(`${this.backendUrl}/mcp/tools/invoke-direct`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  // Action Log methods
+  getActionLog(limit?: number, toolName?: string, actionType?: string, undoableOnly?: boolean): Observable<any> {
+    const args: { [key: string]: any } = {};
+    if (limit) args['limit'] = limit;
+    if (toolName) args['toolName'] = toolName;
+    if (actionType) args['actionType'] = actionType;
+    if (undoableOnly) args['undoableOnly'] = undoableOnly;
+
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'get_action_log',
+      arguments: args
+    }).pipe(catchError(this.handleError));
+  }
+
+  getAction(actionId: number): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'get_action',
+      arguments: { actionId }
+    }).pipe(catchError(this.handleError));
+  }
+
+  undoAction(actionId: number): Observable<UndoResponse> {
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'undo_action',
+      arguments: { actionId }
+    }).pipe(catchError(this.handleError));
+  }
+
+  undoLastAction(): Observable<UndoResponse> {
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'undo_last_action',
+      arguments: {}
+    }).pipe(catchError(this.handleError));
+  }
+
+  getActionStats(): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'get_action_stats',
+      arguments: {}
+    }).pipe(catchError(this.handleError));
+  }
+
+  clearActionLog(confirm: boolean): Observable<any> {
+    return this.http.post<any>(`${this.backendUrl}/mcp/tools/invoke-direct`, {
+      toolName: 'clear_action_log',
+      arguments: { confirm }
+    }).pipe(catchError(this.handleError));
+  }
 
   private handleError(error: HttpErrorResponse) {
-    // ... (same as in RagService or a shared error handler)
     let errorMessage = 'Unknown error!';
     if (error.error instanceof ErrorEvent) {
       errorMessage = `Error: ${error.error.message}`;

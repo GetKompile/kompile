@@ -36,7 +36,29 @@ if(NOT DEFINED ARCH)
     endif()
 endif()
 
+# JavaCPP platform naming convention
+if(NOT DEFINED JAVACPP_PLATFORM)
+    if(PLATFORM STREQUAL "linux")
+        if(ARCH STREQUAL "arm64" OR ARCH STREQUAL "aarch64")
+            set(JAVACPP_PLATFORM "linux-arm64")
+        else()
+            set(JAVACPP_PLATFORM "linux-x86_64")
+        endif()
+    elseif(PLATFORM STREQUAL "darwin")
+        if(ARCH STREQUAL "arm64")
+            set(JAVACPP_PLATFORM "macosx-arm64")
+        else()
+            set(JAVACPP_PLATFORM "macosx-x86_64")
+        endif()
+    elseif(PLATFORM STREQUAL "windows")
+        set(JAVACPP_PLATFORM "windows-x86_64")
+    else()
+        set(JAVACPP_PLATFORM "${PLATFORM}-${ARCH}")
+    endif()
+endif()
+
 message(STATUS "Building for platform: ${PLATFORM}-${ARCH}")
+message(STATUS "JavaCPP platform: ${JAVACPP_PLATFORM}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 # Find Rust and Cargo
@@ -207,7 +229,26 @@ add_custom_target(copy-headers
 # Make sure headers are copied before building the wrapper
 add_dependencies(${WRAPPER_LIB_NAME} copy-headers)
 
-# Installation
+# JavaCPP-specific installation paths
+# Install to platform-specific directory for JavaCPP
+install(TARGETS ${WRAPPER_LIB_NAME}
+    LIBRARY DESTINATION ${JAVACPP_PLATFORM}
+    ARCHIVE DESTINATION ${JAVACPP_PLATFORM}
+    RUNTIME DESTINATION ${JAVACPP_PLATFORM}
+)
+
+# Install headers to common include directory for JavaCPP
+install(FILES ${WRAPPER_HEADERS}
+    DESTINATION include
+)
+
+# Install the generated C header if it exists
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/tokenizers_rust.h
+    DESTINATION include
+    OPTIONAL
+)
+
+# Install to legacy paths for backward compatibility
 install(TARGETS ${WRAPPER_LIB_NAME}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -216,12 +257,6 @@ install(TARGETS ${WRAPPER_LIB_NAME}
 
 install(FILES ${WRAPPER_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/tokenizers
-)
-
-# Install the generated C header if it exists
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/tokenizers_rust.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/tokenizers
-    OPTIONAL
 )
 
 # Create a pkg-config file
@@ -247,6 +282,7 @@ message(STATUS "")
 message(STATUS "=== Build Configuration Summary ===")
 message(STATUS "Platform: ${PLATFORM}")
 message(STATUS "Architecture: ${ARCH}")
+message(STATUS "JavaCPP Platform: ${JAVACPP_PLATFORM}")
 message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Cargo Build Type: ${CARGO_BUILD_TYPE}")
 message(STATUS "Wrapper Library: ${WRAPPER_LIB_NAME}${LIB_SUFFIX}")
@@ -255,4 +291,5 @@ message(STATUS "Tokenizers Library: ${TOKENIZERS_LIB_DIR}")
 message(STATUS "Tokenizers Binary: ${TOKENIZERS_BINARY_DIR}")
 message(STATUS "Generated Headers: ${TOKENIZERS_BINARY_DIR}/bindings/include")
 message(STATUS "Install Prefix: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "JavaCPP Platform Dir: ${CMAKE_INSTALL_PREFIX}/${JAVACPP_PLATFORM}")
 message(STATUS "===================================")

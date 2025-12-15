@@ -312,7 +312,22 @@ public class SameDiffTrainerRunner implements PipelineStepRunner {
 
     @Override
     public void close() throws Exception {
-        sd = null;
+        // SameDiff implements AutoCloseable - calling close() releases all OpContexts
+        // cached in InferenceSessions, preventing native memory leaks.
+        // We use reflection to call close() to maintain compatibility with nd4j-api versions
+        // that may not have the close() method yet (avoids compile-time dependency).
+        if (sd != null) {
+            try {
+                // Use reflection to call close() for compatibility with different nd4j-api versions
+                java.lang.reflect.Method closeMethod = sd.getClass().getMethod("close");
+                closeMethod.invoke(sd);
+            } catch (NoSuchMethodException e) {
+                // SameDiff.close() not available in this nd4j-api version - skipping cleanup
+            } catch (Exception e) {
+                // Log but don't rethrow - we still want to clean up other resources
+            }
+            sd = null;
+        }
         initialized = false;
         URIUtils.deleteTempFileQuietly(modelFileRef);
     }

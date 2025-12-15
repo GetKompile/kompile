@@ -18,34 +18,45 @@ package ai.kompile.vectorstore.anserini;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
+
+import java.util.UUID;
 
 /**
  * Configuration properties for the Anserini VectorStore implementation.
- * Provides sensible defaults so it works out of the box without configuration.
+ * Only created when kompile.vectorstore.anserini.enabled=true is set.
  */
 @Data
-@Component
 @ConfigurationProperties(prefix = "kompile.vectorstore.anserini")
 public class AnseriniVectorStoreProperties {
 
     /**
-     * Path to the Lucene index directory for storing vectors.
-     * Default: "./anserini-vector-index"
+     * Unique instance ID for this JVM instance, used to create unique index paths.
+     * This prevents lock conflicts when multiple instances or test runs use the same directory.
      */
-    private String indexPath = "./anserini-vector-index";
+    private static final String INSTANCE_ID = UUID.randomUUID().toString().substring(0, 8);
+
+    /**
+     * Path to the Lucene index directory for storing vectors.
+     * Default: Uses temp directory with unique instance ID to prevent lock conflicts.
+     * Set explicitly via kompile.vectorstore.anserini.index-path to use a persistent location.
+     */
+    private String indexPath = System.getProperty("java.io.tmpdir") + "/anserini-vector-index-" + INSTANCE_ID;
 
     /**
      * Whether to enable the Anserini VectorStore.
-     * Changed default to TRUE so it works out of the box.
+     * Default is FALSE - must be explicitly enabled via property:
+     * kompile.vectorstore.anserini.enabled=true
      */
-    private boolean enabled = true;
+    private boolean enabled = false;
 
     /**
      * Memory buffer size for IndexWriter in MB.
-     * Default: 256
+     * PERFORMANCE: Higher values reduce flush frequency, improving indexing speed.
+     * Trade-off: More memory usage during indexing.
+     * Recommended: 512-1024 for systems with 8GB+ RAM, 1024-2048 for 16GB+ RAM.
+     * Default: 512 (increased from 256 for better bulk indexing performance)
      */
-    private double memoryBufferSizeMb = 256.0;
+    private double memoryBufferSizeMb = 512.0;
 
     /**
      * Whether to use compound files for the index.
@@ -82,18 +93,26 @@ public class AnseriniVectorStoreProperties {
     public static class HnswParameters {
         /**
          * HNSW M parameter - maximum number of bi-directional links.
-         * Default: 16
+         * PERFORMANCE: Lower values (8-12) = faster indexing, lower recall.
+         * Higher values (24-32) = slower indexing, better recall.
+         * Default: 16 (balanced)
          */
         private int m = 16;
 
         /**
          * HNSW efConstruction parameter - size of the dynamic candidate list.
-         * Default: 100
+         * PERFORMANCE: Lower values (50-100) = faster indexing, lower recall.
+         * Higher values (200-500) = slower indexing, better recall.
+         * For bulk indexing speed, use 50-100. For search quality, use 200+.
+         * Default: 100 (balanced)
          */
         private int efConstruction = 100;
 
         /**
          * Whether to use HNSW indexing instead of flat indexing.
+         * PERFORMANCE: HNSW is faster for large-scale search but slower to index.
+         * Flat indexing is faster to index but O(n) search.
+         * Recommendation: Use flat for < 100k docs, HNSW for > 100k docs.
          * Default: false (use flat indexing for simplicity)
          */
         private boolean enabled = false;

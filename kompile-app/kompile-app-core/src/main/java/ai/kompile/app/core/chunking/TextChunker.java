@@ -19,6 +19,7 @@ package ai.kompile.app.core.chunking;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Interface for text chunking strategies.
@@ -120,7 +121,7 @@ public interface TextChunker {
 
     /**
      * Validates and merges the provided options with default options.
-     * 
+     *
      * @param options The options to validate and merge
      * @return A merged map of options with defaults applied
      */
@@ -130,5 +131,42 @@ public interface TextChunker {
             mergedOptions.putAll(options);
         }
         return mergedOptions;
+    }
+
+    /**
+     * Chunks the given document with progress reporting.
+     *
+     * @param document The document to be chunked
+     * @param options  Options to configure the chunking process
+     * @param progressCallback A callback that receives progress updates during chunking.
+     *                         The callback receives a ChunkingProgress object with current status.
+     * @return A list of chunked documents
+     */
+    default List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options,
+                                      Consumer<ChunkingProgress> progressCallback) {
+        // Default implementation ignores progress callback
+        return chunk(document, options);
+    }
+
+    /**
+     * Progress information during chunking.
+     */
+    record ChunkingProgress(
+            /** Current phase of chunking (e.g., "analyzing", "splitting", "processing") */
+            String phase,
+            /** Progress percentage (0-100) */
+            int progressPercent,
+            /** Number of chunks created so far */
+            int chunksCreated,
+            /** Total characters processed */
+            int charsProcessed,
+            /** Total characters to process */
+            int totalChars,
+            /** Descriptive message about current progress */
+            String message
+    ) {
+        public static ChunkingProgress of(String phase, int percent, int chunks, int processed, int total, String message) {
+            return new ChunkingProgress(phase, percent, chunks, processed, total, message);
+        }
     }
 }

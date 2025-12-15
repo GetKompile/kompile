@@ -58,8 +58,8 @@ public class RetrieverController {
 
     @GetMapping("/search")
     public ResponseEntity<?> searchDocuments(
-            @RequestParam String query,
-            @RequestParam(defaultValue = "5") int maxResults) { // Changed default to 5
+            @RequestParam("query") String query,
+            @RequestParam(name = "maxResults", defaultValue = "5") int maxResults) { // Changed default to 5
 
         if (query == null || query.trim().isEmpty()) {
             logger.warn("Received direct search request with empty or null query.");

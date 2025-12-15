@@ -41,6 +41,15 @@ public class SamediffBertVocabulary {
     public static final String SEP_TOKEN = "[SEP]";
     public static final String MASK_TOKEN = "[MASK]";
 
+    /**
+     * Default constructor for subclasses (used by TokenizerVocabularyWrapper)
+     */
+    protected SamediffBertVocabulary() {
+        this.tokenToId = new HashMap<>();
+        this.idToToken = new HashMap<>();
+        this.unknownTokenValue = DEFAULT_UNKNOWN_TOKEN;
+        this.unknownTokenId = 100; // Default BERT [UNK] token ID
+    }
 
     public SamediffBertVocabulary(File vocabFile, String unknownTokenValue) throws IOException {
         this.tokenToId = new HashMap<>();

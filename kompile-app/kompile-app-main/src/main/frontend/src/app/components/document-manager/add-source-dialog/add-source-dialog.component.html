@@ -40,13 +40,67 @@
   </mat-radio-group>
 
   <div *ngIf="addSourceForm.get('sourceType')?.value === 'file'" class="form-section file-upload-section">
-    <h4>Select File to Upload</h4>
-    <input type="file" (change)="onFileSelectedChange($event)" #fileUploadElement id="dialogInternalFileInput" class="file-input-field" [disabled]="isSubmitting">
-    <div *ngIf="selectedFile" class="selected-file-info">
-      <mat-icon>attach_file</mat-icon>
-      Selected: <strong>{{ selectedFile.name }}</strong> ({{ (selectedFile.size / 1024).toFixed(2) }} KB)
+    <h4>Select Files to Upload</h4>
+
+    <!-- Hidden file input -->
+    <input type="file" multiple (change)="onFileSelectedChange($event)" #fileUploadElement id="dialogInternalFileInput" class="file-input-hidden" [disabled]="isSubmitting">
+
+    <!-- Drag and drop zone -->
+    <div
+      class="drop-zone"
+      [class.drop-zone-active]="isDragOver"
+      [class.drop-zone-disabled]="isSubmitting"
+      [class.drop-zone-has-files]="selectedFiles.length > 0"
+      (click)="triggerFileInput()"
+      (dragover)="onDragOver($event)"
+      (dragleave)="onDragLeave($event)"
+      (drop)="onDrop($event)">
+
+      <div class="drop-zone-content" *ngIf="selectedFiles.length === 0">
+        <div class="drop-zone-icon">
+          <mat-icon>cloud_upload</mat-icon>
+        </div>
+        <div class="drop-zone-text">
+          <span class="drop-zone-primary">Drag and drop files here</span>
+          <span class="drop-zone-secondary">or click to browse</span>
+        </div>
+        <button mat-stroked-button color="primary" type="button" class="drop-zone-button" [disabled]="isSubmitting">
+          <mat-icon>folder_open</mat-icon>
+          Choose Files
+        </button>
+        <div class="drop-zone-hint">
+          Supports PDF, DOC, DOCX, TXT, HTML, and more
+        </div>
+      </div>
+
+      <!-- Files selected view -->
+      <div class="drop-zone-files" *ngIf="selectedFiles.length > 0" (click)="$event.stopPropagation()">
+        <div class="selected-files-header">
+          <mat-icon color="primary">folder</mat-icon>
+          <span>{{ selectedFiles.length }} file(s) selected ({{ getTotalFileSize() }})</span>
+          <button mat-icon-button class="add-more-btn" (click)="triggerFileInput(); $event.stopPropagation()" [disabled]="isSubmitting" matTooltip="Add more files">
+            <mat-icon>add</mat-icon>
+          </button>
+        </div>
+        <div class="selected-files-list">
+          <div *ngFor="let file of selectedFiles; let i = index" class="selected-file-item">
+            <mat-icon class="file-type-icon" [ngClass]="getFileIconClass(file.name)">{{ getFileIcon(file.name) }}</mat-icon>
+            <div class="file-details">
+              <span class="file-name">{{ file.name }}</span>
+              <span class="file-size">{{ formatFileSize(file.size) }}</span>
+            </div>
+            <button mat-icon-button class="remove-file-btn" (click)="removeFile(i); $event.stopPropagation()" [disabled]="isSubmitting" matTooltip="Remove file">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        </div>
+        <div class="drop-zone-footer">
+          <span class="drop-hint">Drop more files or click + to add</span>
+        </div>
+      </div>
     </div>
-    <mat-error *ngIf="fileErrorMessage && !selectedFile" class="file-error-message">{{ fileErrorMessage }}</mat-error>
+
+    <mat-error *ngIf="fileErrorMessage && selectedFiles.length === 0" class="file-error-message">{{ fileErrorMessage }}</mat-error>
   </div>
 
   <div *ngIf="addSourceForm.get('sourceType')?.value === 'url'" class="form-section">
@@ -67,6 +121,767 @@
       <mat-label>Optional: Desired File Name (if downloaded)</mat-label>
       <input matInput formControlName="fileNameInput" placeholder="e.g., my-document.html" [disabled]="isSubmitting">
     </mat-form-field>
+  </div>
+
+  <!-- Document Analysis & Recommendations -->
+  <div class="recommendations-section" *ngIf="documentAnalysis && getVisibleRecommendations().length > 0">
+    <div class="recommendations-header">
+      <mat-icon>lightbulb</mat-icon>
+      <span>Recommendations</span>
+      <button mat-icon-button class="collapse-btn" (click)="showRecommendations = !showRecommendations">
+        <mat-icon>{{ showRecommendations ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </button>
+    </div>
+
+    <div class="recommendations-list" *ngIf="showRecommendations" [@expandCollapse]>
+      <div
+        *ngFor="let rec of getVisibleRecommendations()"
+        class="recommendation-card"
+        [class.rec-critical]="rec.severity === 'critical'"
+        [class.rec-warning]="rec.severity === 'warning'"
+        [class.rec-suggestion]="rec.severity === 'suggestion'"
+        [class.rec-info]="rec.severity === 'info'">
+        <mat-icon class="rec-icon">{{ rec.icon }}</mat-icon>
+        <div class="rec-content">
+          <div class="rec-title">{{ rec.title }}</div>
+          <div class="rec-description">{{ rec.description }}</div>
+        </div>
+        <div class="rec-actions">
+          <button
+            *ngIf="rec.action"
+            mat-stroked-button
+            color="primary"
+            class="rec-apply-btn"
+            (click)="applyRecommendation(rec)"
+            [disabled]="isSubmitting">
+            {{ rec.action.label }}
+          </button>
+          <button mat-icon-button class="rec-dismiss-btn" (click)="dismissRecommendation(rec.id)" matTooltip="Dismiss">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Document Analysis Summary -->
+  <div class="analysis-summary" *ngIf="documentAnalysis">
+    <div class="analysis-row">
+      <div class="analysis-item">
+        <mat-icon>folder</mat-icon>
+        <span class="analysis-label">Files:</span>
+        <span class="analysis-value">{{ documentAnalysis.fileCount }}</span>
+      </div>
+      <div class="analysis-item">
+        <mat-icon>storage</mat-icon>
+        <span class="analysis-label">Total:</span>
+        <span class="analysis-value">{{ getTotalFileSize() }}</span>
+      </div>
+      <div class="analysis-item">
+        <mat-icon>layers</mat-icon>
+        <span class="analysis-label">Est. chunks:</span>
+        <span class="analysis-value">{{ documentAnalysis.estimatedChunks.toLocaleString() }}</span>
+      </div>
+      <div class="analysis-item">
+        <mat-icon>schedule</mat-icon>
+        <span class="analysis-label">Est. time:</span>
+        <span class="analysis-value">{{ documentAnalysis.estimatedProcessingTime }}</span>
+      </div>
+    </div>
+    <div class="memory-warning" *ngIf="documentAnalysis.memoryWarning">
+      <mat-icon>warning</mat-icon>
+      <span>Large file(s) detected. Consider enabling streaming mode for better stability.</span>
+    </div>
+  </div>
+
+  <!-- Batch Size Recommendations Section -->
+  <div class="batch-recommendations-section" *ngIf="documentAnalysis">
+    <div class="section-header" (click)="toggleBatchRecommendations()">
+      <div class="section-header-left">
+        <mat-icon>memory</mat-icon>
+        <span class="section-title">Batch Size Recommendations</span>
+        <span class="batch-type-badge model-badge">NDArray</span>
+      </div>
+      <mat-icon class="expand-icon">{{ showBatchRecommendations ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="batch-recommendations-content" *ngIf="showBatchRecommendations" [@expandCollapse]>
+      <div class="batch-info-banner">
+        <mat-icon>info_outline</mat-icon>
+        <div class="batch-info-text">
+          <strong>Embedding Batch Size</strong> controls how many text chunks are processed together
+          in a single forward pass through the neural network. Larger batches increase throughput but use more memory.
+        </div>
+      </div>
+
+      <div class="batch-recommendation-grid">
+        <!-- System Memory Info -->
+        <div class="batch-rec-card">
+          <div class="batch-rec-header">
+            <mat-icon>developer_board</mat-icon>
+            <span>System Memory</span>
+          </div>
+          <div class="batch-rec-value" [ngClass]="getMemoryTierClass()">
+            {{ (systemMemoryMB / 1024).toFixed(1) }} GB
+          </div>
+          <div class="batch-rec-label">{{ getMemoryTierLabel() }}</div>
+        </div>
+
+        <!-- Workload Assessment -->
+        <div class="batch-rec-card">
+          <div class="batch-rec-header">
+            <mat-icon>assessment</mat-icon>
+            <span>Workload</span>
+          </div>
+          <div class="batch-rec-value">
+            {{ documentAnalysis.estimatedChunks.toLocaleString() }}
+          </div>
+          <div class="batch-rec-label">{{ getWorkloadDescription() }}</div>
+        </div>
+
+        <!-- Recommended Embedding Batch -->
+        <div class="batch-rec-card recommended">
+          <div class="batch-rec-header">
+            <mat-icon>auto_awesome</mat-icon>
+            <span>Recommended</span>
+          </div>
+          <div class="batch-rec-value highlight">
+            {{ embeddingBatchSize }}
+          </div>
+          <div class="batch-rec-label">Embedding Batch Size</div>
+        </div>
+
+        <!-- Index Batch (from large doc config) -->
+        <div class="batch-rec-card">
+          <div class="batch-rec-header">
+            <mat-icon>storage</mat-icon>
+            <span>Index Batch</span>
+            <span class="batch-type-badge storage-badge">Storage</span>
+          </div>
+          <div class="batch-rec-value">
+            {{ recommendedBatchSizes.indexBatch }}
+          </div>
+          <div class="batch-rec-label">Chunks per Lucene write</div>
+        </div>
+      </div>
+
+      <!-- Batch Size Reference Table -->
+      <div class="batch-reference-table">
+        <div class="batch-ref-header">
+          <mat-icon>table_chart</mat-icon>
+          <span>Memory-Based Recommendations</span>
+        </div>
+        <div class="batch-ref-grid">
+          <div class="batch-ref-item" [class.active]="systemMemoryMB < 4096">
+            <span class="ref-memory">&lt;4GB</span>
+            <span class="ref-embed">Embed: 4</span>
+            <span class="ref-index">Index: 50</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="systemMemoryMB >= 4096 && systemMemoryMB < 8192">
+            <span class="ref-memory">4-8GB</span>
+            <span class="ref-embed">Embed: 8</span>
+            <span class="ref-index">Index: 100</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="systemMemoryMB >= 8192 && systemMemoryMB < 16384">
+            <span class="ref-memory">8-16GB</span>
+            <span class="ref-embed">Embed: 16</span>
+            <span class="ref-index">Index: 150</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="systemMemoryMB >= 16384">
+            <span class="ref-memory">&gt;16GB</span>
+            <span class="ref-embed">Embed: 32</span>
+            <span class="ref-index">Index: 200</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="batch-note">
+        <mat-icon>lightbulb_outline</mat-icon>
+        <span>For fine-tuned control, use the <strong>Batch Size Configuration</strong> panel in Model Debug to run benchmarks on your specific hardware.</span>
+      </div>
+
+      <!-- Adaptive Performance Mode Toggle -->
+      <div class="adaptive-mode-section">
+        <div class="adaptive-toggle-row">
+          <mat-slide-toggle
+            [(ngModel)]="adaptiveMode"
+            (change)="toggleAdaptiveMode()"
+            [disabled]="isSubmitting"
+            color="accent">
+            <div class="adaptive-toggle-label">
+              <mat-icon>auto_fix_high</mat-icon>
+              <span>Adaptive Performance Mode</span>
+            </div>
+          </mat-slide-toggle>
+          <button mat-icon-button
+                  *ngIf="adaptiveMode"
+                  (click)="toggleAdaptiveOptions()"
+                  matTooltip="Configure adaptive settings">
+            <mat-icon>{{ showAdaptiveOptions ? 'expand_less' : 'settings' }}</mat-icon>
+          </button>
+        </div>
+
+        <div class="adaptive-description" *ngIf="!adaptiveMode">
+          <mat-icon>info_outline</mat-icon>
+          <span>Automatically monitors memory usage and adjusts batch sizes during processing for optimal performance.</span>
+        </div>
+
+        <div class="adaptive-active-banner" *ngIf="adaptiveMode && !showAdaptiveOptions">
+          <mat-icon>check_circle</mat-icon>
+          <span>Adaptive mode enabled. Batch sizes will be automatically adjusted based on system load.</span>
+        </div>
+
+        <!-- Adaptive Options Panel -->
+        <div class="adaptive-options-panel" *ngIf="adaptiveMode && showAdaptiveOptions" [@expandCollapse]>
+          <!-- Preset Selection -->
+          <div class="adaptive-presets">
+            <label class="preset-label">Performance Profile</label>
+            <div class="preset-buttons">
+              <button mat-stroked-button
+                      (click)="applyAdaptivePreset('conservative')"
+                      [class.selected]="adaptiveConfig.targetMemoryPercent === 60"
+                      matTooltip="{{ getAdaptivePresetDescription('conservative') }}">
+                <mat-icon>shield</mat-icon>
+                Conservative
+              </button>
+              <button mat-stroked-button
+                      (click)="applyAdaptivePreset('balanced')"
+                      [class.selected]="adaptiveConfig.targetMemoryPercent === 75 || (adaptiveConfig.targetMemoryPercent > 60 && adaptiveConfig.targetMemoryPercent < 80)"
+                      matTooltip="{{ getAdaptivePresetDescription('balanced') }}">
+                <mat-icon>balance</mat-icon>
+                Balanced
+              </button>
+              <button mat-stroked-button
+                      (click)="applyAdaptivePreset('aggressive')"
+                      [class.selected]="adaptiveConfig.targetMemoryPercent >= 80"
+                      matTooltip="{{ getAdaptivePresetDescription('aggressive') }}">
+                <mat-icon>speed</mat-icon>
+                Aggressive
+              </button>
+            </div>
+          </div>
+
+          <!-- Memory Thresholds -->
+          <div class="adaptive-thresholds">
+            <label class="threshold-label">Memory Thresholds</label>
+            <div class="threshold-row">
+              <div class="threshold-item">
+                <span class="threshold-name">Target</span>
+                <span class="threshold-value warning">{{ adaptiveConfig.targetMemoryPercent }}%</span>
+                <span class="threshold-desc">Reduce batch size</span>
+              </div>
+              <div class="threshold-item">
+                <span class="threshold-name">Critical</span>
+                <span class="threshold-value critical">{{ adaptiveConfig.criticalMemoryPercent }}%</span>
+                <span class="threshold-desc">Aggressive reduction</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Batch Size Limits -->
+          <div class="adaptive-limits">
+            <label class="limits-label">Batch Size Limits</label>
+            <div class="limits-grid">
+              <div class="limit-card embedding">
+                <div class="limit-header">
+                  <mat-icon>memory</mat-icon>
+                  <span>Embedding</span>
+                  <span class="batch-type-badge model-badge">NDArray</span>
+                </div>
+                <div class="limit-values">
+                  <span class="limit-range">{{ adaptiveConfig.minEmbeddingBatch }} - {{ adaptiveConfig.maxEmbeddingBatch }}</span>
+                </div>
+              </div>
+              <div class="limit-card index">
+                <div class="limit-header">
+                  <mat-icon>storage</mat-icon>
+                  <span>Index</span>
+                  <span class="batch-type-badge storage-badge">Storage</span>
+                </div>
+                <div class="limit-values">
+                  <span class="limit-range">{{ adaptiveConfig.minIndexBatch }} - {{ adaptiveConfig.maxIndexBatch }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Timing Settings -->
+          <div class="adaptive-timing">
+            <label class="timing-label">Timing</label>
+            <div class="timing-row">
+              <div class="timing-item">
+                <mat-icon>timer</mat-icon>
+                <span>Check every {{ adaptiveConfig.checkIntervalMs / 1000 }}s</span>
+              </div>
+              <div class="timing-item">
+                <mat-icon>hourglass_empty</mat-icon>
+                <span>Cooldown {{ adaptiveConfig.adjustmentCooldownMs / 1000 }}s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tokenizer Configuration Section -->
+  <div class="tokenizer-section">
+    <div class="section-header" (click)="toggleTokenizerSection()">
+      <div class="section-header-left">
+        <mat-icon>text_fields</mat-icon>
+        <span class="section-title">Tokenization (Optional)</span>
+        <mat-chip class="preset-chip" *ngIf="!showTokenizerOptions">
+          {{ enablePreTokenization ? getSelectedTokenizerName() : 'Disabled' }}
+        </mat-chip>
+      </div>
+      <mat-icon class="expand-icon">{{ showTokenizerOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="tokenizer-content" *ngIf="showTokenizerOptions" [@expandCollapse]>
+      <div class="tokenizer-description">
+        <mat-icon>info</mat-icon>
+        <span>Pre-tokenization enables token-aware chunk boundaries, improving embedding quality for models like BERT.</span>
+      </div>
+
+      <mat-slide-toggle
+        [(ngModel)]="enablePreTokenization"
+        [disabled]="isSubmitting"
+        class="tokenizer-toggle">
+        Enable Pre-Tokenization
+      </mat-slide-toggle>
+
+      <div class="tokenizer-options" *ngIf="enablePreTokenization">
+        <mat-form-field appearance="outline" class="tokenizer-select">
+          <mat-label>Tokenizer Model</mat-label>
+          <mat-select
+            [(ngModel)]="selectedTokenizer"
+            (selectionChange)="onTokenizerChange($event.value)"
+            [disabled]="isSubmitting">
+            <mat-option *ngFor="let tokenizer of availableTokenizers" [value]="tokenizer.id">
+              <span class="tokenizer-option-name">{{ tokenizer.name }}</span>
+              <span class="tokenizer-option-desc" *ngIf="tokenizer.description"> - {{ tokenizer.description }}</span>
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="token-length-field">
+          <mat-label>Max Token Length</mat-label>
+          <input matInput type="number" [(ngModel)]="maxTokenLength" [disabled]="isSubmitting" min="64" max="2048">
+          <mat-hint>Maximum tokens per segment</mat-hint>
+        </mat-form-field>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chunking Configuration Section -->
+  <div class="chunking-section">
+    <div class="section-header" (click)="toggleChunkingSection()">
+      <div class="section-header-left">
+        <mat-icon>tune</mat-icon>
+        <span class="section-title">Chunking Configuration</span>
+        <mat-chip class="preset-chip" *ngIf="!showChunkingOptions">{{ getActivePresetName() }}</mat-chip>
+      </div>
+      <mat-icon class="expand-icon">{{ showChunkingOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="chunking-content" *ngIf="showChunkingOptions" [@expandCollapse]>
+      <!-- Presets -->
+      <div class="presets-section">
+        <label class="presets-label">Quick Presets</label>
+        <div class="presets-grid">
+          <button
+            *ngFor="let preset of chunkingPresets"
+            mat-stroked-button
+            class="preset-button"
+            [class.preset-active]="selectedPreset === preset.id"
+            (click)="applyPreset(preset.id)"
+            [disabled]="isSubmitting"
+            [matTooltip]="preset.description">
+            {{ preset.name }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Strategy Selection -->
+      <div class="strategy-section">
+        <label class="strategy-label">Chunking Strategy</label>
+        <div class="strategy-cards">
+          <div
+            *ngFor="let strategy of chunkerStrategies"
+            class="strategy-card"
+            [class.strategy-selected]="chunkingConfig.strategy === strategy.id"
+            (click)="selectStrategy(strategy.id)"
+            [class.disabled]="isSubmitting">
+            <mat-icon class="strategy-icon">{{ strategy.icon }}</mat-icon>
+            <div class="strategy-info">
+              <span class="strategy-name">{{ strategy.name }}</span>
+              <span class="strategy-best-for">{{ strategy.bestFor }}</span>
+            </div>
+            <mat-icon class="check-icon" *ngIf="chunkingConfig.strategy === strategy.id">check_circle</mat-icon>
+          </div>
+        </div>
+      </div>
+
+      <!-- Advanced Options -->
+      <div class="advanced-options">
+        <div class="options-header" (click)="toggleAdvancedOptions()">
+          <span>Advanced Options</span>
+          <mat-icon>{{ showAdvancedOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+
+        <div class="options-content" *ngIf="showAdvancedOptions">
+          <!-- Chunk Size with Slider -->
+          <div class="option-row">
+            <div class="option-label-row">
+              <label>Chunk Size</label>
+              <span class="option-value">{{ chunkingConfig.options.chunkSize }} chars</span>
+            </div>
+            <mat-slider
+              min="100"
+              max="4000"
+              step="100"
+              [disabled]="isSubmitting"
+              class="option-slider">
+              <input matSliderThumb [(ngModel)]="chunkingConfig.options.chunkSize" (ngModelChange)="onChunkingOptionChange()">
+            </mat-slider>
+            <div class="slider-labels">
+              <span>100</span>
+              <span>Smaller = More precise</span>
+              <span>4000</span>
+            </div>
+          </div>
+
+          <!-- Overlap with Slider -->
+          <div class="option-row">
+            <div class="option-label-row">
+              <label>Overlap</label>
+              <span class="option-value">{{ chunkingConfig.options.overlap }} chars</span>
+            </div>
+            <mat-slider
+              min="0"
+              max="1000"
+              step="25"
+              [disabled]="isSubmitting"
+              class="option-slider">
+              <input matSliderThumb [(ngModel)]="chunkingConfig.options.overlap" (ngModelChange)="onChunkingOptionChange()">
+            </mat-slider>
+            <div class="slider-labels">
+              <span>0</span>
+              <span>Context continuity</span>
+              <span>1000</span>
+            </div>
+          </div>
+
+          <!-- Toggles Row -->
+          <div class="toggles-row">
+            <mat-slide-toggle
+              [(ngModel)]="chunkingConfig.options.preserveParagraphs"
+              [disabled]="isSubmitting"
+              (ngModelChange)="onChunkingOptionChange()">
+              Preserve Paragraphs
+            </mat-slide-toggle>
+
+            <mat-slide-toggle
+              *ngIf="chunkingConfig.strategy === 'custom_markdown'"
+              [(ngModel)]="chunkingConfig.options.splitOnHeadings"
+              [disabled]="isSubmitting"
+              (ngModelChange)="onChunkingOptionChange()">
+              Split on Headings
+            </mat-slide-toggle>
+          </div>
+
+          <!-- Language Selection (for OpenNLP) -->
+          <mat-form-field
+            appearance="outline"
+            class="language-field"
+            *ngIf="chunkingConfig.strategy === 'opennlp_sentence'">
+            <mat-label>Language</mat-label>
+            <mat-select [(ngModel)]="chunkingConfig.options.language" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+              <mat-option value="en">English</mat-option>
+              <mat-option value="de">German</mat-option>
+              <mat-option value="es">Spanish</mat-option>
+              <mat-option value="fr">French</mat-option>
+              <mat-option value="it">Italian</mat-option>
+              <mat-option value="nl">Dutch</mat-option>
+              <mat-option value="pt">Portuguese</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Chunk Size Limits -->
+          <div class="limits-row">
+            <mat-form-field appearance="outline" class="limit-field">
+              <mat-label>Min Chunk Size</mat-label>
+              <input matInput type="number" [(ngModel)]="chunkingConfig.options.minChunkSize" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="limit-field">
+              <mat-label>Max Chunk Size</mat-label>
+              <input matInput type="number" [(ngModel)]="chunkingConfig.options.maxChunkSize" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+            </mat-form-field>
+          </div>
+        </div>
+      </div>
+
+      <!-- Estimated Chunks Preview -->
+      <div class="chunk-preview" *ngIf="selectedFiles.length > 0">
+        <mat-icon>info</mat-icon>
+        <span>Estimated: ~{{ estimateChunks() }} chunks based on current settings</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Large Document Handling Section -->
+  <div class="large-doc-section" *ngIf="documentAnalysis?.hasLargeFiles || showLargeDocOptions">
+    <div class="section-header" (click)="toggleLargeDocOptions()">
+      <div class="section-header-left">
+        <mat-icon>memory</mat-icon>
+        <span class="section-title">Large Document Handling</span>
+        <mat-chip class="mode-chip" *ngIf="!showLargeDocOptions">
+          {{ largeDocConfig.mode | titlecase }}
+        </mat-chip>
+      </div>
+      <mat-icon class="expand-icon">{{ showLargeDocOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="large-doc-content" *ngIf="showLargeDocOptions" [@expandCollapse]>
+      <!-- Processing Mode Selection -->
+      <div class="mode-section">
+        <label class="mode-label">Processing Mode</label>
+        <div class="mode-cards">
+          <div
+            *ngFor="let mode of largeDocumentModes"
+            class="mode-card"
+            [class.mode-selected]="largeDocConfig.mode === mode.id"
+            (click)="selectLargeDocMode(mode.id)"
+            [class.disabled]="isSubmitting">
+            <mat-icon class="mode-icon">{{ mode.icon }}</mat-icon>
+            <div class="mode-info">
+              <span class="mode-name">{{ mode.name }}</span>
+              <span class="mode-description">{{ mode.description }}</span>
+            </div>
+            <div class="mode-badges">
+              <span class="badge" [ngClass]="getMemoryUsageClass(mode.memoryUsage)">
+                {{ mode.memoryUsage }} memory
+              </span>
+              <span class="badge" [ngClass]="getSpeedClass(mode.processingSpeed)">
+                {{ mode.processingSpeed }}
+              </span>
+            </div>
+            <mat-icon class="check-icon" *ngIf="largeDocConfig.mode === mode.id">check_circle</mat-icon>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mode-specific options -->
+      <div class="mode-options" *ngIf="largeDocConfig.mode !== 'standard'">
+        <!-- Batch Size (for batch and hierarchical modes) -->
+        <div class="option-row" *ngIf="largeDocConfig.mode === 'batch' || largeDocConfig.mode === 'hierarchical'">
+          <div class="option-label-row">
+            <label>
+              Index Batch Size
+              <span class="batch-type-badge storage-badge">Storage</span>
+            </label>
+            <span class="option-value">{{ largeDocConfig.batchSize }} chunks</span>
+          </div>
+          <mat-slider
+            min="10"
+            max="200"
+            step="10"
+            [disabled]="isSubmitting"
+            class="option-slider">
+            <input matSliderThumb [(ngModel)]="largeDocConfig.batchSize">
+          </mat-slider>
+          <div class="slider-labels">
+            <span>10</span>
+            <span>Chunks per Lucene write operation</span>
+            <span>200</span>
+          </div>
+          <div class="batch-type-note">
+            <mat-icon>info_outline</mat-icon>
+            <span>This controls how many chunks are written to the index at once. For <strong>embedding batch size</strong> (NDArray inference), see the Batch Size Configuration panel in Model Debug.</span>
+          </div>
+        </div>
+
+        <!-- Hierarchical options -->
+        <div class="toggles-row" *ngIf="largeDocConfig.mode === 'hierarchical'">
+          <mat-slide-toggle
+            [(ngModel)]="largeDocConfig.createSummaries"
+            [disabled]="isSubmitting">
+            Create Document Summaries
+          </mat-slide-toggle>
+        </div>
+      </div>
+
+      <!-- Optimization Options -->
+      <div class="optimization-section">
+        <label class="optimization-label">Optimization Options</label>
+        <div class="toggles-row">
+          <mat-slide-toggle
+            [(ngModel)]="largeDocConfig.optimizeExtraction"
+            [disabled]="isSubmitting">
+            Optimize Text Extraction
+          </mat-slide-toggle>
+          <mat-slide-toggle
+            [(ngModel)]="largeDocConfig.skipEmbeddedMedia"
+            [disabled]="isSubmitting">
+            Skip Embedded Media
+          </mat-slide-toggle>
+        </div>
+        <div class="optimization-hint">
+          <mat-icon>lightbulb</mat-icon>
+          <span>Skipping media can significantly reduce processing time for documents with many images.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subprocess Configuration Section -->
+  <div class="subprocess-section">
+    <div class="section-header" (click)="toggleSubprocessSection()">
+      <div class="section-header-left">
+        <mat-icon>settings_applications</mat-icon>
+        <span class="section-title">Processing Mode</span>
+        <mat-chip class="mode-chip" [ngClass]="{
+          'enabled-chip': selectedProcessingMode === 'subprocess',
+          'disabled-chip': selectedProcessingMode === 'inprocess',
+          'auto-chip': selectedProcessingMode === 'auto'
+        }" *ngIf="!showSubprocessOptions">
+          {{ selectedProcessingMode === 'auto' ? 'Auto' : (selectedProcessingMode === 'subprocess' ? 'Subprocess' : 'In-Process') }}
+        </mat-chip>
+      </div>
+      <mat-icon class="expand-icon">{{ showSubprocessOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="subprocess-content" *ngIf="showSubprocessOptions" [@expandCollapse]>
+      <!-- Per-Request Processing Mode Selector -->
+      <div class="processing-mode-selector">
+        <label class="mode-selector-label">
+          <mat-icon>play_circle</mat-icon>
+          Select Processing Mode for This Upload
+        </label>
+        <div class="mode-options">
+          <button
+            *ngFor="let mode of processingModeOptions"
+            mat-stroked-button
+            class="mode-option-btn"
+            [class.selected]="selectedProcessingMode === mode.value"
+            (click)="selectedProcessingMode = mode.value"
+            [disabled]="isSubmitting"
+            [matTooltip]="mode.description">
+            <mat-icon>{{ mode.icon }}</mat-icon>
+            <span class="mode-label">{{ mode.label }}</span>
+          </button>
+        </div>
+        <div class="mode-description">
+          <mat-icon>info</mat-icon>
+          <span>{{ getSelectedProcessingModeDescription() }}</span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Global Configuration Section -->
+      <div class="global-config-header">
+        <mat-icon>settings</mat-icon>
+        <span>Global Subprocess Settings</span>
+        <span class="hint-text">(applies when mode is 'Auto')</span>
+      </div>
+
+      <!-- Mode Banner -->
+      <div class="subprocess-mode-banner" [ngClass]="{'mode-enabled': subprocessConfig.enabled, 'mode-disabled': !subprocessConfig.enabled}">
+        <mat-icon>{{ subprocessConfig.enabled ? 'security' : 'warning' }}</mat-icon>
+        <span>{{ getSubprocessModeDescription() }}</span>
+      </div>
+
+      <!-- Enable/Disable Toggle -->
+      <div class="subprocess-toggle-row">
+        <mat-slide-toggle
+          [checked]="subprocessConfig.enabled"
+          (change)="toggleSubprocessEnabled($event.checked)"
+          [disabled]="isSubmitting"
+          color="primary">
+          <div class="subprocess-toggle-label">
+            <mat-icon>{{ subprocessConfig.enabled ? 'check_circle' : 'cancel' }}</mat-icon>
+            <span>{{ subprocessConfig.enabled ? 'Subprocess Mode Enabled' : 'Subprocess Mode Disabled' }}</span>
+          </div>
+        </mat-slide-toggle>
+      </div>
+
+      <!-- Subprocess Options (only shown when enabled) -->
+      <div class="subprocess-options" *ngIf="subprocessConfig.enabled">
+        <!-- Heap Size Selection -->
+        <div class="subprocess-option-group">
+          <label class="subprocess-option-label">
+            <mat-icon>memory</mat-icon>
+            JVM Heap Size
+          </label>
+          <div class="heap-size-selector">
+            <button
+              *ngFor="let size of heapSizeOptions"
+              mat-stroked-button
+              class="heap-size-btn"
+              [class.selected]="subprocessConfig.heapSize === size"
+              [class.recommended]="isRecommendedHeapSize(size)"
+              (click)="subprocessConfig.heapSize = size"
+              [disabled]="isSubmitting">
+              {{ size }}
+              <span class="recommended-label" *ngIf="isRecommendedHeapSize(size)">Recommended</span>
+            </button>
+          </div>
+          <div class="heap-size-hint">
+            <mat-icon>info_outline</mat-icon>
+            <span>Based on your system's {{ (systemMemoryMB / 1024).toFixed(1) }}GB RAM, {{ getRecommendedHeapSizeLabel() }} is recommended</span>
+          </div>
+        </div>
+
+        <!-- Timeout Configuration -->
+        <div class="subprocess-option-group">
+          <label class="subprocess-option-label">
+            <mat-icon>timer</mat-icon>
+            Job Timeout
+          </label>
+          <div class="timeout-row">
+            <mat-form-field appearance="outline" class="timeout-field">
+              <mat-label>Minutes</mat-label>
+              <input matInput type="number" [(ngModel)]="subprocessConfig.timeoutMinutes" [disabled]="isSubmitting" min="1" max="1440">
+            </mat-form-field>
+            <span class="timeout-hint">Maximum time before job is terminated (1-1440 min)</span>
+          </div>
+        </div>
+
+        <!-- Advanced Settings -->
+        <div class="subprocess-advanced">
+          <div class="advanced-header">
+            <mat-icon>tune</mat-icon>
+            <span>Health Monitoring</span>
+          </div>
+          <div class="advanced-grid">
+            <div class="advanced-item">
+              <mat-form-field appearance="outline" class="compact-field">
+                <mat-label>Heartbeat Interval (sec)</mat-label>
+                <input matInput type="number" [(ngModel)]="subprocessConfig.heartbeatIntervalSeconds" [disabled]="isSubmitting" min="5" max="60">
+              </mat-form-field>
+              <span class="advanced-hint">How often process reports status</span>
+            </div>
+            <div class="advanced-item">
+              <mat-form-field appearance="outline" class="compact-field">
+                <mat-label>Stale Threshold (sec)</mat-label>
+                <input matInput type="number" [(ngModel)]="subprocessConfig.staleThresholdSeconds" [disabled]="isSubmitting" min="30" max="600">
+              </mat-form-field>
+              <span class="advanced-hint">Time without heartbeat before force-kill</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- In-Process Mode Warning (when subprocess is disabled) -->
+      <div class="in-process-warning" *ngIf="!subprocessConfig.enabled">
+        <mat-icon>warning</mat-icon>
+        <div class="warning-content">
+          <strong>In-Process Mode</strong>
+          <span>Document processing will run in the main application process. A crash or out-of-memory error during processing may affect the entire application.</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <mat-checkbox formControlName="rebuildIndex" class="full-width-field" style="margin-top: 16px;" [disabled]="isSubmitting">

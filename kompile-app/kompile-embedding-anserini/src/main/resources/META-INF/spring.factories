@@ -1,1 +1,3 @@
+# Anserini Embedding auto-configuration
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
 ai.kompile.embedding.anserini.config.AnseriniEmbeddingConfiguration

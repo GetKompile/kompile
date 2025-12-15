@@ -34,6 +34,8 @@ import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Component;
 
@@ -46,6 +48,8 @@ import java.util.Set;
 
 @Component
 public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
+
+    private static final Logger logger = LoggerFactory.getLogger(MicrosoftOfficeLoaderImpl.class);
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
             "doc", "docx", "xls", "xlsx", "ppt", "pptx", "mdb", "accdb", "pst"
@@ -79,22 +83,40 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
 
         String filename = file.getName().toLowerCase();
 
-        if (filename.endsWith(".doc")) {
-            return loadWordDoc(file);
-        } else if (filename.endsWith(".docx")) {
-            return loadWordDocx(file);
-        } else if (filename.endsWith(".xls")) {
-            return loadExcelXls(file);
-        } else if (filename.endsWith(".xlsx")) {
-            return loadExcelXlsx(file);
-        } else if (filename.endsWith(".ppt")) {
-            return loadPowerPointPpt(file);
-        } else if (filename.endsWith(".pptx")) {
-            return loadPowerPointPptx(file);
-        } else if (filename.endsWith(".mdb") || filename.endsWith(".accdb")) {
-            return loadAccessDatabase(file);
-        } else if (filename.endsWith(".pst")) {
-            return loadOutlookPst(file);
+        try {
+            if (filename.endsWith(".doc")) {
+                return loadWordDoc(file);
+            } else if (filename.endsWith(".docx")) {
+                return loadWordDocx(file);
+            } else if (filename.endsWith(".xls")) {
+                return loadExcelXls(file);
+            } else if (filename.endsWith(".xlsx")) {
+                return loadExcelXlsx(file);
+            } else if (filename.endsWith(".ppt")) {
+                return loadPowerPointPpt(file);
+            } else if (filename.endsWith(".pptx")) {
+                return loadPowerPointPptx(file);
+            } else if (filename.endsWith(".mdb") || filename.endsWith(".accdb")) {
+                return loadAccessDatabase(file);
+            } else if (filename.endsWith(".pst")) {
+                return loadOutlookPst(file);
+            }
+        } catch (Exception e) {
+            // Handle corrupted or invalid Office files gracefully
+            String errorMessage = e.getMessage();
+            logger.warn("Unable to parse Microsoft Office file '{}': {}. The file may be corrupted or in an unsupported format.",
+                       file.getName(), errorMessage);
+
+            // Return an error document so the caller knows what happened
+            Document errorDoc = new Document("[Error: Unable to parse Microsoft Office file. The file may be corrupted, truncated, or password-protected.]");
+            errorDoc.getMetadata().put("source", file.getAbsolutePath());
+            errorDoc.getMetadata().put("fileName", file.getName());
+            errorDoc.getMetadata().put("fileSize", file.length());
+            errorDoc.getMetadata().put("lastModified", file.lastModified());
+            errorDoc.getMetadata().put("loader", getName());
+            errorDoc.getMetadata().put("parseError", true);
+            errorDoc.getMetadata().put("errorMessage", errorMessage != null ? errorMessage : "Unknown error");
+            return List.of(errorDoc);
         }
 
         throw new IllegalArgumentException("Unsupported file type: " + filename);

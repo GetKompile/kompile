@@ -16,10 +16,11 @@
 
 package ai.kompile.cli.main.build;
 
-import ai.kompile.cli.main.models.KompileModelManager;
-import ai.kompile.cli.main.models.ModelConstants;
-import ai.kompile.cli.main.models.ModelDescriptor;
-import ai.kompile.cli.main.models.ModelType;
+
+import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.modelmanager.ModelDescriptor;
+import ai.kompile.modelmanager.ModelType;
 import org.apache.maven.model.*;
 import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
@@ -27,12 +28,7 @@ import org.codehaus.plexus.util.xml.Xpp3DomBuilder;
 import org.codehaus.plexus.util.xml.pull.XmlPullParserException;
 import picocli.CommandLine;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.StringReader;
+import java.io.*;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.channels.Channels;
@@ -40,16 +36,8 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.Callable;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
@@ -100,7 +88,7 @@ public class RagPomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--includeAppMain"}, description = "Include kompile-app-main module", defaultValue = "true", negatable = true)
     private boolean includeAppMain;
-    @CommandLine.Option(names = {"--includeAppRFCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
+    @CommandLine.Option(names = {"--includeAppCore"}, description = "Include kompile-app-core module", defaultValue = "true", negatable = true)
     private boolean includeAppCore;
     @CommandLine.Option(names = {"--includeLoadersOrchestrator"}, description = "Include kompile-app-loaders-orchestrator module", defaultValue = "true", negatable = true)
     private boolean includeLoadersOrchestrator;
@@ -173,6 +161,9 @@ public class RagPomGenerator implements Callable<Void> {
 
     @CommandLine.Option(names = {"--buildNative"}, description = "Configure build for GraalVM native image", defaultValue = "true")
     private boolean buildNative = true;
+
+    @CommandLine.Option(names = {"--appTitle"}, description = "Application title displayed in the UI banner", defaultValue = "Kompile RAG Console")
+    private String appTitle = "Kompile RAG Console";
 
     @CommandLine.Option(names = {"--anserini-indexes"},
             description = "Comma-separated list of Anserini prebuilt index IDs to ensure are available (e.g., msmarco-passage-v1). " +
@@ -415,6 +406,7 @@ public class RagPomGenerator implements Callable<Void> {
         parentPom.setArtifactId("spring-boot-starter-parent");
         parentPom.setVersion(DEFAULT_SPRING_BOOT_VERSION);
         model.setParent(parentPom);
+        model.getProperties().setProperty("javacpp.platform",javacppPlatform);
 
         File projectDir;
         if (outputFile.isDirectory()) {
@@ -639,7 +631,8 @@ public class RagPomGenerator implements Callable<Void> {
         writer.write("# =============================================================================\n");
 
         writer.write("spring.application.name=" + pomProperties.getProperty("instanceArtifactId", this.instanceArtifactId) + "\n");
-        writer.write("server.port=8080\n\n");
+        writer.write("server.port=8080\n");
+        writer.write("kompile.app.title=" + this.appTitle + "\n\n");
 
         writer.write("# This property defines the base directory from which models will be loaded AT RUNTIME.\n");
         writer.write("# It defaults to the path used during generation if KOMPILE_MODEL_CACHE_DIR is not set.\n");
@@ -680,7 +673,7 @@ public class RagPomGenerator implements Callable<Void> {
                     if (desc != null && resolvedModelPaths.containsKey(desc.getModelId())) {
                         String encoderModelPathValue = "${kompile.runtime.model.cache.path}/" + desc.getExpectedCacheSubpath().replace("\\", "/");
                         writer.write("anserini.encoder." + trimmedEncoderId + ".model.path=" + encoderModelPathValue + "\n");
-                        if ("bge-base-en-v1.5-onnx".equals(trimmedEncoderId)) {
+                        if ("bge-base-en-v1.5".equals(trimmedEncoderId)) {
                             writer.write("anserini.encoder." + trimmedEncoderId + ".vocab.path=${kompile.runtime.model.cache.path}/anserini/encoders/onnx/bge-base-en-v1.5/tokenizer.json\n");
                         }
                     }
@@ -1125,8 +1118,11 @@ public class RagPomGenerator implements Callable<Void> {
         defaultDependencies.clear();
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-web", "${spring-boot.version}");
         addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter", "${spring-boot.version}");
+        // Jakarta Bean Validation provider (Hibernate Validator) - required by modules using jakarta.validation-api
+        addDependency(defaultDependencies, "org.springframework.boot", "spring-boot-starter-validation", "${spring-boot.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-client", "${spring-ai.version}");
         addDependency(defaultDependencies, "org.springframework.ai", "spring-ai-starter-mcp-server", "${spring-ai.version}");
+        addDependency(defaultDependencies,"ai.kompile", "tokenizers-native", "0.1.0-SNAPSHOT","compile" ,javacppPlatform , false);
 
         addDependency(defaultDependencies, "jakarta.mail", "jakarta.mail-api", DEFAULT_JAKARTA_MAIL_VERSION);
 
@@ -2252,6 +2248,7 @@ public class RagPomGenerator implements Callable<Void> {
 
         writer.write("spring.application.name=" + instanceArtifactId + "\n");
         writer.write("server.port=8080\n");
+        writer.write("kompile.app.title=" + this.appTitle + "\n");
         writer.write("\n");
 
         writer.write("# Logging Configuration\n");
@@ -2368,7 +2365,10 @@ public class RagPomGenerator implements Callable<Void> {
         if (model.getBuild() == null) {
             model.setBuild(new Build());
         }
+
+
         Build build = model.getBuild();
+
         try {
             Plugin compilerPlugin = createPlugin("org.apache.maven.plugins", "maven-compiler-plugin", "${maven-compiler-plugin.version}");
             Xpp3Dom compilerConfig = Xpp3DomBuilder.build(new StringReader(
@@ -2500,7 +2500,6 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
         addBuildArg(buildArgsDom, "-H:+ReportUnsupportedElementsAtRuntime");
 
-        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.bytedeco.javacpp.indexer.UnsafeRaw");
         addBuildArg(buildArgsDom, "--initialize-at-build-time=org.nd4j.shade.protobuf.UnsafeUtil");
         addBuildArg(buildArgsDom, "--initialize-at-build-time=com.google.protobuf.UnsafeUtil");
 
@@ -2509,7 +2508,7 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "--enable-all-security-services");
 
         addBuildArg(buildArgsDom, "--initialize-at-build-time=java.rmi.server.Operation,org.apache.logging.log4j.Util,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.util.ProviderUtil,org.apache.logging.log4j.util.PropertySource$Util,org.apache.logging.log4j.core.impl.Log4jProvider,org.apache.logging.log4j.spi.AbstractLogger,org.apache.logging.log4j.core.impl.Log4jContextFactory,org.apache.logging.log4j.core.selector.ClassLoaderContextSelector,org.apache.logging.log4j.core.LifeCycle$State,org.apache.logging.log4j.status.StatusLogger,org.apache.logging.log4j.spi.StandardLevel,,org.apache.logging.log4j.util.Strings,org.apache.logging.log4j.Level,org.apache.logging.log4j.util.PropertiesUtil,org.apache.logging.log4j.util.OsgiServiceLocator,org.apache.logging.log4j.util.PropertyFilePropertySource,org.apache.logging.log4j.message.ParameterFormatter,org.apache.logging.log4j.status.StatusLogger$Config,org.apache.logging.log4j.status.StatusLogger$InstanceHolder");
-        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.nd4j.autodiff.samediff,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.bytedeco.javacpp.indexer,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.apache.lucene.util.ScalarQuantizer,org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.openblas.global.openblas,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.springframework.ai.chat.client.advisor,reactor.core.scheduler,java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=ai.kompile.app.MainApplication,org.nd4j.linalg.cpu.nativecpu.NDArray,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.nd4j.linalg.api.ops.impl.scalar.LeakyReLU,org.nd4j.linalg.cpu.nativecpu.CpuNDArrayFactory,org.nd4j.jita.constant.ProtectedCachedShapeInfoProvider,org.nd4j.jita.constant.ConstantProtector,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.memory.deallocation.DeallocatorService,org.nd4j.linalg.factory.Nd4j,ai.kompile.presets.TokenizersHelper,ai.kompile.bindings.TokenizersNative,org.nd4j.autodiff.samediff,org.nd4j.imports.converters.DifferentialFunctionClassHolder,org.nd4j.linalg.api.ops,org.bytedeco.javacpp.indexer,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.apache.lucene.util.ScalarQuantizer,org.jline.nativ.JLineLibrary,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.global.mklml,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.openblas.global.openblas,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.springframework.ai.chat.client.advisor,reactor.core.scheduler,java.awt.event,org.apache.poi.util.RandomSingleton,sun.awt.X11,sun.rmi.server,java.rmi.server,sun.java.rmi.server,sun.rmi.transport,org.apache.tomcat.jni.SSL,sun.awt.X11GraphicsConfig,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,org.springframework.boot.loader.ref.DefaultCleaner,org.apache.tomcat.util.net.openssl.OpenSSLContext,org.apache.tomcat.util.net.openssl.OpenSSLEngine,sun.awt.dnd.SunDropTargetContextPeer$EventDispatcher,org.springframework.core.io.VfsUtils,org.springframework.boot.loader.ref.Cleaner,org.springframework.boot.loader.ref.DefaultCleaner,org.springframework.web.reactive.function.client.DefaultExchangeStrategiesBuilder,reactor.core.scheduler.SchedulerState$DisposeAwaiterRunnable,org.apache.catalina.mbeans.MBeanUtils,org.apache.catalina.mbeans.MBeanFactory");
         addBuildArg(buildArgsDom, "--trace-class-initialization=org.apache.tomcat.util.compat.Jre12Compat,java.lang.ref.WeakReference,java.lang.ref.SoftReference,org.nd4j.nativeblas.NativeOpsHolder,org.apache.tomcat.util.compat,org.apache.catalina.webresources.DirResourceSet,org.bytedeco.javacpp.Loader,org.bytedeco.javacpp.tools.PointerBufferPoolMXBean,java.rmi.server.Operation,org.nd4j.linalg.factory.Nd4j,org.nd4j.linalg.cpu.nativecpu.CpuBackend,org.nd4j.linalg.learning.config,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.nd4j.linalg.cpu.nativecpu.CpuEnvironment,org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu$Environment,org.nd4j.linalg.cpu.nativecpu.buffer.CpuDeallocator,org.bytedeco.javacpp.Pointer,org.nd4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,sun.nio.ch.FileChannelImpl,org.apache.lucene.util.ScalarQuantizer,org.jline.terminal.impl.jna,org.jline.terminal.impl.jna.linux.LinuxNativePty$UtilLibrary,org.jline.nativ.JLineLibrary,org.eclipse.deeplearning4j.nativeblas.NativeOpsHolder,org.eclipse.deeplearning4j.linalg.api.memory.deallocation.DeallocatorService$DeallocatorServiceThread,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.CpuEnvironment,org.bytedeco.openblas.presets.openblas,org.bytedeco.onnxruntime.presets.onnxruntime,org.bytedeco.onnx.presets.onnx,org.bytedeco.opencl.presets.OpenCL,org.bytedeco.openblas.presets.openblas_nolapack,org.bytedeco.dnnl.presets.dnnl,org.bytedeco.mkldnn.presets.mklml,org.bytedeco.opencl.global.OpenCL,org.bytedeco.tensorflow.presets.tensorflow,org.bytedeco.mkldnn.global.mklml,org.eclipse.deeplearning4j.linalg.cpu.nativecpu.bindings.Nd4jCpu,org.bytedeco.onnx.global.onnx,org.bytedeco.mkldnn.global.mkldnn,org.bytedeco.openblas.global.openblas,org.bytedeco.openblas.global.openblas_nolapack,org.bytedeco.onnxruntime.global.onnxruntime,org.bytedeco.javacpp.Loader$Helper,org.bytedeco.javacpp.Loader,org.bytedeco.dnnl.global.dnnl,org.bytedeco.javacpp.Pointer,org.eclipse.deeplearning4j.autodiff.samediff.internal.memory.ArrayCacheMemoryMgr,org.bytedeco.javacpp.Pointer$DeallocatorThread,org.eclipse.deeplearning4j.linalg.api.ops.impl.layers.ExternalErrorsFunction,org.eclipse.deeplearning4j.linalg.factory.Nd4j,org.springframework.ai.chat.client.advisor.api.BaseAdvisor,reactor.core.scheduler.Schedulers,reactor.core.scheduler.BoundedElasticScheduler$BoundedState,reactor.core.scheduler.BoundedElasticSchedulerSupplier,reactor.core.scheduler.BoundedElasticScheduler,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices$1,reactor.core.scheduler.BoundedElasticScheduler$BoundedServices");
 
         addBuildArg(buildArgsDom, "-H:IncludeResources=log4j2.xml");
@@ -2520,6 +2519,15 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "-H:+AllowDeprecatedBuilderClassesOnImageClasspath");
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/native-image/.*\\.json");
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/services/.*");
+
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/tokenizers/.*\\.dll");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/tokenizers/.*\\.dylib");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/tokenizers/.*\\.so");
+
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/bindings/.*\\.so");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/bindings/.*\\.dll");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/bindings/.*\\.dylib");
+
         addBuildArg(buildArgsDom, "-H:IncludeResources=ai/kompile/.*\\.schema\\.json");
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring/.*\\.imports");
         addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/spring\\.components");

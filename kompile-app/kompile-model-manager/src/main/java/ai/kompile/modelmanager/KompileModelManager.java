@@ -37,6 +37,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import java.io.BufferedInputStream;
+import java.util.Map;
 
 /**
  * Manages the download, caching, and retrieval of ML/NLP models.
@@ -85,6 +86,34 @@ public class KompileModelManager {
 
     public Path getBaseCachePath() {
         return baseCachePath;
+    }
+
+    /**
+     * Ensures both model and vocabulary files are available for an encoder model.
+     * This method downloads both the model file (.sdz) and its corresponding vocabulary file.
+     *
+     * @param modelId The model identifier (e.g., "bge-base-en-v1.5")
+     * @return ModelBundle containing paths to both model and vocabulary files
+     * @throws IOException if download or caching fails
+     */
+    public ModelBundle ensureEncoderModelBundle(String modelId) throws IOException {
+        ModelDescriptor modelDescriptor = ModelConstants.getAnseriniEncoderModelDescriptor(modelId);
+        ModelDescriptor vocabDescriptor = ModelConstants.getAnseriniEncoderVocabDescriptor(modelId);
+        
+        if (modelDescriptor == null) {
+            throw new IOException("No model descriptor found for model ID: " + modelId);
+        }
+        if (vocabDescriptor == null) {
+            throw new IOException("No vocabulary descriptor found for model ID: " + modelId);
+        }
+        
+        // Ensure both model and vocabulary are downloaded
+        Path modelPath = ensureModelAvailable(modelDescriptor);
+        Path vocabPath = ensureModelAvailable(vocabDescriptor);
+        TokenizerConfig tokenizerConfig = TokenizerConfig.fromMetadata(modelDescriptor.getMetadata());
+        LOGGER.info("Model bundle ready for {}: model={}, vocab={}", modelId, modelPath, vocabPath);
+        
+        return new ModelBundle(modelId, modelPath, vocabPath, modelDescriptor.getMetadata(),tokenizerConfig);
     }
 
     /**
@@ -160,6 +189,44 @@ public class KompileModelManager {
             }
         }
         return modelPathInCache;
+    }
+
+    /**
+     * Container for model bundle containing model and vocabulary paths
+     */
+    public static class ModelBundle {
+        private final String modelId;
+        private final Path modelPath;
+        private final Path vocabularyPath;
+        private final Map<String, Object> metadata;
+        private TokenizerConfig tokenizerConfig;
+
+        public ModelBundle(String modelId, Path modelPath, Path vocabularyPath, Map<String, Object> metadata,TokenizerConfig tokenizerConfig) {
+            this.modelId = modelId;
+            this.modelPath = modelPath;
+            this.vocabularyPath = vocabularyPath;
+            this.metadata = metadata;
+            this.tokenizerConfig = tokenizerConfig;
+        }
+        
+        public String getModelId() { return modelId; }
+        public Path getModelPath() { return modelPath; }
+        public Path getVocabularyPath() { return vocabularyPath; }
+        public Map<String, Object> getMetadata() { return metadata; }
+
+        public TokenizerConfig getTokenizerConfig() {
+            return tokenizerConfig;
+        }
+
+        @Override
+        public String toString() {
+            return "ModelBundle{" +
+                    "modelId='" + modelId + '\'' +
+                    ", modelPath=" + modelPath +
+                    ", vocabularyPath=" + vocabularyPath +
+                    ", metadata=" + metadata +
+                    '}';
+        }
     }
 
     private String calculateSha256(Path path) throws IOException {

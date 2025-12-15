@@ -17,12 +17,15 @@
 import { Injectable } from '@angular/core';
 import { environment } from '../../environments/environment'; // If you use environment files
 
+// Export the backendUrl for use in services that don't extend BaseService
+export const backendUrl = environment.apiUrl;
+
 @Injectable({
   providedIn: 'root'
 })
 export class BaseService {
-  // Adjust if your Spring Boot backend runs on a different port or context path
-  public readonly backendUrl = environment.apiUrl || 'http://localhost:8080/api';
+  // Backend URL is dynamically determined from environment
+  public readonly backendUrl = environment.apiUrl;
 
   constructor() { }
 }
