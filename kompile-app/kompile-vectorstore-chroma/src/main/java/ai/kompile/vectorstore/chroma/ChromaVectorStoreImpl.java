@@ -43,26 +43,29 @@ public class ChromaVectorStoreImpl implements VectorStore {
                 springAiChromaVectorStore.getClass().getSimpleName());
     }
 
-    // ... add and delete methods remain the same ...
     @Override
-    public void add(List<Document> documents, List<List<Float>> embeddings) {
+    public int add(List<Document> documents, List<List<Float>> embeddings) {
         logger.warn("add(documents, List<List<Float>> embeddings) called on ChromaVectorStoreImpl. " +
                 "This wrapper will delegate to add(List<Document> documents), " +
                 "relying on the underlying Spring AI ChromaVectorStore to handle embedding generation " +
                 "using its configured EmbeddingModel. The provided pre-computed embeddings will be ignored by this call.");
         if (documents != null && !documents.isEmpty()) {
-            add(documents);
+            return add(documents);
         }
+        return 0;
     }
 
     @Override
-    public void add(List<Document> documents) {
+    public int add(List<Document> documents) {
         if (documents != null && !documents.isEmpty()) {
             logger.debug("Adding {} documents to ChromaVectorStore via Spring AI VectorStore.", documents.size());
             this.springAiChromaVectorStore.add(documents);
-            logger.info("Successfully submitted {} documents to ChromaVectorStore.", documents.size());
+            int count = documents.size();
+            logger.info("Successfully submitted {} documents to ChromaVectorStore.", count);
+            return count;
         } else {
             logger.debug("No documents provided to add to ChromaVectorStore.");
+            return 0;
         }
     }
 

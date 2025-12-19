@@ -33,14 +33,20 @@
 
     <dependencies>
         <!-- Minimal dependencies - only what's absolutely necessary -->
-        
+
         <!-- Apache Commons Compress for tar.gz extraction -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
             <version>1.21</version>
         </dependency>
-        
+
+        <!-- Jackson for JSON parsing (model registry) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- Logging facade -->
         <dependency>
             <groupId>org.slf4j</groupId>

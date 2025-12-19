@@ -132,6 +132,22 @@ public class BuildRagApp implements Callable<Integer> {
     @Option(names = {"--includePgmlIndexer"}, description = "Include kompile-app-pgml-indexer module")
     private boolean includePgmlIndexer = false;
 
+    @Option(names = {"--includeModelStaging"}, description = "Include kompile-model-staging module for model management and archives")
+    private boolean includeModelStaging = false;
+
+    // Archive Options
+    @Option(names = {"--archivePath"}, description = "Path to a .karch archive to embed in the application (for offline/air-gapped deployments)")
+    private File archivePath;
+
+    @Option(names = {"--modelSourceType"}, description = "Model source type: ARCHIVE (offline), REGISTRY (online), HYBRID (try archive first, fall back to registry)", defaultValue = "HYBRID")
+    private String modelSourceType = "HYBRID";
+
+    @Option(names = {"--registryUrls"}, description = "Comma-separated list of remote model registry URLs", arity = "1..*", split = ",")
+    private List<String> registryUrls;
+
+    @Option(names = {"--archiveOnly"}, description = "Enable archive-only mode (no network model downloads)", defaultValue = "false")
+    private boolean archiveOnly;
+
     @Option(names = {"--native"}, description = "Build a GraalVM native image (activates 'native' profile)", defaultValue = "true", negatable = true)
     private boolean buildNative;
 
@@ -226,7 +242,18 @@ public class BuildRagApp implements Callable<Integer> {
 
         // Additional options
         ragPomCliArgs.add("--includePgmlIndexer=" + this.includePgmlIndexer);
+        ragPomCliArgs.add("--includeModelStaging=" + this.includeModelStaging);
         ragPomCliArgs.add("--buildNative=" + this.buildNative);
+
+        // Archive options
+        ragPomCliArgs.add("--modelSourceType=" + this.modelSourceType);
+        if (this.archivePath != null && this.archivePath.exists()) {
+            ragPomCliArgs.add("--archivePath=" + this.archivePath.getAbsolutePath());
+        }
+        if (this.registryUrls != null && !this.registryUrls.isEmpty()) {
+            ragPomCliArgs.add("--registryUrls=" + String.join(",", this.registryUrls));
+        }
+        ragPomCliArgs.add("--archiveOnly=" + this.archiveOnly);
 
         // UI customization
         ragPomCliArgs.add("--appTitle=" + this.appTitle);
@@ -240,6 +267,36 @@ public class BuildRagApp implements Callable<Integer> {
         if (!instancePomFile.exists()) {
             System.err.println("Generated instance POM file not found: " + instancePomFile.getAbsolutePath());
             return 1;
+        }
+
+        // Copy archive to resources if specified
+        if (this.archivePath != null && this.archivePath.exists()) {
+            File resourcesDir = new File(projectBuildDir, "src/main/resources/models");
+            if (!resourcesDir.exists() && !resourcesDir.mkdirs()) {
+                System.err.println("Failed to create resources/models directory");
+                return 1;
+            }
+            File destArchive = new File(resourcesDir, this.archivePath.getName());
+            System.out.println("Embedding archive: " + this.archivePath.getName() + " -> " + destArchive.getAbsolutePath());
+            FileUtils.copyFile(this.archivePath, destArchive);
+
+            // Create application.properties with archive configuration
+            File appPropsDir = new File(projectBuildDir, "src/main/resources");
+            File appPropsFile = new File(appPropsDir, "application-archive.properties");
+            StringBuilder propsContent = new StringBuilder();
+            propsContent.append("# Auto-generated archive configuration\n");
+            propsContent.append("kompile.models.source-type=").append(archiveOnly ? "ARCHIVE" : modelSourceType).append("\n");
+            propsContent.append("kompile.models.embedded-archive=classpath:models/").append(this.archivePath.getName()).append("\n");
+            propsContent.append("kompile.models.auto-extract-embedded=true\n");
+            propsContent.append("kompile.models.allow-fallback=").append(!archiveOnly).append("\n");
+            propsContent.append("kompile.models.verify-checksums=true\n");
+            if (this.registryUrls != null && !this.registryUrls.isEmpty()) {
+                for (int i = 0; i < this.registryUrls.size(); i++) {
+                    propsContent.append("kompile.models.registry-urls[").append(i).append("]=").append(this.registryUrls.get(i)).append("\n");
+                }
+            }
+            FileUtils.writeStringToFile(appPropsFile, propsContent.toString(), "UTF-8");
+            System.out.println("Created archive configuration: " + appPropsFile.getAbsolutePath());
         }
 
         InvocationRequest request = new DefaultInvocationRequest();
@@ -438,6 +495,15 @@ public class BuildRagApp implements Callable<Integer> {
         // Additional
         if (includeAnserini) System.out.println("    ✓ Anserini Search");
         if (includePgmlIndexer) System.out.println("    ✓ PostgresML Indexer");
+        if (includeModelStaging) System.out.println("    ✓ Model Staging");
+
+        // Archive configuration
+        if (archivePath != null && archivePath.exists()) {
+            System.out.println("    ✓ Embedded Archive: " + archivePath.getName());
+            System.out.println("      Model Source: " + (archiveOnly ? "ARCHIVE (offline mode)" : modelSourceType));
+        } else if (registryUrls != null && !registryUrls.isEmpty()) {
+            System.out.println("    ✓ Registry URLs: " + String.join(", ", registryUrls));
+        }
 
         System.out.println();
     }

@@ -17,6 +17,8 @@
 package ai.kompile.core.indexers;
 
 import ai.kompile.core.retrievers.RetrievedDoc;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
@@ -26,9 +28,21 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-
-@Service
+/**
+ * A no-operation implementation of IndexerService.
+ * This bean is only created if no other IndexerService implementation is available,
+ * allowing the application to start but with indexing functionality disabled.
+ */
+@Service("noOpIndexerService")
+@ConditionalOnMissingBean(value = IndexerService.class, ignored = NoOpIndexerService.class)
 public class NoOpIndexerService extends IndexerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(NoOpIndexerService.class);
+
+    public NoOpIndexerService() {
+        logger.warn("No specific IndexerService implementation found or configured. " +
+                "Initializing NoOpIndexerService. Keyword indexing functionality will be non-operational.");
+    }
     @Override
     public void indexDocuments(List<RetrievedDoc> documents, String collectionNameParam) {
 
@@ -40,7 +54,8 @@ public class NoOpIndexerService extends IndexerService {
     }
 
     @Override
-    public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException {
+    public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam)
+            throws IOException {
 
     }
 
@@ -65,7 +80,8 @@ public class NoOpIndexerService extends IndexerService {
     }
 
     @Override
-    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException {
+    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings)
+            throws IOException {
         // No-op
     }
 
@@ -93,5 +109,29 @@ public class NoOpIndexerService extends IndexerService {
     public boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException {
         return false;
     }
-}
 
+    @Override
+    public String getIndexPath() {
+        return "N/A (No-Op Indexer)";
+    }
+
+    @Override
+    public void indexFromLucene() throws IOException {
+        // No-op
+    }
+
+    @Override
+    public boolean startVectorIndexCreationAsync() {
+        return false;
+    }
+
+    @Override
+    public void cancelCurrentJob() {
+        // No-op
+    }
+
+    @Override
+    public JobStatus getJobStatus() {
+        return JobStatus.idle();
+    }
+}

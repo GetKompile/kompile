@@ -142,8 +142,20 @@ public class FlatDenseSearcher<K extends Comparable<K>> extends BaseDenseSearche
 
   @Override
   protected ScoredDoc[] searchVector(@Nullable K qid, float[] queryVector, int k) throws IOException {
+    LOG.info("FlatDenseSearcher.searchVector: k={}, queryVectorDim={}, numCandidates={}, indexNumDocs={}",
+            k, queryVector.length, Math.max(k, DUMMY_K_FOR_KNN_QUERY), reader.numDocs());
+
     KnnFloatVectorQuery vectorQuery = new KnnFloatVectorQuery(Constants.VECTOR, queryVector, Math.max(k, DUMMY_K_FOR_KNN_QUERY));
     TopDocs topDocs = getIndexSearcher().search(vectorQuery, k, BREAK_SCORE_TIES_BY_DOCID, true);
+
+    LOG.info("FlatDenseSearcher.searchVector: Lucene returned {} hits (totalHits={})",
+            topDocs.scoreDocs.length, topDocs.totalHits);
+
+    if (topDocs.scoreDocs.length > 0) {
+      LOG.info("FlatDenseSearcher: Top hit score={}, docId={}",
+              topDocs.scoreDocs[0].score, topDocs.scoreDocs[0].doc);
+    }
+
     return super.processLuceneTopDocs(qid, topDocs);
   }
 

@@ -34,7 +34,7 @@ class KompileModelManagerTest {
     @Test
     void testModelDescriptorCreation() {
         ModelDescriptor descriptor = ModelConstants.createOpenNLPSentenceModelDescriptor("en");
-        
+
         assertNotNull(descriptor);
         assertEquals("opennlp-sentence-en", descriptor.getModelId());
         assertEquals(ModelType.OPENNLP_SENTENCE, descriptor.getModelType());
@@ -48,7 +48,7 @@ class KompileModelManagerTest {
         assertTrue(ModelConstants.isOpenNLPLanguageSupported("de"));
         assertTrue(ModelConstants.isOpenNLPLanguageSupported("fr"));
         assertFalse(ModelConstants.isOpenNLPLanguageSupported("xyz"));
-        
+
         assertTrue(ModelConstants.getSupportedOpenNLPLanguages().contains("en"));
         assertTrue(ModelConstants.getSupportedOpenNLPLanguages().size() > 20);
     }

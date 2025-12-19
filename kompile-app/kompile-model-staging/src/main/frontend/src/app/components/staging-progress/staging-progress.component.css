@@ -1,0 +1,103 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ */
+
+.staging-container {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.staging-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.staging-header h1 {
+  margin: 0 0 8px 0;
+  font-weight: 400;
+}
+
+.subtitle {
+  color: #666;
+  margin: 0;
+}
+
+.staging-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.staging-card {
+  border-left: 4px solid #e0e0e0;
+}
+
+.staging-card.status-success {
+  border-left-color: #4caf50;
+}
+
+.staging-card.status-error {
+  border-left-color: #f44336;
+}
+
+.staging-card.status-pending {
+  border-left-color: #ff9800;
+}
+
+.staging-card mat-card-avatar {
+  background: #f5f5f5;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.progress-text {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.message {
+  margin-top: 12px;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.error {
+  margin-top: 12px;
+  color: #f44336;
+  font-size: 0.9rem;
+}
+
+.timestamps {
+  margin-top: 12px;
+  font-size: 0.8rem;
+  color: #888;
+  display: flex;
+  gap: 16px;
+}
+
+.staging-card mat-card-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 16px;
+  color: #666;
+}

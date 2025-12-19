@@ -20,6 +20,13 @@ import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import {
   AddUrlRequest,
+  AddPathRequest,
+  AddYouTubeRequest,
+  YouTubeTranscriptResponse,
+  AddTextRequest,
+  AddTextResponse,
+  AddDiscordRequest,
+  DiscordResponse,
   FileUploadResponse,
   SimpleMessageResponse,
   LoaderInfo,
@@ -34,7 +41,8 @@ import {
   BatchAsyncUploadResponse,
   UploadedFileInfo,
   CancelTaskResponse,
-  ProcessingModeInfo
+  ProcessingModeInfo,
+  SubprocessIngestConfig
 } from '../models/api-models';
 import { BaseService } from './base.service';
 
@@ -52,8 +60,8 @@ export class DocumentService extends BaseService {
       .pipe(catchError(this.handleError));
   }
 
-  getUploadedFiles(): Observable<{uploaded_files_location: string, files: UploadedFileInfo[]}> {
-    return this.http.get<{uploaded_files_location: string, files: UploadedFileInfo[]}>(`${this.backendUrl}/documents/uploaded-files`)
+  getUploadedFiles(): Observable<{ uploaded_files_location: string, files: UploadedFileInfo[] }> {
+    return this.http.get<{ uploaded_files_location: string, files: UploadedFileInfo[] }>(`${this.backendUrl}/documents/uploaded-files`)
       .pipe(catchError(this.handleError));
   }
 
@@ -79,6 +87,47 @@ export class DocumentService extends BaseService {
 
   addUrl(addUrlRequest: AddUrlRequest): Observable<FileUploadResponse> {
     return this.http.post<FileUploadResponse>(`${this.backendUrl}/documents/add-url`, addUrlRequest)
+      .pipe(catchError(this.handleError));
+  }
+
+  addPath(addPathRequest: AddPathRequest): Observable<SimpleMessageResponse> {
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/documents/add-path`, addPathRequest)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Add a YouTube video transcript as a document source.
+   * Fetches the transcript from YouTube and processes it for indexing.
+   *
+   * @param request The request containing YouTube URL and optional parameters
+   * @returns Observable with transcript details and processing status
+   */
+  addYouTubeTranscript(request: AddYouTubeRequest): Observable<YouTubeTranscriptResponse> {
+    return this.http.post<YouTubeTranscriptResponse>(`${this.backendUrl}/documents/add-youtube`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Add text content directly as a document source.
+   * Takes raw text (e.g., pasted from clipboard) and processes it for indexing.
+   *
+   * @param request The request containing text content and optional parameters
+   * @returns Observable with processing status
+   */
+  addTextContent(request: AddTextRequest): Observable<AddTextResponse> {
+    return this.http.post<AddTextResponse>(`${this.backendUrl}/documents/add-text`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Add Discord channel/server messages as a document source.
+   * Fetches messages from the specified Discord server/channel and processes them for indexing.
+   *
+   * @param request The request containing Discord server ID, optional channel ID, and bot token
+   * @returns Observable with message fetch details and processing status
+   */
+  addDiscordMessages(request: AddDiscordRequest): Observable<DiscordResponse> {
+    return this.http.post<DiscordResponse>(`${this.backendUrl}/documents/add-discord`, request)
       .pipe(catchError(this.handleError));
   }
 
@@ -120,8 +169,9 @@ export class DocumentService extends BaseService {
    * @param loaderName Optional loader name
    * @param chunkerName Optional chunker name
    * @param processingMode Optional processing mode: 'auto', 'subprocess', or 'inprocess'
+   * @param subprocessConfig Optional subprocess configuration (heap size, timeout, etc.)
    */
-  uploadFileAsync(file: File, loaderName?: string, chunkerName?: string, processingMode?: string): Observable<AsyncUploadResponse> {
+  uploadFileAsync(file: File, loaderName?: string, chunkerName?: string, processingMode?: string, subprocessConfig?: SubprocessIngestConfig): Observable<AsyncUploadResponse> {
     const formData: FormData = new FormData();
     formData.append('file', file, file.name);
     if (loaderName) {
@@ -130,8 +180,15 @@ export class DocumentService extends BaseService {
     if (chunkerName) {
       formData.append('chunkerName', chunkerName);
     }
-    if (processingMode) {
-      formData.append('processingMode', processingMode);
+    // Always send processingMode - default to 'auto' if not specified
+    formData.append('processingMode', processingMode || 'auto');
+    console.log('[DocumentService] uploadFileAsync processingMode:', processingMode || 'auto');
+    // Pass subprocess config as JSON if provided
+    if (subprocessConfig) {
+      formData.append('subprocessHeapSize', subprocessConfig.heapSize || '');
+      formData.append('subprocessTimeoutMinutes', String(subprocessConfig.timeoutMinutes || 60));
+      formData.append('subprocessHeartbeatSeconds', String(subprocessConfig.heartbeatIntervalSeconds || 10));
+      formData.append('subprocessStaleThresholdSeconds', String(subprocessConfig.staleThresholdSeconds || 120));
     }
     return this.http.post<AsyncUploadResponse>(`${this.backendUrl}/documents/upload-async`, formData)
       .pipe(catchError(this.handleError));
@@ -145,8 +202,9 @@ export class DocumentService extends BaseService {
    * @param loaderName Optional loader name
    * @param chunkerName Optional chunker name
    * @param processingMode Optional processing mode: 'auto', 'subprocess', or 'inprocess'
+   * @param subprocessConfig Optional subprocess configuration (heap size, timeout, etc.)
    */
-  uploadFilesAsync(files: File[], loaderName?: string, chunkerName?: string, processingMode?: string): Observable<BatchAsyncUploadResponse> {
+  uploadFilesAsync(files: File[], loaderName?: string, chunkerName?: string, processingMode?: string, subprocessConfig?: SubprocessIngestConfig): Observable<BatchAsyncUploadResponse> {
     const formData: FormData = new FormData();
     files.forEach(file => {
       formData.append('files', file, file.name);
@@ -157,8 +215,15 @@ export class DocumentService extends BaseService {
     if (chunkerName) {
       formData.append('chunkerName', chunkerName);
     }
-    if (processingMode) {
-      formData.append('processingMode', processingMode);
+    // Always send processingMode - default to 'auto' if not specified
+    formData.append('processingMode', processingMode || 'auto');
+    console.log('[DocumentService] uploadFilesAsync processingMode:', processingMode || 'auto');
+    // Pass subprocess config if provided
+    if (subprocessConfig) {
+      formData.append('subprocessHeapSize', subprocessConfig.heapSize || '');
+      formData.append('subprocessTimeoutMinutes', String(subprocessConfig.timeoutMinutes || 60));
+      formData.append('subprocessHeartbeatSeconds', String(subprocessConfig.heartbeatIntervalSeconds || 10));
+      formData.append('subprocessStaleThresholdSeconds', String(subprocessConfig.staleThresholdSeconds || 120));
     }
     return this.http.post<BatchAsyncUploadResponse>(`${this.backendUrl}/documents/upload-batch-async`, formData)
       .pipe(catchError(this.handleError));
@@ -167,8 +232,8 @@ export class DocumentService extends BaseService {
   /**
    * Get available processing modes for document ingestion
    */
-  getProcessingModes(): Observable<{modes: ProcessingModeInfo[], default: string}> {
-    return this.http.get<{modes: ProcessingModeInfo[], default: string}>(`${this.backendUrl}/documents/processing-modes`)
+  getProcessingModes(): Observable<{ modes: ProcessingModeInfo[], default: string }> {
+    return this.http.get<{ modes: ProcessingModeInfo[], default: string }>(`${this.backendUrl}/documents/processing-modes`)
       .pipe(catchError(this.handleError));
   }
 
@@ -221,5 +286,152 @@ export class DocumentService extends BaseService {
   getWarmupStatus(): Observable<any> {
     return this.http.get<any>(`${this.backendUrl}/system/warmup`)
       .pipe(catchError(this.handleError));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // FACT SHEET INTEGRATION METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Upload a file with advanced options from the add source dialog.
+   */
+  uploadFileWithOptions(file: File, options: {
+    loaderName?: string;
+    chunkerName?: string;
+    chunkerOptions?: { [key: string]: any };
+    rebuildIndex?: boolean;
+    subprocessConfig?: any;
+    processingMode?: string;
+  }): Observable<FileUploadResponse> {
+    const formData: FormData = new FormData();
+    formData.append('file', file, file.name);
+    if (options.loaderName) {
+      formData.append('loader', options.loaderName);
+    }
+    if (options.chunkerName) {
+      formData.append('chunkerName', options.chunkerName);
+    }
+    if (options.chunkerOptions) {
+      formData.append('chunkerOptions', JSON.stringify(options.chunkerOptions));
+    }
+    if (options.rebuildIndex !== undefined) {
+      formData.append('rebuildIndex', String(options.rebuildIndex));
+    }
+    if (options.processingMode) {
+      formData.append('processingMode', options.processingMode);
+    }
+    return this.http.post<FileUploadResponse>(`${this.backendUrl}/documents/upload`, formData)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Add a URL source with options.
+   */
+  addUrlSource(url: string, options: {
+    fileName?: string;
+    loaderName?: string;
+    chunkerName?: string;
+    rebuildIndex?: boolean;
+  }): Observable<FileUploadResponse> {
+    const request: AddUrlRequest = {
+      url: url,
+      fileName: options.fileName,
+      loaderName: options.loaderName,
+      chunkerName: options.chunkerName,
+      rebuildIndex: options.rebuildIndex
+    };
+    return this.addUrl(request);
+  }
+
+  /**
+   * Add text content as a source.
+   */
+  addTextSource(textContent: string, options: {
+    sourceName?: string;
+    chunkerName?: string;
+    rebuildIndex?: boolean;
+  }): Observable<AddTextResponse> {
+    const request: AddTextRequest = {
+      content: textContent,
+      sourceName: options.sourceName,
+      chunkerName: options.chunkerName,
+      rebuildIndex: options.rebuildIndex
+    };
+    return this.addTextContent(request);
+  }
+
+  /**
+   * Add a YouTube video transcript as a source.
+   */
+  addYouTubeSource(youtubeUrl: string, options: {
+    language?: string;
+    saveTranscript?: boolean;
+    chunkerName?: string;
+    rebuildIndex?: boolean;
+  }): Observable<YouTubeTranscriptResponse> {
+    const request: AddYouTubeRequest = {
+      url: youtubeUrl,
+      language: options.language || 'en',
+      saveTranscriptFile: options.saveTranscript,
+      chunkerName: options.chunkerName,
+      rebuildIndex: options.rebuildIndex
+    };
+    return this.addYouTubeTranscript(request);
+  }
+
+  /**
+   * Add Confluence content as a source.
+   */
+  addConfluenceSource(options: {
+    baseUrl: string;
+    email: string;
+    apiToken: string;
+    spaceKey: string;
+    includeChildren?: boolean;
+    includeAttachments?: boolean;
+    chunkerName?: string;
+    rebuildIndex?: boolean;
+  }): Observable<SimpleMessageResponse> {
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}/confluence/ingest`, {
+      baseUrl: options.baseUrl,
+      email: options.email,
+      apiToken: options.apiToken,
+      spaceKey: options.spaceKey,
+      includeChildren: options.includeChildren ?? true,
+      includeAttachments: options.includeAttachments ?? false,
+      chunkerName: options.chunkerName,
+      rebuildIndex: options.rebuildIndex
+    }).pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Add Slack messages as a source.
+   */
+  addSlackSource(options: {
+    channelId: string;
+    token?: string;
+    messageLimit?: number;
+    includeThreads?: boolean;
+    startDate?: string;
+    endDate?: string;
+    daysBack?: number;
+    loadAllChannels?: boolean;
+    historyMode?: boolean;
+    chunkerName?: string;
+    rebuildIndex?: boolean;
+  }): Observable<SimpleMessageResponse> {
+    const endpoint = options.historyMode ? '/slack/history/ingest' : '/slack/ingest';
+    return this.http.post<SimpleMessageResponse>(`${this.backendUrl}${endpoint}`, {
+      channelId: options.channelId,
+      token: options.token,
+      messageLimit: options.messageLimit ?? 100,
+      includeThreads: options.includeThreads ?? true,
+      startDate: options.startDate,
+      endDate: options.endDate,
+      daysBack: options.daysBack ?? 30,
+      loadAllChannels: options.loadAllChannels ?? false,
+      chunkerName: options.chunkerName,
+      rebuildIndex: options.rebuildIndex
+    }).pipe(catchError(this.handleError));
   }
 }

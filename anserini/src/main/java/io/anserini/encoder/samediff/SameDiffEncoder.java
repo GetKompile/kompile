@@ -56,7 +56,20 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
     protected final KompileModelManager modelManager;
 
     // Lock for thread-safe encoding - SameDiff models are NOT thread-safe
+    // CRITICAL: This lock must be used by ALL subclasses for ALL encoding operations
+    // to prevent concurrent access to the SameDiff model. Subclasses should NOT create
+    // their own locks - use this one via the protected accessor.
     private final ReentrantLock encodeLock = new ReentrantLock();
+
+    /**
+     * Get the encoder lock for subclass use.
+     * CRITICAL: Subclasses MUST use this lock for any operation that accesses the SameDiff model.
+     * Do NOT create separate locks in subclasses - this causes deadlocks.
+     * @return The shared encoder lock
+     */
+    protected ReentrantLock getEncoderLock() {
+        return encodeLock;
+    }
 
     // ========== SHUTDOWN COORDINATION ==========
     /**

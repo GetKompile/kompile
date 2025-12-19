@@ -44,9 +44,13 @@ import java.nio.file.Paths;
 import java.util.Map;
 import java.util.Properties;
 
+import ai.kompile.orchestrator.config.OrchestratorAutoConfiguration;
+import org.springframework.context.annotation.Import;
+
 @SpringBootApplication(scanBasePackages = "ai.kompile")
 @EnableConfigurationProperties({}) // Keep if other @ConfigurationProperties are used elsewhere
 @EnableScheduling
+@Import(OrchestratorAutoConfiguration.class)
 public class MainApplication {
 
     private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
@@ -61,9 +65,6 @@ public class MainApplication {
     // ND4J environment config constants
     private static final String ND4J_CONFIG_FILENAME = "nd4j-environment-config.json";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-
-
-
 
     public static void main(String[] args) throws Exception {
         String maxFileSizeArg = DEFAULT_MAX_FILE_SIZE;
@@ -81,8 +82,9 @@ public class MainApplication {
 
         DifferentialFunctionClassHolder.initInstance();
         NativeOps nativeOps = null;
-        System.setProperty(ND4JSystemProperties.INIT_NATIVEOPS_HOLDER,"false");
-        Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class.forName("org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu");
+        System.setProperty(ND4JSystemProperties.INIT_NATIVEOPS_HOLDER, "false");
+        Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class
+                .forName("org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu");
         nativeOps = nativeOpsClazz.newInstance();
         NativeOpsHolder.getInstance().setDeviceNativeOps(nativeOps);
         NativeOpsHolder.getInstance().initOps();
@@ -91,9 +93,10 @@ public class MainApplication {
         Nd4jBackend load = Nd4jBackend.load();
         Nd4j.backend = load;
 
-
-        // CRITICAL: Load and apply persisted ND4J environment configuration BEFORE Spring context starts.
-        // This ensures that persisted settings (threads, lifecycle tracking, etc.) are applied
+        // CRITICAL: Load and apply persisted ND4J environment configuration BEFORE
+        // Spring context starts.
+        // This ensures that persisted settings (threads, lifecycle tracking, etc.) are
+        // applied
         // before any beans (like embedding models) start using ND4J.
         loadAndApplyPersistedNd4jConfig();
         logger.info("ND4J environment configured: maxThreads={}, maxMasterThreads={}, lifecycleTracking={}",
@@ -114,7 +117,9 @@ public class MainApplication {
         Properties systemProperties = System.getProperties();
         for (Map.Entry<Object, Object> entry : systemProperties.entrySet()) {
             String key = entry.getKey().toString();
-            if (key.startsWith("kompile.multipart") || key.startsWith("java.runtime") || key.startsWith("os.name")) { // Filter for relevance
+            if (key.startsWith("kompile.multipart") || key.startsWith("java.runtime") || key.startsWith("os.name")) { // Filter
+                                                                                                                      // for
+                                                                                                                      // relevance
                 logger.info("{}: {}", key, entry.getValue());
             }
         }
@@ -126,16 +131,19 @@ public class MainApplication {
      * are applied before any beans (like embedding models) or SameDiff use ND4J.
      *
      * CRITICAL: ND4J environment setters MUST be called before SameDiff usage.
-     * This method ensures that happens by running in main() before Spring context starts.
+     * This method ensures that happens by running in main() before Spring context
+     * starts.
      *
-     * The configuration is loaded from: ~/.kompile/config/nd4j-environment-config.json
+     * The configuration is loaded from:
+     * ~/.kompile/config/nd4j-environment-config.json
      * If no persisted config exists, default values are used AND persisted to disk,
      * allowing users to modify the file for subsequent runs.
      *
      * To manage settings at runtime:
      * - GET /api/nd4j/environment - View current configuration
      * - POST /api/nd4j/environment - Update configuration (persisted to disk)
-     * - POST /api/nd4j/environment/preset/{name} - Apply a preset (minimal, balanced, detailed, performance)
+     * - POST /api/nd4j/environment/preset/{name} - Apply a preset (minimal,
+     * balanced, detailed, performance)
      */
     private static void loadAndApplyPersistedNd4jConfig() {
         logger.info("=== Loading Persisted ND4J Environment Configuration ===");
@@ -186,7 +194,7 @@ public class MainApplication {
      * Creates parent directories if they don't exist.
      *
      * @param configFilePath Path to the config file
-     * @param config Configuration to persist
+     * @param config         Configuration to persist
      */
     private static void persistNd4jConfig(Path configFilePath, Nd4jEnvironmentConfig config) {
         try {
@@ -395,7 +403,8 @@ public class MainApplication {
     }
 
     /**
-     * Component to initiate graceful shutdown of embedding models EARLY in the shutdown process.
+     * Component to initiate graceful shutdown of embedding models EARLY in the
+     * shutdown process.
      * This runs BEFORE the Nd4jCleanupAndExitHandler to ensure that:
      * 1. New encoding operations are rejected
      * 2. Active encoding operations are allowed to complete
@@ -411,8 +420,7 @@ public class MainApplication {
         private final ai.kompile.core.embeddings.EmbeddingModel embeddingModel;
 
         public EmbeddingModelGracefulShutdownHandler(
-                @org.springframework.beans.factory.annotation.Autowired(required = false)
-                ai.kompile.core.embeddings.EmbeddingModel embeddingModel) {
+                @org.springframework.beans.factory.annotation.Autowired(required = false) ai.kompile.core.embeddings.EmbeddingModel embeddingModel) {
             this.embeddingModel = embeddingModel;
         }
 
@@ -425,10 +433,10 @@ public class MainApplication {
                 return;
             }
 
-            // Check if this is an AnseriniEmbeddingModelImpl which supports graceful shutdown
+            // Check if this is an AnseriniEmbeddingModelImpl which supports graceful
+            // shutdown
             if (embeddingModel instanceof ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl) {
-                ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl anseriniModel =
-                        (ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl) embeddingModel;
+                ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl anseriniModel = (ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl) embeddingModel;
 
                 log.info("Initiating graceful shutdown for Anserini embedding model");
                 try {
@@ -458,16 +466,16 @@ public class MainApplication {
         @PreDestroy
         public void cleanupAndExit() {
             log.info("Starting comprehensive ND4J native resource cleanup");
-            
+
             try {
                 // 1. Destroy workspaces for current thread
                 Nd4j.getWorkspaceManager().destroyAllWorkspacesForCurrentThread();
                 log.info("Destroyed ND4J workspaces for shutdown thread");
-                
+
                 // 2. Release memory context
                 Nd4j.getMemoryManager().releaseCurrentContext();
                 log.info("Released ND4J memory context");
-                
+
                 // 3. Trigger native memory deallocation
                 try {
                     Nd4j.getMemoryManager().invokeGc();
@@ -475,7 +483,7 @@ public class MainApplication {
                 } catch (Exception e) {
                     log.debug("Could not invoke ND4J GC (may not be available)", e);
                 }
-                
+
                 // 4. Try to tear down NativeOps (may not have public API)
                 try {
                     NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
@@ -491,13 +499,15 @@ public class MainApplication {
                 } catch (Exception e) {
                     log.debug("Could not tear down NativeOps", e);
                 }
-                
+
                 // 5. Try to shut down BLAS thread pool via JavaCPP
                 try {
-                    // This attempts to call openblas_set_num_threads(1) then openblas_set_num_threads(0)
+                    // This attempts to call openblas_set_num_threads(1) then
+                    // openblas_set_num_threads(0)
                     // to force OpenBLAS to shut down its thread pool
                     Class<?> openblasClass = Class.forName("org.bytedeco.javacpp.openblas");
-                    java.lang.reflect.Method setThreadsMethod = openblasClass.getMethod("blas_set_num_threads", int.class);
+                    java.lang.reflect.Method setThreadsMethod = openblasClass.getMethod("blas_set_num_threads",
+                            int.class);
                     setThreadsMethod.invoke(null, 1);
                     Thread.sleep(100);
                     setThreadsMethod.invoke(null, 0);
@@ -507,7 +517,7 @@ public class MainApplication {
                 } catch (Exception e) {
                     log.debug("Could not shut down OpenBLAS threads via JavaCPP", e);
                 }
-                
+
                 // 6. Force a system GC to cleanup any remaining references
                 try {
                     System.gc();
@@ -515,7 +525,7 @@ public class MainApplication {
                 } catch (Exception e) {
                     log.debug("Could not force system GC", e);
                 }
-                
+
                 log.info("ND4J native resource cleanup completed");
 
             } catch (Exception e) {
@@ -523,14 +533,16 @@ public class MainApplication {
             }
 
             // CRITICAL: Cleanup order matters!
-            // 1. First close scalar INDArrays (may trigger TAD/Shape allocations during cleanup)
+            // 1. First close scalar INDArrays (may trigger TAD/Shape allocations during
+            // cleanup)
             // 2. Then clear TAD cache (cleans up TADs created during scalar cleanup)
             // 3. Then clear Shape cache (cleans up shapes created during scalar cleanup)
             // 4. Finally trigger leak check
 
             // Step 1: DifferentialFunctionClassHolder cleanup
             // CRITICAL: Operation prototypes hold scalar INDArrays with native memory
-            // These must be explicitly closed before leak detection or they will be reported as leaks
+            // These must be explicitly closed before leak detection or they will be
+            // reported as leaks
             try {
                 log.info("Step 1: Cleaning up DifferentialFunctionClassHolder operation prototypes...");
                 org.nd4j.imports.converters.DifferentialFunctionClassHolder.cleanup();
@@ -539,7 +551,8 @@ public class MainApplication {
                 log.warn("Error cleaning up operation prototypes", e);
             }
 
-            // Step 2: Clear native TAD cache (after scalar cleanup to catch any TADs created during close)
+            // Step 2: Clear native TAD cache (after scalar cleanup to catch any TADs
+            // created during close)
             try {
                 log.info("Step 2: Clearing native TAD cache after scalar cleanup...");
                 Nd4j.getNativeOps().clearTADCache();
@@ -548,7 +561,8 @@ public class MainApplication {
                 log.warn("Error clearing TAD cache", e);
             }
 
-            // Step 3: Clear native Shape cache (after scalar cleanup to catch any shapes created during close)
+            // Step 3: Clear native Shape cache (after scalar cleanup to catch any shapes
+            // created during close)
             try {
                 log.info("Step 3: Clearing native Shape cache after scalar cleanup...");
                 Nd4j.getNativeOps().clearShapeCache();
@@ -560,7 +574,6 @@ public class MainApplication {
             log.warn("All cleanup complete. Triggering leak check...");
             Nd4j.getNativeOps().triggerLeakCheck();
 
-            
             System.err.println("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
             System.err.flush();
         }

@@ -1,0 +1,147 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="catalog-container">
+  <div class="catalog-header">
+    <h1>Model Catalog</h1>
+    <p class="subtitle">Browse and download available models from HuggingFace and GitHub</p>
+    <button mat-raised-button color="primary" (click)="loadCatalog()" [disabled]="isLoading">
+      <mat-icon>refresh</mat-icon>
+      Refresh
+    </button>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="isLoading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading model catalog...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-container" *ngIf="error">
+    <mat-icon>error_outline</mat-icon>
+    <p>{{ error }}</p>
+    <button mat-raised-button color="primary" (click)="loadCatalog()">Retry</button>
+  </div>
+
+  <!-- Main Content -->
+  <div class="catalog-content" *ngIf="!isLoading && !error && catalog">
+
+    <!-- Encoders Section -->
+    <section class="model-section" *ngIf="getEncoders().length > 0">
+      <h2 class="section-title">
+        <mat-icon>transform</mat-icon>
+        Encoders
+        <span class="count-badge">{{ getEncoders().length }}</span>
+      </h2>
+      <p class="section-description">Dense retrieval encoders for embedding text into vector space</p>
+
+      <div class="model-grid">
+        <mat-card *ngFor="let model of getEncoders()" class="model-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar class="model-avatar">transform</mat-icon>
+            <mat-card-title>{{ model.id }}</mat-card-title>
+            <mat-card-subtitle>
+              <mat-icon class="source-icon">{{ getSourceIcon(model.source) }}</mat-icon>
+              {{ model.source }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <p class="model-description">{{ model.metadata.description }}</p>
+            <div class="model-specs">
+              <div class="spec" *ngIf="model.metadata.embeddingDim">
+                <span class="spec-label">Dimensions</span>
+                <span class="spec-value">{{ model.metadata.embeddingDim }}</span>
+              </div>
+              <div class="spec" *ngIf="model.metadata.maxSequenceLength">
+                <span class="spec-label">Max Length</span>
+                <span class="spec-value">{{ model.metadata.maxSequenceLength }}</span>
+              </div>
+              <div class="spec">
+                <span class="spec-label">Format</span>
+                <span class="spec-value">{{ model.format }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-raised-button color="primary"
+                    (click)="stageModel(model)"
+                    [disabled]="isStaging(model.id)">
+              <mat-icon>{{ isStaging(model.id) ? 'sync' : 'cloud_download' }}</mat-icon>
+              {{ isStaging(model.id) ? 'Staging...' : 'Stage' }}
+            </button>
+            <button mat-button color="accent"
+                    (click)="stageModel(model, true)"
+                    [disabled]="isStaging(model.id)"
+                    matTooltip="Download, convert, and promote in one step">
+              <mat-icon>rocket_launch</mat-icon>
+              Auto-Promote
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Cross-Encoders Section -->
+    <section class="model-section" *ngIf="getCrossEncoders().length > 0">
+      <h2 class="section-title">
+        <mat-icon>compare_arrows</mat-icon>
+        Cross-Encoders
+        <span class="count-badge">{{ getCrossEncoders().length }}</span>
+      </h2>
+      <p class="section-description">Reranking models for improving search result relevance</p>
+
+      <div class="model-grid">
+        <mat-card *ngFor="let model of getCrossEncoders()" class="model-card cross-encoder">
+          <mat-card-header>
+            <mat-icon mat-card-avatar class="model-avatar">compare_arrows</mat-icon>
+            <mat-card-title>{{ model.id }}</mat-card-title>
+            <mat-card-subtitle>
+              <mat-icon class="source-icon">{{ getSourceIcon(model.source) }}</mat-icon>
+              {{ model.source }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <p class="model-description">{{ model.metadata.description }}</p>
+            <div class="model-specs">
+              <div class="spec" *ngIf="model.metadata.hiddenSize">
+                <span class="spec-label">Hidden Size</span>
+                <span class="spec-value">{{ model.metadata.hiddenSize }}</span>
+              </div>
+              <div class="spec" *ngIf="model.metadata.numLayers">
+                <span class="spec-label">Layers</span>
+                <span class="spec-value">{{ model.metadata.numLayers }}</span>
+              </div>
+              <div class="spec" *ngIf="model.metadata.trainingData">
+                <span class="spec-label">Training</span>
+                <span class="spec-value">{{ model.metadata.trainingData }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-raised-button color="primary"
+                    (click)="stageModel(model)"
+                    [disabled]="isStaging(model.id)">
+              <mat-icon>{{ isStaging(model.id) ? 'sync' : 'cloud_download' }}</mat-icon>
+              {{ isStaging(model.id) ? 'Staging...' : 'Stage' }}
+            </button>
+            <button mat-button color="accent"
+                    (click)="stageModel(model, true)"
+                    [disabled]="isStaging(model.id)">
+              <mat-icon>rocket_launch</mat-icon>
+              Auto-Promote
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Empty State -->
+    <div class="empty-state" *ngIf="getEncoders().length === 0 && getCrossEncoders().length === 0">
+      <mat-icon>inventory_2</mat-icon>
+      <p>No models available in the catalog</p>
+    </div>
+
+  </div>
+</div>

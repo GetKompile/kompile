@@ -46,15 +46,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
     private final String instruction;
     private final boolean normalizeEmbeddings;
 
-    /**
-     * Lock for encoding to prevent concurrent access to the SameDiff model.
-     * SameDiff models are NOT thread-safe - concurrent calls to output() cause
-     * undefined behavior, hangs, or crashes.
-     * <p>
-     * This lock is used by both encode() and encodeBatch() to ensure only one
-     * thread can access the model at a time.
-     */
-    private final java.util.concurrent.locks.ReentrantLock batchEncodeLock = new java.util.concurrent.locks.ReentrantLock();
+    // NOTE: This class uses the parent's encodeLock via getEncoderLock() for ALL model access.
+    // DO NOT add a separate lock here - it causes deadlocks with the parent class's lock.
 
     /**
      * Override to provide the instruction prefix for pipelined bulk encoding.
@@ -136,12 +129,13 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // Acquire lock for inference - SameDiff models are NOT thread-safe
         // This prevents concurrent access from warmup service and pipeline
-        batchEncodeLock.lock();
+        // CRITICAL: Use parent's lock to prevent deadlocks with encodeSafe() and encodeBatch()
+        getEncoderLock().lock();
         try {
             // Delegate to encodeFromTokenized for actual inference
             return encodeFromTokenized(query, encoding);
         } finally {
-            batchEncodeLock.unlock();
+            getEncoderLock().unlock();
         }
     }
 
@@ -162,6 +156,42 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         if (encoding == null) {
             LOG.warn("[{}] Null encoding provided for query", modelIdentifier);
             return null;
+        }
+
+        // ========== TOKENIZATION DIAGNOSTIC ==========
+        // Check for potential tokenization issues that could cause zero-magnitude vectors
+        int seqLen = encoding.inputIds.length;
+        int nonPadTokens = 0;
+        int unkTokenCount = 0;
+        long unkTokenId = 100; // Default BERT [UNK] token ID
+
+        for (long tokenId : encoding.inputIds) {
+            if (tokenId != 0) nonPadTokens++; // PAD is typically 0
+            if (tokenId == unkTokenId) unkTokenCount++;
+        }
+
+        // Always log tokenization info at INFO level for debugging
+        LOG.info("[{}] Tokenization: input='{}', seqLen={}, nonPadTokens={}, unkTokens={}, first20IDs={}",
+                modelIdentifier,
+                query.length() > 50 ? query.substring(0, 50) + "..." : query,
+                seqLen, nonPadTokens, unkTokenCount,
+                Arrays.toString(Arrays.copyOf(encoding.inputIds, Math.min(20, encoding.inputIds.length))));
+
+        // Log warnings for potential issues
+        if (nonPadTokens <= 2) { // Only [CLS] and [SEP]
+            LOG.warn("[{}] TOKENIZATION WARNING: Input '{}' produced only {} non-padding tokens. " +
+                    "This may result in poor embeddings.",
+                    modelIdentifier,
+                    query.length() > 50 ? query.substring(0, 50) + "..." : query,
+                    nonPadTokens);
+        }
+
+        if (unkTokenCount > 0 && unkTokenCount >= (nonPadTokens - 2)) {
+            LOG.warn("[{}] TOKENIZATION WARNING: Input '{}' produced {} [UNK] tokens out of {} tokens. " +
+                    "Most or all words are out-of-vocabulary.",
+                    modelIdentifier,
+                    query.length() > 50 ? query.substring(0, 50) + "..." : query,
+                    unkTokenCount, nonPadTokens);
         }
 
         // Get what the model actually expects
@@ -194,31 +224,143 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                     LOG.warn("[{}] Unknown model input '{}' - cannot map to tokenizer output", this.modelIdentifier, inputName);
                 }
             }
-            // Some BGE checkpoints expose only a single output tensor (already pooled),
-            // while others expose both the token embeddings and a pooled output.
-            // Prefer the second output when available (matching prior behavior), but
-            // gracefully fall back to the first output to avoid IndexOutOfBounds for
-            // single-output models.
+            // Select output tensor - prefer pooler output (index 1) when available
             String outputName;
             if (this.outputTensorNamesFromModel.size() > 1) {
                 outputName = this.outputTensorNamesFromModel.get(1);
             } else if (!this.outputTensorNamesFromModel.isEmpty()) {
                 outputName = this.outputTensorNamesFromModel.get(0);
-                LOG.debug("[{}] Only one output tensor exposed by model; using '{}'",
-                        this.modelIdentifier, outputName);
             } else {
-                LOG.error("[{}] No output tensors exposed by model - cannot run inference", this.modelIdentifier);
+                LOG.error("[{}] No output tensors exposed by model", this.modelIdentifier);
                 return null;
             }
 
+            // ========== INPUT TENSOR DIAGNOSTIC ==========
+            // Log input tensor info - CRITICAL for debugging zero-output issues
+            LOG.info("[{}] Model inputs expected: {}, Provided: {}",
+                    this.modelIdentifier, modelInputs, placeholderMap.keySet());
+
+            if (placeholderMap.isEmpty()) {
+                LOG.error("[{}] NO INPUT TENSORS PROVIDED! Model expects: {}. " +
+                        "Input name matchers may not recognize the model's input names.",
+                        this.modelIdentifier, modelInputs);
+            }
+
+            for (Map.Entry<String, INDArray> entry : placeholderMap.entrySet()) {
+                INDArray tensor = entry.getValue();
+                if (tensor != null && tensor.length() > 0) {
+                    double min = tensor.minNumber().doubleValue();
+                    double max = tensor.maxNumber().doubleValue();
+                    double mean = tensor.meanNumber().doubleValue();
+                    int[] firstValues = Arrays.copyOf(tensor.toIntVector(), Math.min(15, (int) tensor.length()));
+                    LOG.info("[{}] Input '{}': shape={}, dtype={}, min={}, max={}, mean={}, first15={}",
+                            this.modelIdentifier, entry.getKey(),
+                            Arrays.toString(tensor.shape()), tensor.dataType(),
+                            (int)min, (int)max, mean, Arrays.toString(firstValues));
+
+                    // Warn if input_ids looks suspicious
+                    if (entry.getKey().toLowerCase().contains("input") && min == max) {
+                        LOG.warn("[{}] SUSPICIOUS INPUT: tensor '{}' has constant value {}. All token IDs are the same!",
+                                this.modelIdentifier, entry.getKey(), (int)min);
+                    }
+                }
+            }
+
             // Execute inference - this is a blocking native call that cannot be interrupted
-            System.err.println("[BgeEncoder] Starting sameDiffModel.output() for outputName=" + outputName);
-            System.err.flush();
+            LOG.debug("[{}] Starting sameDiffModel.output() for outputName={}", this.modelIdentifier, outputName);
             long inferenceStart = System.currentTimeMillis();
+
+            // ========== DIAGNOSTIC: Dump pooler operation details ==========
+            System.err.println("\n========== BROKEN OP DIAGNOSTIC ==========");
+            System.err.println("Model: " + this.modelIdentifier);
+            System.err.println("Output requested: " + outputName);
+
+            // Get all outputs including intermediates for diagnosis
+            try {
+                Map<String, INDArray> diagMap = this.sameDiffModel.output(placeholderMap,
+                    "last_hidden_state",
+                    "/pooler/Gather_output_0",
+                    "/pooler/dense/Gemm_output_0",
+                    outputName);
+
+                // 1. last_hidden_state - transformer output
+                INDArray lastHidden = diagMap.get("last_hidden_state");
+                if (lastHidden != null) {
+                    System.err.println("\n[1] last_hidden_state (transformer output):");
+                    System.err.println("    Shape: " + Arrays.toString(lastHidden.shape()));
+                    System.err.println("    Min: " + lastHidden.minNumber() + ", Max: " + lastHidden.maxNumber());
+                    System.err.println("    Status: " + (lastHidden.maxNumber().floatValue() != 0 ? "OK" : "BROKEN - all zeros"));
+                }
+
+                // 2. Check Gather index constant
+                if (this.sameDiffModel.hasVariable("/Constant_output_0")) {
+                    INDArray gatherIdx = this.sameDiffModel.getVariable("/Constant_output_0").getArr();
+                    System.err.println("\n[2] /Constant_output_0 (Gather index):");
+                    System.err.println("    Shape: " + Arrays.toString(gatherIdx.shape()));
+                    System.err.println("    Value: " + gatherIdx);
+                    System.err.println("    Expected: scalar 0 or shape [1] with value [0]");
+                }
+
+                // 3. Gather output
+                INDArray gatherOut = diagMap.get("/pooler/Gather_output_0");
+                if (gatherOut != null) {
+                    System.err.println("\n[3] /pooler/Gather_output_0:");
+                    System.err.println("    Shape: " + Arrays.toString(gatherOut.shape()));
+                    System.err.println("    Expected shape: [batch, hidden] e.g. [1, 768]");
+                    System.err.println("    Actual shape indicates BROKEN Gather op adding extra dimensions");
+                    System.err.println("    Min: " + gatherOut.minNumber() + ", Max: " + gatherOut.maxNumber());
+                    System.err.println("    Status: " + (gatherOut.maxNumber().floatValue() != 0 ? "OK (values present)" : "BROKEN - all zeros"));
+                }
+
+                // 4. Gemm/Dense output
+                INDArray gemmOut = diagMap.get("/pooler/dense/Gemm_output_0");
+                if (gemmOut != null) {
+                    System.err.println("\n[4] /pooler/dense/Gemm_output_0:");
+                    System.err.println("    Shape: " + Arrays.toString(gemmOut.shape()));
+                    System.err.println("    Min: " + gemmOut.minNumber() + ", Max: " + gemmOut.maxNumber());
+                    System.err.println("    Status: " + (gemmOut.maxNumber().floatValue() != 0 ? "OK" : "BROKEN - all zeros"));
+                    if (gemmOut.maxNumber().floatValue() == 0) {
+                        System.err.println("    >>> GEMM IS THE BROKEN OP <<<");
+                        System.err.println("    Gemm receives input shape " + Arrays.toString(gatherOut.shape()) + " but expects 2D [batch, features]");
+                    }
+                }
+
+                // 5. Final output
+                INDArray finalOut = diagMap.get(outputName);
+                if (finalOut != null) {
+                    System.err.println("\n[5] Final output '" + outputName + "':");
+                    System.err.println("    Shape: " + Arrays.toString(finalOut.shape()));
+                    System.err.println("    Min: " + finalOut.minNumber() + ", Max: " + finalOut.maxNumber());
+                }
+
+                // Check pooler weights
+                System.err.println("\n[6] Pooler weights:");
+                for (org.nd4j.autodiff.samediff.SDVariable sdVar : this.sameDiffModel.variables()) {
+                    String varName = sdVar.name();
+                    if (varName.contains("pooler") && varName.contains("dense") &&
+                        (varName.contains("weight") || varName.contains("bias"))) {
+                        INDArray arr = sdVar.getArr();
+                        if (arr != null) {
+                            System.err.println("    " + varName + ": shape=" + Arrays.toString(arr.shape()) +
+                                ", min=" + arr.minNumber() + ", max=" + arr.maxNumber());
+                        }
+                    }
+                }
+
+                System.err.println("\n========== END DIAGNOSTIC ==========\n");
+
+                // Cleanup
+                for (INDArray arr : diagMap.values()) {
+                    if (arr != null) try { arr.close(); } catch (Exception ignored) {}
+                }
+            } catch (Exception e) {
+                System.err.println("Diagnostic failed: " + e.getMessage());
+            }
+
+            // Execute model inference
             outputMap = this.sameDiffModel.output(placeholderMap, outputName);
             long inferenceTime = System.currentTimeMillis() - inferenceStart;
-            System.err.println("[BgeEncoder] sameDiffModel.output() completed in " + inferenceTime + "ms");
-            System.err.flush();
+            LOG.debug("[{}] sameDiffModel.output() completed in {}ms", this.modelIdentifier, inferenceTime);
 
             // Check for interrupt immediately after inference completes
             if (Thread.currentThread().isInterrupted()) {
@@ -234,8 +376,40 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
 
-            LOG.debug("[{}] Got output tensor '{}' with shape: {}",
-                    this.modelIdentifier, outputName, Arrays.toString(embeddingTensor.shape()));
+            // ========== OUTPUT TENSOR DIAGNOSTIC ==========
+            // Log output tensor stats to diagnose zero-magnitude issues
+            double outMin = embeddingTensor.minNumber().doubleValue();
+            double outMax = embeddingTensor.maxNumber().doubleValue();
+            double outMean = embeddingTensor.meanNumber().doubleValue();
+
+            LOG.debug("[{}] Output tensor '{}': shape={}, min={}, max={}, mean={}",
+                    this.modelIdentifier, outputName,
+                    Arrays.toString(embeddingTensor.shape()), outMin, outMax, outMean);
+
+            // Warn if output is all zeros or near-zero BEFORE any processing
+            if (outMin == 0.0 && outMax == 0.0) {
+                LOG.error("[{}] OUTPUT TENSOR IS ALL ZEROS! Model '{}' produced garbage output. " +
+                        "This could be due to: (1) Incompatible model file format, (2) Model was trained with different tokenization, " +
+                        "(3) Model expects different input tensor names/shapes, (4) DAG execution error in SameDiff. " +
+                        "Input query: '{}', Output shape: {}",
+                        this.modelIdentifier, outputName,
+                        query.length() > 100 ? query.substring(0, 100) + "..." : query,
+                        Arrays.toString(embeddingTensor.shape()));
+
+                // Log all available outputs for debugging
+                LOG.error("[{}] Available output tensors in model: {}", this.modelIdentifier, outputMap.keySet());
+                for (Map.Entry<String, INDArray> outEntry : outputMap.entrySet()) {
+                    INDArray outArr = outEntry.getValue();
+                    if (outArr != null) {
+                        LOG.error("[{}]   Output '{}': shape={}, min={}, max={}, mean={}",
+                                this.modelIdentifier, outEntry.getKey(),
+                                Arrays.toString(outArr.shape()),
+                                outArr.minNumber().doubleValue(),
+                                outArr.maxNumber().doubleValue(),
+                                outArr.meanNumber().doubleValue());
+                    }
+                }
+            }
 
             return processOutput(embeddingTensor);
 
@@ -364,6 +538,22 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             if (reshapedEmbedding.data() == null) {
                 LOG.error("[{}] Invalid embedding after reshape - null data buffer", this.modelIdentifier);
                 return null;
+            }
+
+            // DEBUG: Check raw embedding statistics BEFORE normalization
+            // This helps diagnose zero-magnitude vector issues
+            double rawMin = reshapedEmbedding.minNumber().doubleValue();
+            double rawMax = reshapedEmbedding.maxNumber().doubleValue();
+            double rawMean = reshapedEmbedding.meanNumber().doubleValue();
+            if (rawMin == 0.0 && rawMax == 0.0) {
+                LOG.error("[{}] ZERO-MAGNITUDE VECTOR DETECTED: Raw embedding is all zeros BEFORE normalization. " +
+                        "Shape: {}, This indicates the SameDiff model forward pass produced garbage output. " +
+                        "Check: (1) Model file integrity, (2) Input tensor shapes match model expectations, " +
+                        "(3) Tokenizer output is valid, (4) Model was trained for this input format.",
+                        this.modelIdentifier, Arrays.toString(reshapedEmbedding.shape()));
+            } else if (LOG.isDebugEnabled()) {
+                LOG.debug("[{}] Raw embedding stats: min={}, max={}, mean={}, shape={}",
+                        this.modelIdentifier, rawMin, rawMax, rawMean, Arrays.toString(reshapedEmbedding.shape()));
             }
 
             if (this.normalizeEmbeddings) {
@@ -585,6 +775,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
     // Batch inference is always supported for SameDiff models with proper padding
     // The encodeSingleInferenceBatch() method handles dynamic batching correctly
+    // Batch inference is always supported for SameDiff models with proper padding
     private volatile boolean batchInferenceSupported = true;
 
     /**
@@ -622,7 +813,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // Acquire lock to prevent concurrent SameDiff model access
         // This is CRITICAL - the warmup service may be calling encode() concurrently
-        batchEncodeLock.lock();
+        // CRITICAL: Use parent's lock to prevent deadlocks with encodeSafe() and encode()
+        getEncoderLock().lock();
         try {
             System.err.println("[BgeEncoder] Lock acquired, processing " + texts.size() + " texts");
             System.err.flush();
@@ -654,7 +846,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             return encodeBatchWithDynamicSizing(texts);
 
         } finally {
-            batchEncodeLock.unlock();
+            getEncoderLock().unlock();
             System.err.println("[BgeEncoder] Lock released");
             System.err.flush();
         }
@@ -1008,18 +1200,9 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                     "inputs=" + placeholderMap.keySet());
             System.err.flush();
 
-            // CRITICAL FIX: For batch size > 1, use the first output (token embeddings) instead of
-            // the pooler output (index 1). The pooler's Gemm operation fails with batch > 1 because
-            // the Gather operation produces [batch, 1, 1, hidden] shape which xw_plus_b can't handle.
+            // Select output tensor - prefer pooler output (index 1) when available
             String outputName;
-            boolean useTokenEmbeddings = batchSize > 1 && this.outputTensorNamesFromModel.size() > 1;
-
-            if (useTokenEmbeddings) {
-                // Use first output (token embeddings) for batch inference
-                outputName = this.outputTensorNamesFromModel.get(0);
-                LOG.debug("[{}] Batch size {} > 1: using token embeddings output '{}' to avoid pooler Gemm issue",
-                        modelIdentifier, batchSize, outputName);
-            } else if (this.outputTensorNamesFromModel.size() > 1) {
+            if (this.outputTensorNamesFromModel.size() > 1) {
                 outputName = this.outputTensorNamesFromModel.get(1);
             } else if (!this.outputTensorNamesFromModel.isEmpty()) {
                 outputName = this.outputTensorNamesFromModel.get(0);
@@ -1030,10 +1213,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             // ========== STEP 4: FORWARD PASS (THE CRITICAL STEP) ==========
             stepStart = System.currentTimeMillis();
-            System.err.println("[INFERENCE-TIMING] Step 4: STARTING model.output() for batch=" + batchSize +
-                    ", seqLen=" + maxLen + ", output=" + outputName +
-                    (useTokenEmbeddings ? " (token embeddings)" : " (pooler)"));
-            System.err.flush();
+            LOG.debug("[{}] Starting model.output() for batch={}, seqLen={}, output={}",
+                    modelIdentifier, batchSize, maxLen, outputName);
 
             outputMap = this.sameDiffModel.output(placeholderMap, outputName);
 
@@ -1183,19 +1364,9 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             }
             long tensorCreateTime = System.currentTimeMillis() - stepStart;
 
-            // CRITICAL FIX: For batch size > 1, use the first output (token embeddings) instead of
-            // the pooler output (index 1). The pooler's Gemm operation fails with batch > 1 because
-            // the Gather operation produces [batch, 1, 1, hidden] shape which xw_plus_b can't handle.
-            // By using token embeddings, we extract CLS ourselves in extractSingleEmbedding().
+            // Select output tensor - prefer pooler output (index 1) when available
             String outputName;
-            boolean useTokenEmbeddings = batchSize > 1 && this.outputTensorNamesFromModel.size() > 1;
-
-            if (useTokenEmbeddings) {
-                // Use first output (token embeddings) for batch inference
-                outputName = this.outputTensorNamesFromModel.get(0);
-                LOG.debug("[{}] Batch size {} > 1: using token embeddings output '{}' to avoid pooler Gemm issue",
-                        modelIdentifier, batchSize, outputName);
-            } else if (this.outputTensorNamesFromModel.size() > 1) {
+            if (this.outputTensorNamesFromModel.size() > 1) {
                 outputName = this.outputTensorNamesFromModel.get(1);
             } else if (!this.outputTensorNamesFromModel.isEmpty()) {
                 outputName = this.outputTensorNamesFromModel.get(0);
@@ -1207,11 +1378,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             // ========== STEP 3: FORWARD PASS ==========
             stepStart = System.currentTimeMillis();
             long estimatedCost = estimateBatchCost(batchSize, maxSeqLength);
-            System.err.println("[INFERENCE-FROM-ENCODINGS] Forward pass: batch=" + batchSize +
-                    ", seqLen=" + maxSeqLength + ", output=" + outputName +
-                    (useTokenEmbeddings ? " (token embeddings)" : " (pooler)") +
-                    ", estimatedCost=" + estimatedCost);
-            System.err.flush();
+            LOG.debug("[{}] Forward pass: batch={}, seqLen={}, output={}, estimatedCost={}",
+                    modelIdentifier, batchSize, maxSeqLength, outputName, estimatedCost);
 
             // Update batch info - FORWARD_PASS step (this is where the work happens)
             updateBatchInfo(batchSize, maxSeqLength, embDim, totalTokens,

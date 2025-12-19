@@ -46,5 +46,16 @@ public enum ModelType {
     /**
      * Generic embedding models not specifically tied to Anserini encoders.
      */
-    EMBEDDING_MODEL
+    EMBEDDING_MODEL,
+
+    /**
+     * Cross-encoder reranking models. These models take a query-document pair
+     * and output a relevance score for reranking search results.
+     */
+    CROSS_ENCODER_MODEL,
+
+    /**
+     * Reranking models (general category for any reranking approach).
+     */
+    RERANKER_MODEL
 }

@@ -133,6 +133,13 @@ public class ChunkingStage implements PipelineStage<TokenizationStage.Tokenizati
             return List.of(retrievedDoc);
         }
 
+        // Skip documents with null or empty text content
+        String text = tokenizedDoc.getText();
+        if (text == null || text.trim().isEmpty()) {
+            logger.debug("Skipping chunking for document {} - no text content", tokenizedDoc.getId());
+            return List.of(); // Return empty list for empty documents
+        }
+
         try {
             // Use token boundaries if available and enabled
             if (useTokenBoundaries && tokenizedDoc.wasTokenized() && !tokenizedDoc.tokenOffsets().isEmpty()) {

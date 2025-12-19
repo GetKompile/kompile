@@ -37,7 +37,9 @@ public record IngestProgressUpdate(
         String message,
         IngestStats stats,
         String errorMessage,
-        Instant timestamp
+        Instant timestamp,
+        /** The ID of the fact sheet this task is associated with */
+        Long factSheetId
 ) {
     /**
      * The current phase of the ingest pipeline.
@@ -345,6 +347,10 @@ public record IngestProgressUpdate(
             Integer chunksEmbedded,
             Integer chunksIndexed,      // Number of chunks indexed (used by frontend progress bar)
             Integer documentsIndexed,   // Legacy field - in subprocess mode, this also holds chunks indexed
+            // ========== ACTUAL INDEX STORE COUNTS ==========
+            // These reflect the actual persisted counts in the indexes (verified after commit)
+            Long actualKeywordIndexCount,   // Actual count in Lucene keyword index
+            Long actualVectorStoreCount,    // Actual count in vector store (HNSW index)
             Long totalProcessingTimeMs,
             String loaderUsed,
             String chunkerUsed,
@@ -401,7 +407,10 @@ public record IngestProgressUpdate(
             SubprocessRuntimeInfo subprocessRuntimeInfo
     ) {
         public static IngestStats empty() {
-            return new IngestStats(0, 0, 0, 0, 0, 0L, null, null, List.of(),
+            return new IngestStats(0, 0, 0, 0, 0,
+                    // Actual index counts
+                    null, null,
+                    0L, null, null, List.of(),
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     // Pipeline fields - extraction
                     null, null, null, null,
@@ -428,6 +437,9 @@ public record IngestProgressUpdate(
             private Integer chunksEmbedded = 0;
             private Integer chunksIndexed = 0;
             private Integer documentsIndexed = 0;
+            // Actual index store counts
+            private Long actualKeywordIndexCount;
+            private Long actualVectorStoreCount;
             private Long totalProcessingTimeMs = 0L;
             private String loaderUsed;
             private String chunkerUsed;
@@ -475,6 +487,8 @@ public record IngestProgressUpdate(
             public Builder chunksEmbedded(Integer val) { this.chunksEmbedded = val; return this; }
             public Builder chunksIndexed(Integer val) { this.chunksIndexed = val; return this; }
             public Builder documentsIndexed(Integer val) { this.documentsIndexed = val; return this; }
+            public Builder actualKeywordIndexCount(Long val) { this.actualKeywordIndexCount = val; return this; }
+            public Builder actualVectorStoreCount(Long val) { this.actualVectorStoreCount = val; return this; }
             public Builder totalProcessingTimeMs(Long val) { this.totalProcessingTimeMs = val; return this; }
             public Builder loaderUsed(String val) { this.loaderUsed = val; return this; }
             public Builder chunkerUsed(String val) { this.chunkerUsed = val; return this; }
@@ -520,6 +534,8 @@ public record IngestProgressUpdate(
             public IngestStats build() {
                 return new IngestStats(documentsLoaded, chunksCreated, chunksEmbedded,
                         chunksIndexed, documentsIndexed,
+                        // Actual index counts
+                        actualKeywordIndexCount, actualVectorStoreCount,
                         totalProcessingTimeMs, loaderUsed, chunkerUsed, processedDocumentIds,
                         loadingTimeMs, conversionTimeMs, chunkingTimeMs, embeddingTimeMs, indexingTimeMs,
                         currentBatch, totalBatches, batchSize, parallelProcessing, workerThreads,
@@ -544,6 +560,13 @@ public record IngestProgressUpdate(
      * Creates an initial queued update.
      */
     public static IngestProgressUpdate queued(String taskId, String fileName) {
+        return queued(taskId, fileName, null);
+    }
+
+    /**
+     * Creates an initial queued update with fact sheet association.
+     */
+    public static IngestProgressUpdate queued(String taskId, String fileName, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -554,7 +577,8 @@ public record IngestProgressUpdate(
                 "Document upload queued",
                 IngestStats.empty(),
                 null,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -564,6 +588,15 @@ public record IngestProgressUpdate(
     public static IngestProgressUpdate progress(String taskId, String fileName, IngestPhase phase,
                                                   int progressPercent, String currentStep, String message,
                                                   IngestStats stats) {
+        return progress(taskId, fileName, phase, progressPercent, currentStep, message, stats, null);
+    }
+
+    /**
+     * Creates a progress update for a specific phase with fact sheet association.
+     */
+    public static IngestProgressUpdate progress(String taskId, String fileName, IngestPhase phase,
+                                                  int progressPercent, String currentStep, String message,
+                                                  IngestStats stats, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -574,7 +607,8 @@ public record IngestProgressUpdate(
                 message,
                 stats,
                 null,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -582,6 +616,13 @@ public record IngestProgressUpdate(
      * Creates a completion update.
      */
     public static IngestProgressUpdate completed(String taskId, String fileName, IngestStats stats) {
+        return completed(taskId, fileName, stats, null);
+    }
+
+    /**
+     * Creates a completion update with fact sheet association.
+     */
+    public static IngestProgressUpdate completed(String taskId, String fileName, IngestStats stats, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -592,7 +633,8 @@ public record IngestProgressUpdate(
                 "Document successfully processed and indexed",
                 stats,
                 null,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -601,6 +643,14 @@ public record IngestProgressUpdate(
      */
     public static IngestProgressUpdate failed(String taskId, String fileName, IngestPhase failedPhase,
                                                 String errorMessage, IngestStats stats) {
+        return failed(taskId, fileName, failedPhase, errorMessage, stats, null);
+    }
+
+    /**
+     * Creates a failure update with fact sheet association.
+     */
+    public static IngestProgressUpdate failed(String taskId, String fileName, IngestPhase failedPhase,
+                                                String errorMessage, IngestStats stats, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -611,7 +661,8 @@ public record IngestProgressUpdate(
                 "Document processing failed",
                 stats,
                 errorMessage,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -619,6 +670,13 @@ public record IngestProgressUpdate(
      * Creates a cancellation update due to memory pressure.
      */
     public static IngestProgressUpdate memoryPressure(String taskId, String fileName, String message) {
+        return memoryPressure(taskId, fileName, message, null);
+    }
+
+    /**
+     * Creates a cancellation update due to memory pressure with fact sheet association.
+     */
+    public static IngestProgressUpdate memoryPressure(String taskId, String fileName, String message, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -629,7 +687,8 @@ public record IngestProgressUpdate(
                 message,
                 IngestStats.empty(),
                 "Job stopped: " + message,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -638,6 +697,14 @@ public record IngestProgressUpdate(
      */
     public static IngestProgressUpdate cancelled(String taskId, String fileName, IngestPhase currentPhase,
                                                    String reason, IngestStats stats) {
+        return cancelled(taskId, fileName, currentPhase, reason, stats, null);
+    }
+
+    /**
+     * Creates a cancellation update with stats and fact sheet association.
+     */
+    public static IngestProgressUpdate cancelled(String taskId, String fileName, IngestPhase currentPhase,
+                                                   String reason, IngestStats stats, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -648,7 +715,8 @@ public record IngestProgressUpdate(
                 reason,
                 stats,
                 "Job cancelled: " + reason,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 
@@ -657,6 +725,14 @@ public record IngestProgressUpdate(
      * This is a critical system event indicating emergency memory protection.
      */
     public static IngestProgressUpdate memoryKilled(String taskId, String fileName, String message) {
+        return memoryKilled(taskId, fileName, message, null);
+    }
+
+    /**
+     * Creates an update for a job forcibly killed due to memory exceeding kill threshold
+     * with fact sheet association.
+     */
+    public static IngestProgressUpdate memoryKilled(String taskId, String fileName, String message, Long factSheetId) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -667,7 +743,8 @@ public record IngestProgressUpdate(
                 message,
                 IngestStats.empty(),
                 "CRITICAL: " + message,
-                Instant.now()
+                Instant.now(),
+                factSheetId
         );
     }
 

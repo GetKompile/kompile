@@ -1,0 +1,199 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="registry-container">
+  <div class="page-header">
+    <h1>
+      <mat-icon>inventory_2</mat-icon>
+      Model Registry
+    </h1>
+    <p class="subtitle">Browse and manage models in the local registry</p>
+  </div>
+
+  <!-- Stats Cards -->
+  <div class="stats-grid" *ngIf="!isLoading && !error">
+    <mat-card class="stat-card">
+      <mat-icon>storage</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.total }}</span>
+        <span class="stat-label">Total Models</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card">
+      <mat-icon>hub</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.denseEncoders }}</span>
+        <span class="stat-label">Dense Encoders</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card">
+      <mat-icon>scatter_plot</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.sparseEncoders }}</span>
+        <span class="stat-label">Sparse Encoders</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card">
+      <mat-icon>compare_arrows</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.crossEncoders }}</span>
+        <span class="stat-label">Cross-Encoders</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card highlight">
+      <mat-icon>check_circle</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.active }}</span>
+        <span class="stat-label">Active</span>
+      </div>
+    </mat-card>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar" *ngIf="!isLoading && !error">
+    <mat-form-field appearance="outline" class="search-field">
+      <mat-label>Search Models</mat-label>
+      <input matInput [(ngModel)]="searchQuery" placeholder="Search by ID, description, or source...">
+      <mat-icon matPrefix>search</mat-icon>
+      <button mat-icon-button matSuffix *ngIf="searchQuery" (click)="searchQuery = ''">
+        <mat-icon>close</mat-icon>
+      </button>
+    </mat-form-field>
+
+    <mat-button-toggle-group [(value)]="selectedType" class="type-toggles">
+      <mat-button-toggle *ngFor="let type of modelTypes" [value]="type.value">
+        {{ type.label }}
+      </mat-button-toggle>
+    </mat-button-toggle-group>
+
+    <button mat-icon-button (click)="loadRegistry()" matTooltip="Refresh Registry">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="isLoading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading registry...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-state" *ngIf="error">
+    <mat-icon>error_outline</mat-icon>
+    <p>{{ error }}</p>
+    <button mat-raised-button color="primary" (click)="loadRegistry()">
+      <mat-icon>refresh</mat-icon>
+      Retry
+    </button>
+  </div>
+
+  <!-- Content -->
+  <div class="registry-content" *ngIf="!isLoading && !error">
+    <!-- Empty State -->
+    <div class="empty-state" *ngIf="getModels().length === 0">
+      <mat-icon>inventory_2</mat-icon>
+      <p *ngIf="searchQuery">No models matching "{{ searchQuery }}"</p>
+      <p *ngIf="!searchQuery && selectedType !== 'all'">No {{ selectedType | titlecase }} models in registry</p>
+      <p *ngIf="!searchQuery && selectedType === 'all'">No models in registry</p>
+      <button mat-raised-button color="primary" routerLink="/download" *ngIf="!searchQuery">
+        <mat-icon>cloud_download</mat-icon>
+        Download Models
+      </button>
+    </div>
+
+    <!-- Model Cards -->
+    <div class="model-grid" *ngIf="getModels().length > 0">
+      <mat-card *ngFor="let model of getModels()" class="model-card" (click)="openModelDetails(model)">
+        <mat-card-header>
+          <mat-icon mat-card-avatar [class]="'type-icon type-' + model.type">
+            {{ getModelTypeIcon(model.type) }}
+          </mat-icon>
+          <mat-card-title>
+            {{ model.model_id }}
+            <button mat-icon-button class="copy-btn" (click)="copyModelId(model, $event)"
+                    matTooltip="Copy Model ID">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </mat-card-title>
+          <mat-card-subtitle>
+            {{ getModelTypeDisplayName(model.type) }}
+          </mat-card-subtitle>
+        </mat-card-header>
+
+        <mat-card-content>
+          <!-- Status -->
+          <div class="status-row">
+            <mat-chip [class]="'status-chip-' + model.status">
+              <mat-icon>{{ getStatusIcon(model.status) }}</mat-icon>
+              {{ model.status | titlecase }}
+            </mat-chip>
+          </div>
+
+          <!-- Metadata -->
+          <div class="metadata-row" *ngIf="model.metadata">
+            <span class="metadata-item" *ngIf="model.metadata.embeddingDim">
+              <mat-icon>straighten</mat-icon>
+              {{ model.metadata.embeddingDim }}d
+            </span>
+            <span class="metadata-item" *ngIf="model.metadata.maxSequenceLength">
+              <mat-icon>text_fields</mat-icon>
+              {{ model.metadata.maxSequenceLength }} max
+            </span>
+            <span class="metadata-item" *ngIf="model.metadata.numLayers">
+              <mat-icon>layers</mat-icon>
+              {{ model.metadata.numLayers }} layers
+            </span>
+          </div>
+
+          <!-- Tokenizer summary -->
+          <div class="tokenizer-row">
+            <mat-icon>text_format</mat-icon>
+            <span>{{ getTokenizerSummary(model) }}</span>
+          </div>
+
+          <!-- Vocab info -->
+          <div class="vocab-row">
+            <mat-icon>description</mat-icon>
+            <span>{{ getVocabInfo(model) }}</span>
+          </div>
+        </mat-card-content>
+
+        <mat-card-actions align="end">
+          <button mat-button color="primary" (click)="openModelDetails(model); $event.stopPropagation()">
+            <mat-icon>info</mat-icon>
+            Details
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+
+    <!-- Registry Info Footer -->
+    <div class="registry-info" *ngIf="registry">
+      <span class="info-item">
+        <mat-icon>info</mat-icon>
+        Registry v{{ registry.version }}
+      </span>
+      <span class="info-item" *ngIf="registry.updated_at">
+        <mat-icon>update</mat-icon>
+        Updated: {{ registry.updated_at | date:'medium' }}
+      </span>
+    </div>
+  </div>
+</div>

@@ -41,7 +41,9 @@
     <!-- New specialized loader modules -->
     <module>kompile-loader-microsoft</module>
     <module>kompile-loader-mail</module>
+    <module>kompile-loader-slack</module>
     <module>kompile-loader-pdf-extended</module>
+    <module>kompile-loader-web</module>
     <module>kompile-app-anserini</module>
     <module>kompile-app-openai-llm</module>
     <module>kompile-app-anthropic-llm</module>
@@ -68,6 +70,18 @@
     <module>kompile-vectorstore-anserini</module>
     <module>kompile-chat-history</module>
     <module>kompile-orchestrator</module>
+    <module>kompile-knowledge-graph</module>
+    <module>kompile-oauth2-client</module>
+    <!-- OAuth-dependent source provider modules -->
+    <module>kompile-source-confluence</module>
+    <module>kompile-source-jira</module>
+    <module>kompile-source-slack</module>
+    <module>kompile-source-gdrive</module>
+    <module>kompile-source-notion</module>
+    <module>kompile-source-reddit</module>
+    <module>kompile-source-email</module>
+    <module>kompile-loader-email-imap</module>
+    <module>kompile-model-staging</module>
 
   </modules>
 
@@ -215,7 +229,17 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-slack</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-loader-pdf-extended</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-web</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -336,6 +360,62 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-orchestrator</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-knowledge-graph</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-oauth2-client</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- OAuth-dependent source provider modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-confluence</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-jira</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-slack</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-gdrive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-notion</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-reddit</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-email</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-email-imap</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-model-staging</artifactId>
         <version>${project.version}</version>
       </dependency>
 

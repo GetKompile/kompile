@@ -19,8 +19,6 @@ package ai.kompile.vectorstore.anserini;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import java.util.UUID;
-
 /**
  * Configuration properties for the Anserini VectorStore implementation.
  * Only created when kompile.vectorstore.anserini.enabled=true is set.
@@ -30,17 +28,11 @@ import java.util.UUID;
 public class AnseriniVectorStoreProperties {
 
     /**
-     * Unique instance ID for this JVM instance, used to create unique index paths.
-     * This prevents lock conflicts when multiple instances or test runs use the same directory.
-     */
-    private static final String INSTANCE_ID = UUID.randomUUID().toString().substring(0, 8);
-
-    /**
      * Path to the Lucene index directory for storing vectors.
-     * Default: Uses temp directory with unique instance ID to prevent lock conflicts.
-     * Set explicitly via kompile.vectorstore.anserini.index-path to use a persistent location.
+     * Default: Uses ~/.kompile/anserini-vector-index for persistent storage.
+     * Set explicitly via kompile.vectorstore.anserini.index-path to customize.
      */
-    private String indexPath = System.getProperty("java.io.tmpdir") + "/anserini-vector-index-" + INSTANCE_ID;
+    private String indexPath = System.getProperty("user.home") + "/.kompile/anserini-vector-index";
 
     /**
      * Whether to enable the Anserini VectorStore.
@@ -48,6 +40,19 @@ public class AnseriniVectorStoreProperties {
      * kompile.vectorstore.anserini.enabled=true
      */
     private boolean enabled = false;
+
+    /**
+     * Whether to enable persistent storage for the index.
+     * If true (DEFAULT), the index path will be used as-is without appending a
+     * unique JVM suffix.
+     * This allows multiple processes (e.g., main app and subprocesses) to share the
+     * same index,
+     * ensuring semantic search with RAG always uses a consistent location.
+     * If false, a JVM-unique suffix is appended to prevent lock conflicts during
+     * testing.
+     * Default: true (consistent location for production use)
+     */
+    private boolean persistenceEnabled = true;
 
     /**
      * Memory buffer size for IndexWriter in MB.
@@ -82,6 +87,23 @@ public class AnseriniVectorStoreProperties {
      * Default: false
      */
     private boolean quantizeInt8 = false;
+
+    /**
+     * Number of batch add operations before committing to the index.
+     * PERFORMANCE: Higher values reduce commit overhead during bulk indexing.
+     * Set to 1 for immediate durability (slower), or 10-50 for bulk indexing (faster).
+     * Note: A commit is always performed after the final batch in a bulk operation.
+     * Default: 10 (commit every 10 batches for 10x fewer commits)
+     */
+    private int batchCommitInterval = 10;
+
+    /**
+     * Maximum number of documents to buffer before forcing a commit.
+     * This provides a safety net to ensure commits happen even if batch count is low.
+     * Set to 0 to disable document-based commit triggering.
+     * Default: 5000 (commit at least every 5000 documents)
+     */
+    private int maxDocumentsBeforeCommit = 5000;
 
     /**
      * HNSW parameters for hierarchical navigable small world indexing.

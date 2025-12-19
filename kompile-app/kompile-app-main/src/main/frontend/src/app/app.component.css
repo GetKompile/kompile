@@ -14,56 +14,239 @@
  * limitations under the License.
  */
 
+/* src/app/app.component.css */
 .app-container {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  font-family: var(--font-family-base);
+  background-color: var(--bg-body);
 }
 
+/* 
+ * Sticky Header Implementation 
+ * Ensures navigation remains accessible while scrolling
+ */
 header {
-  background-color: #333;
-  color: white;
-  padding: 1em;
-  text-align: center;
+  background-color: var(--bg-header);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition-normal);
 }
 
-nav {
-  background-color: #f4f4f4;
-  padding: 0.5em;
-  text-align: center;
-  border-bottom: 1px solid #ddd;
+/* Header Content Layout */
+.header-content {
+  max-width: 1400px;
+  /* Wider container for header */
+  margin: 0 auto;
+  padding: 0 var(--spacing-4);
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-nav button {
-  padding: 0.5em 1em;
-  margin: 0 0.5em;
-  cursor: pointer;
-  border: 1px solid transparent;
-  background-color: #e7e7e7;
-  border-radius: 4px;
+header h1 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
 }
 
-nav button.active {
-  background-color: #007bff;
-  color: white;
-  border-color: #0056b3;
-}
+/* 
+ * Responsive Navigation 
+ */
+/* 
+ * Responsive Navigation 
+ */
+/* mat-tab-nav-bar styles are handled by Angular Material theme */
 
-nav button:hover:not(.active) {
-  background-color: #ddd;
-}
-
+/* 
+ * Main Content Area 
+ * Centralized container with responsive padding
+ */
 main {
   flex-grow: 1;
-  padding: 1em;
-  background-color: #fff;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--spacing-6) var(--spacing-4);
+  animation: fadeIn 0.4s ease-out;
+}
+
+/* Content Fade In Animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 footer {
-  background-color: #333;
-  color: white;
+  background-color: var(--bg-header);
+  border-top: 1px solid var(--border-color);
+  color: var(--text-tertiary);
   text-align: center;
-  padding: 1em;
-  font-size: 0.8em;
+  padding: var(--spacing-6);
+  font-size: var(--font-size-xs);
+  margin-top: auto;
+}
+
+/* 
+ * Responsive Breakpoints 
+ */
+@media (max-width: 768px) {
+  .header-content {
+    flex-direction: column;
+    height: auto;
+    padding: var(--spacing-3) var(--spacing-4);
+    gap: var(--spacing-3);
+  }
+
+  /* mat-tab-nav-bar handles its own responsiveness */
+
+  main {
+    padding: var(--spacing-4) var(--spacing-3);
+  }
+}
+
+/* Dark Mode Support (Future-proofing) */
+@media (prefers-color-scheme: dark) {
+  /* Only activated if we switch :root variables via a .dark-theme class */
+  /* This block is a placeholder for semantic color mapping */
+}
+
+/* Knowledge Graph Container */
+.graph-container {
+  height: calc(100vh - 180px);
+  min-height: 500px;
+  width: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* FACT SHEET SELECTOR                                                             */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-3) var(--spacing-4);
+}
+
+.fact-sheet-selector {
+  display: flex;
+  align-items: center;
+}
+
+.fact-sheet-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-weight: 500;
+  transition: background 0.2s ease;
+}
+
+.fact-sheet-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.fact-sheet-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Fact Sheet Menu Styles */
+::ng-deep .fact-sheet-menu .menu-header {
+  padding: 12px 16px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 0.5px;
+}
+
+::ng-deep .fact-sheet-menu .mat-mdc-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+::ng-deep .fact-sheet-menu .fact-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #888;
+}
+
+::ng-deep .fact-sheet-menu .check-icon {
+  color: #4caf50;
+  font-size: 18px;
+  margin-left: 8px;
+}
+
+::ng-deep .fact-sheet-menu .active-sheet {
+  background: #e3f2fd;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* CREATE FACT SHEET DIALOG                                                        */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.2s ease;
+}
+
+.dialog-content {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.dialog-content h2 {
+  margin: 0 0 16px;
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.dialog-content .full-width {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }

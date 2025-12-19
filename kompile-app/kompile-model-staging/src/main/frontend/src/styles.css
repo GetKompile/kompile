@@ -1,0 +1,149 @@
+/* Local font imports - cached locally instead of Google CDN */
+@import 'material-icons/iconfont/material-icons.css';
+@import '@fontsource/roboto/300.css';
+@import '@fontsource/roboto/400.css';
+@import '@fontsource/roboto/500.css';
+
+/* Global Styles for Model Staging Frontend */
+
+:root {
+  --primary-color: #1976d2;
+  --accent-color: #ff4081;
+  --warn-color: #f44336;
+  --success-color: #4caf50;
+  --pending-color: #ff9800;
+  --font-family-base: 'Roboto', sans-serif;
+  --font-family-monospace: 'Roboto Mono', monospace;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--font-family-base);
+  background-color: #fafafa;
+}
+
+/* Status Colors */
+.status-success {
+  color: var(--success-color);
+}
+
+.status-error {
+  color: var(--warn-color);
+}
+
+.status-pending {
+  color: var(--pending-color);
+}
+
+.status-info {
+  color: var(--primary-color);
+}
+
+/* Badge styles */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.badge-success {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.badge-error {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+.badge-pending {
+  background-color: #fff3e0;
+  color: #e65100;
+}
+
+.badge-info {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+/* Card styles */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+/* Snackbar styles */
+.snackbar-success {
+  --mdc-snackbar-container-color: #4caf50;
+  --mdc-snackbar-supporting-text-color: white;
+}
+
+.snackbar-error {
+  --mdc-snackbar-container-color: #f44336;
+  --mdc-snackbar-supporting-text-color: white;
+}
+
+/* Loading spinner container */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  gap: 16px;
+  color: #666;
+}
+
+/* Code/monospace text */
+code, .monospace {
+  font-family: var(--font-family-monospace);
+  background-color: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+/* Section headers */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.section-header mat-icon {
+  color: var(--primary-color);
+}
+
+.section-header h2 {
+  margin: 0;
+  font-weight: 400;
+  font-size: 1.4em;
+  color: #333;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 48px;
+  color: #666;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #bdbdbd;
+  margin-bottom: 16px;
+}
+
+.empty-state p {
+  margin: 8px 0;
+  font-size: 1.1em;
+}

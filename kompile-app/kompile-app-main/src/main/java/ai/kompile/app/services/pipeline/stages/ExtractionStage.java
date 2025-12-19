@@ -19,13 +19,20 @@ package ai.kompile.app.services.pipeline.stages;
 import ai.kompile.app.services.pipeline.PipelineStage;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
+import ai.kompile.core.source.SourceAttributionHelper;
+import ai.kompile.core.source.SourceDocumentStorageService;
+import ai.kompile.core.source.SourceMetadataConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -47,6 +54,7 @@ public class ExtractionStage implements PipelineStage<ExtractionStage.Extraction
     private static final Logger logger = LoggerFactory.getLogger(ExtractionStage.class);
 
     private final List<DocumentLoader> availableLoaders;
+    private final SourceDocumentStorageService sourceStorageService;
     private final StageMetrics metrics = new StageMetrics();
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
@@ -55,7 +63,13 @@ public class ExtractionStage implements PipelineStage<ExtractionStage.Extraction
     private boolean autoDetectLoader = true;
 
     public ExtractionStage(List<DocumentLoader> availableLoaders) {
+        this(availableLoaders, null);
+    }
+
+    public ExtractionStage(List<DocumentLoader> availableLoaders,
+                          SourceDocumentStorageService sourceStorageService) {
         this.availableLoaders = availableLoaders;
+        this.sourceStorageService = sourceStorageService;
     }
 
     @Override
@@ -91,23 +105,48 @@ public class ExtractionStage implements PipelineStage<ExtractionStage.Extraction
 
             logger.debug("Using loader '{}' for file '{}'", loader.getName(), fileName);
 
-            // Create source descriptor
-            DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
-                    .type(DocumentSourceDescriptor.SourceType.FILE)
-                    .pathOrUrl(filePath.toString())
-                    .originalFileName(fileName)
-                    .sourceId(input.sourceId() != null ? input.sourceId() : "file_" + fileName)
-                    .metadata(input.metadata() != null ? input.metadata() : Map.of())
-                    .build();
+            // Create source descriptor with file path and metadata
+            DocumentSourceDescriptor.DocumentSourceDescriptorBuilder descriptorBuilder =
+                    DocumentSourceDescriptor.builder()
+                            .type(DocumentSourceDescriptor.SourceType.FILE)
+                            .pathOrUrl(filePath.toAbsolutePath().toString())
+                            .originalFileName(fileName)
+                            .sourceId(input.sourceId() != null ? input.sourceId() : "file:" + filePath.toAbsolutePath())
+                            .sizeBytes(fileSize)
+                            .metadata(input.metadata() != null ? new HashMap<>(input.metadata()) : new HashMap<>());
+
+            // Store original document if storage service is available
+            if (sourceStorageService != null && sourceStorageService.isEnabled()) {
+                Optional<SourceDocumentStorageService.StorageResult> storageResult =
+                        sourceStorageService.storeDocument(filePath);
+                if (storageResult.isPresent()) {
+                    SourceDocumentStorageService.StorageResult result = storageResult.get();
+                    descriptorBuilder.storedCopyPath(result.getStoredPathString());
+                    descriptorBuilder.checksum(result.checksum());
+                    logger.debug("Stored document copy: {} -> {} (checksum: {})",
+                            fileName, result.storedPath(), result.checksum().substring(0, 16) + "...");
+
+                    // Store metadata alongside the document (including source_url if present)
+                    if (input.metadata() != null && !input.metadata().isEmpty()) {
+                        sourceStorageService.storeMetadata(result.checksum(), input.metadata());
+                    }
+                }
+            }
+
+            DocumentSourceDescriptor sourceDescriptor = descriptorBuilder.build();
 
             // Load documents
             List<Document> documents = loader.load(sourceDescriptor);
 
+            // Add source attribution metadata to all loaded documents
+            documents = addSourceAttribution(documents, sourceDescriptor, loader.getName());
+
             long elapsedNanos = System.nanoTime() - startNanos;
             metrics.recordSuccess(elapsedNanos, fileSize, documents.size());
 
-            logger.debug("Extracted {} documents from '{}' in {}ms using {}",
-                    documents.size(), fileName, elapsedNanos / 1_000_000, loader.getName());
+            logger.debug("Extracted {} documents from '{}' in {}ms using {} (source_id: {})",
+                    documents.size(), fileName, elapsedNanos / 1_000_000, loader.getName(),
+                    sourceDescriptor.getEffectiveSourceId());
 
             return new ExtractionOutput(
                     documents,
@@ -231,5 +270,87 @@ public class ExtractionStage implements PipelineStage<ExtractionStage.Extraction
         public int documentCount() {
             return documents != null ? documents.size() : 0;
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SOURCE ATTRIBUTION HELPER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Adds source attribution metadata to all loaded documents.
+     *
+     * This ensures that when documents are indexed (both keyword and vector),
+     * they carry source information that allows them to be traced back to
+     * their original source file.
+     *
+     * @param documents       The loaded documents
+     * @param sourceDescriptor The source descriptor with path and storage info
+     * @param loaderName      Name of the loader that was used
+     * @return Documents with source attribution metadata added
+     */
+    private List<Document> addSourceAttribution(
+            List<Document> documents,
+            DocumentSourceDescriptor sourceDescriptor,
+            String loaderName) {
+
+        if (documents == null || documents.isEmpty()) {
+            return documents;
+        }
+
+        // Build base source metadata from descriptor
+        Map<String, Object> sourceMetadata = sourceDescriptor.toSourceMetadata();
+        sourceMetadata.put(SourceMetadataConstants.LOADER_NAME, loaderName);
+        sourceMetadata.put(SourceMetadataConstants.INDEXED_AT, Instant.now().toString());
+
+        int totalChunks = documents.size();
+        List<Document> enrichedDocuments = new ArrayList<>(documents.size());
+
+        for (int i = 0; i < documents.size(); i++) {
+            Document doc = documents.get(i);
+
+            // Create new metadata map with source attribution
+            Map<String, Object> enrichedMetadata = new HashMap<>();
+
+            // Copy source metadata first
+            enrichedMetadata.putAll(sourceMetadata);
+
+            // Add chunk info
+            enrichedMetadata.put(SourceMetadataConstants.CHUNK_INDEX, i);
+            enrichedMetadata.put(SourceMetadataConstants.TOTAL_CHUNKS, totalChunks);
+
+            // Overlay document's own metadata (don't overwrite source tracking keys)
+            if (doc.getMetadata() != null) {
+                for (Map.Entry<String, Object> entry : doc.getMetadata().entrySet()) {
+                    String key = entry.getKey();
+                    // Don't let document metadata overwrite core source keys
+                    boolean isCoreSourceKey = false;
+                    for (String coreKey : SourceMetadataConstants.CORE_SOURCE_KEYS) {
+                        if (coreKey.equals(key)) {
+                            isCoreSourceKey = true;
+                            break;
+                        }
+                    }
+                    if (!isCoreSourceKey) {
+                        enrichedMetadata.put(key, entry.getValue());
+                    }
+                }
+            }
+
+            // Create new document with enriched metadata
+            Document enrichedDoc = new Document(
+                    doc.getId(),
+                    doc.getText(),
+                    enrichedMetadata
+            );
+
+            enrichedDocuments.add(enrichedDoc);
+        }
+
+        logger.trace("Added source attribution to {} documents (source_id: {}, stored_copy: {})",
+                documents.size(),
+                sourceDescriptor.getEffectiveSourceId(),
+                sourceDescriptor.getStoredCopyPath() != null ? "yes" : "no");
+
+        return enrichedDocuments;
     }
 }

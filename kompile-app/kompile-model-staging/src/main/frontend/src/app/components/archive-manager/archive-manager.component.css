@@ -1,0 +1,350 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.archive-manager-container {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 28px;
+  font-weight: 500;
+  margin: 0 0 8px 0;
+  color: #1a237e;
+}
+
+.page-header .subtitle {
+  color: #666;
+  margin: 0;
+}
+
+.tab-label {
+  margin-left: 8px;
+}
+
+.tab-content {
+  padding: 24px 0;
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+/* Archive Cards */
+.archive-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 16px;
+}
+
+.archive-card {
+  border-radius: 8px;
+}
+
+.archive-card mat-card-avatar {
+  color: #1a237e;
+}
+
+.archive-details {
+  margin-top: 16px;
+}
+
+.detail-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.detail-row .label {
+  font-weight: 500;
+  color: #666;
+  min-width: 80px;
+}
+
+.detail-row .value {
+  color: #333;
+}
+
+.detail-row .value.url {
+  word-break: break-all;
+  font-size: 12px;
+  color: #1976d2;
+}
+
+.models-panel {
+  margin-top: 16px;
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: #666;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #ccc;
+  margin-bottom: 16px;
+}
+
+.empty-state p {
+  margin: 4px 0;
+}
+
+.empty-state .hint {
+  font-size: 14px;
+  color: #999;
+}
+
+/* Catalog Content */
+.catalog-info {
+  background: #f5f5f5;
+  padding: 16px;
+  border-radius: 8px;
+  margin-bottom: 24px;
+}
+
+.catalog-info p {
+  margin: 4px 0;
+}
+
+/* Update Content */
+.update-summary {
+  margin-bottom: 24px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  text-align: center;
+}
+
+.summary-item {
+  padding: 16px;
+}
+
+.summary-item .number {
+  display: block;
+  font-size: 36px;
+  font-weight: 500;
+  color: #1a237e;
+}
+
+.summary-item .label {
+  color: #666;
+  font-size: 14px;
+}
+
+.summary-item.highlight .number {
+  color: #ff9800;
+}
+
+.summary-item.warning .number {
+  color: #f44336;
+}
+
+.up-to-date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px;
+  color: #4caf50;
+}
+
+.up-to-date mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+}
+
+.update-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 16px;
+}
+
+.update-card {
+  border-radius: 8px;
+}
+
+.update-card.has-update {
+  border-left: 4px solid #ff9800;
+}
+
+.update-card mat-card-avatar.update-available {
+  color: #ff9800;
+}
+
+.arrow-icon {
+  font-size: 16px;
+  vertical-align: middle;
+  margin: 0 4px;
+}
+
+.update-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.update-details .size {
+  color: #666;
+  font-size: 14px;
+}
+
+.changelog {
+  font-size: 14px;
+  color: #666;
+  margin-top: 8px;
+  padding: 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.version-major {
+  background-color: #ffebee !important;
+  color: #c62828 !important;
+}
+
+.version-minor {
+  background-color: #fff3e0 !important;
+  color: #ef6c00 !important;
+}
+
+.version-patch {
+  background-color: #e8f5e9 !important;
+  color: #2e7d32 !important;
+}
+
+/* Form Cards */
+.form-card {
+  max-width: 800px;
+  border-radius: 8px;
+}
+
+.export-form,
+.import-form,
+.download-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row mat-form-field {
+  flex: 1;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+/* Model Selection */
+.model-selection {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 8px;
+}
+
+.selection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.selection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.model-chips {
+  margin-bottom: 8px;
+}
+
+.selection-count {
+  font-size: 14px;
+  color: #666;
+  margin: 0;
+}
+
+.advanced-options {
+  margin-top: 8px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .archive-list,
+  .update-list {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row {
+    flex-direction: column;
+  }
+
+  .summary-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+/* Snackbar styles */
+:host ::ng-deep .snackbar-success {
+  background-color: #4caf50;
+  color: white;
+}
+
+:host ::ng-deep .snackbar-error {
+  background-color: #f44336;
+  color: white;
+}
+
+:host ::ng-deep .snackbar-warning {
+  background-color: #ff9800;
+  color: white;
+}

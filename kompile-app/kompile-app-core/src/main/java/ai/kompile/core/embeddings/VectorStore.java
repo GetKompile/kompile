@@ -21,23 +21,100 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.document.Document;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Interface for a vector store that can store documents with their embeddings
  * and perform similarity searches.
  *
- * <p>This interface provides both optimized INDArray-based methods (preferred for performance)
- * and legacy float[]/List&lt;Float&gt; methods for Spring AI compatibility.</p>
+ * <p>
+ * This interface provides both optimized INDArray-based methods (preferred for
+ * performance)
+ * and legacy float[]/List&lt;Float&gt; methods for Spring AI compatibility.
+ * </p>
  *
  * <h2>Performance Recommendations</h2>
  * <ul>
- *   <li>Use {@link #addWithEmbeddings(List, INDArray)} for batch document addition</li>
- *   <li>Use {@link #similaritySearchWithScores(INDArray, int, double)} for search operations</li>
- *   <li>Avoid the legacy List&lt;Float&gt; methods in hot paths</li>
+ * <li>Use {@link #addWithEmbeddings(List, INDArray)} for batch document
+ * addition</li>
+ * <li>Use {@link #similaritySearchWithScores(INDArray, int, double)} for search
+ * operations</li>
+ * <li>Avoid the legacy List&lt;Float&gt; methods in hot paths</li>
  * </ul>
  */
 public interface VectorStore {
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BROWSING AND STATUS METHODS (for Index Browser)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns the path to the vector store index.
+     * 
+     * @return path as String, or "N/A" if not applicable
+     */
+    default String getVectorStorePath() {
+        return "N/A";
+    }
+
+    /**
+     * Returns whether the vector store is available and ready for use.
+     * 
+     * @return true if vector store is available
+     */
+    default boolean isVectorStoreAvailable() {
+        return true;
+    }
+
+    /**
+     * Returns whether the vector store is using a temporary fallback index due to
+     * initialization errors.
+     * 
+     * @return true if using fallback index
+     */
+    default boolean isUsingFallbackIndex() {
+        return false;
+    }
+
+    /**
+     * Returns the approximate count of vectors/documents in the store.
+     * 
+     * @return approximate count, or -1 if not available
+     */
+    default long getApproxVectorCount() {
+        return -1L;
+    }
+
+    /**
+     * Lists documents from the vector store with pagination.
+     *
+     * @param offset starting offset
+     * @param limit  maximum number of documents to return
+     * @return list of document info maps containing id, content preview, and
+     *         metadata
+     */
+    default List<Map<String, Object>> listVectorDocuments(int offset, int limit) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Refreshes the internal reader to see changes made by external processes.
+     * <p>
+     * This is useful when documents are added by a subprocess (e.g., vector
+     * population subprocess) and the main app needs to see the new documents.
+     * Implementations should use efficient mechanisms like
+     * {@code DirectoryReader.openIfChanged()} to only refresh if the index
+     * has actually changed.
+     * </p>
+     *
+     * @return true if the reader was refreshed (index had changes), false if no
+     *         refresh was needed
+     */
+    default boolean refreshReader() {
+        return false;
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // OPTIMIZED METHODS (INDArray-native, no conversion overhead)
@@ -49,18 +126,19 @@ public interface VectorStore {
      * This is the PREFERRED method for batch additions as it avoids
      * float[]/List&lt;Float&gt; conversion overhead.
      *
-     * @param documents List of Spring AI Documents
-     * @param embeddings INDArray of shape [numDocs, embeddingDim] containing embeddings
+     * @param documents  List of Spring AI Documents
+     * @param embeddings INDArray of shape [numDocs, embeddingDim] containing
+     *                   embeddings
+     * @return The actual number of documents successfully persisted to the store
      * @throws IllegalArgumentException if documents.size() != embeddings.rows()
      */
-    default void addWithEmbeddings(List<Document> documents, INDArray embeddings) {
+    default int addWithEmbeddings(List<Document> documents, INDArray embeddings) {
         // Default implementation converts to legacy format for backward compatibility
         if (documents == null || documents.isEmpty()) {
-            return;
+            return 0;
         }
         if (embeddings == null || embeddings.isEmpty()) {
-            add(documents);
-            return;
+            return add(documents);
         }
 
         List<List<Float>> embeddingsList = new ArrayList<>(documents.size());
@@ -85,7 +163,7 @@ public interface VectorStore {
                 }
             }
         }
-        add(documents, embeddingsList);
+        return add(documents, embeddingsList);
     }
 
     /**
@@ -95,8 +173,9 @@ public interface VectorStore {
      * and returns scored documents for ranking.
      *
      * @param queryEmbedding INDArray of shape [1, embeddingDim] or [embeddingDim]
-     * @param k The number of most similar documents to retrieve
-     * @param threshold Minimum similarity score threshold (behavior depends on implementation)
+     * @param k              The number of most similar documents to retrieve
+     * @param threshold      Minimum similarity score threshold (behavior depends on
+     *                       implementation)
      * @return A list of ScoredDocuments sorted by score descending
      */
     default List<ScoredDocument> similaritySearchWithScores(INDArray queryEmbedding, int k, double threshold) {
@@ -152,8 +231,8 @@ public interface VectorStore {
      * Enables BLAS-optimized batch operations for multi-query scenarios.
      *
      * @param queryEmbeddings INDArray of shape [numQueries, embeddingDim]
-     * @param k Number of results per query
-     * @param threshold Minimum similarity score
+     * @param k               Number of results per query
+     * @param threshold       Minimum similarity score
      * @return List of results for each query
      */
     default List<List<ScoredDocument>> batchSimilaritySearch(INDArray queryEmbeddings, int k, double threshold) {
@@ -182,6 +261,45 @@ public interface VectorStore {
         return results;
     }
 
+    /**
+     * Adds documents with pre-computed float[][] embeddings.
+     * <p>
+     * This method avoids the boxing overhead of List&lt;List&lt;Float&gt;&gt; and
+     * the INDArray allocation overhead, making it ideal for bulk indexing from
+     * pre-computed embeddings.
+     * </p>
+     *
+     * @param documents  List of Spring AI Documents
+     * @param embeddings float[numDocs][embeddingDim] array of pre-computed embeddings
+     * @return The actual number of documents successfully persisted to the store
+     * @throws IllegalArgumentException if documents.size() != embeddings.length
+     */
+    default int addWithFloatArrayEmbeddings(List<Document> documents, float[][] embeddings) {
+        // Default implementation converts to legacy format for backward compatibility
+        if (documents == null || documents.isEmpty()) {
+            return 0;
+        }
+        if (embeddings == null || embeddings.length == 0) {
+            return add(documents);
+        }
+
+        // Convert float[][] to List<List<Float>> (fallback for implementations
+        // that haven't overridden this method)
+        List<List<Float>> embeddingsList = new ArrayList<>(documents.size());
+        for (float[] embedding : embeddings) {
+            if (embedding != null) {
+                List<Float> rowList = new ArrayList<>(embedding.length);
+                for (float v : embedding) {
+                    rowList.add(v);
+                }
+                embeddingsList.add(rowList);
+            } else {
+                embeddingsList.add(null);
+            }
+        }
+        return add(documents, embeddingsList);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONVENIENCE METHODS (auto-embed, may involve internal conversion)
     // ═══════════════════════════════════════════════════════════════════════════
@@ -191,8 +309,11 @@ public interface VectorStore {
      * generate embeddings for these documents using a configured EmbeddingModel.
      *
      * @param documents List of Spring AI Documents.
+     * @return The actual number of documents successfully persisted to the store.
+     *         This may be less than documents.size() if some documents were skipped
+     *         (e.g., due to empty embeddings or errors).
      */
-    void add(List<Document> documents);
+    int add(List<Document> documents);
 
     /**
      * Performs a similarity search using a query string.
@@ -200,28 +321,30 @@ public interface VectorStore {
      * using a configured EmbeddingModel, then perform the search.
      *
      * @param query The query string.
-     * @param k The number of most similar documents to retrieve.
+     * @param k     The number of most similar documents to retrieve.
      * @return A list of Spring AI Documents.
      */
     List<Document> similaritySearch(String query, int k);
 
     /**
-     * Performs a similarity search using a query string with a similarity threshold.
+     * Performs a similarity search using a query string with a similarity
+     * threshold.
      *
-     * @param query The query string.
-     * @param k The number of most similar documents to retrieve.
+     * @param query     The query string.
+     * @param k         The number of most similar documents to retrieve.
      * @param threshold The similarity score threshold.
      * @return A list of Spring AI Documents.
      */
     List<Document> similaritySearch(String query, int k, double threshold);
 
     /**
-     * Performs a similarity search using a query string, returning scored documents.
+     * Performs a similarity search using a query string, returning scored
+     * documents.
      * <p>
      * This method auto-embeds the query and returns documents with scores.
      *
-     * @param query The query string
-     * @param k The number of most similar documents to retrieve
+     * @param query     The query string
+     * @param k         The number of most similar documents to retrieve
      * @param threshold The similarity score threshold
      * @return A list of ScoredDocuments sorted by score descending
      */
@@ -251,13 +374,14 @@ public interface VectorStore {
      * This method retrieves documents using vector similarity search and then
      * applies the specified reranking algorithm to improve result quality.
      *
-     * @param query The query string
-     * @param k The number of most similar documents to retrieve
-     * @param threshold The similarity score threshold
+     * @param query          The query string
+     * @param k              The number of most similar documents to retrieve
+     * @param threshold      The similarity score threshold
      * @param rerankerConfig Configuration for reranking (null to skip reranking)
      * @return A list of ScoredDocuments sorted by reranked score descending
      */
-    default List<ScoredDocument> similaritySearchWithReranking(String query, int k, double threshold, RerankerConfig rerankerConfig) {
+    default List<ScoredDocument> similaritySearchWithReranking(String query, int k, double threshold,
+            RerankerConfig rerankerConfig) {
         // Default implementation: just do similarity search without reranking
         // Implementations with reranking support should override this
         return similaritySearchWithScores(query, k, threshold);
@@ -267,13 +391,15 @@ public interface VectorStore {
      * Performs a similarity search with reranking using INDArray query embedding.
      *
      * @param queryEmbedding The query embedding as INDArray
-     * @param query The original query string (for reranking algorithms that need it)
-     * @param k The number of results
-     * @param threshold The similarity threshold
+     * @param query          The original query string (for reranking algorithms
+     *                       that need it)
+     * @param k              The number of results
+     * @param threshold      The similarity threshold
      * @param rerankerConfig Configuration for reranking
      * @return Reranked scored documents
      */
-    default List<ScoredDocument> similaritySearchWithReranking(INDArray queryEmbedding, String query, int k, double threshold, RerankerConfig rerankerConfig) {
+    default List<ScoredDocument> similaritySearchWithReranking(INDArray queryEmbedding, String query, int k,
+            double threshold, RerankerConfig rerankerConfig) {
         // Default implementation: just do similarity search without reranking
         return similaritySearchWithScores(queryEmbedding, k, threshold);
     }
@@ -286,9 +412,61 @@ public interface VectorStore {
      * Deletes documents from the store by their IDs.
      *
      * @param ids List of document IDs to delete.
-     * @return true if deletion was successful for all specified IDs, false otherwise.
+     * @return true if deletion was successful for all specified IDs, false
+     *         otherwise.
      */
     boolean delete(List<String> ids);
+
+    /**
+     * Flushes any pending documents and commits them to the store.
+     * <p>
+     * This method should be called after bulk indexing operations to ensure
+     * all documents are persisted. Implementations using batch commit optimization
+     * will commit any buffered documents that haven't reached the batch threshold yet.
+     * </p>
+     *
+     * @return true if flush/commit was successful, false otherwise
+     */
+    default boolean flushAndCommit() {
+        // Default implementation does nothing - implementations with batch
+        // commit optimization should override this
+        return true;
+    }
+
+    /**
+     * Switches the vector store to use a different index path.
+     * <p>
+     * This allows dynamic switching between different vector indices at runtime,
+     * which is useful for per-fact-sheet index storage. After switching, the store
+     * will read from and write to the new location.
+     * </p>
+     * <p>
+     * Implementations should close any existing resources for the old path and
+     * open/create resources for the new path. If the new path doesn't exist,
+     * implementations should create it.
+     * </p>
+     *
+     * @param newPath The new index path to switch to
+     * @return true if the switch was successful, false otherwise
+     */
+    default boolean switchIndexPath(String newPath) {
+        // Default implementation does nothing - implementations that support
+        // index path switching should override this
+        return false;
+    }
+
+    /**
+     * Returns the current index path used by the vector store.
+     * <p>
+     * This is an alias for {@link #getVectorStorePath()} for consistency with
+     * the switchIndexPath method naming.
+     * </p>
+     *
+     * @return The current index path, or "N/A" if not applicable
+     */
+    default String getIndexPath() {
+        return getVectorStorePath();
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // LEGACY METHODS (Spring AI compatibility, involves conversion overhead)
@@ -300,24 +478,29 @@ public interface VectorStore {
      * <b>Note:</b> This method involves boxing overhead. Prefer
      * {@link #addWithEmbeddings(List, INDArray)} for better performance.
      *
-     * @param documents List of Spring AI Documents.
-     * @param embeddings List of corresponding vector embeddings as List&lt;Float&gt;.
+     * @param documents  List of Spring AI Documents.
+     * @param embeddings List of corresponding vector embeddings as
+     *                   List&lt;Float&gt;.
+     * @return The actual number of documents successfully persisted to the store.
+     *         This may be less than documents.size() if some documents were skipped.
      * @deprecated Use {@link #addWithEmbeddings(List, INDArray)} instead
      */
     @Deprecated
-    void add(List<Document> documents, List<List<Float>> embeddings);
+    int add(List<Document> documents, List<List<Float>> embeddings);
 
     /**
      * Performs a similarity search against the stored vector embeddings.
      * <p>
      * <b>Note:</b> This method involves unboxing overhead. Prefer
-     * {@link #similaritySearchWithScores(INDArray, int, double)} for better performance.
+     * {@link #similaritySearchWithScores(INDArray, int, double)} for better
+     * performance.
      *
      * @param queryEmbedding The vector embedding of the query as List&lt;Float&gt;.
-     * @param k The number of most similar documents to retrieve.
-     * @param threshold Optional similarity threshold.
+     * @param k              The number of most similar documents to retrieve.
+     * @param threshold      Optional similarity threshold.
      * @return A list of Spring AI Documents.
-     * @deprecated Use {@link #similaritySearchWithScores(INDArray, int, double)} instead
+     * @deprecated Use {@link #similaritySearchWithScores(INDArray, int, double)}
+     *             instead
      */
     @Deprecated
     List<Document> similaritySearch(List<Float> queryEmbedding, int k, double threshold);

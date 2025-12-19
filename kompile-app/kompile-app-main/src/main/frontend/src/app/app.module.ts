@@ -22,7 +22,6 @@ import { CommonModule } from '@angular/common';
 import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 
 import { AppComponent } from './app.component';
-import { DocumentManagerComponent } from './components/document-manager/document-manager.component';
 import { McpToolsViewerComponent } from './components/mcp-tools-viewer/mcp-tools-viewer.component';
 import { McpServerBuilderComponent } from './components/mcp-server-builder/mcp-server-builder.component';
 import { RestMcpBridgeComponent } from './components/rest-mcp-bridge/rest-mcp-bridge.component';
@@ -44,6 +43,17 @@ import { OrchestratorHubComponent } from './components/orchestrator-hub/orchestr
 import { FolderSidebarComponent } from './components/folder-sidebar/folder-sidebar.component';
 import { FolderFilesDialogComponent } from './components/folder-files-dialog/folder-files-dialog.component';
 import { SubprocessLogsComponent } from './components/subprocess-logs/subprocess-logs.component';
+import { SettingsComponent } from './components/settings/settings.component';
+import { DeveloperHubComponent } from './components/developer-hub/developer-hub.component';
+import { PipelineSettingsPanelComponent } from './components/document-manager/pipeline-settings-panel/pipeline-settings-panel.component';
+import { ProcessingSettingsComponent } from './components/processing-settings/processing-settings.component';
+import { GraphVisualizerComponent } from './components/graph-visualizer/graph-visualizer.component';
+import { ConnectionsManagerComponent } from './components/connections-manager/connections-manager.component';
+import { FactSheetManagerComponent } from './components/fact-sheet-manager/fact-sheet-manager.component';
+import { CrossIndexStatusComponent } from './components/cross-index-status/cross-index-status.component';
+import { StagingConfigComponent } from './components/staging-config/staging-config.component';
+import { ArchiveManagerComponent } from './components/archive-manager/archive-manager.component';
+import { ArchiveAssemblyComponent } from './components/archive-assembly/archive-assembly.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -69,15 +79,14 @@ import { TextFieldModule } from '@angular/cdk/text-field';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
-import {DocumentDebuggerComponent} from './components/document-manager/document-debugger/document-debugger.component';
-import {MatSlideToggle} from '@angular/material/slide-toggle';
+import { DocumentDebuggerComponent } from './components/document-manager/document-debugger/document-debugger.component';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatSliderModule } from '@angular/material/slider';
 import { MatToolbarModule } from '@angular/material/toolbar';
 
 @NgModule({
   declarations: [
     AppComponent,
-    DocumentManagerComponent,
     DocumentDebuggerComponent,
     McpToolsViewerComponent,
     McpServerBuilderComponent,
@@ -96,7 +105,11 @@ import { MatToolbarModule } from '@angular/material/toolbar';
     JobHistoryComponent,
     OrchestratorHubComponent,
     FolderSidebarComponent,
-    FolderFilesDialogComponent
+    FolderFilesDialogComponent,
+    SettingsComponent,
+    DeveloperHubComponent,
+    ProcessingSettingsComponent,
+    CrossIndexStatusComponent
   ],
   imports: [
     BrowserModule,
@@ -127,7 +140,7 @@ import { MatToolbarModule } from '@angular/material/toolbar';
     MatChipsModule,
     MatDividerModule,
     TextFieldModule,
-    MatSlideToggle,
+    MatSlideToggleModule,
     MatMenuModule,
     MatCheckboxModule,
     MatButtonToggleModule,
@@ -137,6 +150,13 @@ import { MatToolbarModule } from '@angular/material/toolbar';
     BatchSizeConfigComponent,
     SubprocessConfigComponent,
     SubprocessLogsComponent,
+    PipelineSettingsPanelComponent,
+    GraphVisualizerComponent,
+    ConnectionsManagerComponent,
+    FactSheetManagerComponent,
+    StagingConfigComponent,
+    ArchiveManagerComponent,
+    ArchiveAssemblyComponent,
   ],
   providers: [],
   bootstrap: [AppComponent]

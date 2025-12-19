@@ -14,44 +14,125 @@
  * limitations under the License.
  */
 
-/* src/styles.scss or src/styles.css */
+/* src/styles.scss */
 @use '@angular/material' as mat;
 
 /* ==========================================================================
-   Global Font Configuration
+   Premium Design Token System
    ========================================================================== */
 
-/*
- * Standardized font families for the entire application.
- * - Primary: Roboto (loaded from Google Fonts)
- * - Monospace: Source Code Pro (loaded from Google Fonts)
- *
- * Use CSS custom properties (variables) for consistency across all components.
- */
 :root {
-  /* Primary font stack - Roboto with system fallbacks */
-  --font-family-base: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  /* 
+   * Color Palette - Premium Dark/Light Hybrid Capable
+   * Using HSL for easy variations
+   */
+  --primary-hue: 220;   /* Deep Blue */
+  --secondary-hue: 260; /* Royal Purple */
+  --accent-hue: 330;    /* Vibrant Pink/Magenta */
+  --success-hue: 150;   /* Emerald */
+  --warning-hue: 40;    /* Amber */
+  --error-hue: 0;       /* Crimson */
 
-  /* Monospace font stack - Source Code Pro with fallbacks */
-  --font-family-monospace: 'Source Code Pro', 'Fira Code', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+  /* Semantic Colors */
+  --color-primary: hsl(var(--primary-hue), 90%, 55%);
+  --color-primary-dark: hsl(var(--primary-hue), 90%, 35%);
+  --color-primary-light: hsl(var(--primary-hue), 90%, 95%);
+  
+  --color-secondary: hsl(var(--secondary-hue), 80%, 60%);
+  --color-accent: hsl(var(--accent-hue), 90%, 60%);
 
-  /* Font weights */
-  --font-weight-light: 300;
-  --font-weight-regular: 400;
-  --font-weight-medium: 500;
-  --font-weight-bold: 700;
+  /* Backgrounds & Surfaces */
+  --bg-body: #f8f9fa;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #ffffff;
+  --bg-header: #ffffff;
+  
+  /* Text Colors */
+  --text-primary: #1a1f36;
+  --text-secondary: #697386;
+  --text-tertiary: #8792a2;
+  --text-inverse: #ffffff;
+
+  /* Borders & Dividers */
+  --border-color: #e3e8ee;
+  --border-focus: var(--color-primary);
+
+  /* Shadows (Premium Depth) */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+
+  /* Typography */
+  --font-family-base: 'Inter', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-family-monospace: 'JetBrains Mono', 'Source Code Pro', 'Fira Code', monospace;
+  
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 1.875rem;
+
+  /* Spacing */
+  --spacing-1: 0.25rem;
+  --spacing-2: 0.5rem;
+  --spacing-3: 0.75rem;
+  --spacing-4: 1rem;
+  --spacing-6: 1.5rem;
+  --spacing-8: 2rem;
+  --spacing-12: 3rem;
+
+  /* Border Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ==========================================================================
-   Global Element Styles
+   Global Resets & Base Styles
    ========================================================================== */
 
-/* Apply consistent fonts to code elements throughout the app */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family-base);
+  background-color: var(--bg-body);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+}
+
+/* Typography Enhancements */
+h1, h2, h3, h4, h5, h6 {
+  margin-top: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* Code Elements */
 code, pre, kbd, samp, .code, .monospace {
   font-family: var(--font-family-monospace) !important;
 }
 
-/* Ensure textarea and input inherit proper fonts */
+/* Form Elements */
 textarea, input {
   font-family: inherit;
 }
@@ -63,31 +144,92 @@ textarea[class*="json"],
 textarea[class*="yaml"],
 textarea[class*="config"] {
   font-family: var(--font-family-monospace) !important;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
 }
 
-  /* Snackbar custom styles */
+/* ==========================================================================
+   Utility Classes
+   ========================================================================== */
+
+/* Layout */
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 var(--spacing-4);
+}
+
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-2 { gap: var(--spacing-2); }
+.gap-4 { gap: var(--spacing-4); }
+
+/* Visibility */
+.hidden { display: none !important; }
+
+/* Snackbar Overrides (Modern Look) */
 .snackbar-success {
-  background-color: #4CAF50 !important; /* Green */
-  color: white !important;
+  --mdc-snackbar-container-color: hsl(var(--success-hue), 80%, 40%) !important;
+  --mdc-snackbar-supporting-text-color: #ffffff !important;
 }
-.snackbar-success .mat-mdc-button.mat-mdc-snack-bar-action {
-  color: white !important;
-}
-.snackbar-success .mat-mdc-simple-snack-bar__label { /* For newer MDC based components text color */
-  color: white !important;
-}
-
 
 .snackbar-error {
-  background-color: #F44336 !important; /* Red */
-  color: white !important;
-}
-.snackbar-error .mat-mdc-button.mat-mdc-snack-bar-action {
-  color: white !important;
-}
-.snackbar-error .mat-mdc-simple-snack-bar__label { /* For newer MDC based components text color */
-  color: white !important;
+  --mdc-snackbar-container-color: hsl(var(--error-hue), 80%, 55%) !important;
+  --mdc-snackbar-supporting-text-color: #ffffff !important;
 }
 
-html, body { height: 100%; }
-body { margin: 0; font-family: var(--font-family-base); }
+/* Modern File Upload - Global Overrides if needed */
+.drop-zone {
+  border: 2px dashed var(--border-color);
+  background: var(--bg-surface);
+  transition: all var(--transition-normal);
+}
+
+.drop-zone.drop-zone-active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ==========================================================================
+   Source Viewer Dialog Global Styles
+   ========================================================================== */
+
+/* Dialog panel class - must be global because MatDialog renders outside component scope */
+.source-viewer-dialog-panel {
+  .mat-mdc-dialog-container {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .mat-mdc-dialog-surface {
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+}
+
+/* Ensure the dialog has proper sizing */
+.source-viewer-dialog-panel .mat-mdc-dialog-container .mdc-dialog__surface {
+  max-height: 90vh;
+  overflow: hidden;
+}

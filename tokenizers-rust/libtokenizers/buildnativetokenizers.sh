@@ -140,8 +140,43 @@ esac
 
 echo "Building for target: ${TARGET}"
 
+# First, build the tokenizers-ffi Rust crate that provides C FFI bindings
+echo "==============================================="
+echo "Building tokenizers-ffi Rust crate..."
+echo "==============================================="
+
+FFI_DIR="${SCRIPT_DIR}/tokenizers-ffi"
+FFI_TARGET_DIR="${BUILD_DIR}/tokenizers-ffi"
+
+if [[ -d "${FFI_DIR}" ]]; then
+    mkdir -p "${FFI_TARGET_DIR}"
+
+    # Build the FFI crate
+    CARGO_TARGET_DIR="${FFI_TARGET_DIR}" cargo build --release --manifest-path="${FFI_DIR}/Cargo.toml"
+
+    # Generate C header with cbindgen
+    if command_exists cbindgen; then
+        echo "Generating C header with cbindgen..."
+        cbindgen --lang c --output "${SCRIPT_DIR}/include/tokenizers_ffi.h" "${FFI_DIR}"
+    else
+        echo "Installing cbindgen..."
+        cargo install cbindgen
+        cbindgen --lang c --output "${SCRIPT_DIR}/include/tokenizers_ffi.h" "${FFI_DIR}"
+    fi
+
+    echo "tokenizers-ffi built successfully"
+    echo "Static library: ${FFI_TARGET_DIR}/release/libtokenizers_ffi.a"
+    echo "Dynamic library: ${FFI_TARGET_DIR}/release/libtokenizers_ffi.so"
+else
+    echo "ERROR: tokenizers-ffi directory not found at ${FFI_DIR}"
+    echo "Please ensure the tokenizers-ffi crate exists"
+    exit 1
+fi
+
 # Build using CMake (which will handle the external project)
-echo "Building with CMake (including external tokenizers project)..."
+echo "==============================================="
+echo "Building with CMake..."
+echo "==============================================="
 cd "${BUILD_DIR}"
 
 # Check if we need to reconfigure due to compiler change
@@ -192,25 +227,35 @@ JAVACPP_PLATFORM_DIR="${OUTPUT_DIR}/ai/kompile/tokenizers/${JAVACPP_PLATFORM}"
 copy_essential_libraries() {
     local source_dir="$1"
     local dest_dir="$2"
-    
+
     echo "Copying essential libraries from ${source_dir} to ${dest_dir}"
-    
+
     # Copy our wrapper library (the main one we built)
     case "${PLATFORM}" in
         linux)
             find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.so*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            # Also copy the FFI library if present (needed if dynamically linked)
+            if [[ -f "${FFI_TARGET_DIR}/release/libtokenizers_ffi.so" ]]; then
+                cp "${FFI_TARGET_DIR}/release/libtokenizers_ffi.so" "${dest_dir}/" 2>/dev/null || true
+            fi
             ;;
         darwin)
             find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.dylib*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
             find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.jnilib*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            if [[ -f "${FFI_TARGET_DIR}/release/libtokenizers_ffi.dylib" ]]; then
+                cp "${FFI_TARGET_DIR}/release/libtokenizers_ffi.dylib" "${dest_dir}/" 2>/dev/null || true
+            fi
             ;;
         mingw*|cygwin*|msys*|windows*)
             find "${source_dir}" -maxdepth 1 -name "libtokenizers_wrapper.dll*" -exec cp {} "${dest_dir}/" \; 2>/dev/null || true
+            if [[ -f "${FFI_TARGET_DIR}/release/tokenizers_ffi.dll" ]]; then
+                cp "${FFI_TARGET_DIR}/release/tokenizers_ffi.dll" "${dest_dir}/" 2>/dev/null || true
+            fi
             ;;
     esac
-    
-    # Note: We do NOT copy the Rust proc-macro libraries as they are only needed at compile time
-    # The main tokenizers library is built as a static library (.rlib) and is linked into our wrapper
+
+    # Note: The tokenizers-ffi library contains the actual HuggingFace tokenizers implementation
+    # It is either statically linked into the wrapper, or needs to be present at runtime
 }
 
 # Copy only essential runtime libraries

@@ -66,60 +66,153 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(ParallelIngestPipeline.class);
 
-    // ========== BATCH SIZE CONFIGURATION ==========
-    // DYNAMIC BATCH SIZING is now enabled in BgeSameDiffEncoder:
-    // - Batch size scales inversely with sequence length squared (attention is
-    // O(n²))
-    // - For 512-token sequences: ~8 texts/batch
-    // - For 256-token sequences: ~32 texts/batch
-    // - For 128-token sequences: ~128 texts/batch
-    //
-    // These constants are fallback values when no embedding model is provided.
-    // When an embedding model IS provided, batch sizes come from:
-    // embeddingModel.getOptimalBatchSize() - conservative default for 512-token
-    // sequences
-    // embeddingModel.getMaxBatchSize() - maximum for 512-token sequences
-    //
-    // The actual batch sizing happens dynamically in
-    // BgeSameDiffEncoder.encodeBatch()
-    // based on the actual sequence lengths of the texts being encoded.
-    private static final int MIN_BATCH_SIZE = 1; // Allow single-item batches
-    private static final int DEFAULT_BATCH_SIZE = 4; // Very conservative for 512-token sequences
-    private static final int MAX_BATCH_SIZE = 8; // Conservative fallback
+    // ========== DEFAULT VALUES (used when no configuration provided) ==========
+    // These are fallback values - prefer using PipelineConfig for customization.
+    private static final int DEFAULT_MIN_BATCH_SIZE = 1;
+    private static final int DEFAULT_BATCH_SIZE = 16;    // Increased from 4
+    private static final int DEFAULT_MAX_BATCH_SIZE = 64; // Increased from 8
 
-    // ========== QUEUE CONFIGURATION ==========
-    // Larger queue to allow better batch accumulation
-    private static final int QUEUE_CAPACITY = 200;
-    private static final long QUEUE_POLL_TIMEOUT_MS = 50;
+    private static final int DEFAULT_QUEUE_CAPACITY = 1000; // Increased from 500
+    private static final long DEFAULT_QUEUE_POLL_TIMEOUT_MS = 50;
 
-    // ========== ADAPTIVE BATCHING ==========
-    // Maximum time to wait for batch accumulation (ms)
-    private static final long MAX_BATCH_WAIT_MS = 500;
-    // Minimum time to wait before checking queue again (ms)
-    private static final long MIN_BATCH_WAIT_MS = 25;
+    private static final long DEFAULT_MAX_BATCH_WAIT_MS = 500;
+    private static final long DEFAULT_MIN_BATCH_WAIT_MS = 25;
 
-    // ========== THREAD POOL CONFIGURATION ==========
-    // With OpenMP-based transformer inference, a SINGLE embedding thread is
-    // optimal.
-    // OpenMP internally parallelizes across all CPU cores for each forward pass.
-    // Multiple embedding threads would compete for the same CPU resources and cause
-    // DAG rebuilding contention in SameDiff.
-    private static final int MIN_EMBEDDING_THREADS = 1;
-    private static final int MAX_EMBEDDING_THREADS = 1; // Single thread lets OpenMP use all cores
-    private static final int MIN_CHUNKING_THREADS = 2;
-    private static final int MAX_CHUNKING_THREADS = 16;
-
-    // ========== PARALLEL INDEXING CONFIGURATION ==========
-    // Indexing can be parallelized since keyword index and vector store are
-    // independent.
-    // Multiple indexing workers can process batches concurrently.
-    private static final int MIN_INDEXING_THREADS = 1;
-    private static final int MAX_INDEXING_THREADS = 4; // Multiple workers for batch accumulation
-    private static final int INDEXING_BATCH_ACCUMULATION_SIZE = 4; // Accumulate N batches before bulk index
+    private static final int DEFAULT_CHUNKING_THREADS = Math.min(Runtime.getRuntime().availableProcessors() / 2, 16);
+    private static final int DEFAULT_EMBEDDING_THREADS = 1; // Single thread for OpenMP
+    private static final int DEFAULT_INDEXING_THREADS = 4;
+    private static final int DEFAULT_INDEXING_BATCH_ACCUMULATION = 8; // Increased from 4
 
     // ========== PROGRESS REPORTING ==========
-    private static final int PROGRESS_REPORT_INTERVAL = 10; // Report every N chunks
-    private static final long PROGRESS_REPORT_INTERVAL_MS = 100; // Reduced from 200ms for more responsive UI
+    private static final int PROGRESS_REPORT_INTERVAL = 5;  // Report every 5 items for finer granularity
+    private static final long PROGRESS_REPORT_INTERVAL_MS = 50;  // 50ms for more frequent updates
+
+    /**
+     * Configuration record for pipeline settings.
+     * All values are configurable - use this to tune performance for your hardware.
+     */
+    public record PipelineConfig(
+            int minBatchSize,
+            int defaultBatchSize,
+            int maxBatchSize,
+            int queueCapacity,
+            long queuePollTimeoutMs,
+            long maxBatchWaitMs,
+            long minBatchWaitMs,
+            int chunkingThreads,
+            int embeddingThreads,
+            int indexingThreads,
+            int indexingBatchAccumulationSize,
+            boolean parallelIndexingEnabled
+    ) {
+        /**
+         * Creates a default configuration with reasonable defaults.
+         */
+        public static PipelineConfig defaults() {
+            return new PipelineConfig(
+                    DEFAULT_MIN_BATCH_SIZE,
+                    DEFAULT_BATCH_SIZE,
+                    DEFAULT_MAX_BATCH_SIZE,
+                    DEFAULT_QUEUE_CAPACITY,
+                    DEFAULT_QUEUE_POLL_TIMEOUT_MS,
+                    DEFAULT_MAX_BATCH_WAIT_MS,
+                    DEFAULT_MIN_BATCH_WAIT_MS,
+                    DEFAULT_CHUNKING_THREADS,
+                    DEFAULT_EMBEDDING_THREADS,
+                    DEFAULT_INDEXING_THREADS,
+                    DEFAULT_INDEXING_BATCH_ACCUMULATION,
+                    true
+            );
+        }
+
+        /**
+         * Creates a high-throughput configuration for systems with more memory.
+         */
+        public static PipelineConfig highThroughput() {
+            int cores = Runtime.getRuntime().availableProcessors();
+            return new PipelineConfig(
+                    1,
+                    32,     // Larger batches
+                    128,    // Higher max
+                    2000,   // Larger queue
+                    50,
+                    500,
+                    25,
+                    Math.min(cores, 16),
+                    1,      // Still single thread for OpenMP
+                    Math.min(cores / 2, 8),  // More indexing threads
+                    16,     // More batch accumulation
+                    true
+            );
+        }
+
+        /**
+         * Creates a low-memory configuration for constrained systems.
+         */
+        public static PipelineConfig lowMemory() {
+            return new PipelineConfig(
+                    1,
+                    4,      // Small batches
+                    16,     // Lower max
+                    250,    // Smaller queue
+                    50,
+                    500,
+                    25,
+                    2,      // Fewer threads
+                    1,
+                    2,
+                    4,
+                    true
+            );
+        }
+
+        /**
+         * Builder for custom configuration.
+         */
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private int minBatchSize = DEFAULT_MIN_BATCH_SIZE;
+            private int defaultBatchSize = DEFAULT_BATCH_SIZE;
+            private int maxBatchSize = DEFAULT_MAX_BATCH_SIZE;
+            private int queueCapacity = DEFAULT_QUEUE_CAPACITY;
+            private long queuePollTimeoutMs = DEFAULT_QUEUE_POLL_TIMEOUT_MS;
+            private long maxBatchWaitMs = DEFAULT_MAX_BATCH_WAIT_MS;
+            private long minBatchWaitMs = DEFAULT_MIN_BATCH_WAIT_MS;
+            private int chunkingThreads = DEFAULT_CHUNKING_THREADS;
+            private int embeddingThreads = DEFAULT_EMBEDDING_THREADS;
+            private int indexingThreads = DEFAULT_INDEXING_THREADS;
+            private int indexingBatchAccumulationSize = DEFAULT_INDEXING_BATCH_ACCUMULATION;
+            private boolean parallelIndexingEnabled = true;
+
+            public Builder minBatchSize(int v) { this.minBatchSize = v; return this; }
+            public Builder defaultBatchSize(int v) { this.defaultBatchSize = v; return this; }
+            public Builder maxBatchSize(int v) { this.maxBatchSize = v; return this; }
+            public Builder queueCapacity(int v) { this.queueCapacity = v; return this; }
+            public Builder queuePollTimeoutMs(long v) { this.queuePollTimeoutMs = v; return this; }
+            public Builder maxBatchWaitMs(long v) { this.maxBatchWaitMs = v; return this; }
+            public Builder minBatchWaitMs(long v) { this.minBatchWaitMs = v; return this; }
+            public Builder chunkingThreads(int v) { this.chunkingThreads = v; return this; }
+            public Builder embeddingThreads(int v) { this.embeddingThreads = v; return this; }
+            public Builder indexingThreads(int v) { this.indexingThreads = v; return this; }
+            public Builder indexingBatchAccumulationSize(int v) { this.indexingBatchAccumulationSize = v; return this; }
+            public Builder parallelIndexingEnabled(boolean v) { this.parallelIndexingEnabled = v; return this; }
+
+            public PipelineConfig build() {
+                return new PipelineConfig(
+                        minBatchSize, defaultBatchSize, maxBatchSize, queueCapacity,
+                        queuePollTimeoutMs, maxBatchWaitMs, minBatchWaitMs,
+                        chunkingThreads, embeddingThreads, indexingThreads,
+                        indexingBatchAccumulationSize, parallelIndexingEnabled
+                );
+            }
+        }
+    }
+
+    // Pipeline configuration
+    private final PipelineConfig pipelineConfig;
 
     // Pipeline components
     private final AdaptivePipelineConfig config;
@@ -140,6 +233,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private final int embeddingParallelism;
     private final int indexingParallelism;
     private final boolean parallelIndexingEnabled;
+
+    // Vector-only mode: when true, skip keyword index updates (for vector population from existing index)
+    private final boolean vectorOnlyMode;
 
     // Producer-consumer queues - individual chunks flow through pipeline
     private final BlockingQueue<RetrievedDoc> chunkQueue;
@@ -208,13 +304,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
     }
 
     /**
-     * Creates a new parallel ingest pipeline.
+     * Creates a new parallel ingest pipeline with default configuration.
      *
      * @param chunker         The text chunker to use (null for no chunking)
      * @param embeddingModel  The embedding model for generating vectors
      * @param indexerService  The indexer service for storing documents
      * @param chunkingOptions Options for chunking behavior
-     * @param batchSize       Number of chunks per batch
+     * @param batchSize       Number of chunks per batch (0 to use model default)
      */
     public ParallelIngestPipeline(
             TextChunker chunker,
@@ -222,7 +318,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             IndexerService indexerService,
             Map<String, Object> chunkingOptions,
             int batchSize) {
-        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize, true);
+        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize, true, false);
     }
 
     /**
@@ -232,9 +328,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
      * @param embeddingModel          The embedding model for generating vectors
      * @param indexerService          The indexer service for storing documents
      * @param chunkingOptions         Options for chunking behavior
-     * @param batchSize               Number of chunks per batch
-     * @param parallelIndexingEnabled Whether to run keyword and vector indexing in
-     *                                parallel
+     * @param batchSize               Number of chunks per batch (0 to use model default)
+     * @param parallelIndexingEnabled Whether to run keyword and vector indexing in parallel
      */
     public ParallelIngestPipeline(
             TextChunker chunker,
@@ -243,12 +338,79 @@ public class ParallelIngestPipeline implements AutoCloseable {
             Map<String, Object> chunkingOptions,
             int batchSize,
             boolean parallelIndexingEnabled) {
+        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize, parallelIndexingEnabled, false);
+    }
+
+    /**
+     * Creates a new parallel ingest pipeline with configurable parallel indexing and vector-only mode.
+     *
+     * @param chunker                 The text chunker to use (null for no chunking)
+     * @param embeddingModel          The embedding model for generating vectors
+     * @param indexerService          The indexer service for storing documents
+     * @param chunkingOptions         Options for chunking behavior
+     * @param batchSize               Number of chunks per batch (0 to use model default)
+     * @param parallelIndexingEnabled Whether to run keyword and vector indexing in parallel
+     * @param vectorOnlyMode          When true, only index to vector store (skip keyword index)
+     */
+    public ParallelIngestPipeline(
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            Map<String, Object> chunkingOptions,
+            int batchSize,
+            boolean parallelIndexingEnabled,
+            boolean vectorOnlyMode) {
+        this(chunker, embeddingModel, indexerService, chunkingOptions,
+             PipelineConfig.builder()
+                     .defaultBatchSize(batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE)
+                     .parallelIndexingEnabled(parallelIndexingEnabled)
+                     .build(),
+             vectorOnlyMode);
+    }
+
+    /**
+     * Creates a new parallel ingest pipeline with full configuration control.
+     *
+     * @param chunker         The text chunker to use (null for no chunking)
+     * @param embeddingModel  The embedding model for generating vectors
+     * @param indexerService  The indexer service for storing documents
+     * @param chunkingOptions Options for chunking behavior
+     * @param pipelineConfig  Pipeline configuration for threading, batching, and queues
+     */
+    public ParallelIngestPipeline(
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            Map<String, Object> chunkingOptions,
+            PipelineConfig pipelineConfig) {
+        this(chunker, embeddingModel, indexerService, chunkingOptions, pipelineConfig, false);
+    }
+
+    /**
+     * Creates a new parallel ingest pipeline with full configuration control and vector-only mode.
+     *
+     * @param chunker         The text chunker to use (null for no chunking)
+     * @param embeddingModel  The embedding model for generating vectors
+     * @param indexerService  The indexer service for storing documents
+     * @param chunkingOptions Options for chunking behavior
+     * @param pipelineConfig  Pipeline configuration for threading, batching, and queues
+     * @param vectorOnlyMode  When true, only index to vector store (skip keyword index)
+     */
+    public ParallelIngestPipeline(
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            Map<String, Object> chunkingOptions,
+            PipelineConfig pipelineConfig,
+            boolean vectorOnlyMode) {
+        this.pipelineConfig = pipelineConfig != null ? pipelineConfig : PipelineConfig.defaults();
+        this.vectorOnlyMode = vectorOnlyMode;
         this.config = new AdaptivePipelineConfig();
         this.chunker = chunker;
         this.embeddingModel = embeddingModel;
         this.indexerService = indexerService;
         this.chunkingOptions = chunkingOptions != null ? chunkingOptions : new HashMap<>();
-        this.parallelIndexingEnabled = parallelIndexingEnabled;
+        this.parallelIndexingEnabled = this.pipelineConfig.parallelIndexingEnabled();
 
         // Log embedding model status for debugging
         if (embeddingModel != null) {
@@ -258,24 +420,31 @@ public class ParallelIngestPipeline implements AutoCloseable {
             logger.warn("ParallelIngestPipeline: NO embedding model - using passthrough mode");
         }
 
-        // Determine optimal batch size from embedding model if available
-        int optimalBatch = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : DEFAULT_BATCH_SIZE;
-        int maxBatch = embeddingModel != null ? embeddingModel.getMaxBatchSize() : MAX_BATCH_SIZE;
-        int requestedBatch = batchSize > 0 ? batchSize : optimalBatch;
-        this.batchSize = Math.max(MIN_BATCH_SIZE, Math.min(requestedBatch, maxBatch));
+        // Log vector-only mode status
+        if (vectorOnlyMode) {
+            logger.info("ParallelIngestPipeline: VECTOR-ONLY MODE enabled - keyword indexing will be skipped");
+        }
+
+        // Determine optimal batch size from embedding model if available, respecting config limits
+        int modelOptimal = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : this.pipelineConfig.defaultBatchSize();
+        int modelMax = embeddingModel != null ? embeddingModel.getMaxBatchSize() : this.pipelineConfig.maxBatchSize();
+        int configMax = this.pipelineConfig.maxBatchSize();
+        int effectiveMax = Math.max(modelMax, configMax); // Use the higher of model or config max
+        int requestedBatch = this.pipelineConfig.defaultBatchSize() > 0 ? this.pipelineConfig.defaultBatchSize() : modelOptimal;
+        this.batchSize = Math.max(this.pipelineConfig.minBatchSize(), Math.min(requestedBatch, effectiveMax));
 
         // Create adaptive batch accumulator for efficient embedding
         this.batchAccumulator = new AdaptiveBatchAccumulator<>(
-                MIN_BATCH_SIZE,
+                this.pipelineConfig.minBatchSize(),
                 this.batchSize,
-                Math.min(maxBatch, MAX_BATCH_SIZE),
-                MAX_BATCH_WAIT_MS,
-                MIN_BATCH_WAIT_MS);
+                effectiveMax,
+                this.pipelineConfig.maxBatchWaitMs(),
+                this.pipelineConfig.minBatchWaitMs());
 
-        // Calculate parallelism
-        this.chunkingParallelism = calculateChunkingParallelism();
-        this.embeddingParallelism = calculateEmbeddingParallelism();
-        this.indexingParallelism = calculateIndexingParallelism();
+        // Use configured parallelism
+        this.chunkingParallelism = this.pipelineConfig.chunkingThreads();
+        this.embeddingParallelism = this.pipelineConfig.embeddingThreads();
+        this.indexingParallelism = this.pipelineConfig.indexingThreads();
 
         // Create thread pools
         this.chunkingExecutor = new ForkJoinPool(
@@ -297,21 +466,22 @@ public class ParallelIngestPipeline implements AutoCloseable {
             return t;
         });
 
-        // Create bounded queues for backpressure
-        this.chunkQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
-        this.embeddedQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+        // Create bounded queues for backpressure using configured capacity
+        this.chunkQueue = new LinkedBlockingQueue<>(this.pipelineConfig.queueCapacity());
+        this.embeddedQueue = new LinkedBlockingQueue<>(this.pipelineConfig.queueCapacity());
 
         logger.info("=== ParallelIngestPipeline INITIALIZED ===");
         logger.info("  Threading: chunking={}, embedding={}, indexing={}",
                 chunkingParallelism, embeddingParallelism, indexingParallelism);
-        logger.info("  Batching: pipeline_batch={} (model_optimal={}, model_max={}), queueCapacity={}",
-                this.batchSize, optimalBatch, maxBatch, QUEUE_CAPACITY);
+        logger.info("  Batching: pipeline_batch={} (model_optimal={}, model_max={}, config_max={}), queueCapacity={}",
+                this.batchSize, modelOptimal, modelMax, configMax, this.pipelineConfig.queueCapacity());
         logger.info("  DYNAMIC BATCH SIZING: The encoder will dynamically adjust batch sizes based on");
         logger.info("    actual sequence lengths. For 512-token sequences: batch ~{}. For shorter texts,",
-                optimalBatch);
+                modelOptimal);
         logger.info("    batches will be larger. See [DYNAMIC-BATCH] log entries for actual sizes used.");
         logger.info("  PARALLEL INDEXING: {} (keyword+vector indexes updated concurrently)",
                 parallelIndexingEnabled ? "ENABLED" : "DISABLED");
+        logger.info("  Indexing batch accumulation: {}", this.pipelineConfig.indexingBatchAccumulationSize());
         logger.info("==========================================");
     }
 
@@ -326,24 +496,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
         this(chunker, null, indexerService, chunkingOptions, batchSize);
     }
 
-    private int calculateChunkingParallelism() {
-        int cores = config.getAvailableCores();
-        int optimal = Math.max(MIN_CHUNKING_THREADS, cores / 2);
-        return Math.min(optimal, MAX_CHUNKING_THREADS);
-    }
-
-    private int calculateIndexingParallelism() {
-        int cores = config.getAvailableCores();
-        // Indexing uses I/O, moderate parallelism is beneficial
-        int optimal = Math.max(MIN_INDEXING_THREADS, Math.min(cores / 2, MAX_INDEXING_THREADS));
-        return optimal;
-    }
-
-    private int calculateEmbeddingParallelism() {
-        int cores = config.getAvailableCores();
-        // Embedding is memory-intensive, use fewer threads
-        int optimal = Math.max(MIN_EMBEDDING_THREADS, cores / 4);
-        return Math.min(optimal, MAX_EMBEDDING_THREADS);
+    /**
+     * Returns the current pipeline configuration.
+     */
+    public PipelineConfig getPipelineConfig() {
+        return pipelineConfig;
     }
 
     public void setProgressCallback(Consumer<PipelineProgress> callback) {
@@ -488,16 +645,17 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 processedIds = new ArrayList<>();
             }
 
-            // Complete
+            // ========== PIPELINE COMPLETE ==========
             long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
             double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
 
-            reportProgress("complete", 100,
-                    String.format("Done: %d docs -> %d chunks in %dms (%.1f/sec)",
-                            documentsProcessed.get(), chunksIndexed.get(), totalTimeMs, chunksPerSec));
+            // Send highly visible completion message
+            reportProgress("COMPLETED", 100,
+                    String.format("=== PIPELINE COMPLETE === %d docs -> %d chunks created -> %d indexed in %dms (%.1f chunks/sec)",
+                            documentsProcessed.get(), chunksCreated.get(), chunksIndexed.get(), totalTimeMs, chunksPerSec));
 
-            logger.info("Pipeline complete: {} documents -> {} chunks in {}ms ({} chunks/sec)",
-                    documentsProcessed.get(), chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+            logger.info("========== PIPELINE COMPLETE: {} documents -> {} chunks -> {} indexed in {}ms ({} chunks/sec) ==========",
+                    documentsProcessed.get(), chunksCreated.get(), chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
 
             return new PipelineResult(
                     documentsProcessed.get(),
@@ -509,6 +667,203 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Stop periodic progress reporter
             progressReporter.shutdownNow();
         }
+    }
+
+    /**
+     * Processes pre-chunked documents through the pipeline, skipping the chunking phase.
+     * This is optimized for vector store population from existing Lucene indexes.
+     *
+     * @param chunks The pre-chunked documents to process (embedding + indexing only)
+     * @return Pipeline result with statistics
+     */
+    public PipelineResult processPreChunked(List<RetrievedDoc> chunks) throws InterruptedException {
+        if (chunks == null || chunks.isEmpty()) {
+            return new PipelineResult(0, 0, 0, 0, List.of());
+        }
+
+        startTimeMs.set(System.currentTimeMillis());
+        int totalChunks = chunks.size();
+
+        logger.info("Starting PRE-CHUNKED pipeline: {} chunks, embedding={} threads, indexing={} threads, batch={}",
+                totalChunks, embeddingParallelism, indexingParallelism, batchSize);
+
+        reportProgress("starting", 1,
+                String.format("Starting vector population: %d chunks, %d+%d workers",
+                        totalChunks, embeddingParallelism, indexingParallelism));
+
+        // Start embedding workers (consumers of chunk queue, producers of embedded queue)
+        List<Future<?>> embeddingFutures = startEmbeddingWorkers();
+
+        // Start indexing worker (consumer of embedded queue)
+        Future<List<String>> indexingFuture = startIndexingWorker();
+
+        // Start periodic progress reporter (every 1 second for responsive progress)
+        ScheduledExecutorService progressReporter = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "pipeline-progress");
+            t.setDaemon(true);
+            return t;
+        });
+        progressReporter.scheduleAtFixedRate(() -> {
+            try {
+                if (!cancelled) {
+                    int created = chunksCreated.get();
+                    int embedded = chunksEmbedded.get();
+                    int indexed = chunksIndexed.get();
+                    int queueSize = chunkQueue.size();
+                    int embeddedQueueSize = embeddedQueue.size();
+                    long elapsed = System.currentTimeMillis() - startTimeMs.get();
+                    double rate = elapsed > 0 ? (indexed * 1000.0 / elapsed) : 0;
+
+                    // Phase is always embedding or indexing for pre-chunked data
+                    String phase = indexed > 0 || embeddingComplete ? "indexing" : "embedding";
+
+                    int activeWorkers = (int) workerStatuses.values().stream()
+                            .filter(w -> "processing".equals(w.status())).count();
+
+                    // Calculate ETA
+                    String etaStr = "";
+                    if (indexed > 0 && indexed < totalChunks) {
+                        long remaining = totalChunks - indexed;
+                        if (rate > 0) {
+                            long etaSec = (long) (remaining / rate);
+                            if (etaSec > 60) {
+                                etaStr = String.format(" (~%dm %ds)", etaSec / 60, etaSec % 60);
+                            } else {
+                                etaStr = String.format(" (~%ds)", etaSec);
+                            }
+                        }
+                    }
+
+                    logger.debug("Periodic progress: phase={}, queued={}, embedded={}, indexed={}/{}, " +
+                            "chunkQ={}, embedQ={}, active={}, rate={}",
+                            phase, created, embedded, indexed, totalChunks, queueSize, embeddedQueueSize,
+                            activeWorkers, rate);
+
+                    reportProgressWithWorkers(phase, Math.min(99, (int) ((indexed * 100) / totalChunks)),
+                            String.format("%d/%d indexed (%.1f/sec)%s [Q:%d/%d]",
+                                    indexed, totalChunks, rate, etaStr, queueSize, embeddedQueueSize));
+                }
+            } catch (Exception e) {
+                logger.error("Error in periodic progress reporter: {}", e.getMessage(), e);
+            }
+        }, 1, 1, TimeUnit.SECONDS);
+
+        try {
+            // Skip chunking - queue pre-chunked documents directly
+            queuePreChunkedDocuments(chunks, totalChunks);
+            chunkingComplete = true;
+
+            logger.info("Queued {} pre-chunked documents for embedding", chunksCreated.get());
+
+            // Wait for embedding to complete
+            for (Future<?> future : embeddingFutures) {
+                try {
+                    future.get(30, TimeUnit.MINUTES);
+                } catch (TimeoutException e) {
+                    logger.error("Embedding timed out");
+                    cancelled = true;
+                } catch (ExecutionException e) {
+                    logger.error("Embedding failed: {}", e.getCause().getMessage(), e.getCause());
+                }
+            }
+            embeddingComplete = true;
+
+            logger.info("Embedding complete: {} chunks embedded in {} batches",
+                    chunksEmbedded.get(), embeddingBatchesProcessed.get());
+
+            // Wait for indexing to complete
+            List<String> processedIds;
+            try {
+                processedIds = indexingFuture.get(30, TimeUnit.MINUTES);
+            } catch (TimeoutException | ExecutionException e) {
+                logger.error("Indexing failed: {}", e.getMessage(), e);
+                processedIds = new ArrayList<>();
+            }
+
+            // ========== PIPELINE COMPLETE ==========
+            long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
+            double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
+
+            reportProgress("COMPLETED", 100,
+                    String.format("=== PIPELINE COMPLETE (pre-chunked) === %d chunks indexed in %dms (%.1f chunks/sec)",
+                            chunksIndexed.get(), totalTimeMs, chunksPerSec));
+
+            logger.info("========== PIPELINE COMPLETE (pre-chunked): {} chunks indexed in {}ms ({} chunks/sec) ==========",
+                    chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+
+            return new PipelineResult(
+                    totalChunks, // documents = total chunks for pre-chunked
+                    chunksCreated.get(),
+                    chunksIndexed.get(),
+                    totalTimeMs,
+                    processedIds);
+        } finally {
+            progressReporter.shutdownNow();
+        }
+    }
+
+    /**
+     * Queue pre-chunked documents directly to the embedding queue (skip chunking).
+     */
+    private void queuePreChunkedDocuments(List<RetrievedDoc> chunks, int totalChunks) throws InterruptedException {
+        logger.info("Queueing {} pre-chunked documents for embedding...", totalChunks);
+
+        int queuedCount = 0;
+        long lastProgressLogTime = System.currentTimeMillis();
+
+        for (RetrievedDoc chunk : chunks) {
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                break;
+            }
+
+            // Queue directly to chunkQueue for embedding workers
+            // Use blocking put with backpressure - wait indefinitely for space
+            // This allows the pipeline to naturally throttle when embedding is slow
+            boolean queued = false;
+            int waitCycles = 0;
+            while (!queued && !cancelled && !Thread.currentThread().isInterrupted()) {
+                // Try to offer with a timeout, so we can check for cancellation
+                queued = chunkQueue.offer(chunk, 5000, TimeUnit.MILLISECONDS);
+                if (!queued) {
+                    waitCycles++;
+                    long now = System.currentTimeMillis();
+                    // Log progress every 30 seconds when waiting
+                    if (now - lastProgressLogTime > 30000) {
+                        int embedded = chunksEmbedded.get();
+                        int indexed = chunksIndexed.get();
+                        logger.info("Queue backpressure: queued {}/{}, embedded {}, indexed {}, queue size {}",
+                                queuedCount, totalChunks, embedded, indexed, chunkQueue.size());
+                        lastProgressLogTime = now;
+                    }
+                    // After 5 minutes of waiting on a single chunk, log a warning
+                    if (waitCycles > 0 && waitCycles % 60 == 0) {
+                        logger.warn("Waiting to queue chunk {}/{} for {}s - embedding may be slow. " +
+                                        "Queue: {}/{}, Embedded: {}, Indexed: {}",
+                                queuedCount + 1, totalChunks, waitCycles * 5,
+                                chunkQueue.size(), this.pipelineConfig.queueCapacity(),
+                                chunksEmbedded.get(), chunksIndexed.get());
+                    }
+                }
+            }
+
+            // Check if we were cancelled while waiting
+            if (cancelled || Thread.currentThread().isInterrupted()) {
+                logger.info("Queueing cancelled after {} chunks", queuedCount);
+                break;
+            }
+
+            queuedCount++;
+            chunksCreated.incrementAndGet();
+
+            // Report progress periodically
+            if (queuedCount % 100 == 0 || queuedCount == totalChunks) {
+                int progressPercent = Math.min(25, (queuedCount * 25) / totalChunks);
+                reportProgress("queueing", progressPercent,
+                        String.format("Queued %d/%d chunks", queuedCount, totalChunks));
+            }
+        }
+
+        logger.info("Finished queueing {} chunks for embedding", queuedCount);
     }
 
     /**
@@ -542,10 +897,20 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 AtomicInteger threadChunks = threadChunkCounts.computeIfAbsent(threadId, k -> new AtomicInteger(0));
 
                 try {
-                    // Update worker status to processing
+                    // === BEGIN CHUNK: Report document chunking start ===
                     workerStatuses.put(workerKey,
                             PipelineProgress.WorkerStatus.processing(workerId, "chunking",
                                     threadChunks.get(), 1, 0, "doc " + (docIndex + 1)));
+
+                    int totalChunksCreatedBefore = chunksCreated.get();
+                    int progressPercent = 5 + (int) ((documentsProcessed.get() / (double) totalDocuments) * 20);
+                    String docName = doc.getMetadata() != null && doc.getMetadata().containsKey("source")
+                            ? String.valueOf(doc.getMetadata().get("source"))
+                            : "doc-" + (docIndex + 1);
+                    reportProgressWithWorkers("chunking", progressPercent,
+                            String.format("BEGIN CHUNK doc %d/%d: %s (worker %d, total chunks so far: %d)",
+                                    docIndex + 1, totalDocuments, docName, workerId, totalChunksCreatedBefore));
+                    // === END BEGIN CHUNK ===
 
                     long startTime = System.currentTimeMillis();
                     List<RetrievedDoc> chunks = chunkSingleDocument(doc, docIndex, totalDocuments);
@@ -598,12 +963,19 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             PipelineProgress.WorkerStatus.processing(workerId, "chunking",
                                     threadChunks.get(), chunks.size(), throughput, "doc " + (docIndex + 1)));
 
-                    // Report progress
+                    // === END CHUNK: Report document chunking completion ===
                     int processed = documentsProcessed.get();
-                    int progressPercent = 5 + (int) ((processed / (double) totalDocuments) * 20);
-                    reportProgressWithWorkers("chunking", progressPercent,
-                            String.format("Chunked %d/%d docs (%d chunks)",
-                                    processed, totalDocuments, chunksCreated.get()));
+                    int chunksNow = chunksCreated.get();
+                    int progressPercentEnd = 5 + (int) ((processed / (double) totalDocuments) * 20);
+                    String docNameEnd = doc.getMetadata() != null && doc.getMetadata().containsKey("source")
+                            ? String.valueOf(doc.getMetadata().get("source"))
+                            : "doc-" + (docIndex + 1);
+                    reportProgressWithWorkers("chunking", progressPercentEnd,
+                            String.format("END CHUNK doc %d/%d: %s -> %d chunks in %dms (%.1f/s) [total: %d/%d docs, %d chunks]",
+                                    docIndex + 1, totalDocuments, docNameEnd,
+                                    chunks.size(), elapsed, throughput,
+                                    processed, totalDocuments, chunksNow));
+                    // === END END CHUNK ===
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 } catch (Exception e) {
@@ -652,6 +1024,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
         if (chunker == null) {
             return List.of(retrievedDoc);
+        }
+
+        // Skip documents with null or empty text content
+        String text = retrievedDoc.getText();
+        if (text == null || text.trim().isEmpty()) {
+            logger.debug("Skipping chunking for document {} - no text content", docIndex);
+            return List.of(); // Return empty list for empty documents
         }
 
         try {
@@ -714,6 +1093,14 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         workerId, Thread.currentThread().getName(),
                         batchAccumulator.getTargetBatchSize(), batchAccumulator.getMaxBatchSize());
 
+                // Report embedding phase started immediately (before warmup)
+                // This ensures frontend knows we've entered embedding phase
+                if (workerId == 0) { // Only first worker reports to avoid spam
+                    int queueSize = chunkQueue.size();
+                    reportProgressWithWorkers("embedding", 0,
+                            String.format("Starting embedding workers (%d chunks queued)", queueSize));
+                }
+
                 // Wait for embedding model to be ready (warmup may be in progress)
                 // This prevents concurrent access to the SameDiff model during warmup
                 if (embeddingModel != null) {
@@ -751,6 +1138,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             workerStatuses.put(workerKey,
                                     new PipelineProgress.WorkerStatus(workerId, "embedding", "waiting",
                                             0, 0, 0, "waiting for model warmup"));
+                            // Report progress during warmup so frontend knows embedding phase has started
+                            int queueSize = chunkQueue.size();
+                            reportProgressWithWorkers("embedding", 0,
+                                    String.format("Model warmup in progress (worker %d, queue=%d)", workerId, queueSize));
                         }
                         try {
                             Thread.sleep(100);
@@ -768,6 +1159,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 long lastActivityTime = System.currentTimeMillis();
                 int consecutiveEmptyPolls = 0;
                 final int MAX_EMPTY_POLLS_BEFORE_EXIT = 20; // 20 * 50ms = 1 second of inactivity after completion
+
+                // Progress reporting while waiting - track last report time
+                long lastWaitingProgressReportMs = System.currentTimeMillis();
+                final long WAITING_PROGRESS_REPORT_INTERVAL_MS = 200; // Report every 200ms while waiting
 
                 // Memory pressure tracking
                 long lastMemoryCheckTime = System.currentTimeMillis();
@@ -797,9 +1192,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             }
                         }
                     }
-                    // Update status to waiting/accumulating
+                    // Update status to waiting/accumulating with cumulative throughput
+                    long elapsed = System.currentTimeMillis() - startTimeMs.get();
+                    double cumulativeThroughput = elapsed > 0 ? (workerProcessed.get() * 1000.0 / elapsed) : 0;
                     workerStatuses.put(workerKey,
-                            PipelineProgress.WorkerStatus.waiting(workerId, "embedding", workerProcessed.get()));
+                            PipelineProgress.WorkerStatus.waitingWithThroughput(workerId, "embedding", workerProcessed.get(), cumulativeThroughput));
 
                     System.err
                             .println("[PIPELINE-DEBUG] Worker " + workerId + ": calling accumulateFlatBatch, queueSize="
@@ -811,7 +1208,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     List<RetrievedDoc> batch = batchAccumulator.accumulateFlatBatch(
                             chunkQueue,
                             () -> chunkingComplete,
-                            QUEUE_POLL_TIMEOUT_MS);
+                            this.pipelineConfig.queuePollTimeoutMs());
 
                     System.err.println("[PIPELINE-DEBUG] Worker " + workerId
                             + ": accumulateFlatBatch returned batch.size=" + batch.size());
@@ -849,8 +1246,22 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         System.err.println(
                                 "[PIPELINE-DEBUG] Worker " + workerId + ": processBatchEmbeddingOptimized RETURNED");
                         System.err.flush();
+                        // Reset waiting report timer after processing
+                        lastWaitingProgressReportMs = System.currentTimeMillis();
                     } else {
                         consecutiveEmptyPolls++;
+
+                        // Periodically report progress while waiting for chunks
+                        long currentTimeMs = System.currentTimeMillis();
+                        if (currentTimeMs - lastWaitingProgressReportMs >= WAITING_PROGRESS_REPORT_INTERVAL_MS) {
+                            lastWaitingProgressReportMs = currentTimeMs;
+                            int embedded = chunksEmbedded.get();
+                            int total = chunksCreated.get();
+                            int progressPercent = total > 0 ? Math.min(99, (embedded * 100) / total) : 0;
+                            reportProgressWithWorkers("embedding", progressPercent,
+                                    String.format("Embedded %d/%d chunks (waiting for chunking, queue=%d)",
+                                            embedded, total, chunkQueue.size()));
+                        }
                     }
 
                     // Robust exit condition with multiple checks:
@@ -870,7 +1281,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
                     // Log periodic heartbeat during long waits
                     long inactiveMs = System.currentTimeMillis() - lastActivityTime;
-                    if (inactiveMs > 5000 && inactiveMs % 5000 < QUEUE_POLL_TIMEOUT_MS) {
+                    if (inactiveMs > 5000 && inactiveMs % 5000 < this.pipelineConfig.queuePollTimeoutMs()) {
                         logger.debug(
                                 "Embedding worker {}: waiting for chunks (inactive {}ms, queue={}, chunkingComplete={})",
                                 workerId, inactiveMs, chunkQueue.size(), chunkingComplete);
@@ -1012,6 +1423,42 @@ public class ParallelIngestPipeline implements AutoCloseable {
             String modelName = embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "passthrough";
             logger.info("Batch {}: Starting embedding for {} chunks using {}",
                     batchNum, batch.size(), modelName);
+
+            // === BEGIN BATCH: Report batch start with clear indicator ===
+            int totalChunksCreated = chunksCreated.get();
+            int embeddedSoFar = chunksEmbedded.get();
+            int progressPercent = totalChunksCreated > 0 ? Math.min(95, (embeddedSoFar * 100) / totalChunksCreated) : 0;
+
+            // Set batch metrics to show we're starting this batch
+            currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
+                    .batchNumber(batchNum)
+                    .totalBatches(estimatedTotalBatches)
+                    .inputTexts(inputTexts)
+                    .inputTokens(estimatedTokens)
+                    .maxSequenceLength(estimatedMaxSeqLen)
+                    .avgSequenceLength(estimatedAvgSeqLen)
+                    .outputVectors(0) // Not yet generated
+                    .embeddingDimension(0)
+                    .outputSizeBytes(0)
+                    .inferenceTimeMs(0)
+                    .totalBatchTimeMs(0)
+                    .currentStep("EMBEDDING")
+                    .heartbeatSeconds(0)
+                    .stepStartTimeMs(batchStartTime)
+                    .isStuck(false)
+                    .tokensPerSecond(0)
+                    .embeddingsPerSecond(0)
+                    .batchThroughput(0)
+                    .modelName(modelName)
+                    .deviceType("CPU")
+                    .statusLevel("RUNNING")
+                    .build();
+
+            reportProgressWithWorkers("embedding", progressPercent,
+                    String.format("BEGIN BATCH %d: Embedding %d chunks (%d/%d total) using %s",
+                            batchNum, inputTexts, embeddedSoFar, totalChunksCreated, modelName));
+            // === END BEGIN BATCH ===
+
             List<float[]> embeddings = generateEmbeddingsOptimized(actualBatch);
 
             // Checkpoint hook
@@ -1132,7 +1579,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
             } else {
                 // Passthrough mode - chunks go directly to indexer for embedding
                 // Don't increment chunksEmbedded here - it will be counted when indexed
+                // (see passthrough handling in processIndexBatchForWorker)
                 processed = chunksEmbedded.get();
+                // Still count as processed by this worker for status display
+                workerProcessed.addAndGet(batch.size());
             }
 
             // Update worker status with throughput
@@ -1148,17 +1598,58 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     workerId, batchNum, batch.size(), embeddingStatus, totalBatchTime,
                     String.format("%.1f", batchThroughput), embeddingDimension, outputSizeBytes / 1024);
 
-            // Report progress with worker statuses
+            // === END BATCH: Report batch completion with clear indicator ===
             int total = chunksCreated.get();
             if (total > 0) {
-                // Use calculated progress from PipelineProgress instead of hardcoded range
-                reportProgressWithWorkers(actualEmbeddingDone ? "embedding" : "passthrough", 0,
-                        String.format("%s %d/%d chunks (batch %d: %d @ %.1f/s, dim=%d)",
+                // Always report as "embedding" phase so frontend shows correct UI state
+                // Even in passthrough mode, we're still in the embedding phase of the pipeline
+                int embeddedQueuedCount = actualEmbeddingDone ? processed : embeddedQueue.size();
+                int endProgressPercent = total > 0 ? Math.min(95, (embeddedQueuedCount * 100) / total) : 0;
+
+                // Update batch metrics for END state
+                currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
+                        .batchNumber(batchNum)
+                        .totalBatches(estimatedTotalBatches)
+                        .inputTexts(batch.size())
+                        .inputTokens(0) // Already processed
+                        .maxSequenceLength(0)
+                        .avgSequenceLength(0)
+                        .outputVectors(actualEmbeddingDone ? batch.size() : 0)
+                        .embeddingDimension(embeddingDimension)
+                        .outputSizeBytes(outputSizeBytes)
+                        .inferenceTimeMs(actualEmbeddingDone ? totalBatchTime : 0)
+                        .totalBatchTimeMs(totalBatchTime)
+                        .currentStep("COMPLETE")
+                        .heartbeatSeconds(0)
+                        .stepStartTimeMs(0)
+                        .isStuck(false)
+                        .tokensPerSecond(0)
+                        .embeddingsPerSecond(batchThroughput)
+                        .batchThroughput(batchThroughput)
+                        .modelName(modelName)
+                        .deviceType("CPU")
+                        .statusLevel("COMPLETE")
+                        .build();
+
+                reportProgressWithWorkers("embedding", endProgressPercent,
+                        String.format("END BATCH %d: %s %d chunks in %dms (%.1f/s) [%d/%d total, dim=%d]",
+                                batchNum,
                                 actualEmbeddingDone ? "Embedded" : "Queued",
-                                processed, total, batchNum, batch.size(), batchThroughput, embeddingDimension));
+                                batch.size(), totalBatchTime, batchThroughput,
+                                embeddedQueuedCount, total, embeddingDimension));
             }
+            // === END END BATCH ===
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (OutOfMemoryError oom) {
+            // Handle OOM gracefully - log, trigger GC, and continue with next batch
+            logger.error("OUT OF MEMORY in embedding worker {} processing batch {} ({} chunks)! " +
+                    "Consider reducing batch size (current: {}) or increasing heap (-Xmx).",
+                    workerId, batchNum, batch.size(), batchSize);
+            // Try to recover some memory
+            System.gc();
+            // Update last error for progress reporting
+            lastError = "OutOfMemoryError in batch " + batchNum + " - reduce batch size or increase heap";
         } catch (Exception e) {
             logger.error("Embedding batch failed: {}", e.getMessage(), e);
         }
@@ -1498,11 +1989,78 @@ public class ParallelIngestPipeline implements AutoCloseable {
             System.err.flush();
 
             List<float[]> embeddings;
+
+            // Use timeout to prevent indefinite blocking on native calls
+            // Default: 5 minutes per batch (adjust based on batch size and hardware)
+            final long EMBED_TIMEOUT_MS = 5 * 60 * 1000L; // 5 minutes
+
+            // Submit embedding to a separate thread with timeout
+            final List<String> finalTexts = texts;
+            java.util.concurrent.ExecutorService timeoutExecutor =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "embed-batch-timeout");
+                    t.setDaemon(true);
+                    return t;
+                });
+
             try {
-                embeddings = embeddingModel.embedBatch(texts);
+                java.util.concurrent.Future<List<float[]>> embedFuture =
+                    timeoutExecutor.submit(() -> embeddingModel.embedBatch(finalTexts));
+
+                try {
+                    embeddings = embedFuture.get(EMBED_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.TimeoutException te) {
+                    // Timeout occurred - the embedding is stuck
+                    embedFuture.cancel(true);  // Try to interrupt
+
+                    // Log detailed info about the problematic batch
+                    logger.error("EMBEDDING TIMEOUT after {}ms for batch of {} texts!",
+                            EMBED_TIMEOUT_MS, texts.size());
+                    logger.error("Batch details: avgLen={}, maxLen={}, minLen={}",
+                            texts.stream().mapToInt(String::length).average().orElse(0),
+                            texts.stream().mapToInt(String::length).max().orElse(0),
+                            texts.stream().mapToInt(String::length).min().orElse(0));
+
+                    // Log first few characters of each text for debugging
+                    for (int i = 0; i < Math.min(3, texts.size()); i++) {
+                        String preview = texts.get(i);
+                        if (preview.length() > 100) {
+                            preview = preview.substring(0, 100) + "...";
+                        }
+                        logger.error("  Text[{}] preview: {}", i, preview.replace("\n", "\\n"));
+                    }
+
+                    System.err.println("[EMBEDDING-TIMEOUT] Batch timed out after " + EMBED_TIMEOUT_MS +
+                            "ms - skipping batch of " + texts.size() + " texts");
+                    System.err.flush();
+
+                    // Return null to skip this batch - pipeline will continue with next batch
+                    return null;
+                } catch (java.util.concurrent.ExecutionException ee) {
+                    // Fix: Handle OutOfMemoryError and other Errors properly
+                    // OutOfMemoryError extends Error, not Exception, so casting to Exception fails
+                    Throwable cause = ee.getCause();
+                    if (cause instanceof OutOfMemoryError) {
+                        logger.error("OUT OF MEMORY during embedding batch of {} texts! " +
+                                "Consider reducing batch size or increasing heap.", texts.size());
+                        // Return null to skip this batch gracefully instead of crashing
+                        return null;
+                    } else if (cause instanceof Error) {
+                        // Other errors (StackOverflowError, etc.) - log and skip batch
+                        logger.error("Critical error during embedding: {}", cause.getClass().getSimpleName(), cause);
+                        return null;
+                    } else if (cause instanceof Exception) {
+                        throw (Exception) cause;
+                    } else if (cause != null) {
+                        throw new RuntimeException("Embedding failed", cause);
+                    }
+                    throw ee;
+                }
             } finally {
                 inferenceComplete.set(true);
                 heartbeat.interrupt();
+                // Shutdown the timeout executor to prevent thread leak
+                timeoutExecutor.shutdownNow();
             }
 
             long elapsed = System.currentTimeMillis() - startTime;
@@ -1539,6 +2097,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
             }
 
             return embeddings;
+        } catch (OutOfMemoryError oom) {
+            // Catch OOM at the outer level too (not wrapped in ExecutionException)
+            logger.error("OUT OF MEMORY in generateEmbeddingsOptimized for {} texts! " +
+                    "Heap exhausted - reduce batch size or increase -Xmx", chunks.size());
+            // Attempt to free memory by suggesting GC (may help in some cases)
+            System.gc();
+            return null;
         } catch (Exception e) {
             logger.error("Failed to generate embeddings: {}", e.getMessage(), e);
             return null;
@@ -1576,25 +2141,46 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 int consecutiveEmptyPolls = 0;
                 final int MAX_EMPTY_POLLS_AFTER_COMPLETE = 10; // 10 * 50ms = 500ms grace period
 
+                // Progress reporting while waiting - track last report time
+                long lastWaitingProgressReportMs = System.currentTimeMillis();
+                final long WAITING_PROGRESS_REPORT_INTERVAL_MS = 200; // Report every 200ms while waiting
+
                 while (!cancelled && !Thread.currentThread().isInterrupted()) {
                     try {
-                        // Update status to waiting
+                        // Update status to waiting with cumulative throughput
+                        long elapsedMs = System.currentTimeMillis() - startTimeMs.get();
+                        int workerTotal = perWorkerProcessed.get(workerId).get();
+                        double cumulativeThroughput = elapsedMs > 0 ? (workerTotal * 1000.0 / elapsedMs) : 0;
                         workerStatuses.put(workerKey,
-                                PipelineProgress.WorkerStatus.waiting(workerId, "indexing",
-                                        perWorkerProcessed.get(workerId).get()));
+                                PipelineProgress.WorkerStatus.waitingWithThroughput(workerId, "indexing",
+                                        workerTotal, cumulativeThroughput));
 
                         // Poll with timeout to check for completion
-                        EmbeddedBatch batch = embeddedQueue.poll(QUEUE_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                        EmbeddedBatch batch = embeddedQueue.poll(this.pipelineConfig.queuePollTimeoutMs(), TimeUnit.MILLISECONDS);
 
                         if (batch != null) {
                             // Reset watchdog on successful dequeue
                             consecutiveEmptyPolls = 0;
                             processIndexBatchForWorker(batch, localProcessedIds, workerId,
                                     perWorkerProcessed.get(workerId));
+                            // Reset waiting report timer after processing
+                            lastWaitingProgressReportMs = System.currentTimeMillis();
                         } else {
                             // Queue was empty on this poll
                             if (embeddingComplete) {
                                 consecutiveEmptyPolls++;
+                            }
+
+                            // Periodically report progress while waiting for work
+                            long now = System.currentTimeMillis();
+                            if (now - lastWaitingProgressReportMs >= WAITING_PROGRESS_REPORT_INTERVAL_MS) {
+                                lastWaitingProgressReportMs = now;
+                                int indexed = chunksIndexed.get();
+                                int total = chunksCreated.get();
+                                int progressPercent = total > 0 ? Math.min(99, (indexed * 100) / total) : 0;
+                                reportProgressWithWorkers("indexing", progressPercent,
+                                        String.format("Indexed %d/%d chunks (waiting for embeddings, queue=%d)",
+                                                indexed, total, embeddedQueue.size()));
                             }
                         }
 
@@ -1622,6 +2208,20 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
+                    } catch (OutOfMemoryError oom) {
+                        // Handle OOM gracefully - log, trigger GC, and try to continue
+                        logger.error("OUT OF MEMORY in indexing worker {} processing batch! " +
+                                "Consider reducing queue capacity or increasing heap (-Xmx).", workerId);
+                        // Try to recover some memory
+                        System.gc();
+                        lastError = "OutOfMemoryError in indexing worker " + workerId + " - increase heap";
+                        // Sleep briefly to let GC run
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
                     } catch (RuntimeException e) {
                         logger.error("Indexing worker {}: error processing batch, continuing: {}",
                                 workerId, e.getMessage());
@@ -1673,24 +2273,61 @@ public class ParallelIngestPipeline implements AutoCloseable {
         String workerKey = "index-" + workerId;
 
         try {
-            // Update status to processing
+            int batchNum = indexingBatchesProcessed.get() + 1;
+            int batchSize = batch.chunks().size();
+
+            // === BEGIN INDEX: Report batch indexing start ===
             workerStatuses.put(workerKey,
                     PipelineProgress.WorkerStatus.processing(workerId, "indexing",
-                            workerProcessed.get(), batch.chunks().size(), 0,
-                            "batch " + indexingBatchesProcessed.get()));
+                            workerProcessed.get(), batchSize, 0,
+                            "batch " + batchNum));
+
+            int indexedBefore = chunksIndexed.get();
+            int totalChunks = chunksCreated.get();
+            String indexMode = vectorOnlyMode ? "vector-only" : (parallelIndexingEnabled ? "parallel" : "sequential");
+            int progressPercent = 60 + (totalChunks > 0 ? (int) ((indexedBefore / (double) totalChunks) * 35) : 0);
+            reportProgressWithWorkers("indexing", progressPercent,
+                    String.format("BEGIN INDEX batch %d: %d chunks (%s mode, worker %d) [indexed so far: %d/%d]",
+                            batchNum, batchSize, indexMode, workerId, indexedBefore, totalChunks));
+            // === END BEGIN INDEX ===
 
             long batchStartTime = System.currentTimeMillis();
 
             // Index the batch WITH pre-computed embeddings to avoid re-embedding
-            if (parallelIndexingEnabled && batch.embeddings() != null && !batch.embeddings().isEmpty()) {
+            // Track ACTUAL persisted count, not just batch size sent
+            int actualVectorIndexed = 0;
+            // batchSize already declared at top of method
+
+            // VECTOR-ONLY MODE: Skip keyword indexing, only update vector store
+            // This is used when populating vector store from existing keyword index
+            if (vectorOnlyMode && batch.embeddings() != null && !batch.embeddings().isEmpty()) {
+                logger.debug("Worker {}: VECTOR-ONLY INDEXING batch ({} chunks, {} embeddings) - skipping keyword index",
+                        workerId, batch.chunks().size(), batch.embeddings().size());
+                try {
+                    actualVectorIndexed = indexerService.indexToVectorStoreOnly(batch.chunks(), batch.embeddings());
+                    if (actualVectorIndexed != batchSize) {
+                        logger.debug("Worker {}: VECTOR-ONLY indexing returned {} actual vs {} batch size",
+                                workerId, actualVectorIndexed, batchSize);
+                    }
+                } catch (java.io.IOException e) {
+                    logger.error("Worker {}: VECTOR-ONLY INDEXING FAILED: {}", workerId, e.getMessage());
+                    throw new RuntimeException("Vector-only indexing failed", e);
+                }
+            } else if (parallelIndexingEnabled && batch.embeddings() != null && !batch.embeddings().isEmpty()) {
                 // PARALLEL MODE: Run keyword and vector indexing concurrently
                 logger.debug("Worker {}: PARALLEL INDEXING batch ({} chunks, {} embeddings)",
                         workerId, batch.chunks().size(), batch.embeddings().size());
-                java.util.concurrent.CompletableFuture<Void> indexingFuture = indexerService
-                        .indexDocumentsParallel(batch.chunks(), batch.embeddings());
+                java.util.concurrent.CompletableFuture<ai.kompile.core.indexers.IndexerService.IndexingResult> indexingFuture =
+                        indexerService.indexDocumentsParallel(batch.chunks(), batch.embeddings());
 
                 try {
-                    indexingFuture.get(60, TimeUnit.SECONDS);
+                    ai.kompile.core.indexers.IndexerService.IndexingResult result = indexingFuture.get(60, TimeUnit.SECONDS);
+                    // Use the actual vector indexed count from the result
+                    actualVectorIndexed = result.vectorIndexed();
+                    if (actualVectorIndexed != batchSize) {
+                        logger.warn("Worker {}: PARALLEL INDEXING returned {} actual vector indexed vs {} batch size",
+                                workerId, actualVectorIndexed, batchSize);
+                    }
                 } catch (java.util.concurrent.TimeoutException e) {
                     logger.error("Worker {}: PARALLEL INDEXING TIMEOUT after 60s for {} chunks",
                             workerId, batch.chunks().size());
@@ -1706,11 +2343,18 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 logger.debug("Worker {}: SEQUENTIAL INDEXING batch ({} chunks, {} embeddings)",
                         workerId, batch.chunks().size(), batch.embeddings().size());
                 indexerService.indexDocumentsWithFloatEmbeddings(batch.chunks(), batch.embeddings());
+                // Sequential mode doesn't return count yet, assume all indexed
+                actualVectorIndexed = batchSize;
             } else {
                 // PASSTHROUGH MODE: No embeddings provided
+                // The indexer will handle embedding if needed
                 logger.debug("Worker {}: PASSTHROUGH INDEXING batch ({} chunks)",
                         workerId, batch.chunks().size());
                 indexerService.indexDocuments(batch.chunks());
+                actualVectorIndexed = batchSize;
+                // In passthrough mode, also count as embedded since no separate embedding step
+                // This fulfills the promise in embedding worker: "it will be counted when indexed"
+                chunksEmbedded.addAndGet(batchSize);
             }
 
             // Track processed IDs
@@ -1720,17 +2364,16 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 }
             }
 
-            int batchSize = batch.chunks().size();
-            int indexed = chunksIndexed.addAndGet(batchSize);
+            // Use the ACTUAL count of documents persisted to vector store
+            int indexed = chunksIndexed.addAndGet(actualVectorIndexed);
             workerProcessed.addAndGet(batchSize);
             indexingWorkerProcessed.addAndGet(batchSize);
-            int batchNum = indexingBatchesProcessed.incrementAndGet();
+            indexingBatchesProcessed.incrementAndGet(); // Increment but reuse batchNum from start
 
             long elapsed = System.currentTimeMillis() - batchStartTime;
             double batchThroughput = elapsed > 0 ? (batchSize * 1000.0 / elapsed) : 0;
 
             // Update worker status with throughput
-            String indexMode = parallelIndexingEnabled ? "parallel" : "sequential";
             workerStatuses.put(workerKey,
                     PipelineProgress.WorkerStatus.processing(workerId, "indexing",
                             workerProcessed.get(), batchSize, batchThroughput,
@@ -1739,14 +2382,16 @@ public class ParallelIngestPipeline implements AutoCloseable {
             logger.debug("Worker {}: indexed batch {} ({} chunks, {}) in {}ms ({}/sec)",
                     workerId, batchNum, batchSize, indexMode, elapsed, String.format("%.1f", batchThroughput));
 
-            // Report progress with worker statuses
+            // === END INDEX: Report batch indexing completion ===
             int total = chunksCreated.get();
             if (total > 0) {
-                int progressPercent = 60 + (int) ((indexed / (double) total) * 35);
-                reportProgressWithWorkers("indexing", progressPercent,
-                        String.format("Indexed %d/%d chunks (worker %d: %s batch %d)",
-                                indexed, total, workerId, indexMode, batchNum));
+                int progressPercentEnd = 60 + (int) ((indexed / (double) total) * 35);
+                reportProgressWithWorkers("indexing", progressPercentEnd,
+                        String.format("END INDEX batch %d: %d chunks in %dms (%.1f/s) [%d/%d total, %s mode]",
+                                batchNum, batchSize, elapsed, batchThroughput,
+                                indexed, total, indexMode));
             }
+            // === END END INDEX ===
         } catch (Exception e) {
             logger.error("Worker {}: indexing batch failed: {}", workerId, e.getMessage(), e);
             lastError = "Indexing failed: " + e.getMessage();
@@ -1806,9 +2451,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Build queue status
             PipelineProgress.QueueStatus queueStatus = new PipelineProgress.QueueStatus(
                     chunkQueue.size(),
-                    QUEUE_CAPACITY,
+                    this.pipelineConfig.queueCapacity(),
                     embeddedQueue.size(),
-                    QUEUE_CAPACITY);
+                    this.pipelineConfig.queueCapacity());
 
             // Get current embedding batch metrics (may be null if not embedding)
             PipelineProgress.EmbeddingBatchMetrics batchMetrics = currentEmbeddingBatchMetrics;
@@ -2168,16 +2813,16 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 processedIds = new ArrayList<>();
             }
 
-            // Complete
+            // ========== PIPELINE COMPLETE ==========
             long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
             double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
 
-            reportProgress("complete", 100,
-                    String.format("Done: %d chunks in %dms (%.1f/sec)",
-                            chunksIndexed.get(), totalTimeMs, chunksPerSec));
+            reportProgress("COMPLETED", 100,
+                    String.format("=== PIPELINE COMPLETE (external producer) === %d chunks created -> %d indexed in %dms (%.1f chunks/sec)",
+                            chunksCreated.get(), chunksIndexed.get(), totalTimeMs, chunksPerSec));
 
-            logger.info("Pipeline complete: {} chunks in {}ms ({} chunks/sec)",
-                    chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+            logger.info("========== PIPELINE COMPLETE (external producer): {} chunks created -> {} indexed in {}ms ({} chunks/sec) ==========",
+                    chunksCreated.get(), chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
 
             return new PipelineResult(
                     documentsProcessed.get(),

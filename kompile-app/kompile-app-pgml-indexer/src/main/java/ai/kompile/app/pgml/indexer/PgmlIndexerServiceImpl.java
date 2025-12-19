@@ -50,25 +50,27 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     private static final Logger logger = LoggerFactory.getLogger(PgmlIndexerServiceImpl.class);
 
     private final PgmlIndexerProperties properties;
-    private  VectorStore vectorStore;
+    private VectorStore vectorStore;
     private final List<DocumentLoader> documentLoaders;
     private final ApplicationContext applicationContext;
 
     public PgmlIndexerServiceImpl(PgmlIndexerProperties properties,
-                                  ApplicationContext applicationContext,
-                                  List<DocumentLoader> documentLoaders,
-                                  List<VectorStore> vectorStore) {
+            ApplicationContext applicationContext,
+            List<DocumentLoader> documentLoaders,
+            List<VectorStore> vectorStore) {
         this.properties = properties;
         this.applicationContext = applicationContext;
         this.documentLoaders = documentLoaders;
         if (CollectionUtils.isEmpty(this.documentLoaders)) {
-            logger.warn("No DocumentLoader beans found. File and directory indexing capabilities will be limited if used.");
+            logger.warn(
+                    "No DocumentLoader beans found. File and directory indexing capabilities will be limited if used.");
         }
-        logger.info("PgmlIndexerServiceImpl initialized with VectorStore: {} (expected to use default collection: '{}') and {} document loaders.",
+        logger.info(
+                "PgmlIndexerServiceImpl initialized with VectorStore: {} (expected to use default collection: '{}') and {} document loaders.",
                 vectorStore.getClass().getName(), properties.getDefaultCollectionName(), this.documentLoaders.size());
-        if(vectorStore.size() > 1) {
-            for(VectorStore vectorStore1 : vectorStore) {
-                if(vectorStore1 instanceof NoOpVectorStoreImpl) {
+        if (vectorStore.size() > 1) {
+            for (VectorStore vectorStore1 : vectorStore) {
+                if (vectorStore1 instanceof NoOpVectorStoreImpl) {
                     continue;
                 } else {
                     this.vectorStore = vectorStore1;
@@ -82,7 +84,8 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     }
 
     private String getEffectiveCollectionName(String collectionNameFromParam) {
-        return StringUtils.hasText(collectionNameFromParam) ? collectionNameFromParam : properties.getDefaultCollectionName();
+        return StringUtils.hasText(collectionNameFromParam) ? collectionNameFromParam
+                : properties.getDefaultCollectionName();
     }
 
     private DocumentLoader findLoaderForPath(Path filePath) {
@@ -120,16 +123,16 @@ public class PgmlIndexerServiceImpl extends IndexerService {
         if (document == null) {
             return null;
         }
-        
+
         RetrievedDoc.Builder builder = RetrievedDoc.builder()
                 .id(document.getId())
                 .text(document.getText())
                 .metadata(document.getMetadata());
-        
+
         if (document.getScore() != null) {
             builder.score(document.getScore());
         }
-        
+
         return builder.build();
     }
 
@@ -140,7 +143,7 @@ public class PgmlIndexerServiceImpl extends IndexerService {
         if (retrievedDoc == null) {
             return null;
         }
-        
+
         return new Document(retrievedDoc.getId(), retrievedDoc.getText(), retrievedDoc.getMetadata());
     }
 
@@ -153,7 +156,7 @@ public class PgmlIndexerServiceImpl extends IndexerService {
         }
 
         logger.info("Submitting {} documents for indexing via VectorStore: {}. " +
-                        "VectorStore is expected to use its pre-configured default collection (logged as: {}).",
+                "VectorStore is expected to use its pre-configured default collection (logged as: {}).",
                 documents.size(), vectorStore.getClass().getSimpleName(), loggedCollectionName);
 
         // Convert RetrievedDoc to Document for vector store compatibility
@@ -166,7 +169,6 @@ public class PgmlIndexerServiceImpl extends IndexerService {
         logger.info("Successfully submitted {} documents to VectorStore. Assumed target collection for logging: {}",
                 documents.size(), loggedCollectionName);
     }
-
 
     @Override
     public void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException {
@@ -221,9 +223,11 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     }
 
     @Override
-    public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException {
+    public void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam)
+            throws IOException {
         String effectiveCollectionName = getEffectiveCollectionName(collectionNameParam);
-        logger.info("Request to index directory: {} with sourceIdPrefix: {}. Target collection context for logging/descriptor: {}",
+        logger.info(
+                "Request to index directory: {} with sourceIdPrefix: {}. Target collection context for logging/descriptor: {}",
                 directoryPath, sourceIdPrefix, effectiveCollectionName);
 
         if (!Files.isDirectory(directoryPath)) {
@@ -250,9 +254,9 @@ public class PgmlIndexerServiceImpl extends IndexerService {
                 try {
                     DocumentLoader loader = findLoaderForPath(filePath);
                     if (loader != null) {
-                        String fileSpecificSourceId = StringUtils.hasText(sourceIdPrefix) ?
-                                sourceIdPrefix + ":" + directoryPath.relativize(filePath).toString() :
-                                directoryPath.relativize(filePath).toString();
+                        String fileSpecificSourceId = StringUtils.hasText(sourceIdPrefix)
+                                ? sourceIdPrefix + ":" + directoryPath.relativize(filePath).toString()
+                                : directoryPath.relativize(filePath).toString();
 
                         DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
                                 .type(DocumentSourceDescriptor.SourceType.FILE)
@@ -274,11 +278,13 @@ public class PgmlIndexerServiceImpl extends IndexerService {
                                     .collect(Collectors.toList());
                             batchDocuments.addAll(loadedDocs);
                         } else {
-                            logger.warn("Loader {} produced no documents for file: {}", loader.getClass().getSimpleName(), filePath);
+                            logger.warn("Loader {} produced no documents for file: {}",
+                                    loader.getClass().getSimpleName(), filePath);
                         }
 
                         if (batchDocuments.size() >= properties.getBatchSize()) {
-                            logger.info("Indexing batch of {} documents from directory scan. Target collection for logging: {}",
+                            logger.info(
+                                    "Indexing batch of {} documents from directory scan. Target collection for logging: {}",
                                     batchDocuments.size(), effectiveCollectionName);
                             indexDocuments(new ArrayList<>(batchDocuments), effectiveCollectionName);
                             batchDocuments.clear();
@@ -288,15 +294,18 @@ public class PgmlIndexerServiceImpl extends IndexerService {
                         logger.warn("No suitable loader found for file in directory: {}. Skipping.", filePath);
                     }
                 } catch (Exception e) {
-                    logger.error("Failed to load or process file: {} in directory {}. Skipping file.", filePath, directoryPath, e);
+                    logger.error("Failed to load or process file: {} in directory {}. Skipping file.", filePath,
+                            directoryPath, e);
                 }
             }
             if (!batchDocuments.isEmpty()) {
-                logger.info("Indexing remaining batch of {} documents from directory scan. Target collection for logging: {}",
+                logger.info(
+                        "Indexing remaining batch of {} documents from directory scan. Target collection for logging: {}",
                         batchDocuments.size(), effectiveCollectionName);
                 indexDocuments(batchDocuments, effectiveCollectionName);
             }
-            logger.info("Successfully processed {} files from directory: {}. Target collection context for logging: {}.",
+            logger.info(
+                    "Successfully processed {} files from directory: {}. Target collection context for logging: {}.",
                     processedFileCount, directoryPath, effectiveCollectionName);
         }
     }
@@ -305,11 +314,12 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     public boolean deleteDocuments(List<String> documentIds, String collectionNameParam) {
         String loggedCollectionName = getEffectiveCollectionName(collectionNameParam);
         if (CollectionUtils.isEmpty(documentIds)) {
-            logger.warn("No document IDs provided for deletion. Target collection for logging: {}", loggedCollectionName);
+            logger.warn("No document IDs provided for deletion. Target collection for logging: {}",
+                    loggedCollectionName);
             return false;
         }
         logger.info("Request to delete {} documents via VectorStore: {}. " +
-                        "VectorStore is expected to use its pre-configured default collection (logged as: {}).",
+                "VectorStore is expected to use its pre-configured default collection (logged as: {}).",
                 documentIds.size(), vectorStore.getClass().getSimpleName(), loggedCollectionName);
 
         Optional<Boolean> result = Optional.of(vectorStore.delete(documentIds));
@@ -324,9 +334,10 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     public boolean deleteAll(String collectionNameParam) {
         String loggedCollectionName = getEffectiveCollectionName(collectionNameParam);
         logger.warn("deleteAll operation for collection '{}' is NOT SUPPORTED by the generic VectorStore interface " +
-                        "and thus not directly by PgmlIndexerServiceImpl. The configured VectorStore ({}) must be managed " +
-                        "directly for such operations on its default collection (e.g., via its own specific API or direct DB commands if it's PgVectorStoreImpl and you want to clear a specific table). " +
-                        "This operation will currently do nothing through the IndexerService.",
+                "and thus not directly by PgmlIndexerServiceImpl. The configured VectorStore ({}) must be managed " +
+                "directly for such operations on its default collection (e.g., via its own specific API or direct DB commands if it's PgVectorStoreImpl and you want to clear a specific table). "
+                +
+                "This operation will currently do nothing through the IndexerService.",
                 loggedCollectionName, vectorStore.getClass().getSimpleName());
         return false;
     }
@@ -334,7 +345,8 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     @Override
     public long getApproxTotalDocCount(String collectionNameParam) {
         String loggedCollectionName = getEffectiveCollectionName(collectionNameParam);
-        logger.warn("getApproxTotalDocCount for collection '{}' is not supported by the generic VectorStore interface. " +
+        logger.warn(
+                "getApproxTotalDocCount for collection '{}' is not supported by the generic VectorStore interface. " +
                         "This capability depends on the specific VectorStore implementation ({}). Returning -1.",
                 loggedCollectionName, vectorStore.getClass().getSimpleName());
         return -1;
@@ -347,7 +359,8 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     }
 
     @Override
-    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException {
+    public void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings)
+            throws IOException {
         if (documents == null || documents.isEmpty()) {
             return;
         }
@@ -366,24 +379,32 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     @Override
     public void reprocessAndIndexAllSources() throws IOException {
         // This is a significant simplification.
-        // A true reprocess would involve fetching sources from a DocumentLoadingService.
+        // A true reprocess would involve fetching sources from a
+        // DocumentLoadingService.
         // PgmlIndexerServiceImpl, as a pure indexer, might not own that responsibility.
-        // For now, it will log a warning and attempt to delete all from the default collection.
+        // For now, it will log a warning and attempt to delete all from the default
+        // collection.
         logger.warn("reprocessAndIndexAllSources called on PgmlIndexerServiceImpl. " +
-                        "This will attempt to delete all documents from the default collection ('{}') but will NOT automatically re-fetch and re-index all sources. " +
-                        "Document re-loading and re-submission must be handled externally.",
+                "This will attempt to delete all documents from the default collection ('{}') but will NOT automatically re-fetch and re-index all sources. "
+                +
+                "Document re-loading and re-submission must be handled externally.",
                 properties.getDefaultCollectionName());
         deleteAll(properties.getDefaultCollectionName());
-        // Actual re-indexing logic (loading docs and calling indexDocuments) should be orchestrated externally.
+        // Actual re-indexing logic (loading docs and calling indexDocuments) should be
+        // orchestrated externally.
     }
 
     @Override
     public boolean isIndexAvailable() {
-        // For a VectorStore-based indexer, "availability" usually means the VectorStore service is reachable.
-        // A more robust check might involve a ping or status check if the VectorStore interface supported it.
-        // For PgML, this would mean the database is up and the pgvector/pgml extensions are working.
+        // For a VectorStore-based indexer, "availability" usually means the VectorStore
+        // service is reachable.
+        // A more robust check might involve a ping or status check if the VectorStore
+        // interface supported it.
+        // For PgML, this would mean the database is up and the pgvector/pgml extensions
+        // are working.
         // We assume if vectorStore bean is initialized, it's "available".
-        logger.debug("isIndexAvailable for PgmlIndexerServiceImpl assumes VectorStore ({}) is available if initialized.",
+        logger.debug(
+                "isIndexAvailable for PgmlIndexerServiceImpl assumes VectorStore ({}) is available if initialized.",
                 vectorStore.getClass().getSimpleName());
         return this.vectorStore != null;
     }
@@ -393,10 +414,12 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     @Override
     public List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException {
         logger.warn("listIndexedDocuments is not fully supported by PgmlIndexerServiceImpl. " +
-                        "This operation depends on the VectorStore's ('{}') capability to list documents with content and metadata, " +
-                        "which is not a standard part of the generic VectorStore interface. Returning an empty list.",
+                "This operation depends on the VectorStore's ('{}') capability to list documents with content and metadata, "
+                +
+                "which is not a standard part of the generic VectorStore interface. Returning an empty list.",
                 vectorStore.getClass().getSimpleName());
-        // If your specific VectorStore (e.g., PgVectorStoreImpl) has a method to list documents/metadata,
+        // If your specific VectorStore (e.g., PgVectorStoreImpl) has a method to list
+        // documents/metadata,
         // you could implement that here. Otherwise, this is a placeholder.
         return Collections.emptyList();
     }
@@ -404,29 +427,67 @@ public class PgmlIndexerServiceImpl extends IndexerService {
     @Override
     public Map<String, Object> getIndexedDocument(String docId) throws IOException {
         logger.warn("getIndexedDocument for ID '{}' is not fully supported by PgmlIndexerServiceImpl. " +
-                        "This operation depends on the VectorStore's ('{}') capability to fetch a specific document by ID with its content, " +
-                        "which is not a standard part of the generic VectorStore interface. Returning null.",
+                "This operation depends on the VectorStore's ('{}') capability to fetch a specific document by ID with its content, "
+                +
+                "which is not a standard part of the generic VectorStore interface. Returning null.",
                 docId, vectorStore.getClass().getSimpleName());
-        // If your specific VectorStore has a method like `getDocumentById(String id)`, you could call it here.
+        // If your specific VectorStore has a method like `getDocumentById(String id)`,
+        // you could call it here.
         // For example, PgVectorStoreImpl might query its table by a document_id column.
         return null;
     }
 
     @Override
     public boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException {
-        logger.warn("updateIndexedDocumentContent for ID '{}' is not directly supported by PgmlIndexerServiceImpl in a way that " +
-                        "preserves the original vector ID with new content through the generic VectorStore interface. " +
-                        "A true update would require deleting the old document (and its vector) and adding a new document " +
-                        "(with a new vector calculated from the new content), potentially with a new ID or careful ID management. " +
+        logger.warn(
+                "updateIndexedDocumentContent for ID '{}' is not directly supported by PgmlIndexerServiceImpl in a way that "
+                        +
+                        "preserves the original vector ID with new content through the generic VectorStore interface. "
+                        +
+                        "A true update would require deleting the old document (and its vector) and adding a new document "
+                        +
+                        "(with a new vector calculated from the new content), potentially with a new ID or careful ID management. "
+                        +
                         "This operation requires an EmbeddingModel to re-embed, which is not available here. Returning false.",
                 docId);
         // To implement this properly, you would typically:
         // 1. Need an EmbeddingModel instance.
-        // 2. Create a new Spring AI Document: new Document(docId, newContent, existingMetadata)
+        // 2. Create a new Spring AI Document: new Document(docId, newContent,
+        // existingMetadata)
         // 3. Embed the new document: embeddingModel.embed(newDocument) - or a list.
-        // 4. Delete the old document from VectorStore: vectorStore.delete(List.of(docId))
-        // 5. Add the new, re-embedded document: vectorStore.add(List.of(newEmbeddedDocument))
-        // This is a complex operation not suited for a simple "update content" on a generic VectorStore.
+        // 4. Delete the old document from VectorStore:
+        // vectorStore.delete(List.of(docId))
+        // 5. Add the new, re-embedded document:
+        // vectorStore.add(List.of(newEmbeddedDocument))
+        // This is a complex operation not suited for a simple "update content" on a
+        // generic VectorStore.
         return false;
+    }
+
+    @Override
+    public String getIndexPath() {
+        return "Database Managed (Collection: " + properties.getDefaultCollectionName() + ")";
+    }
+
+    @Override
+    public void indexFromLucene() throws IOException {
+        logger.warn("indexFromLucene is not supported by PgmlIndexerServiceImpl directly.");
+        throw new UnsupportedOperationException("indexFromLucene not supported by PgmlIndexerServiceImpl");
+    }
+
+    @Override
+    public boolean startVectorIndexCreationAsync() {
+        logger.warn("startVectorIndexCreationAsync not supported by PgmlIndexerServiceImpl.");
+        return false;
+    }
+
+    @Override
+    public void cancelCurrentJob() {
+        // No-op
+    }
+
+    @Override
+    public JobStatus getJobStatus() {
+        return JobStatus.idle();
     }
 }

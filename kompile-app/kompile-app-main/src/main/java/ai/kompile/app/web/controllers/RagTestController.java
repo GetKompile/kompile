@@ -19,10 +19,17 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.NoOpEmbeddingModelImpl;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
+import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.core.reranking.RerankerConfig;
+import ai.kompile.core.reranking.RerankerService;
+import ai.kompile.core.reranking.RerankerType;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.modelmanager.KompileModelManager;
+import ai.kompile.modelmanager.ModelConstants;
+import ai.kompile.modelmanager.ModelDescriptor;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +48,10 @@ import java.util.stream.Collectors;
  * - GET /api/rag/test/query - Run a test query against all RAG components
  * - GET /api/rag/test/status - Check status of RAG components
  * - GET /api/rag/test/embed - Test embedding generation
+ * - GET /api/rag/test/rerankers - List available reranker types
+ * - GET /api/rag/test/query-with-reranking - Run a query with reranking
+ * - GET /api/rag/test/cross-encoder-models - List available cross-encoder models
+ * - POST /api/rag/test/cross-encoder-models/{modelId}/download - Download a cross-encoder model
  */
 @RestController
 @RequestMapping("/api/rag/test")
@@ -51,12 +62,16 @@ public class RagTestController {
     private final DocumentRetriever keywordRetriever;
     private final VectorStore vectorStore;
     private final EmbeddingModel embeddingModel;
+    private final RerankerService rerankerService;
+    private final KompileModelManager modelManager;
 
     @Autowired
     public RagTestController(
             List<DocumentRetriever> documentRetrievers,
             List<VectorStore> vectorStores,
-            List<EmbeddingModel> embeddingModels) {
+            List<EmbeddingModel> embeddingModels,
+            @Autowired(required = false) RerankerService rerankerService,
+            @Autowired(required = false) KompileModelManager modelManager) {
 
         // Select non-NoOp implementations
         this.keywordRetriever = documentRetrievers.stream()
@@ -74,10 +89,14 @@ public class RagTestController {
                 .findFirst()
                 .orElse(embeddingModels.isEmpty() ? new NoOpEmbeddingModelImpl() : embeddingModels.get(0));
 
-        log.info("RagTestController initialized - KeywordRetriever: {}, VectorStore: {}, EmbeddingModel: {}",
+        this.rerankerService = rerankerService;
+        this.modelManager = modelManager != null ? modelManager : new KompileModelManager();
+
+        log.info("RagTestController initialized - KeywordRetriever: {}, VectorStore: {}, EmbeddingModel: {}, RerankerService: {}",
                 this.keywordRetriever.getClass().getSimpleName(),
                 this.vectorStore.getClass().getSimpleName(),
-                this.embeddingModel.getClass().getSimpleName());
+                this.embeddingModel.getClass().getSimpleName(),
+                this.rerankerService != null ? this.rerankerService.getClass().getSimpleName() : "N/A");
     }
 
     /**
@@ -104,6 +123,20 @@ public class RagTestController {
         embeddingStatus.put("class", embeddingModel.getClass().getSimpleName());
         embeddingStatus.put("available", !(embeddingModel instanceof NoOpEmbeddingModelImpl));
         status.put("embeddingModel", embeddingStatus);
+
+        // Reranker service status
+        Map<String, Object> rerankerStatus = new LinkedHashMap<>();
+        rerankerStatus.put("available", rerankerService != null);
+        if (rerankerService != null) {
+            rerankerStatus.put("class", rerankerService.getClass().getSimpleName());
+            rerankerStatus.put("supportedTypes", rerankerService.getSupportedTypes().stream()
+                    .map(RerankerType::getId)
+                    .collect(Collectors.toList()));
+        } else {
+            rerankerStatus.put("class", "N/A");
+            rerankerStatus.put("supportedTypes", Collections.emptyList());
+        }
+        status.put("reranker", rerankerStatus);
 
         return ResponseEntity.ok(status);
     }
@@ -341,6 +374,314 @@ public class RagTestController {
         return ResponseEntity.ok(result);
     }
 
+    /**
+     * Get available reranker types and their configuration options.
+     */
+    @GetMapping("/rerankers")
+    public ResponseEntity<Map<String, Object>> getRerankers() {
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        result.put("available", rerankerService != null);
+
+        List<Map<String, Object>> rerankerTypes = new ArrayList<>();
+
+        // Add all supported reranker types with their descriptions
+        for (RerankerType type : RerankerType.values()) {
+            if (type != RerankerType.NONE) {
+                Map<String, Object> typeInfo = new LinkedHashMap<>();
+                typeInfo.put("id", type.getId());
+                typeInfo.put("name", type.name());
+                typeInfo.put("description", type.getDescription());
+
+                // Add parameters for each type with complete metadata
+                List<Map<String, Object>> params = new ArrayList<>();
+
+                // Add common parameters for feedback-based rerankers
+                switch (type) {
+                    case RM3:
+                        params.add(createParam("fbDocs", "Feedback Documents", "number", 10, 1, 50));
+                        params.add(createParam("fbTerms", "Feedback Terms", "number", 10, 1, 100));
+                        params.add(createParam("originalQueryWeight", "Original Query Weight", "number", 0.5, 0.0, 1.0));
+                        params.add(createParam("filterTerms", "Filter Non-Alphanumeric Terms", "boolean", true, null, null));
+                        params.add(createParam("outputQuery", "Log Expanded Queries", "boolean", false, null, null));
+                        break;
+                    case BM25_PRF:
+                        params.add(createParam("fbDocs", "Feedback Documents", "number", 10, 1, 50));
+                        params.add(createParam("fbTerms", "Feedback Terms", "number", 20, 1, 100));
+                        params.add(createParam("k1", "BM25 k1", "number", 0.9, 0.0, 3.0));
+                        params.add(createParam("b", "BM25 b", "number", 0.4, 0.0, 1.0));
+                        params.add(createParam("newTermWeight", "New Term Weight Boost", "number", 0.2, 0.0, 1.0));
+                        params.add(createParam("outputQuery", "Log Expanded Queries", "boolean", false, null, null));
+                        break;
+                    case ROCCHIO:
+                        params.add(createParam("fbDocs", "Feedback Documents", "number", 10, 1, 50));
+                        params.add(createParam("fbTerms", "Feedback Terms", "number", 10, 1, 100));
+                        params.add(createParam("alpha", "Original Query Weight (alpha)", "number", 1.0, 0.0, 2.0));
+                        params.add(createParam("beta", "Positive Feedback Weight (beta)", "number", 0.75, 0.0, 2.0));
+                        params.add(createParam("gamma", "Negative Feedback Weight (gamma)", "number", 0.15, 0.0, 1.0));
+                        params.add(createParam("useNegative", "Use Negative Feedback", "boolean", false, null, null));
+                        params.add(createParam("outputQuery", "Log Expanded Queries", "boolean", false, null, null));
+                        break;
+                    case AXIOM:
+                        params.add(createParam("fbDocs", "Feedback Documents", "number", 10, 1, 50));
+                        params.add(createParam("fbTerms", "Feedback Terms", "number", 10, 1, 100));
+                        params.add(createParam("r", "Axiom R (Relevance Model Terms)", "number", 20, 1, 100));
+                        params.add(createParam("n", "Axiom N (Context Terms)", "number", 30, 1, 100));
+                        params.add(createParam("axiomBeta", "Axiom Beta (Expansion Weight)", "number", 0.4, 0.0, 1.0));
+                        params.add(createParam("deterministic", "Deterministic Results", "boolean", true, null, null));
+                        params.add(createParam("seed", "Random Seed", "number", 42, 0, Long.MAX_VALUE));
+                        break;
+                    case SCORE_TIES_ADJUSTER:
+                        // No parameters needed - just breaks ties deterministically
+                        break;
+                    case CROSS_ENCODER:
+                        params.add(createParam("topK", "Documents to Rerank (-1 = all)", "number", -1, -1, 100));
+                        // Add available cross-encoder models
+                        Map<String, Object> modelParam = createParam("crossEncoderModel", "Cross-Encoder Model", "select",
+                                ModelConstants.getDefaultCrossEncoderModelId(), null, null);
+                        modelParam.put("options", ModelConstants.getAvailableCrossEncoderModelIds());
+                        params.add(modelParam);
+                        break;
+                    default:
+                        break;
+                }
+                typeInfo.put("parameters", params);
+
+                // Check if this type is supported by the current service
+                typeInfo.put("supported", rerankerService != null && rerankerService.isSupported(type));
+
+                rerankerTypes.add(typeInfo);
+            }
+        }
+
+        result.put("types", rerankerTypes);
+
+        return ResponseEntity.ok(result);
+    }
+
+    private Map<String, Object> createParam(String id, String label, String type, Object defaultValue, Object min, Object max) {
+        Map<String, Object> param = new LinkedHashMap<>();
+        param.put("id", id);
+        param.put("label", label);
+        param.put("type", type);
+        param.put("default", defaultValue);
+        param.put("min", min);
+        param.put("max", max);
+        return param;
+    }
+
+    /**
+     * Run a similarity search with optional reranking.
+     */
+    @GetMapping("/query-with-reranking")
+    public ResponseEntity<Map<String, Object>> queryWithReranking(
+            @RequestParam("q") String query,
+            @RequestParam(name = "k", defaultValue = "10") int maxResults,
+            @RequestParam(name = "threshold", defaultValue = "0.0") double threshold,
+            @RequestParam(name = "rerankerType", defaultValue = "none") String rerankerType,
+            // Common parameters
+            @RequestParam(name = "fbDocs", defaultValue = "10") int fbDocs,
+            @RequestParam(name = "fbTerms", defaultValue = "10") int fbTerms,
+            @RequestParam(name = "topK", defaultValue = "-1") int topK,
+            // RM3 parameters
+            @RequestParam(name = "originalQueryWeight", defaultValue = "0.5") float originalQueryWeight,
+            @RequestParam(name = "filterTerms", defaultValue = "true") boolean filterTerms,
+            @RequestParam(name = "outputQuery", defaultValue = "false") boolean outputQuery,
+            // BM25-PRF parameters
+            @RequestParam(name = "k1", defaultValue = "0.9") float k1,
+            @RequestParam(name = "b", defaultValue = "0.4") float b,
+            @RequestParam(name = "newTermWeight", defaultValue = "0.2") float newTermWeight,
+            // Rocchio parameters
+            @RequestParam(name = "alpha", defaultValue = "1.0") float alpha,
+            @RequestParam(name = "beta", defaultValue = "0.75") float beta,
+            @RequestParam(name = "gamma", defaultValue = "0.15") float gamma,
+            @RequestParam(name = "useNegative", defaultValue = "false") boolean useNegative,
+            // Axiom parameters
+            @RequestParam(name = "r", defaultValue = "20") int r,
+            @RequestParam(name = "n", defaultValue = "30") int n,
+            @RequestParam(name = "axiomBeta", defaultValue = "0.4") float axiomBeta,
+            @RequestParam(name = "deterministic", defaultValue = "true") boolean deterministic,
+            @RequestParam(name = "seed", defaultValue = "42") long seed,
+            // Cross-encoder parameters
+            @RequestParam(name = "crossEncoderModel", defaultValue = "") String crossEncoderModel) {
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("query", query);
+        result.put("maxResults", maxResults);
+        result.put("threshold", threshold);
+
+        if (vectorStore instanceof NoOpVectorStoreImpl) {
+            result.put("error", "No vector store available");
+            return ResponseEntity.ok(result);
+        }
+
+        try {
+            // First, get initial results without reranking for comparison
+            long startInitial = System.currentTimeMillis();
+            List<ScoredDocument> initialResults = vectorStore.similaritySearchWithScores(query, maxResults, threshold);
+            long initialDuration = System.currentTimeMillis() - startInitial;
+
+            result.put("initialDurationMs", initialDuration);
+            result.put("initialCount", initialResults.size());
+
+            // Format initial results
+            List<Map<String, Object>> initialHits = initialResults.stream()
+                    .map(this::formatScoredDocument)
+                    .collect(Collectors.toList());
+            result.put("initialHits", initialHits);
+
+            // Check if reranking is requested
+            RerankerType selectedType = RerankerType.fromId(rerankerType);
+            result.put("rerankerType", selectedType.getId());
+            result.put("rerankerDescription", selectedType.getDescription());
+
+            if (selectedType == RerankerType.NONE) {
+                result.put("reranked", false);
+                result.put("rerankedHits", initialHits);
+                result.put("rerankDurationMs", 0);
+            } else {
+                // Build reranker config with all parameters
+                RerankerConfig config = new RerankerConfig()
+                        .setType(selectedType)
+                        .setEnabled(true)
+                        // Common parameters
+                        .setFbDocs(fbDocs)
+                        .setFbTerms(fbTerms)
+                        .setTopK(topK)
+                        // RM3 parameters
+                        .setOriginalQueryWeight(originalQueryWeight)
+                        .setFilterTerms(filterTerms)
+                        .setOutputQuery(outputQuery)
+                        // BM25-PRF parameters
+                        .setK1(k1)
+                        .setB(b)
+                        .setNewTermWeight(newTermWeight)
+                        // Rocchio parameters
+                        .setAlpha(alpha)
+                        .setBeta(beta)
+                        .setGamma(gamma)
+                        .setUseNegative(useNegative)
+                        // Axiom parameters
+                        .setR(r)
+                        .setN(n)
+                        .setAxiomBeta(axiomBeta)
+                        .setDeterministic(deterministic)
+                        .setSeed(seed);
+
+                // Build config map for response
+                Map<String, Object> configMap = new LinkedHashMap<>();
+                configMap.put("type", selectedType.getId());
+                configMap.put("fbDocs", fbDocs);
+                configMap.put("fbTerms", fbTerms);
+                configMap.put("topK", topK);
+
+                switch (selectedType) {
+                    case RM3:
+                        configMap.put("originalQueryWeight", originalQueryWeight);
+                        configMap.put("filterTerms", filterTerms);
+                        configMap.put("outputQuery", outputQuery);
+                        break;
+                    case BM25_PRF:
+                        configMap.put("k1", k1);
+                        configMap.put("b", b);
+                        configMap.put("newTermWeight", newTermWeight);
+                        break;
+                    case ROCCHIO:
+                        configMap.put("alpha", alpha);
+                        configMap.put("beta", beta);
+                        configMap.put("gamma", gamma);
+                        configMap.put("useNegative", useNegative);
+                        break;
+                    case AXIOM:
+                        configMap.put("r", r);
+                        configMap.put("n", n);
+                        configMap.put("axiomBeta", axiomBeta);
+                        configMap.put("deterministic", deterministic);
+                        configMap.put("seed", seed);
+                        break;
+                    case CROSS_ENCODER:
+                        String modelToUse = crossEncoderModel != null && !crossEncoderModel.isEmpty()
+                                ? crossEncoderModel
+                                : ModelConstants.getDefaultCrossEncoderModelId();
+                        configMap.put("crossEncoderModel", modelToUse);
+                        break;
+                    default:
+                        break;
+                }
+
+                result.put("rerankerConfig", configMap);
+
+                // Perform reranking
+                long startRerank = System.currentTimeMillis();
+                List<ScoredDocument> rerankedResults = vectorStore.similaritySearchWithReranking(query, maxResults, threshold, config);
+                long rerankDuration = System.currentTimeMillis() - startRerank;
+
+                result.put("reranked", true);
+                result.put("rerankDurationMs", rerankDuration);
+                result.put("rerankedCount", rerankedResults.size());
+
+                // Format reranked results with rank change info
+                List<Map<String, Object>> rerankedHits = new ArrayList<>();
+                for (int i = 0; i < rerankedResults.size(); i++) {
+                    ScoredDocument doc = rerankedResults.get(i);
+                    Map<String, Object> formatted = formatScoredDocument(doc);
+                    formatted.put("newRank", i + 1);
+
+                    // Find original rank
+                    int originalRank = -1;
+                    for (int j = 0; j < initialResults.size(); j++) {
+                        if (initialResults.get(j).getId().equals(doc.getId())) {
+                            originalRank = j + 1;
+                            break;
+                        }
+                    }
+                    formatted.put("originalRank", originalRank);
+                    formatted.put("rankChange", originalRank > 0 ? originalRank - (i + 1) : 0);
+
+                    rerankedHits.add(formatted);
+                }
+                result.put("rerankedHits", rerankedHits);
+            }
+
+            result.put("totalHits", initialResults.size());
+
+        } catch (Exception e) {
+            log.error("Error in query with reranking", e);
+            result.put("error", e.getMessage());
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    private Map<String, Object> formatScoredDocument(ScoredDocument scoredDoc) {
+        Map<String, Object> formatted = new LinkedHashMap<>();
+        formatted.put("id", scoredDoc.getId());
+        formatted.put("score", scoredDoc.score());
+
+        String content = scoredDoc.getText();
+        if (content != null) {
+            formatted.put("contentLength", content.length());
+            formatted.put("preview", content.length() > 300 ? content.substring(0, 300) + "..." : content);
+            formatted.put("content", content);
+        }
+
+        Map<String, Object> metadata = scoredDoc.getMetadata();
+        if (metadata != null && !metadata.isEmpty()) {
+            // Filter out large metadata values
+            Map<String, Object> filteredMeta = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : metadata.entrySet()) {
+                if (entry.getValue() instanceof String || entry.getValue() instanceof Number || entry.getValue() instanceof Boolean) {
+                    filteredMeta.put(entry.getKey(), entry.getValue());
+                }
+            }
+            if (!filteredMeta.isEmpty()) {
+                formatted.put("metadata", filteredMeta);
+            }
+        }
+
+        return formatted;
+    }
+
     private Map<String, Object> formatRetrievedDoc(RetrievedDoc doc) {
         Map<String, Object> formatted = new LinkedHashMap<>();
         formatted.put("id", doc.getId());
@@ -390,5 +731,252 @@ public class RagTestController {
         }
 
         return formatted;
+    }
+
+    // ==================== Cross-Encoder Model Management ====================
+
+    /**
+     * Get a list of all available cross-encoder models with their cache status.
+     */
+    @GetMapping("/cross-encoder-models")
+    public ResponseEntity<Map<String, Object>> getCrossEncoderModels() {
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        Set<String> availableModelIds = ModelConstants.getAvailableCrossEncoderModelIds();
+        result.put("totalModels", availableModelIds.size());
+        result.put("defaultModel", ModelConstants.getDefaultCrossEncoderModelId());
+
+        List<Map<String, Object>> models = new ArrayList<>();
+
+        for (String modelId : availableModelIds) {
+            ModelDescriptor descriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
+            if (descriptor != null) {
+                Map<String, Object> modelInfo = new LinkedHashMap<>();
+                modelInfo.put("modelId", modelId);
+                modelInfo.put("cached", modelManager.isCrossEncoderModelCached(modelId));
+
+                // Add metadata
+                Map<String, Object> metadata = descriptor.getMetadata();
+                if (metadata != null) {
+                    modelInfo.put("description", metadata.get("description"));
+                    modelInfo.put("hiddenSize", metadata.get("hidden_size"));
+                    modelInfo.put("numLayers", metadata.get("num_layers"));
+                    modelInfo.put("maxSequenceLength", metadata.get("max_sequence_length"));
+                    modelInfo.put("framework", metadata.get("framework"));
+                    modelInfo.put("trainingData", metadata.get("training_data"));
+                }
+
+                // Get cached path if available
+                java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+                if (cachedPath != null) {
+                    modelInfo.put("cachedPath", cachedPath.toString());
+                }
+
+                models.add(modelInfo);
+            }
+        }
+
+        result.put("models", models);
+
+        // Count cached models
+        long cachedCount = models.stream()
+                .filter(m -> Boolean.TRUE.equals(m.get("cached")))
+                .count();
+        result.put("cachedCount", cachedCount);
+
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Download/ensure a cross-encoder model is available.
+     */
+    @PostMapping("/cross-encoder-models/{modelId}/download")
+    public ResponseEntity<Map<String, Object>> downloadCrossEncoderModel(
+            @PathVariable String modelId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("modelId", modelId);
+
+        // Check if model is valid
+        if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
+            result.put("success", false);
+            result.put("error", "Unknown cross-encoder model: " + modelId);
+            result.put("availableModels", ModelConstants.getAvailableCrossEncoderModelIds());
+            return ResponseEntity.badRequest().body(result);
+        }
+
+        try {
+            long startTime = System.currentTimeMillis();
+            boolean wasCached = modelManager.isCrossEncoderModelCached(modelId);
+
+            var bundle = modelManager.ensureCrossEncoderModelAvailable(modelId);
+            long duration = System.currentTimeMillis() - startTime;
+
+            result.put("success", true);
+            result.put("wasCached", wasCached);
+            result.put("modelPath", bundle.getModelPath().toString());
+            result.put("durationMs", duration);
+
+            // Add bundle info
+            if (bundle.getDescription() != null) {
+                result.put("description", bundle.getDescription());
+            }
+            if (bundle.getHiddenSize() != null) {
+                result.put("hiddenSize", bundle.getHiddenSize());
+            }
+            if (bundle.getNumLayers() != null) {
+                result.put("numLayers", bundle.getNumLayers());
+            }
+            if (bundle.getMaxSequenceLength() != null) {
+                result.put("maxSequenceLength", bundle.getMaxSequenceLength());
+            }
+            if (bundle.getFramework() != null) {
+                result.put("framework", bundle.getFramework());
+            }
+
+            if (wasCached) {
+                result.put("message", "Model was already cached");
+            } else {
+                result.put("message", "Model downloaded successfully");
+            }
+
+            log.info("Cross-encoder model {} {} in {}ms",
+                    modelId,
+                    wasCached ? "loaded from cache" : "downloaded",
+                    duration);
+
+        } catch (Exception e) {
+            log.error("Failed to download cross-encoder model {}: {}", modelId, e.getMessage(), e);
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(result);
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Get detailed info about a specific cross-encoder model.
+     */
+    @GetMapping("/cross-encoder-models/{modelId}")
+    public ResponseEntity<Map<String, Object>> getCrossEncoderModelInfo(
+            @PathVariable String modelId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("modelId", modelId);
+
+        // Check if model exists
+        if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
+            result.put("found", false);
+            result.put("error", "Unknown cross-encoder model: " + modelId);
+            result.put("availableModels", ModelConstants.getAvailableCrossEncoderModelIds());
+            return ResponseEntity.status(404).body(result);
+        }
+
+        result.put("found", true);
+
+        ModelDescriptor descriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
+        if (descriptor != null) {
+            result.put("downloadUrl", descriptor.getDownloadUrl());
+            result.put("checksum", descriptor.getChecksum());
+            result.put("expectedCacheSubpath", descriptor.getExpectedCacheSubpath());
+            result.put("modelType", descriptor.getModelType().name());
+
+            Map<String, Object> metadata = descriptor.getMetadata();
+            if (metadata != null) {
+                result.put("description", metadata.get("description"));
+                result.put("hiddenSize", metadata.get("hidden_size"));
+                result.put("numLayers", metadata.get("num_layers"));
+                result.put("maxSequenceLength", metadata.get("max_sequence_length"));
+                result.put("framework", metadata.get("framework"));
+                result.put("trainingData", metadata.get("training_data"));
+            }
+        }
+
+        // Check cache status
+        result.put("cached", modelManager.isCrossEncoderModelCached(modelId));
+
+        java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+        if (cachedPath != null) {
+            result.put("cachedPath", cachedPath.toString());
+
+            // Get file size if exists
+            try {
+                java.io.File file = cachedPath.toFile();
+                if (file.exists()) {
+                    if (file.isDirectory()) {
+                        result.put("type", "directory");
+                        long dirSize = java.nio.file.Files.walk(cachedPath)
+                                .filter(p -> p.toFile().isFile())
+                                .mapToLong(p -> p.toFile().length())
+                                .sum();
+                        result.put("sizeBytes", dirSize);
+                        result.put("sizeMB", String.format("%.2f", dirSize / (1024.0 * 1024.0)));
+                    } else {
+                        result.put("type", "file");
+                        result.put("sizeBytes", file.length());
+                        result.put("sizeMB", String.format("%.2f", file.length() / (1024.0 * 1024.0)));
+                    }
+                }
+            } catch (Exception e) {
+                result.put("sizeError", e.getMessage());
+            }
+        }
+
+        // Is this the default model?
+        result.put("isDefault", modelId.equals(ModelConstants.getDefaultCrossEncoderModelId()));
+
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Delete a cached cross-encoder model.
+     */
+    @DeleteMapping("/cross-encoder-models/{modelId}")
+    public ResponseEntity<Map<String, Object>> deleteCrossEncoderModel(
+            @PathVariable String modelId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("modelId", modelId);
+
+        // Check if model exists
+        if (!ModelConstants.isCrossEncoderModelAvailable(modelId)) {
+            result.put("success", false);
+            result.put("error", "Unknown cross-encoder model: " + modelId);
+            return ResponseEntity.status(404).body(result);
+        }
+
+        java.nio.file.Path cachedPath = modelManager.getCrossEncoderModelPath(modelId);
+        if (cachedPath == null) {
+            result.put("success", true);
+            result.put("message", "Model was not cached");
+            return ResponseEntity.ok(result);
+        }
+
+        try {
+            java.io.File file = cachedPath.toFile();
+            if (file.exists()) {
+                if (file.isDirectory()) {
+                    // Delete directory recursively
+                    java.nio.file.Files.walk(cachedPath)
+                            .sorted(java.util.Comparator.reverseOrder())
+                            .map(java.nio.file.Path::toFile)
+                            .forEach(java.io.File::delete);
+                } else {
+                    java.nio.file.Files.delete(cachedPath);
+                }
+                result.put("success", true);
+                result.put("message", "Model cache deleted");
+                result.put("deletedPath", cachedPath.toString());
+                log.info("Deleted cached cross-encoder model: {}", modelId);
+            } else {
+                result.put("success", true);
+                result.put("message", "Model was not cached");
+            }
+        } catch (Exception e) {
+            log.error("Failed to delete cross-encoder model {}: {}", modelId, e.getMessage(), e);
+            result.put("success", false);
+            result.put("error", e.getMessage());
+            return ResponseEntity.status(500).body(result);
+        }
+
+        return ResponseEntity.ok(result);
     }
 }

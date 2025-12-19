@@ -56,15 +56,11 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
     // Stats reporting interval
     private static final int STATS_REPORT_INTERVAL = 10;
 
-    /**
-     * Lock for encoding to prevent concurrent access to the SameDiff model.
-     * SameDiff models are NOT thread-safe - concurrent calls to output() cause
-     * undefined behavior, hangs, or crashes.
-     * <p>
-     * This lock is used by both encode() and encodeBatch() to ensure only one
-     * thread can access the model at a time.
-     */
-    private final java.util.concurrent.locks.ReentrantLock encodeLock = new java.util.concurrent.locks.ReentrantLock();
+    // NOTE: This class uses the parent's encodeLock via getEncoderLock() for ALL model access.
+    // DO NOT add a separate lock here - it causes deadlocks with the parent class's lock.
+    // CRITICAL: A previous version had a shadowing `encodeLock` field which caused deadlocks
+    // because parent's bulkEncodeOptimized() used parent's lock while encode()/encodeBatch()
+    // used the subclass's lock, allowing concurrent SameDiff access.
 
     public GenericDenseSameDiffEncoder(@NotNull String modelIdentifier,
                                        boolean doLowerCaseAndStripAccents,
@@ -149,12 +145,13 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // Acquire lock for inference - SameDiff models are NOT thread-safe
         // This prevents concurrent access from warmup service and pipeline
-        encodeLock.lock();
+        // CRITICAL: Use parent's lock to prevent deadlocks with encodeSafe() and encodeBatch()
+        getEncoderLock().lock();
         try {
             // Delegate to encodeFromTokenized for actual inference
             return encodeFromTokenized(query, encoding);
         } finally {
-            encodeLock.unlock();
+            getEncoderLock().unlock();
         }
     }
 
@@ -179,6 +176,36 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         long encodeStartNanos = System.nanoTime();
         int tokenCount = encoding.inputIds.length;
+
+        // ========== TOKENIZATION DIAGNOSTIC ==========
+        // Check for potential tokenization issues that could cause zero-magnitude vectors
+        int nonPadTokens = 0;
+        int unkTokenCount = 0;
+        long unkTokenId = 100; // Default BERT [UNK] token ID
+
+        for (long tokenId : encoding.inputIds) {
+            if (tokenId != 0) nonPadTokens++; // PAD is typically 0
+            if (tokenId == unkTokenId) unkTokenCount++;
+        }
+
+        // Log warnings for potential issues
+        if (nonPadTokens <= 2) { // Only [CLS] and [SEP]
+            LOG.warn("[{}] TOKENIZATION WARNING: Input '{}' produced only {} non-padding tokens. " +
+                    "This may result in poor embeddings. Token IDs: {}",
+                    modelIdentifier,
+                    query.length() > 50 ? query.substring(0, 50) + "..." : query,
+                    nonPadTokens,
+                    Arrays.toString(Arrays.copyOf(encoding.inputIds, Math.min(20, encoding.inputIds.length))));
+        }
+
+        if (unkTokenCount > 0 && unkTokenCount >= (nonPadTokens - 2)) {
+            LOG.warn("[{}] TOKENIZATION WARNING: Input '{}' produced {} [UNK] tokens out of {} tokens. " +
+                    "Most or all words are out-of-vocabulary. Token IDs: {}",
+                    modelIdentifier,
+                    query.length() > 50 ? query.substring(0, 50) + "..." : query,
+                    unkTokenCount, nonPadTokens,
+                    Arrays.toString(Arrays.copyOf(encoding.inputIds, Math.min(20, encoding.inputIds.length))));
+        }
 
         // Track all arrays that need cleanup to prevent off-heap memory leaks
         Map<String, INDArray> placeholderMap = new HashMap<>();
@@ -220,6 +247,26 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             String outputTensorName = this.outputTensorNamesFromModel.get(0);
 
+            // ========== INPUT TENSOR DIAGNOSTIC ==========
+            // Log input tensor stats to diagnose potential issues
+            for (Map.Entry<String, INDArray> entry : placeholderMap.entrySet()) {
+                INDArray tensor = entry.getValue();
+                if (tensor != null && tensor.length() > 0) {
+                    double min = tensor.minNumber().doubleValue();
+                    double max = tensor.maxNumber().doubleValue();
+                    double mean = tensor.meanNumber().doubleValue();
+                    LOG.debug("[{}] Input tensor '{}': shape={}, min={}, max={}, mean={}",
+                            this.modelIdentifier, entry.getKey(),
+                            Arrays.toString(tensor.shape()), min, max, mean);
+
+                    // Warn if input_ids looks suspicious
+                    if (entry.getKey().toLowerCase().contains("input") && min == max) {
+                        LOG.warn("[{}] SUSPICIOUS INPUT: tensor '{}' has constant value {}. All token IDs are the same!",
+                                this.modelIdentifier, entry.getKey(), min);
+                    }
+                }
+            }
+
             // ========== BENCHMARK: Inference ==========
             long inferenceStart = System.nanoTime();
 
@@ -251,8 +298,40 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
 
-            LOG.debug("[{}] Got output tensor '{}' with shape: {}",
-                    this.modelIdentifier, outputTensorName, Arrays.toString(embeddingTensor.shape()));
+            // ========== OUTPUT TENSOR DIAGNOSTIC ==========
+            // Log output tensor stats to diagnose zero-magnitude issues
+            double outMin = embeddingTensor.minNumber().doubleValue();
+            double outMax = embeddingTensor.maxNumber().doubleValue();
+            double outMean = embeddingTensor.meanNumber().doubleValue();
+
+            LOG.debug("[{}] Output tensor '{}': shape={}, min={}, max={}, mean={}",
+                    this.modelIdentifier, outputTensorName,
+                    Arrays.toString(embeddingTensor.shape()), outMin, outMax, outMean);
+
+            // Warn if output is all zeros or near-zero BEFORE any processing
+            if (outMin == 0.0 && outMax == 0.0) {
+                LOG.error("[{}] OUTPUT TENSOR IS ALL ZEROS! Model '{}' produced garbage output. " +
+                        "This could be due to: (1) Incompatible model file format, (2) Model was trained with different tokenization, " +
+                        "(3) Model expects different input tensor names/shapes, (4) DAG execution error in SameDiff. " +
+                        "Input query: '{}', Output shape: {}",
+                        this.modelIdentifier, outputTensorName,
+                        query.length() > 100 ? query.substring(0, 100) + "..." : query,
+                        Arrays.toString(embeddingTensor.shape()));
+
+                // Log all available outputs for debugging
+                LOG.error("[{}] Available output tensors in model: {}", this.modelIdentifier, outputMap.keySet());
+                for (Map.Entry<String, INDArray> outEntry : outputMap.entrySet()) {
+                    INDArray outArr = outEntry.getValue();
+                    if (outArr != null) {
+                        LOG.error("[{}]   Output '{}': shape={}, min={}, max={}, mean={}",
+                                this.modelIdentifier, outEntry.getKey(),
+                                Arrays.toString(outArr.shape()),
+                                outArr.minNumber().doubleValue(),
+                                outArr.maxNumber().doubleValue(),
+                                outArr.meanNumber().doubleValue());
+                    }
+                }
+            }
 
             // ========== BENCHMARK: Post-processing ==========
             long postProcessStart = System.nanoTime();
@@ -395,6 +474,22 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             if (reshapedEmbedding.data() == null) {
                 LOG.error("[{}] Invalid embedding after reshape - null data buffer", this.modelIdentifier);
                 return null;
+            }
+
+            // DEBUG: Check raw embedding statistics BEFORE normalization
+            // This helps diagnose zero-magnitude vector issues
+            double rawMin = reshapedEmbedding.minNumber().doubleValue();
+            double rawMax = reshapedEmbedding.maxNumber().doubleValue();
+            double rawMean = reshapedEmbedding.meanNumber().doubleValue();
+            if (rawMin == 0.0 && rawMax == 0.0) {
+                LOG.error("[{}] ZERO-MAGNITUDE VECTOR DETECTED: Raw embedding is all zeros BEFORE normalization. " +
+                        "Shape: {}, This indicates the SameDiff model forward pass produced garbage output. " +
+                        "Check: (1) Model file integrity, (2) Input tensor shapes match model expectations, " +
+                        "(3) Tokenizer output is valid, (4) Model was trained for this input format.",
+                        this.modelIdentifier, Arrays.toString(reshapedEmbedding.shape()));
+            } else if (LOG.isDebugEnabled()) {
+                LOG.debug("[{}] Raw embedding stats: min={}, max={}, mean={}, shape={}",
+                        this.modelIdentifier, rawMin, rawMax, rawMean, Arrays.toString(reshapedEmbedding.shape()));
             }
 
             if (this.normalizeOutput) {
@@ -635,7 +730,8 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
 
         // Acquire lock to prevent concurrent SameDiff model access
         // This is CRITICAL - the warmup service may be calling encode() concurrently
-        encodeLock.lock();
+        // CRITICAL: Use parent's lock to prevent deadlocks with encodeSafe() and encode()
+        getEncoderLock().lock();
         try {
             // For single text, tokenize and encode directly (we already have the lock)
             if (texts.size() == 1) {
@@ -667,7 +763,7 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
             }
             return result;
         } finally {
-            encodeLock.unlock();
+            getEncoderLock().unlock();
         }
     }
 
