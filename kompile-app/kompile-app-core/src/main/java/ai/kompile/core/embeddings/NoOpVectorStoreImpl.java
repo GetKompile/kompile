@@ -27,8 +27,10 @@ import java.util.List;
 
 /**
  * A no-operation implementation of the VectorStore interface.
- * This bean is created if no other concrete VectorStore implementation is found,
- * allowing the application to start but with vector store functionality disabled.
+ * This bean is created if no other concrete VectorStore implementation is
+ * found,
+ * allowing the application to start but with vector store functionality
+ * disabled.
  */
 @Service("noOpVectorStore") // Give it a specific bean name
 @ConditionalOnMissingBean(VectorStore.class)
@@ -42,21 +44,26 @@ public class NoOpVectorStoreImpl implements VectorStore {
     }
 
     @Override
-    public void add(List<Document> documents, List<List<Float>> embeddings) {
-        logger.warn("NoOpVectorStore: add(documents, List<List<Float>> embeddings) called but no operation will be performed.");
-        // No-op
+    public int add(List<Document> documents, List<List<Float>> embeddings) {
+        logger.warn(
+                "NoOpVectorStore: add(documents, List<List<Float>> embeddings) called but no operation will be performed.");
+        // No-op - return 0 since nothing is actually persisted
+        return 0;
     }
 
     @Override
-    public void add(List<Document> documents) {
+    public int add(List<Document> documents) {
         logger.warn("NoOpVectorStore: add(List<Document> documents) called but no operation will be performed.");
-        // No-op
+        // No-op - return 0 since nothing is actually persisted
+        return 0;
     }
 
     @Override
     public boolean delete(List<String> ids) {
-        logger.warn("NoOpVectorStore: delete called for IDs: {}. No operation will be performed. Returning false.", ids);
-        return false; // Or true, depending on how you want to signify a no-op success. False implies nothing was done.
+        logger.warn("NoOpVectorStore: delete called for IDs: {}. No operation will be performed. Returning false.",
+                ids);
+        return false; // Or true, depending on how you want to signify a no-op success. False implies
+                      // nothing was done.
     }
 
     @Override
@@ -67,13 +74,35 @@ public class NoOpVectorStoreImpl implements VectorStore {
 
     @Override
     public List<Document> similaritySearch(String query, int k) {
-        logger.warn("NoOpVectorStore: similaritySearch by query string called for query: '{}'. Returning empty list.", query);
+        logger.warn("NoOpVectorStore: similaritySearch by query string called for query: '{}'. Returning empty list.",
+                query);
         return Collections.emptyList();
     }
 
     @Override
     public List<Document> similaritySearch(String query, int k, double threshold) {
-        logger.warn("NoOpVectorStore: similaritySearch by query string with threshold called for query: '{}'. Returning empty list.", query);
+        logger.warn(
+                "NoOpVectorStore: similaritySearch by query string with threshold called for query: '{}'. Returning empty list.",
+                query);
         return Collections.emptyList();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BROWSING AND STATUS METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Override
+    public String getVectorStorePath() {
+        return "N/A (NoOp)";
+    }
+
+    @Override
+    public boolean isVectorStoreAvailable() {
+        return false;
+    }
+
+    @Override
+    public long getApproxVectorCount() {
+        return 0L;
     }
 }

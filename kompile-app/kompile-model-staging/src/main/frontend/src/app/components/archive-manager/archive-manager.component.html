@@ -1,0 +1,477 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="archive-manager-container">
+  <div class="page-header">
+    <h1>
+      <mat-icon>archive</mat-icon>
+      Archive Manager
+    </h1>
+    <p class="subtitle">Manage Kompile archives (.karch) for model distribution</p>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)">
+    <!-- Installed Archives Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>inventory_2</mat-icon>
+        <span class="tab-label">Installed</span>
+        <mat-badge *ngIf="installedArchives.length > 0" [matBadge]="installedArchives.length" matBadgeColor="primary"></mat-badge>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="loadInstalledArchives()" [disabled]="loadingArchives">
+            <mat-icon>refresh</mat-icon>
+            Refresh
+          </button>
+        </div>
+
+        <mat-spinner *ngIf="loadingArchives" diameter="40"></mat-spinner>
+
+        <div *ngIf="!loadingArchives && installedArchives.length === 0" class="empty-state">
+          <mat-icon>inventory_2</mat-icon>
+          <p>No archives installed</p>
+          <p class="hint">Download or import an archive to get started</p>
+        </div>
+
+        <div class="archive-list" *ngIf="!loadingArchives && installedArchives.length > 0">
+          <mat-card *ngFor="let archive of installedArchives" class="archive-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>archive</mat-icon>
+              <mat-card-title>{{ archive.archiveId }}</mat-card-title>
+              <mat-card-subtitle>Version {{ archive.version }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="archive-details">
+                <div class="detail-row">
+                  <span class="label">Installed:</span>
+                  <span class="value">{{ archive.installedAt | date:'medium' }}</span>
+                </div>
+                <div class="detail-row" *ngIf="archive.sourceUrl">
+                  <span class="label">Source:</span>
+                  <span class="value url">{{ archive.sourceUrl }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="label">Models:</span>
+                  <span class="value">{{ archive.modelIds?.length || 0 }}</span>
+                </div>
+                <mat-expansion-panel *ngIf="archive.modelIds?.length" class="models-panel">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>View Models</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <mat-chip-listbox>
+                    <mat-chip *ngFor="let modelId of archive.modelIds">{{ modelId }}</mat-chip>
+                  </mat-chip-listbox>
+                </mat-expansion-panel>
+              </div>
+            </mat-card-content>
+            <mat-card-actions align="end">
+              <button mat-button color="warn" (click)="uninstallArchive(archive)">
+                <mat-icon>delete</mat-icon>
+                Uninstall
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Remote Catalog Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>cloud</mat-icon>
+        <span class="tab-label">Remote Catalog</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="loadRemoteCatalog(true)" [disabled]="loadingCatalog">
+            <mat-icon>refresh</mat-icon>
+            Refresh Catalog
+          </button>
+        </div>
+
+        <mat-spinner *ngIf="loadingCatalog" diameter="40"></mat-spinner>
+
+        <div *ngIf="!loadingCatalog && !remoteCatalog" class="empty-state">
+          <mat-icon>cloud_off</mat-icon>
+          <p>No catalog loaded</p>
+          <p class="hint">Click Refresh to load the remote catalog</p>
+        </div>
+
+        <div *ngIf="!loadingCatalog && remoteCatalog" class="catalog-content">
+          <div class="catalog-info">
+            <p><strong>Catalog:</strong> {{ remoteCatalog.name || 'Kompile Archive Catalog' }}</p>
+            <p *ngIf="remoteCatalog.lastUpdated"><strong>Last Updated:</strong> {{ remoteCatalog.lastUpdated }}</p>
+            <p><strong>Archives:</strong> {{ remoteCatalog.archives?.length || 0 }}</p>
+          </div>
+
+          <div class="archive-list" *ngIf="remoteCatalog.archives?.length">
+            <mat-card *ngFor="let entry of remoteCatalog.archives" class="archive-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>cloud_download</mat-icon>
+                <mat-card-title>{{ entry.name }}</mat-card-title>
+                <mat-card-subtitle>{{ entry.archiveId }} - v{{ entry.latestVersion }}</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <p *ngIf="entry.description">{{ entry.description }}</p>
+                <div class="detail-row">
+                  <span class="label">Models:</span>
+                  <span class="value">{{ entry.modelCount }}</span>
+                </div>
+                <mat-chip-listbox *ngIf="entry.tags?.length">
+                  <mat-chip *ngFor="let tag of entry.tags">{{ tag }}</mat-chip>
+                </mat-chip-listbox>
+              </mat-card-content>
+              <mat-card-actions align="end">
+                <button mat-raised-button color="primary" (click)="downloadFromCatalog(entry)">
+                  <mat-icon>download</mat-icon>
+                  Download
+                </button>
+              </mat-card-actions>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Updates Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>update</mat-icon>
+        <span class="tab-label">Updates</span>
+        <mat-badge *ngIf="updateInfo?.updatesCount" [matBadge]="updateInfo?.updatesCount" matBadgeColor="accent"></mat-badge>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="checkForUpdates(true)" [disabled]="loadingUpdates">
+            <mat-icon>refresh</mat-icon>
+            Check for Updates
+          </button>
+          <button mat-raised-button color="accent"
+                  *ngIf="updateInfo?.updatesAvailable"
+                  (click)="applyAllUpdates()"
+                  [disabled]="applyingAllUpdates">
+            <mat-icon>system_update</mat-icon>
+            Update All
+          </button>
+        </div>
+
+        <mat-spinner *ngIf="loadingUpdates" diameter="40"></mat-spinner>
+
+        <div *ngIf="!loadingUpdates && !updateInfo" class="empty-state">
+          <mat-icon>update</mat-icon>
+          <p>Click "Check for Updates" to scan for available updates</p>
+        </div>
+
+        <div *ngIf="!loadingUpdates && updateInfo" class="update-content">
+          <div class="update-summary">
+            <mat-card>
+              <mat-card-content>
+                <div class="summary-grid">
+                  <div class="summary-item">
+                    <span class="number">{{ updateInfo.totalInstalled }}</span>
+                    <span class="label">Installed</span>
+                  </div>
+                  <div class="summary-item" [class.highlight]="updateInfo.updatesAvailable">
+                    <span class="number">{{ updateInfo.updatesCount }}</span>
+                    <span class="label">Updates Available</span>
+                  </div>
+                  <div class="summary-item" [class.warning]="updateInfo.majorUpdates > 0">
+                    <span class="number">{{ updateInfo.majorUpdates }}</span>
+                    <span class="label">Major Updates</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <div *ngIf="!updateInfo.updatesAvailable" class="up-to-date">
+            <mat-icon>check_circle</mat-icon>
+            <p>All archives are up to date!</p>
+          </div>
+
+          <div class="update-list" *ngIf="updateInfo.updates?.length">
+            <mat-card *ngFor="let update of updateInfo.updates" class="update-card"
+                      [class.has-update]="update.updateAvailable">
+              <mat-card-header>
+                <mat-icon mat-card-avatar [class.update-available]="update.updateAvailable">
+                  {{ update.updateAvailable ? 'update' : 'check_circle' }}
+                </mat-icon>
+                <mat-card-title>{{ update.archiveName || update.archiveId }}</mat-card-title>
+                <mat-card-subtitle>
+                  {{ update.currentVersion }}
+                  <span *ngIf="update.updateAvailable">
+                    <mat-icon class="arrow-icon">arrow_forward</mat-icon>
+                    {{ update.latestVersion }}
+                  </span>
+                </mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content *ngIf="update.updateAvailable">
+                <div class="update-details">
+                  <mat-chip [class]="getVersionDiffClass(update.versionDiff || '')">
+                    {{ archiveService.getVersionDiffDisplay(update.versionDiff || '') }}
+                  </mat-chip>
+                  <mat-chip *ngIf="update.mayHaveBreakingChanges" color="warn">
+                    Breaking Changes
+                  </mat-chip>
+                  <span *ngIf="update.sizeBytes" class="size">
+                    {{ formatSize(update.sizeBytes) }}
+                  </span>
+                </div>
+                <p *ngIf="update.changelog" class="changelog">{{ update.changelog }}</p>
+              </mat-card-content>
+              <mat-card-actions align="end" *ngIf="update.updateAvailable">
+                <button mat-raised-button color="primary"
+                        (click)="applyUpdate(update)"
+                        [disabled]="applyingUpdate">
+                  <mat-icon>download</mat-icon>
+                  Update
+                </button>
+              </mat-card-actions>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Export Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>upload</mat-icon>
+        <span class="tab-label">Export</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="form-card">
+          <mat-card-header>
+            <mat-card-title>Export Archive</mat-card-title>
+            <mat-card-subtitle>Create a .karch archive from selected models</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <form class="export-form">
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Archive ID</mat-label>
+                  <input matInput [(ngModel)]="exportForm.archiveId" name="archiveId"
+                         placeholder="kompile-models">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Version</mat-label>
+                  <input matInput [(ngModel)]="exportForm.version" name="version"
+                         placeholder="1.0.0">
+                </mat-form-field>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Output Path (optional)</mat-label>
+                <input matInput [(ngModel)]="exportForm.outputPath" name="outputPath"
+                       placeholder="Leave empty for default">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description (optional)</mat-label>
+                <textarea matInput [(ngModel)]="exportForm.description" name="description"
+                          rows="2"></textarea>
+              </mat-form-field>
+
+              <div class="checkbox-row">
+                <mat-checkbox [(ngModel)]="exportForm.exportAll" name="exportAll">
+                  Export all models
+                </mat-checkbox>
+              </div>
+
+              <div *ngIf="!exportForm.exportAll" class="model-selection">
+                <div class="selection-header">
+                  <span>Select Models</span>
+                  <div class="selection-actions">
+                    <button mat-button (click)="selectAllModels()">Select All</button>
+                    <button mat-button (click)="clearModelSelection()">Clear</button>
+                  </div>
+                </div>
+                <div class="model-chips">
+                  <mat-chip-listbox multiple>
+                    <mat-chip-option *ngFor="let modelId of availableModels"
+                              [selected]="isModelSelected(modelId)"
+                              (click)="toggleModelSelection(modelId)">
+                      {{ modelId }}
+                    </mat-chip-option>
+                  </mat-chip-listbox>
+                </div>
+                <p class="selection-count">
+                  {{ exportForm.modelIds?.length || 0 }} model(s) selected
+                </p>
+              </div>
+
+              <mat-expansion-panel class="advanced-options">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>Advanced Options</mat-panel-title>
+                </mat-expansion-panel-header>
+                <div class="form-row">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Publisher Name</mat-label>
+                    <input matInput [(ngModel)]="exportForm.publisherName" name="publisherName">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Publisher URL</mat-label>
+                    <input matInput [(ngModel)]="exportForm.publisherUrl" name="publisherUrl">
+                  </mat-form-field>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min Kompile Version</mat-label>
+                  <input matInput [(ngModel)]="exportForm.minKompileVersion" name="minKompileVersion"
+                         placeholder="1.0.0">
+                </mat-form-field>
+                <div class="checkbox-row">
+                  <mat-checkbox [(ngModel)]="exportForm.includeReadme" name="includeReadme">
+                    Include README
+                  </mat-checkbox>
+                  <mat-checkbox [(ngModel)]="exportForm.includeChangelog" name="includeChangelog">
+                    Include Changelog
+                  </mat-checkbox>
+                </div>
+              </mat-expansion-panel>
+            </form>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-raised-button color="primary"
+                    (click)="exportArchive()"
+                    [disabled]="exporting">
+              <mat-icon>upload</mat-icon>
+              {{ exporting ? 'Exporting...' : 'Export Archive' }}
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- Import Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>download</mat-icon>
+        <span class="tab-label">Import</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="form-card">
+          <mat-card-header>
+            <mat-card-title>Import Archive</mat-card-title>
+            <mat-card-subtitle>Import models from a local .karch file</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <form class="import-form">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Archive Path</mat-label>
+                <input matInput [(ngModel)]="importForm.archivePath" name="archivePath"
+                       placeholder="/path/to/archive.karch" required>
+                <mat-hint>Full path to the .karch file</mat-hint>
+              </mat-form-field>
+
+              <div class="checkbox-row">
+                <mat-checkbox [(ngModel)]="importForm.verifyChecksums" name="verifyChecksums">
+                  Verify checksums
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="importForm.forceOverwrite" name="forceOverwrite">
+                  Force overwrite existing models
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="importForm.skipCompatibilityCheck" name="skipCompatibilityCheck">
+                  Skip compatibility check
+                </mat-checkbox>
+              </div>
+            </form>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-raised-button color="primary"
+                    (click)="importArchive()"
+                    [disabled]="importing || !importForm.archivePath">
+              <mat-icon>download</mat-icon>
+              {{ importing ? 'Importing...' : 'Import Archive' }}
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- Download Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>cloud_download</mat-icon>
+        <span class="tab-label">Download</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="form-card">
+          <mat-card-header>
+            <mat-card-title>Download Archive</mat-card-title>
+            <mat-card-subtitle>Download a .karch archive from a URL</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <form class="download-form">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Archive URL</mat-label>
+                <input matInput [(ngModel)]="downloadForm.url" name="url"
+                       placeholder="https://example.com/models.karch" required>
+                <mat-hint>URL to the .karch file</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Destination Directory (optional)</mat-label>
+                <input matInput [(ngModel)]="downloadForm.destinationDir" name="destinationDir"
+                       placeholder="Leave empty for default">
+              </mat-form-field>
+
+              <div class="checkbox-row">
+                <mat-checkbox [(ngModel)]="downloadForm.resumeEnabled" name="resumeEnabled">
+                  Enable resume for interrupted downloads
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="downloadForm.verifyChecksum" name="verifyChecksum">
+                  Verify checksum after download
+                </mat-checkbox>
+              </div>
+
+              <div class="checkbox-row">
+                <mat-checkbox [(ngModel)]="downloadForm.autoImport" name="autoImport">
+                  Automatically import after download
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="downloadForm.forceOverwrite" name="forceOverwrite"
+                              [disabled]="!downloadForm.autoImport">
+                  Force overwrite existing models
+                </mat-checkbox>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Expected Checksum (optional)</mat-label>
+                <input matInput [(ngModel)]="downloadForm.expectedChecksum" name="expectedChecksum"
+                       placeholder="SHA256 checksum for verification">
+              </mat-form-field>
+            </form>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-raised-button color="primary"
+                    (click)="downloadArchive()"
+                    [disabled]="downloading || !downloadForm.url">
+              <mat-icon>cloud_download</mat-icon>
+              {{ downloading ? 'Downloading...' : 'Download Archive' }}
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

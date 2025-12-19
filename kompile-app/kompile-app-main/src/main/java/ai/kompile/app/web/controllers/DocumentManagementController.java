@@ -17,8 +17,11 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.app.facts.domain.FactSheet;
+import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.services.DocumentIngestService;
 import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.services.YouTubeTranscriptService;
 import ai.kompile.app.web.dto.AsyncUploadResponse;
 import ai.kompile.app.web.dto.BatchAsyncUploadResponse;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
@@ -28,6 +31,7 @@ import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentLoadingService;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.retrievers.RetrievedDoc;
+import ai.kompile.core.source.SourceDocumentStorageService;
 import ai.kompile.loaders.orchestrator.config.AppDocumentSourceProperties;
 
 import org.slf4j.Logger;
@@ -68,6 +72,9 @@ public class DocumentManagementController {
     private IndexerService indexerService;
     private final DocumentIngestService documentIngestService;
     private final IngestProgressTracker progressTracker;
+    private final YouTubeTranscriptService youTubeTranscriptService;
+    private final SourceDocumentStorageService sourceDocumentStorageService;
+    private final FactSheetService factSheetService;
 
     @Autowired
     public DocumentManagementController(
@@ -78,15 +85,20 @@ public class DocumentManagementController {
             @Autowired(required = false) List<TextChunker> textChunkers,
             @Autowired(required = false) List<IndexerService> indexerService,
             @Autowired(required = false) DocumentIngestService documentIngestService,
-            @Autowired(required = false) IngestProgressTracker progressTracker
-    ) {
+            @Autowired(required = false) IngestProgressTracker progressTracker,
+            @Autowired(required = false) YouTubeTranscriptService youTubeTranscriptService,
+            @Autowired(required = false) SourceDocumentStorageService sourceDocumentStorageService,
+            @Autowired(required = false) FactSheetService factSheetService) {
         this.sourceProperties = appDocumentSourceProperties;
+        this.youTubeTranscriptService = youTubeTranscriptService;
         this.restTemplate = restTemplate;
         this.documentLoaders = documentLoaders != null ? documentLoaders : List.of();
         this.documentLoadingService = documentLoadingService;
         this.textChunkers = textChunkers != null ? textChunkers : List.of();
         this.documentIngestService = documentIngestService;
         this.progressTracker = progressTracker;
+        this.sourceDocumentStorageService = sourceDocumentStorageService != null ? sourceDocumentStorageService : new SourceDocumentStorageService();
+        this.factSheetService = factSheetService;
 
         // Log which dependencies are not available
         if (documentIngestService == null) {
@@ -123,7 +135,8 @@ public class DocumentManagementController {
         if (appDocumentSourceProperties == null ||
                 appDocumentSourceProperties.getUploadsPath() == null ||
                 appDocumentSourceProperties.getUploadsPath().trim().isEmpty()) {
-            logger.warn("'app.document.uploads-path' is not configured in application.properties. Using default uploads path.");
+            logger.warn(
+                    "'app.document.uploads-path' is not configured in application.properties. Using default uploads path.");
             this.uploadsPath = Paths.get("./uploads").toAbsolutePath();
         } else {
             this.uploadsPath = Paths.get(appDocumentSourceProperties.getUploadsPath()).toAbsolutePath();
@@ -133,7 +146,8 @@ public class DocumentManagementController {
     @PostConstruct
     private void initializeUploadsDirectory() {
         try {
-            if (this.uploadsPath != null && !"error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            if (this.uploadsPath != null
+                    && !"error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
                 if (!Files.exists(this.uploadsPath)) {
                     Files.createDirectories(this.uploadsPath);
                     logger.info("Created uploads directory for DocumentManagementController: {}", this.uploadsPath);
@@ -141,16 +155,23 @@ public class DocumentManagementController {
                     logger.info("Uploads directory already exists: {}", this.uploadsPath);
                 }
             } else {
-                logger.error("Uploads path is not properly configured (remains as fallback). Upload functionality will likely fail.");
+                logger.error(
+                        "Uploads path is not properly configured (remains as fallback). Upload functionality will likely fail.");
             }
         } catch (IOException e) {
-            logger.error("FATAL: Could not create or access uploads directory at {}: {}", this.uploadsPath, e.getMessage(), e);
+            logger.error("FATAL: Could not create or access uploads directory at {}: {}", this.uploadsPath,
+                    e.getMessage(), e);
         }
     }
 
-    public record AddUrlRequest(String url, String fileName, String loader, String chunkerName) {}
-    public record LoaderInfo(String name, String className) {}
-    public record ChunkerInfo(String name, String className) {}
+    public record AddUrlRequest(String url, String fileName, String loader, String chunkerName) {
+    }
+
+    public record LoaderInfo(String name, String className) {
+    }
+
+    public record ChunkerInfo(String name, String className) {
+    }
 
     public record ControllerBatchLoadRequestItem(
             DocumentSourceDescriptor source,
@@ -158,16 +179,16 @@ public class DocumentManagementController {
             String chunkerName,
             Map<String, Object> chunkerOptions,
             String vectorStoreName,
-            Map<String, Object> metadata
-    ) {}
+            Map<String, Object> metadata) {
+    }
 
     public record BatchProcessRequest(
             List<ControllerBatchLoadRequestItem> items,
             String defaultLoaderName,
             String defaultChunkerName,
             Map<String, Object> defaultChunkerOptions,
-            String defaultVectorStoreName
-    ) {}
+            String defaultVectorStoreName) {
+    }
 
     public record DocumentProcessingResult(
             int originalDocumentCount,
@@ -176,8 +197,8 @@ public class DocumentManagementController {
             String loaderUsed,
             String chunkerUsed,
             boolean indexingSuccessful,
-            String processingDetails
-    ) {}
+            String processingDetails) {
+    }
 
     public record RetrievedDocInfo(
             String id,
@@ -185,8 +206,8 @@ public class DocumentManagementController {
             Double score,
             Map<String, Object> metadata,
             int contentLength,
-            String contentPreview
-    ) {}
+            String contentPreview) {
+    }
 
     /**
      * Base path handler - returns API overview and available endpoints
@@ -199,15 +220,15 @@ public class DocumentManagementController {
         apiInfo.put("message", "Document Management API");
         apiInfo.put("version", "1.0");
         apiInfo.put("endpoints", Map.of(
-            "GET /api/documents", "This endpoint - API overview",
-            "GET /api/documents/loaders", "List available document loaders",
-            "GET /api/documents/chunkers", "List available text chunkers",
-            "GET /api/documents/sources", "List configured document sources",
-            "GET /api/documents/uploaded-files", "List uploaded files",
-            "GET /api/documents/processing-status", "Get processing status",
-            "POST /api/documents/upload", "Upload a file for processing",
-            "POST /api/documents/add-url", "Add a URL for processing"
-        ));
+                "GET /api/documents", "This endpoint - API overview",
+                "GET /api/documents/loaders", "List available document loaders",
+                "GET /api/documents/chunkers", "List available text chunkers",
+                "GET /api/documents/sources", "List configured document sources",
+                "GET /api/documents/uploaded-files", "List uploaded files",
+                "GET /api/documents/processing-status", "Get processing status",
+                "POST /api/documents/upload", "Upload a file for processing",
+                "POST /api/documents/add-url", "Add a URL for processing",
+                "POST /api/documents/add-path", "Add a server path for processing"));
 
         // Add status info
         boolean uploadsDirectoryReady = this.uploadsPath != null &&
@@ -217,6 +238,51 @@ public class DocumentManagementController {
         apiInfo.put("chunkersAvailable", textChunkers != null ? textChunkers.size() : 0);
 
         return ResponseEntity.ok(apiInfo);
+    }
+
+    public record AddPathRequest(String path, String loader, String chunkerName) {
+    }
+
+    /**
+     * Endpoint to trigger ingestion from a server-side path.
+     * Useful for ingesting directories, existing indices, or large files already
+     * present on the server.
+     */
+    @PostMapping("/add-path")
+    public ResponseEntity<?> addDocumentPath(@RequestBody AddPathRequest request) {
+        if (request == null || request.path() == null || request.path().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Path is required"));
+        }
+
+        String pathStr = request.path().trim();
+        Path path = Paths.get(pathStr);
+
+        if (!Files.exists(path)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Path does not exist on server: " + pathStr));
+        }
+
+        String taskId = UUID.randomUUID().toString();
+        logger.info("Received request to ingest path: {} (Task ID: {})", pathStr, taskId);
+
+        try {
+            // Trigger async processing
+            documentIngestService.processDocumentAsync(
+                    taskId,
+                    path,
+                    request.loader(),
+                    request.chunkerName(),
+                    null // Let service determine mode (will auto-detect large docs/indices)
+            );
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Processing started for path: " + pathStr,
+                    "taskId", taskId));
+
+        } catch (Exception e) {
+            logger.error("Failed to start processing for path: {}", pathStr, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start processing: " + e.getMessage()));
+        }
     }
 
     @GetMapping("/loaders")
@@ -342,34 +408,12 @@ public class DocumentManagementController {
         if (documentIngestService == null) {
             return ResponseEntity.ok(Map.of(
                     "error", "DocumentIngestService not available",
-                    "endpoint", "ingest-service-resolution"
-            ));
+                    "endpoint", "ingest-service-resolution"));
         }
         Map<String, Object> result = documentIngestService.debugChunkerResolution(requestedName);
         result.put("endpoint", "ingest-service-resolution");
         result.put("note", "This tests the chunker resolution logic in DocumentIngestService.findChunker()");
         return ResponseEntity.ok(result);
-    }
-
-    /**
-     * Converts a RetrievedDoc to a display-friendly info record
-     */
-    private RetrievedDocInfo convertToRetrievedDocInfo(RetrievedDoc doc) {
-        String text = doc.getText();
-        String preview = null;
-        
-        if (text != null) {
-            preview = text.length() > 300 ? text.substring(0, 300) + "..." : text;
-        }
-        
-        return new RetrievedDocInfo(
-                doc.getId(),
-                text,
-                doc.getScore(),
-                doc.getMetadata(),
-                text != null ? text.length() : 0,
-                preview
-        );
     }
 
     /**
@@ -397,8 +441,10 @@ public class DocumentManagementController {
         if (request == null || request.items() == null || request.items().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Batch request items cannot be empty."));
         }
-        logger.info("Received batch processing request for {} items. Default Loader: '{}', Default Chunker: '{}', Default Chunker Options: {}",
-                request.items().size(), request.defaultLoaderName(), request.defaultChunkerName(), request.defaultChunkerOptions());
+        logger.info(
+                "Received batch processing request for {} items. Default Loader: '{}', Default Chunker: '{}', Default Chunker Options: {}",
+                request.items().size(), request.defaultLoaderName(), request.defaultChunkerName(),
+                request.defaultChunkerOptions());
 
         Map<String, Object> aggregatedResults = new LinkedHashMap<>();
         long successCount = 0;
@@ -417,27 +463,30 @@ public class DocumentManagementController {
             }
 
             try {
-                String loaderToUse = (item.loaderName() != null && !item.loaderName().isEmpty()) ?
-                        item.loaderName() : request.defaultLoaderName();
-                String chunkerNameToUse = (item.chunkerName() != null && !item.chunkerName().isEmpty()) ?
-                        item.chunkerName() : request.defaultChunkerName();
+                String loaderToUse = (item.loaderName() != null && !item.loaderName().isEmpty()) ? item.loaderName()
+                        : request.defaultLoaderName();
+                String chunkerNameToUse = (item.chunkerName() != null && !item.chunkerName().isEmpty())
+                        ? item.chunkerName()
+                        : request.defaultChunkerName();
 
                 if (loaderToUse == null || loaderToUse.isEmpty()) {
-                    logger.warn("Skipping item {} as no loader is specified (neither item-specific nor default).", itemKey);
+                    logger.warn("Skipping item {} as no loader is specified (neither item-specific nor default).",
+                            itemKey);
                     aggregatedResults.put(itemKey, Map.of("error", "Loader not specified for item."));
                     errorCount++;
                     continue;
                 }
 
                 logger.info("Loading documents for item: {} with loader: '{}'", itemKey, loaderToUse);
-                List<org.springframework.ai.document.Document> loadedDocs =
-                        documentLoadingService.loadDocumentsFromSource(sourceDescriptor, loaderToUse);
+                List<org.springframework.ai.document.Document> loadedDocs = documentLoadingService
+                        .loadDocumentsFromSource(sourceDescriptor, loaderToUse);
 
                 if (loadedDocs == null) {
                     logger.warn("Loader '{}' returned null for item {}. Treating as empty list.", loaderToUse, itemKey);
                     loadedDocs = Collections.emptyList();
                 }
-                logger.info("Loaded {} documents for item: {} with loader: '{}'", loadedDocs.size(), itemKey, loaderToUse);
+                logger.info("Loaded {} documents for item: {} with loader: '{}'", loadedDocs.size(), itemKey,
+                        loaderToUse);
 
                 List<RetrievedDoc> finalDocs = convertToRetrievedDocs(loadedDocs);
 
@@ -458,14 +507,16 @@ public class DocumentManagementController {
                                 chunkerNameToUse, loadedDocs.size(), itemKey, effectiveChunkerOptions);
 
                         List<RetrievedDoc> finalDocs2 = new ArrayList<>();
-                        for(Document doc : loadedDocs) {
-                            finalDocs2.addAll(selectedChunker.chunk(convertToRetrievedDoc(doc), effectiveChunkerOptions));
+                        for (Document doc : loadedDocs) {
+                            finalDocs2
+                                    .addAll(selectedChunker.chunk(convertToRetrievedDoc(doc), effectiveChunkerOptions));
                         }
                         finalDocs = finalDocs2;
                         logger.info("Chunking resulted in {} documents for item {}", finalDocs.size(), itemKey);
 
                     } else {
-                        logger.warn("Chunker '{}' not found for item {}. Using loaded documents without chunking.", chunkerNameToUse, itemKey);
+                        logger.warn("Chunker '{}' not found for item {}. Using loaded documents without chunking.",
+                                chunkerNameToUse, itemKey);
                     }
                 }
 
@@ -483,8 +534,7 @@ public class DocumentManagementController {
                 "message", "Batch processing completed.",
                 "successful_items", successCount,
                 "failed_items", errorCount,
-                "details", aggregatedResults
-        ));
+                "details", aggregatedResults));
     }
 
     /**
@@ -492,8 +542,8 @@ public class DocumentManagementController {
      */
     @PostMapping("/test-chunker")
     public ResponseEntity<?> testChunker(@RequestParam("fileName") String fileName,
-                                         @RequestParam(name = "chunkerName", required = false) String chunkerName,
-                                         @RequestParam(name = "testText", required = false) String testText) {
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "testText", required = false) String testText) {
 
         Map<String, Object> testResults = new HashMap<>();
 
@@ -507,7 +557,8 @@ public class DocumentManagementController {
                 testResults.put("contentLength", contentToTest.length());
             } else if (fileName != null) {
                 // Load content from uploaded file
-                if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+                if (this.uploadsPath == null
+                        || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
                     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                             .body(Map.of("error", "Uploads directory is not configured correctly."));
                 }
@@ -544,11 +595,12 @@ public class DocumentManagementController {
                 testResults.put("contentLength", contentToTest.length());
                 testResults.put("loadedDocuments", docs.size());
             } else {
-                return ResponseEntity.badRequest().body(Map.of("error", "Either fileName or testText must be provided"));
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Either fileName or testText must be provided"));
             }
 
-            testResults.put("contentPreview", contentToTest.length() > 300 ?
-                    contentToTest.substring(0, 300) + "..." : contentToTest);
+            testResults.put("contentPreview",
+                    contentToTest.length() > 300 ? contentToTest.substring(0, 300) + "..." : contentToTest);
 
             // Test all available chunkers or specific one
             List<TextChunker> chunkersToTest = new ArrayList<>();
@@ -559,7 +611,8 @@ public class DocumentManagementController {
                     chunkersToTest.add(specific);
                 } else {
                     return ResponseEntity.badRequest().body(Map.of("error", "Chunker not found: " + chunkerName +
-                            ". Available: " + textChunkers.stream().map(TextChunker::getName).collect(Collectors.joining(", "))));
+                            ". Available: "
+                            + textChunkers.stream().map(TextChunker::getName).collect(Collectors.joining(", "))));
                 }
             } else {
                 chunkersToTest.addAll(textChunkers);
@@ -583,7 +636,7 @@ public class DocumentManagementController {
                         testDoc.getMetadata().put("test", true);
 
                         // Test with different chunk sizes
-                        int[] chunkSizes = {500, 1000, 2000};
+                        int[] chunkSizes = { 500, 1000, 2000 };
                         List<Map<String, Object>> sizeTests = new ArrayList<>();
 
                         for (int chunkSize : chunkSizes) {
@@ -597,7 +650,8 @@ public class DocumentManagementController {
 
                             try {
                                 long startTime = System.currentTimeMillis();
-                                List<RetrievedDoc> chunks = chunker.chunk(convertToRetrievedDoc(testDoc), chunkingOptions);
+                                List<RetrievedDoc> chunks = chunker.chunk(convertToRetrievedDoc(testDoc),
+                                        chunkingOptions);
                                 long duration = System.currentTimeMillis() - startTime;
 
                                 sizeTest.put("success", true);
@@ -611,9 +665,12 @@ public class DocumentManagementController {
                                             .collect(Collectors.toList());
 
                                     sizeTest.put("chunkLengths", chunkLengths);
-                                    sizeTest.put("avgChunkLength", chunkLengths.stream().mapToInt(Integer::intValue).average().orElse(0));
-                                    sizeTest.put("minChunkLength", chunkLengths.stream().mapToInt(Integer::intValue).min().orElse(0));
-                                    sizeTest.put("maxChunkLength", chunkLengths.stream().mapToInt(Integer::intValue).max().orElse(0));
+                                    sizeTest.put("avgChunkLength",
+                                            chunkLengths.stream().mapToInt(Integer::intValue).average().orElse(0));
+                                    sizeTest.put("minChunkLength",
+                                            chunkLengths.stream().mapToInt(Integer::intValue).min().orElse(0));
+                                    sizeTest.put("maxChunkLength",
+                                            chunkLengths.stream().mapToInt(Integer::intValue).max().orElse(0));
 
                                     // Sample chunks
                                     List<Map<String, Object>> samples = new ArrayList<>();
@@ -622,8 +679,10 @@ public class DocumentManagementController {
                                         Map<String, Object> sample = new HashMap<>();
                                         sample.put("index", i);
                                         sample.put("length", chunk.getText() != null ? chunk.getText().length() : 0);
-                                        sample.put("preview", chunk.getText() != null && chunk.getText().length() > 100 ?
-                                                chunk.getText().substring(0, 100) + "..." : chunk.getText());
+                                        sample.put("preview",
+                                                chunk.getText() != null && chunk.getText().length() > 100
+                                                        ? chunk.getText().substring(0, 100) + "..."
+                                                        : chunk.getText());
                                         samples.add(sample);
                                     }
                                     sizeTest.put("sampleChunks", samples);
@@ -667,7 +726,8 @@ public class DocumentManagementController {
      * when real chunkers are available
      */
     private boolean isNoOpChunker(TextChunker chunker) {
-        if (chunker == null) return true;
+        if (chunker == null)
+            return true;
 
         String className = chunker.getClass().getSimpleName().toLowerCase();
         String chunkerName = chunker.getName().toLowerCase();
@@ -705,12 +765,14 @@ public class DocumentManagementController {
 
     /**
      * Mapping of UI chunker strategy IDs to backend chunker names.
-     * This handles the mismatch between frontend naming conventions and backend getName() values.
+     * This handles the mismatch between frontend naming conventions and backend
+     * getName() values.
      * Key = UI name (from CHUNKER_STRATEGIES in api-models.ts)
      * Value = Backend chunker getName() return value
      */
     private static final Map<String, String> CHUNKER_ALIASES = Map.ofEntries(
-            // UI "spring_recursive_character" -> backend "recursive-character" (RecursiveCharacterTextChunker)
+            // UI "spring_recursive_character" -> backend "recursive-character"
+            // (RecursiveCharacterTextChunker)
             Map.entry("spring_recursive_character", "recursive-character"),
             Map.entry("custom_recursive_character", "recursive-character"),
             Map.entry("recursive-character", "recursive-character"),
@@ -722,8 +784,7 @@ public class DocumentManagementController {
             Map.entry("spring_token", "spring_token"),
             // Markdown chunkers
             Map.entry("custom_markdown", "custom_markdown"),
-            Map.entry("spring_markdown", "spring_markdown")
-    );
+            Map.entry("spring_markdown", "spring_markdown"));
 
     /**
      * Finds a chunker by name, supporting both exact matches and UI alias mappings.
@@ -758,7 +819,8 @@ public class DocumentManagementController {
             }
         }
 
-        // Try partial/contains match as fallback (e.g., "recursive" matches "recursive-character")
+        // Try partial/contains match as fallback (e.g., "recursive" matches
+        // "recursive-character")
         String normalizedRequest = requestedName.toLowerCase().replace("_", "-").replace("spring-", "");
         Optional<TextChunker> partialMatch = textChunkers.stream()
                 .filter(chunker -> {
@@ -800,12 +862,12 @@ public class DocumentManagementController {
 
         // Prioritize chunkers by type/name preference
         List<String> preferredPatterns = Arrays.asList(
-                "opennlp",      // OpenNLP chunkers (your preference)
-                "recursive",    // Recursive character chunkers
-                "character",    // Character-based chunkers
-                "sentence",     // Sentence-based chunkers
-                "markdown",     // Markdown-aware chunkers
-                "token"         // Token-based chunkers
+                "opennlp", // OpenNLP chunkers (your preference)
+                "recursive", // Recursive character chunkers
+                "character", // Character-based chunkers
+                "sentence", // Sentence-based chunkers
+                "markdown", // Markdown-aware chunkers
+                "token" // Token-based chunkers
         );
 
         for (String pattern : preferredPatterns) {
@@ -832,7 +894,8 @@ public class DocumentManagementController {
      */
     @PostMapping("/debug-document")
     public ResponseEntity<?> debugDocument(@RequestParam("fileName") String fileName) {
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server."));
         }
@@ -841,7 +904,8 @@ public class DocumentManagementController {
             Path filePath = this.uploadsPath.resolve(fileName).normalize();
 
             if (!filePath.startsWith(this.uploadsPath.normalize())) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path (directory traversal attempt)."));
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid file path (directory traversal attempt)."));
             }
 
             if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
@@ -898,8 +962,10 @@ public class DocumentManagementController {
                         docInfo.put("id", doc.getId());
                         docInfo.put("contentLength", doc.getText() != null ? doc.getText().length() : 0);
                         docInfo.put("hasContent", doc.getText() != null && !doc.getText().trim().isEmpty());
-                        docInfo.put("contentPreview", doc.getText() != null && doc.getText().length() > 200 ?
-                                doc.getText().substring(0, 200) + "..." : doc.getText());
+                        docInfo.put("contentPreview",
+                                doc.getText() != null && doc.getText().length() > 200
+                                        ? doc.getText().substring(0, 200) + "..."
+                                        : doc.getText());
                         docInfo.put("metadata", doc.getMetadata());
                         documentDetails.add(docInfo);
                     }
@@ -930,7 +996,8 @@ public class DocumentManagementController {
                                     chunkingOptions.put("chunkSize", 1000);
                                     chunkingOptions.put("overlap", 200);
 
-                                    List<RetrievedDoc> chunks = chunker.chunk(convertToRetrievedDoc(loadedDocuments.get(0)), chunkingOptions);
+                                    List<RetrievedDoc> chunks = chunker
+                                            .chunk(convertToRetrievedDoc(loadedDocuments.get(0)), chunkingOptions);
                                     chunkResult.put("chunksCreated", chunks.size());
                                     chunkResult.put("success", true);
 
@@ -941,9 +1008,12 @@ public class DocumentManagementController {
                                             RetrievedDoc chunk = chunks.get(i);
                                             Map<String, Object> chunkInfo = new HashMap<>();
                                             chunkInfo.put("index", i);
-                                            chunkInfo.put("length", chunk.getText() != null ? chunk.getText().length() : 0);
-                                            chunkInfo.put("preview", chunk.getText() != null && chunk.getText().length() > 100 ?
-                                                    chunk.getText().substring(0, 100) + "..." : chunk.getText());
+                                            chunkInfo.put("length",
+                                                    chunk.getText() != null ? chunk.getText().length() : 0);
+                                            chunkInfo.put("preview",
+                                                    chunk.getText() != null && chunk.getText().length() > 100
+                                                            ? chunk.getText().substring(0, 100) + "..."
+                                                            : chunk.getText());
                                             sampleChunks.add(chunkInfo);
                                         }
                                         chunkResult.put("sampleChunks", sampleChunks);
@@ -997,28 +1067,64 @@ public class DocumentManagementController {
     }
 
     /**
-     * Processes an uploaded file through the complete workflow: loading, chunking, and indexing.
+     * Processes an uploaded file through the complete workflow: loading, chunking,
+     * and indexing.
      * This overload does not track progress via WebSocket.
      */
-    private DocumentProcessingResult processUploadedFile(Path filePath, String loaderName, String chunkerName) throws Exception {
-        return processUploadedFileWithTracking(filePath, loaderName, chunkerName, null);
+    private DocumentProcessingResult processUploadedFile(Path filePath, String loaderName, String chunkerName)
+            throws Exception {
+        return processUploadedFileWithTracking(filePath, loaderName, chunkerName, null, null);
     }
 
     /**
-     * Processes an uploaded file through the complete workflow: loading, chunking, and indexing.
+     * Processes an uploaded file through the complete workflow: loading, chunking,
+     * and indexing.
+     * This overload accepts an optional source URL for web-sourced documents.
+     */
+    private DocumentProcessingResult processUploadedFile(Path filePath, String loaderName, String chunkerName,
+            String sourceUrl) throws Exception {
+        return processUploadedFileWithTracking(filePath, loaderName, chunkerName, null, sourceUrl);
+    }
+
+    /**
+     * Processes an uploaded file through the complete workflow: loading, chunking,
+     * and indexing.
      * If taskId is provided, sends real-time progress updates via WebSocket.
      */
-    private DocumentProcessingResult processUploadedFileWithTracking(Path filePath, String loaderName, String chunkerName, String taskId) throws Exception {
+    private DocumentProcessingResult processUploadedFileWithTracking(Path filePath, String loaderName,
+            String chunkerName, String taskId) throws Exception {
+        return processUploadedFileWithTracking(filePath, loaderName, chunkerName, taskId, null);
+    }
+
+    /**
+     * Processes an uploaded file through the complete workflow: loading, chunking,
+     * and indexing.
+     * If taskId is provided, sends real-time progress updates via WebSocket.
+     * If sourceUrl is provided, stores the original URL for web-sourced documents.
+     */
+    private DocumentProcessingResult processUploadedFileWithTracking(Path filePath, String loaderName,
+            String chunkerName, String taskId, String sourceUrl) throws Exception {
         String fileName = filePath.getFileName().toString();
         IngestProgressTracker.TaskProgressContext progressContext = null;
 
         // Initialize progress tracking if taskId is provided and tracker is available
         if (taskId != null && progressTracker != null) {
-            progressContext = progressTracker.createContext(taskId, fileName);
+            Long factSheetId = null;
+            if (factSheetService != null) {
+                try {
+                    FactSheet activeSheet = factSheetService.getActiveSheet();
+                    if (activeSheet != null) {
+                        factSheetId = activeSheet.getId();
+                    }
+                } catch (Exception e) {
+                    logger.warn("Could not get active fact sheet for task {}: {}", taskId, e.getMessage());
+                }
+            }
+            progressContext = progressTracker.createContext(taskId, fileName, factSheetId);
         }
 
         try {
-            return doProcessUploadedFile(filePath, loaderName, chunkerName, progressContext);
+            return doProcessUploadedFile(filePath, loaderName, chunkerName, progressContext, sourceUrl);
         } catch (Exception e) {
             if (progressContext != null) {
                 progressContext.fail(IngestProgressUpdate.IngestPhase.FAILED, e.getMessage());
@@ -1028,12 +1134,14 @@ public class DocumentManagementController {
     }
 
     /**
-     * Internal method that performs the actual file processing with optional progress tracking.
+     * Internal method that performs the actual file processing with optional
+     * progress tracking.
+     * @param sourceUrl Optional original URL for web-sourced documents
      */
     private DocumentProcessingResult doProcessUploadedFile(Path filePath, String loaderName, String chunkerName,
-                                                            IngestProgressTracker.TaskProgressContext progress) throws Exception {
-        logger.info("Starting end-to-end processing for uploaded file: {} with loader: '{}', chunker: '{}'",
-                filePath, loaderName, chunkerName);
+            IngestProgressTracker.TaskProgressContext progress, String sourceUrl) throws Exception {
+        logger.info("Starting end-to-end processing for uploaded file: {} with loader: '{}', chunker: '{}', sourceUrl: '{}'",
+                filePath, loaderName, chunkerName, sourceUrl != null ? sourceUrl : "none");
 
         // Debug: List available loaders and chunkers
         logger.debug("Available loaders: {}", documentLoaders.stream()
@@ -1066,7 +1174,8 @@ public class DocumentManagementController {
                     .filter(loader -> loader.supports(tempDescriptor))
                     .findFirst()
                     .orElseThrow(() -> new Exception("No suitable loader found for file: " + filePath +
-                            ". Available loaders: " + documentLoaders.stream().map(DocumentLoader::getName).collect(Collectors.joining(", "))));
+                            ". Available loaders: "
+                            + documentLoaders.stream().map(DocumentLoader::getName).collect(Collectors.joining(", "))));
         }
 
         logger.info("Selected loader: {} ({})", selectedLoader.getName(), selectedLoader.getClass().getSimpleName());
@@ -1079,15 +1188,47 @@ public class DocumentManagementController {
         }
 
         // Step 2: Load documents
+        // Build metadata - if this is a URL source, store the original URL in metadata
+        // Note: pathOrUrl must point to the local file for the loader to read it
+        // The source_url in metadata preserves the original URL for attribution
+        Map<String, Object> metadata = new java.util.HashMap<>();
+        metadata.put("upload_timestamp", System.currentTimeMillis());
+        metadata.put("upload_path", filePath.toString());
+        if (sourceUrl != null && !sourceUrl.isEmpty()) {
+            // Store the original URL in the standard metadata key
+            metadata.put(ai.kompile.core.source.SourceMetadataConstants.SOURCE_URL, sourceUrl);
+        }
+
+        // Use URL type if we have a source URL, but pathOrUrl must still be the local file path
+        // so the loader can read the content from disk
+        DocumentSourceDescriptor.SourceType descriptorType = (sourceUrl != null && !sourceUrl.isEmpty())
+                ? DocumentSourceDescriptor.SourceType.URL
+                : DocumentSourceDescriptor.SourceType.FILE;
+
+        // Store the document and its metadata (including source_url) for later retrieval
+        String storedChecksum = null;
+        if (sourceDocumentStorageService != null && sourceDocumentStorageService.isEnabled()) {
+            try {
+                var storageResult = sourceDocumentStorageService.storeDocument(filePath);
+                if (storageResult.isPresent()) {
+                    storedChecksum = storageResult.get().checksum();
+                    // Store metadata alongside the document (for source_url lookup)
+                    sourceDocumentStorageService.storeMetadata(storedChecksum, metadata);
+                    logger.debug("Stored document with checksum {} and metadata (source_url: {})",
+                            storedChecksum.substring(0, 16) + "...", sourceUrl);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to store document for source URL tracking: {}", e.getMessage());
+            }
+        }
+
         DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
-                .type(DocumentSourceDescriptor.SourceType.FILE)
-                .pathOrUrl(filePath.toString())
+                .type(descriptorType)
+                .pathOrUrl(filePath.toString())  // Always use local file path for loader to read
                 .originalFileName(filePath.getFileName().toString())
-                .sourceId("upload_" + filePath.getFileName().toString())
-                .metadata(Map.of(
-                        "upload_timestamp", System.currentTimeMillis(),
-                        "upload_path", filePath.toString()
-                ))
+                .sourceId((sourceUrl != null ? "url_" : "upload_") + filePath.getFileName().toString())
+                .checksum(storedChecksum)
+                .metadata(metadata)
                 .build();
 
         List<Document> loadedDocuments = selectedLoader.load(sourceDescriptor);
@@ -1107,15 +1248,14 @@ public class DocumentManagementController {
             return new DocumentProcessingResult(
                     0, 0, Collections.emptyList(), selectedLoader.getName(),
                     chunkerName != null ? chunkerName : "none", false,
-                    "No documents could be loaded from the file."
-            );
+                    "No documents could be loaded from the file.");
         }
 
         // Detailed content analysis for each loaded document
         for (int i = 0; i < loadedDocuments.size(); i++) {
             Document doc = loadedDocuments.get(i);
             String content = doc.getText();
-            Map<String, Object> metadata = doc.getMetadata();
+            Map<String, Object> docMetadata = doc.getMetadata();
 
             logger.info("=== DOCUMENT {} ANALYSIS ===", i);
             logger.info("Document ID: {}", doc.getId());
@@ -1159,14 +1299,14 @@ public class DocumentManagementController {
                 logger.error("CRITICAL: Document content is null!");
             }
 
-            if (metadata != null && !metadata.isEmpty()) {
-                logger.info("Metadata keys: {}", metadata.keySet());
+            if (docMetadata != null && !docMetadata.isEmpty()) {
+                logger.info("Metadata keys: {}", docMetadata.keySet());
                 // Log some common metadata that might indicate PDF processing issues
-                if (metadata.containsKey("source")) {
-                    logger.info("Source metadata: {}", metadata.get("source"));
+                if (docMetadata.containsKey("source")) {
+                    logger.info("Source metadata: {}", docMetadata.get("source"));
                 }
-                if (metadata.containsKey("page_count") || metadata.containsKey("pageCount")) {
-                    logger.info("Page count: {}", metadata.getOrDefault("page_count", metadata.get("pageCount")));
+                if (docMetadata.containsKey("page_count") || docMetadata.containsKey("pageCount")) {
+                    logger.info("Page count: {}", docMetadata.getOrDefault("page_count", docMetadata.get("pageCount")));
                 }
             } else {
                 logger.info("No metadata available");
@@ -1190,7 +1330,9 @@ public class DocumentManagementController {
                         chunkerName, textChunkers.stream().map(TextChunker::getName).collect(Collectors.joining(", ")));
                 selectedChunker = selectBestChunker();
             } else if (isNoOpChunker(selectedChunker)) {
-                logger.warn("Specified chunker '{}' is a no-op/stub implementation. Will attempt to find a better chunker.", chunkerName);
+                logger.warn(
+                        "Specified chunker '{}' is a no-op/stub implementation. Will attempt to find a better chunker.",
+                        chunkerName);
                 TextChunker betterChunker = selectBestChunker();
                 if (betterChunker != null) {
                     selectedChunker = betterChunker;
@@ -1228,7 +1370,7 @@ public class DocumentManagementController {
             chunkingOptions.put("chunkSize", 1000);
             chunkingOptions.put("overlap", 200);
             chunkingOptions.put("maxChunkSize", 2000); // For safety
-            chunkingOptions.put("minChunkSize", 100);   // Avoid tiny chunks
+            chunkingOptions.put("minChunkSize", 100); // Avoid tiny chunks
 
             int totalChunksCreated = 0;
             for (int i = 0; i < loadedDocuments.size(); i++) {
@@ -1247,7 +1389,8 @@ public class DocumentManagementController {
                 }
 
                 try {
-                    logger.info("Attempting to chunk with '{}' using options: {}", selectedChunker.getName(), chunkingOptions);
+                    logger.info("Attempting to chunk with '{}' using options: {}", selectedChunker.getName(),
+                            chunkingOptions);
 
                     List<RetrievedDoc> chunks = selectedChunker.chunk(doc, chunkingOptions);
 
@@ -1273,13 +1416,15 @@ public class DocumentManagementController {
 
                             if (chunkText != null && chunkText.length() > 0) {
                                 // Show first 100 chars of each chunk
-                                String chunkPreview = chunkText.length() > 100 ?
-                                        chunkText.substring(0, 100) + "..." : chunkText;
+                                String chunkPreview = chunkText.length() > 100 ? chunkText.substring(0, 100) + "..."
+                                        : chunkText;
                                 logger.info("  Chunk {} preview: '{}'", j, chunkPreview);
 
                                 // Check if chunk is just the original document (indicates chunker failure)
                                 if (chunkText.equals(docContent)) {
-                                    logger.warn("  WARNING: Chunk {} is identical to original document - chunker may not be working!", j);
+                                    logger.warn(
+                                            "  WARNING: Chunk {} is identical to original document - chunker may not be working!",
+                                            j);
                                 }
                             } else {
                                 logger.warn("  WARNING: Chunk {} has no content!", j);
@@ -1291,7 +1436,8 @@ public class DocumentManagementController {
                         totalChunksCreated += chunks.size();
                     }
                 } catch (Exception e) {
-                    logger.error("CHUNKING ERROR for document {}: {} - {}", i, e.getClass().getSimpleName(), e.getMessage(), e);
+                    logger.error("CHUNKING ERROR for document {}: {} - {}", i, e.getClass().getSimpleName(),
+                            e.getMessage(), e);
                     logger.error("Chunker class: {}", selectedChunker.getClass().getName());
                     logger.error("Document content sample: '{}'",
                             docContent.length() > 200 ? docContent.substring(0, 200) + "..." : docContent);
@@ -1311,11 +1457,15 @@ public class DocumentManagementController {
             if (progress != null) {
                 progress.setChunksCreated(finalDocuments.size());
                 progress.updateProgress(IngestProgressUpdate.IngestPhase.CHUNKING, 60,
-                        "Chunking complete", String.format("Created %d chunks from %d documents", finalDocuments.size(), loadedDocuments.size()));
+                        "Chunking complete", String.format("Created %d chunks from %d documents", finalDocuments.size(),
+                                loadedDocuments.size()));
             }
         } else {
-            logger.info("No suitable chunker available (only no-op/stub chunkers found). Using documents as-is without chunking. Available chunkers: {}",
-                    textChunkers.stream().map(c -> c.getName() + "(" + c.getClass().getSimpleName() + (isNoOpChunker(c) ? "-NOOP" : "-REAL") + ")")
+            logger.info(
+                    "No suitable chunker available (only no-op/stub chunkers found). Using documents as-is without chunking. Available chunkers: {}",
+                    textChunkers.stream()
+                            .map(c -> c.getName() + "(" + c.getClass().getSimpleName()
+                                    + (isNoOpChunker(c) ? "-NOOP" : "-REAL") + ")")
                             .collect(Collectors.joining(", ", "[", "]")));
         }
 
@@ -1365,12 +1515,13 @@ public class DocumentManagementController {
         }
 
         String processingDetails = String.format(
-                "Successfully processed file through complete pipeline. Loader: %s, Chunker: %s, Original docs: %d, Final chunks: %d, Indexed: %s. " +
+                "Successfully processed file through complete pipeline. Loader: %s, Chunker: %s, Original docs: %d, Final chunks: %d, Indexed: %s. "
+                        +
                         "Content lengths: %s",
-                selectedLoader.getName(), actualChunkerUsed, loadedDocuments.size(), finalDocuments.size(), indexingSuccessful,
+                selectedLoader.getName(), actualChunkerUsed, loadedDocuments.size(), finalDocuments.size(),
+                indexingSuccessful,
                 loadedDocuments.stream().map(doc -> String.valueOf(doc.getText() != null ? doc.getText().length() : 0))
-                        .collect(Collectors.joining(", ", "[", "]"))
-        );
+                        .collect(Collectors.joining(", ", "[", "]")));
 
         return new DocumentProcessingResult(
                 loadedDocuments.size(),
@@ -1379,28 +1530,30 @@ public class DocumentManagementController {
                 selectedLoader.getName(),
                 actualChunkerUsed,
                 indexingSuccessful,
-                processingDetails
-        );
+                processingDetails);
     }
 
     @PostMapping("/upload")
     public ResponseEntity<?> handleFileUpload(@RequestParam("file") MultipartFile file,
-                                              @RequestParam(name = "loader", required = false) String loaderName,
-                                              @RequestParam(name = "chunkerName", required = false) String chunkerName,
-                                              @RequestParam(name = "processImmediately", required = false, defaultValue = "true") boolean processImmediately,
-                                              @RequestParam(name = "trackProgress", required = false, defaultValue = "true") boolean trackProgress) {
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+            @RequestParam(name = "loader", required = false) String loaderName,
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "processImmediately", required = false, defaultValue = "true") boolean processImmediately,
+            @RequestParam(name = "trackProgress", required = false, defaultValue = "true") boolean trackProgress) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Uploads directory is not configured correctly on the server. Cannot save file."));
+                    .body(Map.of("error",
+                            "Uploads directory is not configured correctly on the server. Cannot save file."));
         }
         if (file.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "File cannot be empty."));
         }
 
-        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
+        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(),
+                "uploaded_file_" + UUID.randomUUID());
         String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
         if (sanitizedFileName.isEmpty()) {
-            sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0,8);
+            sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0, 8);
         }
 
         Path destinationFile = null;
@@ -1409,24 +1562,28 @@ public class DocumentManagementController {
 
             if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
                 logger.warn("Attempt to save file outside designated uploads directory: {}", destinationFile);
-                return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path (directory traversal attempt)."));
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid file path (directory traversal attempt)."));
             }
 
             // Save the file - use REPLACE_EXISTING to handle concurrent uploads atomically
-            // Handle edge case where destination might be a directory (can't replace with REPLACE_EXISTING)
+            // Handle edge case where destination might be a directory (can't replace with
+            // REPLACE_EXISTING)
             if (Files.exists(destinationFile) && Files.isDirectory(destinationFile)) {
                 logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
                 try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
                     walk.sorted(java.util.Comparator.reverseOrder())
-                        .map(Path::toFile)
-                        .forEach(java.io.File::delete);
+                            .map(Path::toFile)
+                            .forEach(java.io.File::delete);
                 }
             }
             // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
-            // (Files.copy with REPLACE_EXISTING has a non-atomic delete-then-create pattern)
+            // (Files.copy with REPLACE_EXISTING has a non-atomic delete-then-create
+            // pattern)
             try (InputStream inputStream = file.getInputStream();
-                 OutputStream outputStream = Files.newOutputStream(destinationFile,
-                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                    OutputStream outputStream = Files.newOutputStream(destinationFile,
+                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE)) {
                 inputStream.transferTo(outputStream);
             }
             logger.info("File uploaded successfully to: {}", destinationFile);
@@ -1438,7 +1595,8 @@ public class DocumentManagementController {
             response.put("selectedLoader", loaderName != null ? loaderName : "Auto-detect");
             response.put("selectedChunkerName", chunkerName != null ? chunkerName : "None");
 
-            // Generate task ID for progress tracking (only if progress tracker is available)
+            // Generate task ID for progress tracking (only if progress tracker is
+            // available)
             String taskId = (trackProgress && progressTracker != null) ? progressTracker.generateTaskId() : null;
             if (taskId != null) {
                 response.put("taskId", taskId);
@@ -1449,7 +1607,8 @@ public class DocumentManagementController {
             if (processImmediately) {
                 try {
                     logger.info("Processing uploaded file immediately: {} (taskId: {})", sanitizedFileName, taskId);
-                    DocumentProcessingResult processingResult = processUploadedFileWithTracking(destinationFile, loaderName, chunkerName, taskId);
+                    DocumentProcessingResult processingResult = processUploadedFileWithTracking(destinationFile,
+                            loaderName, chunkerName, taskId);
 
                     response.put("processingCompleted", true);
                     response.put("originalDocumentCount", processingResult.originalDocumentCount());
@@ -1464,7 +1623,8 @@ public class DocumentManagementController {
                     logger.info("File upload and processing completed successfully: {}", sanitizedFileName);
 
                 } catch (Exception e) {
-                    logger.error("File uploaded successfully but processing failed for {}: {}", sanitizedFileName, e.getMessage(), e);
+                    logger.error("File uploaded successfully but processing failed for {}: {}", sanitizedFileName,
+                            e.getMessage(), e);
 
                     // DEBUG POSTGRESQL FUNCTION ERRORS - check the entire exception chain
                     boolean isPostgresMLError = false;
@@ -1488,14 +1648,15 @@ public class DocumentManagementController {
 
                             // Get DataSource from Spring context
                             try {
-                                org.springframework.context.ApplicationContext context =
-                                        org.springframework.web.context.support.WebApplicationContextUtils
-                                                .getWebApplicationContext(((org.springframework.web.context.request.ServletRequestAttributes)
-                                                        org.springframework.web.context.request.RequestContextHolder.currentRequestAttributes())
+                                org.springframework.context.ApplicationContext context = org.springframework.web.context.support.WebApplicationContextUtils
+                                        .getWebApplicationContext(
+                                                ((org.springframework.web.context.request.ServletRequestAttributes) org.springframework.web.context.request.RequestContextHolder
+                                                        .currentRequestAttributes())
                                                         .getRequest().getServletContext());
                                 dataSource = context.getBean(javax.sql.DataSource.class);
                             } catch (Exception contextError) {
-                                System.err.println("Could not get DataSource from context: " + contextError.getMessage());
+                                System.err
+                                        .println("Could not get DataSource from context: " + contextError.getMessage());
                             }
 
                             if (dataSource != null) {
@@ -1525,7 +1686,8 @@ public class DocumentManagementController {
 
                                         int funcCount = rs.getInt(1);
                                         if (funcCount > 0) {
-                                            System.err.println("   ✓ pgml.embed function EXISTS (" + funcCount + " variants)");
+                                            System.err.println(
+                                                    "   ✓ pgml.embed function EXISTS (" + funcCount + " variants)");
                                         } else {
                                             System.err.println("   ✗ pgml.embed function MISSING!");
                                             System.err.println("   → This is the ROOT CAUSE of the upload failure");
@@ -1535,8 +1697,10 @@ public class DocumentManagementController {
                                     // Test function call
                                     System.err.println("\n3. FUNCTION TEST:");
                                     try (java.sql.Statement stmt = conn.createStatement()) {
-                                        System.err.println("   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
-                                        stmt.executeQuery("SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
+                                        System.err.println(
+                                                "   Testing: SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
+                                        stmt.executeQuery(
+                                                "SELECT pgml.embed('test'::character varying, 'text'::text, '{}'::jsonb)");
                                         System.err.println("   ✓ Function call SUCCEEDED");
                                     } catch (Exception testError) {
                                         System.err.println("   ✗ Function call FAILED: " + testError.getMessage());
@@ -1570,20 +1734,23 @@ public class DocumentManagementController {
 
                     response.put("processingCompleted", false);
                     response.put("processingError", e.getMessage());
-                    response.put("message", response.get("message") + " However, automatic processing failed. You can trigger processing manually through batch operations or index rebuild.");
+                    response.put("message", response.get("message")
+                            + " However, automatic processing failed. You can trigger processing manually through batch operations or index rebuild.");
 
                     // Return success since file was uploaded, but note the processing failure
                     return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).body(response);
                 }
             } else {
                 response.put("processingCompleted", false);
-                response.put("message", response.get("message") + " File saved but not processed immediately. Use batch processing or rebuild index to include it.");
+                response.put("message", response.get("message")
+                        + " File saved but not processed immediately. Use batch processing or rebuild index to include it.");
             }
 
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            String fileNameForError = (destinationFile != null) ? destinationFile.getFileName().toString() : sanitizedFileName;
+            String fileNameForError = (destinationFile != null) ? destinationFile.getFileName().toString()
+                    : sanitizedFileName;
             logger.error("Failed to store uploaded file {}: {}", fileNameForError, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to store uploaded file: " + e.getMessage()));
@@ -1594,26 +1761,36 @@ public class DocumentManagementController {
      * Async file upload endpoint that returns immediately with a task ID.
      * Progress can be tracked via WebSocket subscription to /topic/ingest/{taskId}
      *
-     * @param file the file to upload
-     * @param loaderName optional loader name (auto-detected if not provided)
-     * @param chunkerName optional chunker name (default chunker used if not provided)
-     * @param processingMode optional processing mode: "auto" (default, use global config),
-     *                       "subprocess" (force isolated JVM), or "inprocess" (force same JVM)
+     * @param file           the file to upload
+     * @param loaderName     optional loader name (auto-detected if not provided)
+     * @param chunkerName    optional chunker name (default chunker used if not
+     *                       provided)
+     * @param processingMode optional processing mode: "auto" (default, use global
+     *                       config),
+     *                       "subprocess" (force isolated JVM), or "inprocess"
+     *                       (force same JVM)
      */
     @PostMapping("/upload-async")
     public ResponseEntity<AsyncUploadResponse> handleAsyncFileUpload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(name = "loader", required = false) String loaderName,
             @RequestParam(name = "chunkerName", required = false) String chunkerName,
-            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode) {
+            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode,
+            @RequestParam(name = "subprocessHeapSize", required = false) String subprocessHeapSize,
+            @RequestParam(name = "subprocessTimeoutMinutes", required = false) Integer subprocessTimeoutMinutes,
+            @RequestParam(name = "subprocessHeartbeatSeconds", required = false) Integer subprocessHeartbeatSeconds,
+            @RequestParam(name = "subprocessStaleThresholdSeconds", required = false) Integer subprocessStaleThresholdSeconds) {
 
         if (documentIngestService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(AsyncUploadResponse.error(file.getOriginalFilename(), "Document ingest service is not available."));
+                    .body(AsyncUploadResponse.error(file.getOriginalFilename(),
+                            "Document ingest service is not available."));
         }
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(AsyncUploadResponse.error(file.getOriginalFilename(), "Uploads directory is not configured correctly on the server."));
+                    .body(AsyncUploadResponse.error(file.getOriginalFilename(),
+                            "Uploads directory is not configured correctly on the server."));
         }
         if (file.isEmpty()) {
             return ResponseEntity.badRequest()
@@ -1622,8 +1799,11 @@ public class DocumentManagementController {
 
         // Parse processing mode
         DocumentIngestService.ProcessingMode mode = parseProcessingMode(processingMode);
+        logger.info("=== UPLOAD REQUEST === file={}, processingMode param='{}', parsed mode={}",
+                file.getOriginalFilename(), processingMode, mode);
 
-        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
+        String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(),
+                "uploaded_file_" + UUID.randomUUID());
         String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
         if (sanitizedFileName.isEmpty()) {
             sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0, 8);
@@ -1635,7 +1815,8 @@ public class DocumentManagementController {
             if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
                 logger.warn("Attempt to save file outside designated uploads directory: {}", destinationFile);
                 return ResponseEntity.badRequest()
-                        .body(AsyncUploadResponse.error(sanitizedFileName, "Invalid file path (directory traversal attempt)."));
+                        .body(AsyncUploadResponse.error(sanitizedFileName,
+                                "Invalid file path (directory traversal attempt)."));
             }
 
             // Save the file - handle edge case where destination might be a directory
@@ -1643,14 +1824,15 @@ public class DocumentManagementController {
                 logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
                 try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
                     walk.sorted(java.util.Comparator.reverseOrder())
-                        .map(Path::toFile)
-                        .forEach(java.io.File::delete);
+                            .map(Path::toFile)
+                            .forEach(java.io.File::delete);
                 }
             }
             // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
             try (InputStream inputStream = file.getInputStream();
-                 OutputStream outputStream = Files.newOutputStream(destinationFile,
-                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                    OutputStream outputStream = Files.newOutputStream(destinationFile,
+                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE)) {
                 inputStream.transferTo(outputStream);
             }
             logger.info("File uploaded successfully to: {}", destinationFile);
@@ -1658,10 +1840,16 @@ public class DocumentManagementController {
             // Generate task ID and queue for async processing
             String taskId = UUID.randomUUID().toString();
 
-            // Start async processing with specified mode
-            documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode);
+            // Build subprocess options map if any per-request config was provided
+            Map<String, Object> subprocessOptions = buildSubprocessOptions(
+                    subprocessHeapSize, subprocessTimeoutMinutes,
+                    subprocessHeartbeatSeconds, subprocessStaleThresholdSeconds);
 
-            logger.info("File {} queued for async processing with task ID: {} (mode={})", sanitizedFileName, taskId, mode);
+            // Start async processing with specified mode and options
+            documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode, subprocessOptions);
+
+            logger.info("File {} queued for async processing with task ID: {} (mode={}, subprocessOptions={})",
+                    sanitizedFileName, taskId, mode, subprocessOptions);
 
             return ResponseEntity.accepted()
                     .body(AsyncUploadResponse.accepted(taskId, sanitizedFileName));
@@ -1669,7 +1857,8 @@ public class DocumentManagementController {
         } catch (Exception e) {
             logger.error("Failed to store uploaded file {}: {}", sanitizedFileName, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(AsyncUploadResponse.error(sanitizedFileName, "Failed to store uploaded file: " + e.getMessage()));
+                    .body(AsyncUploadResponse.error(sanitizedFileName,
+                            "Failed to store uploaded file: " + e.getMessage()));
         }
     }
 
@@ -1677,26 +1866,35 @@ public class DocumentManagementController {
      * Batch async file upload endpoint that accepts multiple files.
      * All files are processed concurrently. Progress can be tracked via WebSocket.
      *
-     * @param files the files to upload
-     * @param loaderName optional loader name (auto-detected if not provided)
-     * @param chunkerName optional chunker name (default chunker used if not provided)
-     * @param processingMode optional processing mode: "auto" (default, use global config),
-     *                       "subprocess" (force isolated JVM), or "inprocess" (force same JVM)
+     * @param files          the files to upload
+     * @param loaderName     optional loader name (auto-detected if not provided)
+     * @param chunkerName    optional chunker name (default chunker used if not
+     *                       provided)
+     * @param processingMode optional processing mode: "auto" (default, use global
+     *                       config),
+     *                       "subprocess" (force isolated JVM), or "inprocess"
+     *                       (force same JVM)
      */
     @PostMapping("/upload-batch-async")
     public ResponseEntity<BatchAsyncUploadResponse> handleBatchAsyncFileUpload(
             @RequestParam("files") MultipartFile[] files,
             @RequestParam(name = "loader", required = false) String loaderName,
             @RequestParam(name = "chunkerName", required = false) String chunkerName,
-            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode) {
+            @RequestParam(name = "processingMode", required = false, defaultValue = "auto") String processingMode,
+            @RequestParam(name = "subprocessHeapSize", required = false) String subprocessHeapSize,
+            @RequestParam(name = "subprocessTimeoutMinutes", required = false) Integer subprocessTimeoutMinutes,
+            @RequestParam(name = "subprocessHeartbeatSeconds", required = false) Integer subprocessHeartbeatSeconds,
+            @RequestParam(name = "subprocessStaleThresholdSeconds", required = false) Integer subprocessStaleThresholdSeconds) {
 
         if (documentIngestService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                     .body(BatchAsyncUploadResponse.error("Document ingest service is not available."));
         }
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(BatchAsyncUploadResponse.error("Uploads directory is not configured correctly on the server."));
+                    .body(BatchAsyncUploadResponse
+                            .error("Uploads directory is not configured correctly on the server."));
         }
 
         if (files == null || files.length == 0) {
@@ -1706,6 +1904,11 @@ public class DocumentManagementController {
 
         // Parse processing mode
         DocumentIngestService.ProcessingMode mode = parseProcessingMode(processingMode);
+
+        // Build subprocess options map if any per-request config was provided
+        Map<String, Object> subprocessOptions = buildSubprocessOptions(
+                subprocessHeapSize, subprocessTimeoutMinutes,
+                subprocessHeartbeatSeconds, subprocessStaleThresholdSeconds);
 
         List<AsyncUploadResponse> results = new ArrayList<>();
         int acceptedCount = 0;
@@ -1720,7 +1923,8 @@ public class DocumentManagementController {
                 continue;
             }
 
-            String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(), "uploaded_file_" + UUID.randomUUID());
+            String originalFileName = Objects.requireNonNullElse(file.getOriginalFilename(),
+                    "uploaded_file_" + UUID.randomUUID());
             String sanitizedFileName = originalFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
             if (sanitizedFileName.isEmpty()) {
                 sanitizedFileName = "upload_" + UUID.randomUUID().toString().substring(0, 8);
@@ -1731,7 +1935,8 @@ public class DocumentManagementController {
 
                 if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
                     logger.warn("Attempt to save file outside designated uploads directory: {}", destinationFile);
-                    results.add(AsyncUploadResponse.error(sanitizedFileName, "Invalid file path (directory traversal attempt)."));
+                    results.add(AsyncUploadResponse.error(sanitizedFileName,
+                            "Invalid file path (directory traversal attempt)."));
                     rejectedCount++;
                     continue;
                 }
@@ -1741,14 +1946,15 @@ public class DocumentManagementController {
                     logger.warn("Destination path exists as a directory, deleting before upload: {}", destinationFile);
                     try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
                         walk.sorted(java.util.Comparator.reverseOrder())
-                            .map(Path::toFile)
-                            .forEach(java.io.File::delete);
+                                .map(Path::toFile)
+                                .forEach(java.io.File::delete);
                     }
                 }
                 // Use OutputStream with CREATE+TRUNCATE_EXISTING to avoid race condition
                 try (InputStream inputStream = file.getInputStream();
-                     OutputStream outputStream = Files.newOutputStream(destinationFile,
-                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
+                        OutputStream outputStream = Files.newOutputStream(destinationFile,
+                                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                                StandardOpenOption.WRITE)) {
                     inputStream.transferTo(outputStream);
                 }
                 logger.info("File uploaded successfully to: {}", destinationFile);
@@ -1756,10 +1962,11 @@ public class DocumentManagementController {
                 // Generate task ID and queue for async processing
                 String taskId = UUID.randomUUID().toString();
 
-                // Start async processing with specified mode (runs concurrently with other files)
-                documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode);
+                // Start async processing with specified mode and options (runs concurrently with other files)
+                documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode, subprocessOptions);
 
-                logger.info("File {} queued for async processing with task ID: {} (mode={})", sanitizedFileName, taskId, mode);
+                logger.info("File {} queued for async processing with task ID: {} (mode={})", sanitizedFileName, taskId,
+                        mode);
                 results.add(AsyncUploadResponse.accepted(taskId, sanitizedFileName));
                 acceptedCount++;
 
@@ -1775,8 +1982,7 @@ public class DocumentManagementController {
                 acceptedCount,
                 rejectedCount,
                 String.format("%d file(s) queued for processing, %d rejected", acceptedCount, rejectedCount),
-                "/topic/ingest/all"
-        );
+                "/topic/ingest/all");
 
         return ResponseEntity.accepted().body(response);
     }
@@ -1823,8 +2029,7 @@ public class DocumentManagementController {
             return ResponseEntity.ok(Map.of(
                     "taskId", taskId,
                     "cancelled", true,
-                    "message", "Task has been marked for cancellation. It will stop at the next checkpoint."
-            ));
+                    "message", "Task has been marked for cancellation. It will stop at the next checkpoint."));
         } else {
             // Task not found or already completed
             Optional<IngestProgressUpdate> status = documentIngestService.getTaskStatus(taskId);
@@ -1847,19 +2052,18 @@ public class DocumentManagementController {
                         return ResponseEntity.ok(Map.of(
                                 "taskId", taskId,
                                 "cancelled", false,
-                                "message", reason
-                        ));
+                                "message", reason));
                     })
                     .orElse(ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
                             "taskId", taskId,
                             "cancelled", false,
-                            "message", "Task not found."
-                    )));
+                            "message", "Task not found.")));
         }
     }
 
     /**
-     * Get all active ingest tasks from both async (DocumentIngestService) and sync (IngestProgressTracker) flows.
+     * Get all active ingest tasks from both async (DocumentIngestService) and sync
+     * (IngestProgressTracker) flows.
      */
     @GetMapping("/ingest-tasks")
     public ResponseEntity<Collection<IngestProgressUpdate>> getAllIngestTasks() {
@@ -1873,7 +2077,8 @@ public class DocumentManagementController {
             }
         }
 
-        // Add tasks from sync flow (IngestProgressTracker) - may override if same taskId
+        // Add tasks from sync flow (IngestProgressTracker) - may override if same
+        // taskId
         if (progressTracker != null) {
             for (IngestProgressUpdate task : progressTracker.getAllTasks()) {
                 allTasks.put(task.taskId(), task);
@@ -1885,7 +2090,7 @@ public class DocumentManagementController {
             logger.debug("getAllIngestTasks returning {} tasks", allTasks.size());
             for (IngestProgressUpdate task : allTasks.values()) {
                 logger.debug("  Task {}: phase={}, progress={}%, status={}",
-                            task.taskId(), task.phase(), task.progressPercent(), task.status());
+                        task.taskId(), task.phase(), task.progressPercent(), task.status());
             }
         }
 
@@ -1894,9 +2099,11 @@ public class DocumentManagementController {
 
     @PostMapping("/add-url")
     public ResponseEntity<?> handleAddUrl(@RequestBody AddUrlRequest request) {
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Uploads directory is not configured correctly on the server. Cannot save URL content."));
+                    .body(Map.of("error",
+                            "Uploads directory is not configured correctly on the server. Cannot save URL content."));
         }
         if (request.url() == null || request.url().trim().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "URL cannot be empty."));
@@ -1918,26 +2125,29 @@ public class DocumentManagementController {
                 if (nameFromUrl.isEmpty() || nameFromUrl.equals("/") || nameFromUrl.equals("\\")) {
                     nameFromUrl = "webpage_" + UUID.randomUUID().toString().substring(0, 8);
                 }
-                finalOutputFileName = nameFromUrl.matches(".*\\.[a-zA-Z0-9]{1,5}$") ? nameFromUrl : nameFromUrl + ".html";
+                finalOutputFileName = nameFromUrl.matches(".*\\.[a-zA-Z0-9]{1,5}$") ? nameFromUrl
+                        : nameFromUrl + ".html";
             } else {
                 finalOutputFileName = requestedFileName;
             }
 
             finalOutputFileName = finalOutputFileName.replaceAll("[^a-zA-Z0-9._-]", "_");
             if (finalOutputFileName.isEmpty()) {
-                finalOutputFileName = "url_doc_" + UUID.randomUUID().toString().substring(0,8) + ".html";
+                finalOutputFileName = "url_doc_" + UUID.randomUUID().toString().substring(0, 8) + ".html";
             }
 
             destinationFile = this.uploadsPath.resolve(finalOutputFileName).normalize();
             if (!destinationFile.startsWith(this.uploadsPath.normalize())) {
                 logger.warn("Attempt to save URL content outside designated uploads directory: {}", destinationFile);
-                return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path derived from URL (directory traversal attempt)."));
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid file path derived from URL (directory traversal attempt)."));
             }
 
             logger.info("Fetching content from URL: {}", urlString);
             String content = restTemplate.getForObject(uri, String.class);
             if (content == null) {
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Failed to fetch content from URL (received null): " + urlString));
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(Map.of("error", "Failed to fetch content from URL (received null): " + urlString));
             }
 
             // Handle edge case where destination might be a directory
@@ -1945,15 +2155,17 @@ public class DocumentManagementController {
                 logger.warn("Destination path exists as a directory, deleting before writing: {}", destinationFile);
                 try (java.util.stream.Stream<Path> walk = Files.walk(destinationFile)) {
                     walk.sorted(java.util.Comparator.reverseOrder())
-                        .map(Path::toFile)
-                        .forEach(java.io.File::delete);
+                            .map(Path::toFile)
+                            .forEach(java.io.File::delete);
                 }
             }
-            Files.writeString(destinationFile, content, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.writeString(destinationFile, content, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
             logger.info("Content from URL {} saved successfully to: {}", urlString, destinationFile);
 
             Map<String, Object> response = new HashMap<>();
-            response.put("message", "Content from URL '" + urlString + "' saved successfully as '" + finalOutputFileName + "'.");
+            response.put("message",
+                    "Content from URL '" + urlString + "' saved successfully as '" + finalOutputFileName + "'.");
             response.put("fileName", finalOutputFileName);
             response.put("filePath", destinationFile.toString());
             response.put("selectedLoader", loaderName != null ? loaderName : "Auto-detect");
@@ -1961,8 +2173,9 @@ public class DocumentManagementController {
 
             // Process the downloaded content immediately
             try {
-                logger.info("Processing URL content immediately: {}", finalOutputFileName);
-                DocumentProcessingResult processingResult = processUploadedFile(destinationFile, loaderName, chunkerName);
+                logger.info("Processing URL content immediately: {} (source URL: {})", finalOutputFileName, urlString);
+                DocumentProcessingResult processingResult = processUploadedFile(destinationFile, loaderName,
+                        chunkerName, urlString);
 
                 response.put("processingCompleted", true);
                 response.put("originalDocumentCount", processingResult.originalDocumentCount());
@@ -1977,10 +2190,12 @@ public class DocumentManagementController {
                 logger.info("URL content download and processing completed successfully: {}", finalOutputFileName);
 
             } catch (Exception e) {
-                logger.error("URL content downloaded successfully but processing failed for {}: {}", finalOutputFileName, e.getMessage(), e);
+                logger.error("URL content downloaded successfully but processing failed for {}: {}",
+                        finalOutputFileName, e.getMessage(), e);
                 response.put("processingCompleted", false);
                 response.put("processingError", e.getMessage());
-                response.put("message", response.get("message") + " However, automatic processing failed. You can trigger processing manually through batch operations or index rebuild.");
+                response.put("message", response.get("message")
+                        + " However, automatic processing failed. You can trigger processing manually through batch operations or index rebuild.");
 
                 // Return partial success since file was saved
                 return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).body(response);
@@ -2002,33 +2217,473 @@ public class DocumentManagementController {
         }
     }
 
+    /**
+     * Request record for YouTube transcript ingestion
+     */
+    public record AddYouTubeRequest(String url, String language, String chunkerName, boolean saveTranscriptFile) {
+    }
+
+    /**
+     * Endpoint to add a YouTube video transcript as a document source.
+     * Fetches the transcript from YouTube and processes it for indexing.
+     *
+     * @param request The request containing YouTube URL and optional parameters
+     * @return Response with transcript details and processing status
+     */
+    @PostMapping("/add-youtube")
+    public ResponseEntity<?> handleAddYouTube(@RequestBody AddYouTubeRequest request) {
+        if (youTubeTranscriptService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "YouTube transcript service is not available"));
+        }
+
+        if (request.url() == null || request.url().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "YouTube URL cannot be empty."));
+        }
+
+        String urlString = request.url().trim();
+        String preferredLanguage = request.language();
+        String chunkerName = request.chunkerName();
+        boolean saveFile = request.saveTranscriptFile();
+
+        try {
+            logger.info("Fetching YouTube transcript for URL: {}", urlString);
+
+            // Fetch the transcript
+            YouTubeTranscriptService.TranscriptResult transcriptResult =
+                    youTubeTranscriptService.fetchTranscript(urlString, preferredLanguage);
+
+            String videoId = transcriptResult.getVideoId();
+            String title = transcriptResult.getTitle();
+            String transcript = transcriptResult.getTranscript();
+
+            logger.info("Successfully fetched transcript for video: {} (ID: {}), {} segments, {} characters",
+                    title, videoId, transcriptResult.getSegments().size(), transcript.length());
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "YouTube transcript fetched successfully");
+            response.put("videoId", videoId);
+            response.put("videoTitle", title);
+            response.put("language", transcriptResult.getLanguage());
+            response.put("transcriptLength", transcript.length());
+            response.put("segmentCount", transcriptResult.getSegments().size());
+            response.put("metadata", transcriptResult.getMetadata());
+
+            // Optionally save transcript to file
+            Path transcriptFile = null;
+            if (saveFile && this.uploadsPath != null) {
+                String fileName = "youtube_" + videoId + "_transcript.txt";
+                transcriptFile = this.uploadsPath.resolve(fileName).normalize();
+
+                // Build formatted transcript with timestamps
+                StringBuilder formattedTranscript = new StringBuilder();
+                formattedTranscript.append("YouTube Video Transcript\n");
+                formattedTranscript.append("========================\n");
+                formattedTranscript.append("Title: ").append(title).append("\n");
+                formattedTranscript.append("Video ID: ").append(videoId).append("\n");
+                formattedTranscript.append("URL: https://www.youtube.com/watch?v=").append(videoId).append("\n");
+                formattedTranscript.append("Language: ").append(transcriptResult.getLanguage()).append("\n");
+                formattedTranscript.append("\n--- Transcript ---\n\n");
+                formattedTranscript.append(transcript);
+
+                Files.writeString(transcriptFile, formattedTranscript.toString(),
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+
+                response.put("savedToFile", fileName);
+                response.put("filePath", transcriptFile.toString());
+                logger.info("Saved transcript to file: {}", transcriptFile);
+            }
+
+            // Process for indexing if DocumentIngestService is available
+            if (documentIngestService != null) {
+                String taskId = UUID.randomUUID().toString();
+                logger.info("Starting async processing for YouTube transcript, taskId: {}", taskId);
+
+                // Convert to Spring AI Document
+                org.springframework.ai.document.Document document = youTubeTranscriptService.toDocument(transcriptResult);
+
+                // If we saved to file, process that file
+                if (transcriptFile != null && Files.exists(transcriptFile)) {
+                    documentIngestService.processDocumentAsync(
+                            taskId,
+                            transcriptFile,
+                            null, // auto-detect loader (will use Tika/text loader)
+                            chunkerName,
+                            null // auto processing mode
+                    );
+                    response.put("taskId", taskId);
+                    response.put("processingStarted", true);
+                } else {
+                    // Direct document processing without file
+                    // Note: This requires DocumentIngestService to support direct document ingestion
+                    response.put("processingStarted", false);
+                    response.put("processingNote", "Transcript fetched but direct document ingestion not available. " +
+                            "Enable saveTranscriptFile=true to save and process the transcript.");
+                }
+            } else {
+                response.put("processingStarted", false);
+                response.put("processingNote", "DocumentIngestService not available. Transcript was fetched but not indexed.");
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (YouTubeTranscriptService.YouTubeTranscriptException e) {
+            logger.error("YouTube transcript error for {}: {}", urlString, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of(
+                            "error", "Failed to fetch YouTube transcript",
+                            "details", e.getMessage(),
+                            "url", urlString
+                    ));
+        } catch (Exception e) {
+            logger.error("Error processing YouTube URL {}: {}", urlString, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                            "error", "Failed to process YouTube URL",
+                            "details", e.getMessage(),
+                            "url", urlString
+                    ));
+        }
+    }
+
+    /**
+     * Request record for text/clipboard content
+     */
+    public record AddTextRequest(
+            String content,
+            String sourceName,
+            String chunkerName,
+            String processingMode
+    ) {}
+
+    /**
+     * Endpoint to add text content directly as a document source.
+     * Takes raw text (e.g., pasted from clipboard) and processes it for indexing.
+     *
+     * @param request The request containing text content and optional parameters
+     * @return Response with processing status
+     */
+    @PostMapping("/add-text")
+    public ResponseEntity<?> handleAddText(@RequestBody AddTextRequest request) {
+        if (request.content() == null || request.content().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Text content cannot be empty."));
+        }
+
+        String content = request.content();
+        String sourceName = request.sourceName();
+        if (sourceName == null || sourceName.trim().isEmpty()) {
+            sourceName = "Pasted Text " + java.time.LocalDateTime.now()
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        }
+        String chunkerName = request.chunkerName();
+        String processingMode = request.processingMode();
+
+        try {
+            logger.info("Processing text content: '{}', {} characters, {} words",
+                    sourceName,
+                    content.length(),
+                    content.trim().split("\\s+").length);
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Text content received successfully");
+            response.put("sourceName", sourceName);
+            response.put("contentLength", content.length());
+            response.put("wordCount", content.trim().split("\\s+").length);
+
+            // Save text to file for processing
+            Path textFile = null;
+            if (this.uploadsPath != null) {
+                // Sanitize source name for file system
+                String safeFileName = sourceName.replaceAll("[^a-zA-Z0-9._-]", "_");
+                if (safeFileName.length() > 50) {
+                    safeFileName = safeFileName.substring(0, 50);
+                }
+                String fileName = "text_" + System.currentTimeMillis() + "_" + safeFileName + ".txt";
+                textFile = this.uploadsPath.resolve(fileName).normalize();
+
+                // Write content to file
+                Files.writeString(textFile, content,
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+
+                response.put("filePath", textFile.toString());
+                logger.info("Saved text content to file: {}", textFile);
+            }
+
+            // Process for indexing if DocumentIngestService is available
+            if (documentIngestService != null && textFile != null && Files.exists(textFile)) {
+                String taskId = UUID.randomUUID().toString();
+                logger.info("Starting async processing for text content, taskId: {}", taskId);
+
+                documentIngestService.processDocumentAsync(
+                        taskId,
+                        textFile,
+                        null, // auto-detect loader (will use Tika/text loader)
+                        chunkerName,
+                        parseProcessingMode(processingMode)
+                );
+                response.put("taskId", taskId);
+                response.put("processingStarted", true);
+            } else if (documentIngestService == null) {
+                response.put("processingStarted", false);
+                response.put("processingNote", "DocumentIngestService not available. Text was saved but not indexed.");
+            } else {
+                response.put("processingStarted", false);
+                response.put("processingNote", "Text content saved but could not be processed.");
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error processing text content '{}': {}", sourceName, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                            "error", "Failed to process text content",
+                            "details", e.getMessage(),
+                            "sourceName", sourceName
+                    ));
+        }
+    }
+
+    /**
+     * Request record for Slack channel ingestion
+     */
+    public record AddSlackRequest(
+            String channelId,
+            String token,
+            Integer messageLimit,
+            Boolean includeThreads,
+            String chunkerName
+    ) {}
+
+    /**
+     * Request record for Slack history ingestion
+     */
+    public record AddSlackHistoryRequest(
+            String channelId,
+            String token,
+            String startDate,
+            String endDate,
+            Integer daysBack,
+            Integer maxMessages,
+            Boolean includeThreads,
+            Boolean loadAllChannels,
+            String chunkerName
+    ) {}
+
+    /**
+     * Endpoint to add Slack channel messages as a document source.
+     * Fetches messages from a Slack channel for indexing.
+     *
+     * @param request The request containing channel ID and optional parameters
+     * @return Response with ingestion status
+     */
+    @PostMapping("/add-slack")
+    public ResponseEntity<?> handleAddSlack(@RequestBody AddSlackRequest request) {
+        if (documentLoadingService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Document loading service is not available"));
+        }
+
+        if (request.channelId() == null || request.channelId().trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Slack channel ID cannot be empty."));
+        }
+
+        try {
+            String channelId = request.channelId().trim();
+            logger.info("Processing Slack channel: {}", channelId);
+
+            // Build metadata for the source descriptor
+            Map<String, Object> metadata = new HashMap<>();
+            if (request.token() != null && !request.token().isEmpty()) {
+                metadata.put("slackToken", request.token());
+            }
+            if (request.messageLimit() != null) {
+                metadata.put("limit", request.messageLimit());
+            }
+            if (request.includeThreads() != null) {
+                metadata.put("includeThreads", request.includeThreads());
+            }
+
+            // Create source descriptor for Slack
+            DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
+                    .type(DocumentSourceDescriptor.SourceType.SLACK)
+                    .pathOrUrl(channelId)
+                    .sourceId("slack-" + channelId.replace("#", ""))
+                    .metadata(metadata)
+                    .build();
+
+            // Load documents using the document loading service
+            List<Document> documents = documentLoadingService.loadDocumentsFromSource(sourceDescriptor, "Slack Channel Loader");
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Slack messages loaded successfully");
+            response.put("channelId", channelId);
+            response.put("messageCount", documents.size());
+
+            // Index documents if IndexerService is available
+            if (indexerService != null && !documents.isEmpty()) {
+                logger.info("Indexing {} Slack messages from channel {}", documents.size(), channelId);
+                // Convert Spring AI Documents to RetrievedDocs
+                List<RetrievedDoc> retrievedDocs = documents.stream()
+                        .map(doc -> new RetrievedDoc(doc.getId(), doc.getText(), doc.getMetadata()))
+                        .collect(Collectors.toList());
+                indexerService.indexDocuments(retrievedDocs);
+                response.put("indexed", true);
+                response.put("processingNote", "Messages have been indexed successfully.");
+            } else {
+                response.put("indexed", false);
+                if (documents.isEmpty()) {
+                    response.put("processingNote", "No messages found in the channel.");
+                } else {
+                    response.put("processingNote", "IndexerService not available. Messages were loaded but not indexed.");
+                }
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error processing Slack channel {}: {}", request.channelId(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                            "error", "Failed to process Slack channel",
+                            "details", e.getMessage(),
+                            "channelId", request.channelId()
+                    ));
+        }
+    }
+
+    /**
+     * Endpoint to add Slack message history as a document source.
+     * Fetches historical messages from Slack channels for indexing.
+     *
+     * @param request The request containing channel IDs and date range
+     * @return Response with ingestion status
+     */
+    @PostMapping("/add-slack-history")
+    public ResponseEntity<?> handleAddSlackHistory(@RequestBody AddSlackHistoryRequest request) {
+        if (documentLoadingService == null) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "Document loading service is not available"));
+        }
+
+        if ((request.channelId() == null || request.channelId().trim().isEmpty()) && !Boolean.TRUE.equals(request.loadAllChannels())) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Slack channel ID is required unless loadAllChannels is true."));
+        }
+
+        try {
+            String channelId = request.channelId() != null ? request.channelId().trim() : "";
+            logger.info("Processing Slack history for channel(s): {}", channelId.isEmpty() ? "all channels" : channelId);
+
+            // Build metadata for the source descriptor
+            Map<String, Object> metadata = new HashMap<>();
+            if (request.token() != null && !request.token().isEmpty()) {
+                metadata.put("slackToken", request.token());
+            }
+            if (request.startDate() != null && !request.startDate().isEmpty()) {
+                metadata.put("startDate", request.startDate());
+            }
+            if (request.endDate() != null && !request.endDate().isEmpty()) {
+                metadata.put("endDate", request.endDate());
+            }
+            if (request.daysBack() != null) {
+                metadata.put("daysBack", request.daysBack());
+            }
+            if (request.maxMessages() != null) {
+                metadata.put("maxMessages", request.maxMessages());
+            }
+            if (request.includeThreads() != null) {
+                metadata.put("includeThreads", request.includeThreads());
+            }
+            if (Boolean.TRUE.equals(request.loadAllChannels())) {
+                metadata.put("loadAllChannels", true);
+            }
+
+            // Create source descriptor for Slack History
+            DocumentSourceDescriptor sourceDescriptor = DocumentSourceDescriptor.builder()
+                    .type(DocumentSourceDescriptor.SourceType.SLACK_HISTORY)
+                    .pathOrUrl(channelId)
+                    .sourceId("slack-history-" + (channelId.isEmpty() ? "all" : channelId.replace("#", "").replace(",", "-")))
+                    .metadata(metadata)
+                    .build();
+
+            // Load documents using the document loading service
+            List<Document> documents = documentLoadingService.loadDocumentsFromSource(sourceDescriptor, "Slack History Loader");
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("message", "Slack history loaded successfully");
+            response.put("channelId", channelId.isEmpty() ? "all accessible channels" : channelId);
+            response.put("messageCount", documents.size());
+            if (request.startDate() != null) {
+                response.put("startDate", request.startDate());
+            }
+            if (request.endDate() != null) {
+                response.put("endDate", request.endDate());
+            }
+            if (request.daysBack() != null) {
+                response.put("daysBack", request.daysBack());
+            }
+
+            // Index documents if IndexerService is available
+            if (indexerService != null && !documents.isEmpty()) {
+                logger.info("Indexing {} Slack history messages", documents.size());
+                // Convert Spring AI Documents to RetrievedDocs
+                List<RetrievedDoc> retrievedDocs = documents.stream()
+                        .map(doc -> new RetrievedDoc(doc.getId(), doc.getText(), doc.getMetadata()))
+                        .collect(Collectors.toList());
+                indexerService.indexDocuments(retrievedDocs);
+                response.put("indexed", true);
+                response.put("processingNote", "Messages have been indexed successfully.");
+            } else {
+                response.put("indexed", false);
+                if (documents.isEmpty()) {
+                    response.put("processingNote", "No messages found in the specified channels/time range.");
+                } else {
+                    response.put("processingNote", "IndexerService not available. Messages were loaded but not indexed.");
+                }
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error processing Slack history for {}: {}", request.channelId(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                            "error", "Failed to process Slack history",
+                            "details", e.getMessage(),
+                            "channelId", request.channelId() != null ? request.channelId() : "all"
+                    ));
+        }
+    }
+
     @GetMapping("/sources")
     public ResponseEntity<List<String>> listConfiguredSources() {
         List<String> sources = sourceProperties.getSources();
         if (sources == null || sources.isEmpty()) {
-            return ResponseEntity.ok(Collections.singletonList("No primary document sources configured in 'app.document.sources'. Uploaded files will be processed if uploads path is configured and included."));
+            return ResponseEntity.ok(Collections.singletonList(
+                    "No primary document sources configured in 'app.document.sources'. Uploaded files will be processed if uploads path is configured and included."));
         }
         return ResponseEntity.ok(sources);
     }
 
     @GetMapping("/uploaded-files")
     public ResponseEntity<?> listUploadedFiles() {
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server."));
         }
         try {
             if (!Files.exists(uploadsPath) || !Files.isDirectory(uploadsPath)) {
                 logger.info("Uploads directory does not exist or is not a directory: {}", uploadsPath);
-                return ResponseEntity.ok(Map.of("uploaded_files_location", uploadsPath.toString(), "files", Collections.emptyList()));
+                return ResponseEntity.ok(
+                        Map.of("uploaded_files_location", uploadsPath.toString(), "files", Collections.emptyList()));
             }
             List<Map<String, String>> fileDetails;
             try (Stream<Path> walk = Files.list(uploadsPath)) {
                 fileDetails = walk.filter(Files::isRegularFile)
                         .map(path -> Map.of(
                                 "fileName", path.getFileName().toString(),
-                                "filePath", path.toString()
-                        ))
+                                "filePath", path.toString()))
                         .collect(Collectors.toList());
             }
             return ResponseEntity.ok(Map.of("uploaded_files_location", uploadsPath.toString(), "files", fileDetails));
@@ -2048,7 +2703,8 @@ public class DocumentManagementController {
             @RequestParam(name = "loader", required = false) String loaderName,
             @RequestParam(name = "chunkerName", required = false) String chunkerName) {
 
-        if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
+        if (this.uploadsPath == null
+                || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Uploads directory is not configured correctly on the server."));
         }
@@ -2057,7 +2713,8 @@ public class DocumentManagementController {
             Path filePath = this.uploadsPath.resolve(fileName).normalize();
 
             if (!filePath.startsWith(this.uploadsPath.normalize())) {
-                return ResponseEntity.badRequest().body(Map.of("error", "Invalid file path (directory traversal attempt)."));
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid file path (directory traversal attempt)."));
             }
 
             if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
@@ -2130,9 +2787,10 @@ public class DocumentManagementController {
             status.put("uploadedFileCount", uploadedFileCount);
 
             status.put("systemReady", indexerAvailable && uploadsDirectoryReady && loaderCount > 0);
-            status.put("message", indexerAvailable && uploadsDirectoryReady && loaderCount > 0 ?
-                    "System is ready for document processing." :
-                    "System has some configuration issues that may affect document processing.");
+            status.put("message",
+                    indexerAvailable && uploadsDirectoryReady && loaderCount > 0
+                            ? "System is ready for document processing."
+                            : "System has some configuration issues that may affect document processing.");
 
             return ResponseEntity.ok(status);
 
@@ -2146,8 +2804,10 @@ public class DocumentManagementController {
     /**
      * Parse a processing mode string into a ProcessingMode enum.
      *
-     * @param modeString the mode string (case-insensitive): "auto", "subprocess", or "inprocess"
-     * @return the corresponding ProcessingMode enum value, defaults to AUTO for unrecognized values
+     * @param modeString the mode string (case-insensitive): "auto", "subprocess",
+     *                   or "inprocess"
+     * @return the corresponding ProcessingMode enum value, defaults to AUTO for
+     *         unrecognized values
      */
     private DocumentIngestService.ProcessingMode parseProcessingMode(String modeString) {
         if (modeString == null || modeString.isBlank()) {
@@ -2167,6 +2827,32 @@ public class DocumentManagementController {
     }
 
     /**
+     * Build subprocess options map from per-request parameters.
+     * Returns null if no options are specified (use global config).
+     */
+    private Map<String, Object> buildSubprocessOptions(String heapSize, Integer timeoutMinutes,
+            Integer heartbeatSeconds, Integer staleThresholdSeconds) {
+        // Only create options map if at least one value is provided
+        if (heapSize == null && timeoutMinutes == null && heartbeatSeconds == null && staleThresholdSeconds == null) {
+            return null;
+        }
+        Map<String, Object> options = new java.util.HashMap<>();
+        if (heapSize != null && !heapSize.isBlank()) {
+            options.put("heapSize", heapSize);
+        }
+        if (timeoutMinutes != null) {
+            options.put("timeoutMinutes", timeoutMinutes);
+        }
+        if (heartbeatSeconds != null) {
+            options.put("heartbeatSeconds", heartbeatSeconds);
+        }
+        if (staleThresholdSeconds != null) {
+            options.put("staleThresholdSeconds", staleThresholdSeconds);
+        }
+        return options.isEmpty() ? null : options;
+    }
+
+    /**
      * Get the list of available processing modes for document ingestion.
      * Useful for frontend UI to present options to the user.
      */
@@ -2178,18 +2864,16 @@ public class DocumentManagementController {
         modes.add(Map.of(
                 "value", "auto",
                 "label", "Auto (Use Global Setting)",
-                "description", "Use the global subprocess configuration to decide processing mode"
-        ));
+                "description", "Use the global subprocess configuration to decide processing mode"));
         modes.add(Map.of(
                 "value", "inprocess",
                 "label", "In-Process (Same JVM)",
-                "description", "Process in the same JVM - faster startup, easier debugging, but crashes affect main app"
-        ));
+                "description",
+                "Process in the same JVM - faster startup, easier debugging, but crashes affect main app"));
         modes.add(Map.of(
                 "value", "subprocess",
                 "label", "Subprocess (Isolated JVM)",
-                "description", "Process in a separate JVM - better isolation, crashes don't affect main app"
-        ));
+                "description", "Process in a separate JVM - better isolation, crashes don't affect main app"));
 
         response.put("modes", modes);
         response.put("default", "auto");

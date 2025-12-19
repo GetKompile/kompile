@@ -143,18 +143,32 @@ public class AnseriniLucene99FlatVectorFormat extends KnnVectorsFormat {
 
     @Override
     public void search(String field, float[] target, KnnCollector knnCollector, Bits acceptDocs) throws IOException {
-      collectAllMatchingDocs(knnCollector, acceptDocs, reader.getRandomVectorScorer(field, target));
+      RandomVectorScorer scorer = reader.getRandomVectorScorer(field, target);
+      if (scorer == null) {
+        System.err.println("[AnseriniLucene99FlatVectorReader] WARNING: scorer is null for field: " + field);
+        return;
+      }
+      System.err.println("[AnseriniLucene99FlatVectorReader] search: field=" + field +
+              ", targetDim=" + target.length + ", maxOrd=" + scorer.maxOrd());
+      collectAllMatchingDocs(knnCollector, acceptDocs, scorer);
     }
 
     private void collectAllMatchingDocs(KnnCollector knnCollector, Bits acceptDocs, RandomVectorScorer scorer) throws IOException {
       OrdinalTranslatedKnnCollector collector = new OrdinalTranslatedKnnCollector(knnCollector, scorer::ordToDoc);
       Bits acceptedOrds = scorer.getAcceptOrds(acceptDocs);
+      int collected = 0;
       for (int i = 0; i < scorer.maxOrd(); i++) {
         if (acceptedOrds == null || acceptedOrds.get(i)) {
-          collector.collect(i, scorer.score(i));
+          float score = scorer.score(i);
+          collector.collect(i, score);
           collector.incVisitedCount(1);
+          collected++;
+          if (collected <= 3) {
+            System.err.println("[AnseriniLucene99FlatVectorReader] collected ord=" + i + ", score=" + score);
+          }
         }
       }
+      System.err.println("[AnseriniLucene99FlatVectorReader] total collected: " + collected);
       assert collector.earlyTerminated() == false;
     }
 

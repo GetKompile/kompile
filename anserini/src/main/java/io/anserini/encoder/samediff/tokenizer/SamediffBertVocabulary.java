@@ -56,9 +56,14 @@ public class SamediffBertVocabulary {
         this.idToToken = new HashMap<>();
         this.unknownTokenValue = unknownTokenValue != null ? unknownTokenValue : DEFAULT_UNKNOWN_TOKEN;
 
+        System.err.println("[VocabLoad] Loading vocabulary from: " + vocabFile.getAbsolutePath());
+        System.err.println("[VocabLoad] File exists: " + vocabFile.exists() + ", size: " + vocabFile.length() + " bytes");
+
         int index = 0;
         try (InputStream is = new FileInputStream(vocabFile)) {
             List<String> lines = IOUtils.readLines(is, StandardCharsets.UTF_8);
+            System.err.println("[VocabLoad] Read " + lines.size() + " lines from vocab file");
+
             for (String line : lines) {
                 String token = line.trim();
                 if (!token.isEmpty()) {
@@ -68,6 +73,13 @@ public class SamediffBertVocabulary {
                 }
             }
         }
+
+        System.err.println("[VocabLoad] Loaded " + tokenToId.size() + " tokens into vocabulary");
+        System.err.println("[VocabLoad] Sample: [PAD]=" + tokenToId.get("[PAD]") +
+                ", [UNK]=" + tokenToId.get("[UNK]") +
+                ", [CLS]=" + tokenToId.get("[CLS]") +
+                ", 'the'=" + tokenToId.get("the") +
+                ", 'hello'=" + tokenToId.get("hello"));
 
         if (tokenToId.containsKey(this.unknownTokenValue)) {
             this.unknownTokenId = tokenToId.get(this.unknownTokenValue);
@@ -81,6 +93,8 @@ public class SamediffBertVocabulary {
                 this.unknownTokenId = 0; // Should not happen with a valid vocab
             }
         }
+        System.err.println("[VocabLoad] UnknownTokenId: " + this.unknownTokenId);
+        System.err.flush();
     }
 
     public int getTokenId(String token) {

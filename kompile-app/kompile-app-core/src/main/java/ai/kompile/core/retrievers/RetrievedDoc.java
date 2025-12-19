@@ -16,6 +16,8 @@
 
 package ai.kompile.core.retrievers;
 
+import ai.kompile.core.source.SourceAttributionHelper;
+import ai.kompile.core.source.SourceMetadataConstants;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -23,9 +25,11 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.EqualsAndHashCode;
 import lombok.ToString;
 
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -283,6 +287,153 @@ public class RetrievedDoc {
         this.contentFormatter = contentFormatter;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SOURCE ATTRIBUTION METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Gets the original source path for this document.
+     * @return Optional containing the source file path, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getSourcePath() {
+        return SourceAttributionHelper.getSourcePath(this.metadata);
+    }
+
+    /**
+     * Gets the original source URL for this document.
+     * @return Optional containing the source URL, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getSourceUrl() {
+        return SourceAttributionHelper.getSourceUrl(this.metadata);
+    }
+
+    /**
+     * Gets the source identifier for this document.
+     * @return Optional containing the source ID, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getSourceId() {
+        return SourceAttributionHelper.getSourceId(this.metadata);
+    }
+
+    /**
+     * Gets the path to the stored copy of this document in Kompile's managed storage.
+     * @return Optional containing the stored copy path, empty if not available
+     */
+    @JsonIgnore
+    public Optional<Path> getStoredCopyPath() {
+        return SourceAttributionHelper.getStoredCopyPath(this.metadata);
+    }
+
+    /**
+     * Gets the SHA-256 checksum of the original source document.
+     * @return Optional containing the checksum, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getChecksum() {
+        return SourceAttributionHelper.getChecksum(this.metadata);
+    }
+
+    /**
+     * Gets the original filename of the source document.
+     * @return Optional containing the filename, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getSourceFilename() {
+        return SourceAttributionHelper.getFilename(this.metadata);
+    }
+
+    /**
+     * Gets the best available source location (prefers path over URL).
+     * @return Optional containing the source location, empty if not available
+     */
+    @JsonIgnore
+    public Optional<String> getSourceLocation() {
+        return SourceAttributionHelper.getSourceLocation(this.metadata);
+    }
+
+    /**
+     * Gets the best available reference for citing this document's source.
+     * Priority: stored_copy_path > source_path > source_url > source_id
+     * @return Optional containing citation reference, empty if no source info available
+     */
+    @JsonIgnore
+    public Optional<String> getCitationReference() {
+        return SourceAttributionHelper.getCitationReference(this.metadata);
+    }
+
+    /**
+     * Gets the page number if this document came from a paginated source.
+     * @return Optional containing page number (1-indexed), empty if not available
+     */
+    @JsonIgnore
+    public Optional<Integer> getPageNumber() {
+        return SourceAttributionHelper.getPageNumber(this.metadata);
+    }
+
+    /**
+     * Gets the chunk index if this document is a chunk of a larger document.
+     * @return Optional containing chunk index (0-indexed), empty if not available
+     */
+    @JsonIgnore
+    public Optional<Integer> getChunkIndex() {
+        return SourceAttributionHelper.getChunkIndex(this.metadata);
+    }
+
+    /**
+     * Checks if this document has source attribution information.
+     * @return true if source_id, source_path, or source_url is present in metadata
+     */
+    @JsonIgnore
+    public boolean hasSourceAttribution() {
+        return SourceAttributionHelper.hasSourceAttribution(this.metadata);
+    }
+
+    /**
+     * Gets a formatted citation string for this document.
+     * Format: "[filename] (page X)" or "[source_id]" depending on available metadata.
+     * @return Formatted citation string, or "Unknown source" if no attribution available
+     */
+    @JsonIgnore
+    public String getFormattedCitation() {
+        StringBuilder sb = new StringBuilder();
+
+        Optional<String> filename = getSourceFilename();
+        Optional<String> sourceId = getSourceId();
+        Optional<Integer> pageNum = getPageNumber();
+        Optional<Integer> chunkIdx = getChunkIndex();
+
+        if (filename.isPresent()) {
+            sb.append(filename.get());
+        } else if (sourceId.isPresent()) {
+            sb.append(sourceId.get());
+        } else {
+            Optional<String> location = getSourceLocation();
+            if (location.isPresent()) {
+                // Extract just the filename from path
+                String loc = location.get();
+                int lastSlash = Math.max(loc.lastIndexOf('/'), loc.lastIndexOf('\\'));
+                if (lastSlash >= 0 && lastSlash < loc.length() - 1) {
+                    sb.append(loc.substring(lastSlash + 1));
+                } else {
+                    sb.append(loc);
+                }
+            } else {
+                return "Unknown source";
+            }
+        }
+
+        if (pageNum.isPresent()) {
+            sb.append(" (page ").append(pageNum.get()).append(")");
+        } else if (chunkIdx.isPresent()) {
+            sb.append(" (chunk ").append(chunkIdx.get() + 1).append(")");
+        }
+
+        return sb.toString();
+    }
+
     public Builder mutate() {
         return new Builder().id(this.id).text(this.text).media(this.media).metadata(this.metadata).score(this.score);
     }
@@ -390,6 +541,119 @@ public class RetrievedDoc {
         @Deprecated
         public Builder content(String content) {
             return this.text(content);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // SOURCE ATTRIBUTION BUILDER METHODS
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        /**
+         * Sets the source path metadata.
+         * @param path Path to the original source document
+         * @return the builder instance
+         */
+        public Builder sourcePath(String path) {
+            if (path != null) {
+                this.metadata.put(SourceMetadataConstants.SOURCE_PATH, path);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the source URL metadata.
+         * @param url URL of the original source document
+         * @return the builder instance
+         */
+        public Builder sourceUrl(String url) {
+            if (url != null) {
+                this.metadata.put(SourceMetadataConstants.SOURCE_URL, url);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the source ID metadata.
+         * @param sourceId Unique identifier for the source
+         * @return the builder instance
+         */
+        public Builder sourceId(String sourceId) {
+            if (sourceId != null) {
+                this.metadata.put(SourceMetadataConstants.SOURCE_ID, sourceId);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the source filename metadata.
+         * @param filename Original filename
+         * @return the builder instance
+         */
+        public Builder sourceFilename(String filename) {
+            if (filename != null) {
+                this.metadata.put(SourceMetadataConstants.SOURCE_FILENAME, filename);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the stored copy path metadata.
+         * @param storedPath Path to the stored copy in Kompile's document storage
+         * @return the builder instance
+         */
+        public Builder storedCopyPath(String storedPath) {
+            if (storedPath != null) {
+                this.metadata.put(SourceMetadataConstants.STORED_COPY_PATH, storedPath);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the source checksum metadata.
+         * @param checksum SHA-256 checksum of the source document
+         * @return the builder instance
+         */
+        public Builder checksum(String checksum) {
+            if (checksum != null) {
+                this.metadata.put(SourceMetadataConstants.SOURCE_CHECKSUM, checksum);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the page number metadata.
+         * @param pageNumber Page number (1-indexed)
+         * @return the builder instance
+         */
+        public Builder pageNumber(int pageNumber) {
+            if (pageNumber > 0) {
+                this.metadata.put(SourceMetadataConstants.PAGE_NUMBER, pageNumber);
+            }
+            return this;
+        }
+
+        /**
+         * Sets the chunk index metadata.
+         * @param chunkIndex Chunk index (0-indexed)
+         * @return the builder instance
+         */
+        public Builder chunkIndex(int chunkIndex) {
+            if (chunkIndex >= 0) {
+                this.metadata.put(SourceMetadataConstants.CHUNK_INDEX, chunkIndex);
+            }
+            return this;
+        }
+
+        /**
+         * Copies source attribution from an existing document.
+         * This preserves source tracking when creating derived documents (chunks).
+         * @param source Source document to copy attribution from
+         * @return the builder instance
+         */
+        public Builder copySourceAttribution(RetrievedDoc source) {
+            if (source != null && source.getMetadata() != null) {
+                SourceAttributionHelper.preserveSourceMetadata(source.getMetadata(), this.metadata);
+            }
+            return this;
         }
 
         public RetrievedDoc build() {

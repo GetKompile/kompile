@@ -45,15 +45,222 @@
   margin-bottom: 16px;
 }
 
-.source-type-radio-group {
-  display: flex;
-  gap: 20px; /* Spacing between radio buttons */
-  margin-top: 8px;
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SOURCE TYPE SELECTOR - Card-based selection
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.source-type-selector {
   margin-bottom: 24px;
 }
 
-.source-type-radio-button {
-  /* Add some margin if needed or use gap in flex container */
+.source-type-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.source-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.source-type-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  text-align: center;
+  min-height: 90px;
+}
+
+.source-type-card:hover:not(.disabled) {
+  border-color: #1976d2;
+  background: #f8fbff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.15);
+}
+
+.source-type-card.selected {
+  border-color: #1976d2;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.2);
+}
+
+.source-type-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.source-type-card .source-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: #666;
+  transition: color 0.2s ease;
+}
+
+.source-type-card:hover:not(.disabled) .source-icon,
+.source-type-card.selected .source-icon {
+  color: #1976d2;
+}
+
+.source-type-card .source-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  line-height: 1.2;
+}
+
+.source-type-card .source-desc {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.2;
+}
+
+.source-type-card .check-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #1976d2;
+}
+
+/* Brand-specific colors for different sources */
+
+/* YouTube - Red */
+.source-type-card.youtube:hover:not(.disabled) {
+  border-color: #c4302b;
+  background: #fff5f5;
+}
+
+.source-type-card.youtube.selected {
+  border-color: #c4302b;
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+}
+
+.source-type-card.youtube:hover:not(.disabled) .source-icon,
+.source-type-card.youtube.selected .source-icon {
+  color: #c4302b;
+}
+
+.source-type-card.youtube.selected .check-icon {
+  color: #c4302b;
+}
+
+/* Discord - Purple/Blue */
+.source-type-card.discord:hover:not(.disabled) {
+  border-color: #5865F2;
+  background: #f5f6ff;
+}
+
+.source-type-card.discord.selected {
+  border-color: #5865F2;
+  background: linear-gradient(135deg, #eef0ff 0%, #d4d8ff 100%);
+}
+
+.source-type-card.discord:hover:not(.disabled) .source-icon,
+.source-type-card.discord.selected .source-icon {
+  color: #5865F2;
+}
+
+.source-type-card.discord.selected .check-icon {
+  color: #5865F2;
+}
+
+/* Slack - Green/Teal */
+.source-type-card.slack:hover:not(.disabled) {
+  border-color: #4A154B;
+  background: #faf5fa;
+}
+
+.source-type-card.slack.selected {
+  border-color: #4A154B;
+  background: linear-gradient(135deg, #f8eaf8 0%, #e8d0e8 100%);
+}
+
+.source-type-card.slack:hover:not(.disabled) .source-icon,
+.source-type-card.slack.selected .source-icon {
+  color: #4A154B;
+}
+
+.source-type-card.slack.selected .check-icon {
+  color: #4A154B;
+}
+
+/* Confluence - Blue */
+.source-type-card.confluence:hover:not(.disabled) {
+  border-color: #0052CC;
+  background: #f5f8ff;
+}
+
+.source-type-card.confluence.selected {
+  border-color: #0052CC;
+  background: linear-gradient(135deg, #e6f0ff 0%, #cce0ff 100%);
+}
+
+.source-type-card.confluence:hover:not(.disabled) .source-icon,
+.source-type-card.confluence.selected .source-icon {
+  color: #0052CC;
+}
+
+.source-type-card.confluence.selected .check-icon {
+  color: #0052CC;
+}
+
+/* Responsive adjustments for source type grid */
+@media (max-width: 600px) {
+  .source-type-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .source-type-card {
+    padding: 12px 8px;
+    min-height: 80px;
+  }
+
+  .source-type-card .source-icon {
+    font-size: 24px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .source-type-card .source-name {
+    font-size: 11px;
+  }
+
+  .source-type-card .source-desc {
+    font-size: 9px;
+  }
+
+  .source-type-card .check-icon {
+    font-size: 14px;
+    width: 14px;
+    height: 14px;
+    top: 4px;
+    right: 4px;
+  }
+}
+
+@media (max-width: 400px) {
+  .source-type-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 
@@ -2184,6 +2391,25 @@ mat-dialog-actions button mat-icon {
   font-weight: 500;
 }
 
+/* Auto mode indicator showing current global setting */
+.auto-indicator {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+.auto-indicator.subprocess-active {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.auto-indicator.inprocess-active {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
 .processing-mode-selector .mode-description {
   display: flex;
   align-items: flex-start;
@@ -2245,3 +2471,572 @@ mat-dialog-actions button mat-icon {
     width: 100%;
   }
 }
+
+/* YouTube Transcript Section */
+.youtube-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.youtube-section h4 .section-icon {
+  color: #c4302b;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.youtube-section .section-description {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.youtube-options {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.youtube-options .language-field {
+  min-width: 200px;
+  flex: 1;
+  max-width: 300px;
+}
+
+.youtube-options .save-transcript-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 16px;
+}
+
+.youtube-options .save-transcript-checkbox .info-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #9e9e9e;
+  cursor: help;
+  margin-left: 4px;
+}
+
+.youtube-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+.youtube-info-box mat-icon {
+  color: #1976d2;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.youtube-info-box .info-content {
+  flex: 1;
+  color: #555;
+}
+
+.youtube-info-box .info-content strong {
+  color: #333;
+}
+
+.youtube-info-box .info-content ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.youtube-info-box .info-content li {
+  margin-bottom: 4px;
+}
+
+/* YouTube URL validation icon colors */
+.youtube-section mat-form-field .mat-icon {
+  transition: color 0.2s ease;
+}
+
+.youtube-section mat-form-field .mat-icon[color="primary"] {
+  color: #4caf50 !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   DISCORD MESSAGES SECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.discord-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.discord-section h4 .section-icon {
+  color: #5865F2;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.discord-section .section-description {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.discord-options {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.discord-options .message-limit-field {
+  min-width: 200px;
+  flex: 1;
+  max-width: 300px;
+}
+
+.discord-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.discord-toggles mat-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.discord-toggles .info-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #9e9e9e;
+  cursor: help;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.discord-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f0f2f5;
+  border-radius: 8px;
+  margin-top: 16px;
+  font-size: 13px;
+  border-left: 4px solid #5865F2;
+}
+
+.discord-info-box mat-icon {
+  color: #5865F2;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.discord-info-box .info-content {
+  flex: 1;
+  color: #555;
+}
+
+.discord-info-box .info-content strong {
+  color: #333;
+}
+
+.discord-info-box .info-content ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.discord-info-box .info-content li {
+  margin-bottom: 4px;
+}
+
+.discord-info-box .info-content a {
+  color: #5865F2;
+  text-decoration: none;
+}
+
+.discord-info-box .info-content a:hover {
+  text-decoration: underline;
+}
+
+/* Discord URL validation icon colors */
+.discord-section mat-form-field .mat-icon {
+  transition: color 0.2s ease;
+}
+
+.discord-section mat-form-field .mat-icon[color="primary"] {
+  color: #4caf50 !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   CONFLUENCE PAGES SECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.confluence-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confluence-section h4 .section-icon {
+  color: #0052CC;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.confluence-section .section-description {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.confluence-auth-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.confluence-auth-row .email-field,
+.confluence-auth-row .token-field {
+  width: 100%;
+}
+
+.confluence-options {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.confluence-options mat-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.confluence-options mat-checkbox .info-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  color: #666;
+  vertical-align: middle;
+}
+
+.confluence-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(0, 82, 204, 0.05) 0%, rgba(0, 82, 204, 0.02) 100%);
+  border: 1px solid rgba(0, 82, 204, 0.2);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.confluence-info-box > mat-icon {
+  color: #0052CC;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.confluence-info-box .info-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #333;
+}
+
+.confluence-info-box .info-content ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.confluence-info-box .info-content li {
+  margin-bottom: 4px;
+}
+
+.confluence-info-box .info-content a {
+  color: #0052CC;
+  text-decoration: none;
+}
+
+.confluence-info-box .info-content a:hover {
+  text-decoration: underline;
+}
+
+/* Confluence URL validation icon colors */
+.confluence-section mat-form-field .mat-icon {
+  transition: color 0.2s ease;
+}
+
+.confluence-section mat-form-field .mat-icon[color="primary"] {
+  color: #4caf50 !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .confluence-auth-row {
+    grid-template-columns: 1fr;
+  }
+
+  .confluence-options {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TEXT/CLIPBOARD INPUT SECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.text-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px 0;
+}
+
+.text-section h4 .section-icon {
+  color: #673ab7;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.text-section .section-description {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+/* Paste Button Container */
+.paste-button-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f3e5f5 0%, #e8eaf6 100%);
+  border-radius: 12px;
+  border: 2px dashed #9575cd;
+}
+
+/* Large, touch-friendly paste button for mobile */
+.paste-clipboard-btn {
+  min-width: 240px;
+  min-height: 56px;
+  font-size: 16px !important;
+  font-weight: 500 !important;
+  border-radius: 28px !important;
+  padding: 12px 32px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: linear-gradient(135deg, #7e57c2 0%, #673ab7 100%) !important;
+  color: white !important;
+  box-shadow: 0 4px 12px rgba(103, 58, 183, 0.3) !important;
+  transition: all 0.2s ease !important;
+  /* Make touch target larger for mobile */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.paste-clipboard-btn:hover:not([disabled]) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(103, 58, 183, 0.4) !important;
+}
+
+.paste-clipboard-btn:active:not([disabled]) {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(103, 58, 183, 0.3) !important;
+}
+
+.paste-clipboard-btn[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.paste-clipboard-btn mat-icon {
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.paste-hint {
+  font-size: 12px;
+  color: #7e57c2;
+  text-align: center;
+}
+
+/* Clipboard Error Message */
+.clipboard-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #ffebee;
+  border: 1px solid #ef9a9a;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: #c62828;
+}
+
+.clipboard-error mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #e53935;
+  flex-shrink: 0;
+}
+
+/* Text Input Field */
+.text-input-field textarea {
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 150px;
+}
+
+/* Text Stats */
+.text-stats {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #f5f5f5 0%, #eeeeee 100%);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.text-stats .stat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #555;
+}
+
+.text-stats .stat-item mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #673ab7;
+}
+
+.text-stats .clear-text-btn {
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+}
+
+.text-stats .clear-text-btn mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #999;
+}
+
+.text-stats .clear-text-btn:hover mat-icon {
+  color: #f44336;
+}
+
+/* Text Info Box */
+.text-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, rgba(103, 58, 183, 0.05) 0%, rgba(103, 58, 183, 0.02) 100%);
+  border: 1px solid rgba(103, 58, 183, 0.2);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.text-info-box > mat-icon {
+  color: #673ab7;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.text-info-box .info-content {
+  flex: 1;
+  line-height: 1.5;
+  color: #333;
+}
+
+.text-info-box .info-content strong {
+  color: #673ab7;
+}
+
+.text-info-box .info-content ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.text-info-box .info-content li {
+  margin-bottom: 4px;
+  color: #555;
+}
+
+/* Responsive adjustments for text section */
+@media (max-width: 600px) {
+  .paste-button-container {
+    padding: 20px 16px;
+  }
+
+  .paste-clipboard-btn {
+    width: 100%;
+    min-width: auto;
+    min-height: 64px;
+    font-size: 18px !important;
+    padding: 16px 24px !important;
+  }
+
+  .paste-hint {
+    font-size: 14px;
+  }
+
+  .text-stats {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .text-stats .clear-text-btn {
+    margin-left: 0;
+    align-self: flex-end;
+  }
+
+  .text-info-box {
+    flex-direction: column;
+  }
+}
+

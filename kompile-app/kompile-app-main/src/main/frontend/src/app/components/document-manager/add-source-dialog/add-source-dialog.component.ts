@@ -31,6 +31,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
+import { TextFieldModule } from '@angular/cdk/text-field';
 import { Subscription, merge, startWith } from 'rxjs';
 import { trigger, state, style, transition, animate } from '@angular/animations';
 
@@ -79,11 +80,40 @@ export interface AddSourceDialogData {
 // AddSourceDialogResult is now imported from api-models.ts
 
 interface AddSourceFormModel {
-  sourceType: FormControl<'file' | 'url'>;
+  sourceType: FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence'>;
   urlInput: FormControl<string | null>;
+  pathInput: FormControl<string | null>;
   fileNameInput: FormControl<string | null>;
   loaderSelect: FormControl<string | null>;
   rebuildIndex: FormControl<boolean>; // Added for the checkbox
+  textInput: FormControl<string | null>; // For pasting text content
+  textSourceName: FormControl<string | null>; // Optional name for the text source
+  youtubeUrl: FormControl<string | null>;
+  youtubeLanguage: FormControl<string | null>;
+  saveTranscriptFile: FormControl<boolean>;
+  // Discord form controls
+  discordServerId: FormControl<string | null>;
+  discordChannelId: FormControl<string | null>;
+  discordBotToken: FormControl<string | null>;
+  discordMessageLimit: FormControl<number>;
+  discordIncludeThreads: FormControl<boolean>;
+  saveDiscordMessages: FormControl<boolean>;
+  // Slack form controls
+  slackChannelId: FormControl<string | null>;
+  slackToken: FormControl<string | null>;
+  slackMessageLimit: FormControl<number>;
+  slackIncludeThreads: FormControl<boolean>;
+  slackStartDate: FormControl<string | null>;
+  slackEndDate: FormControl<string | null>;
+  slackDaysBack: FormControl<number>;
+  slackLoadAllChannels: FormControl<boolean>;
+  // Confluence form controls
+  confluenceBaseUrl: FormControl<string | null>;
+  confluenceEmail: FormControl<string | null>;
+  confluenceApiToken: FormControl<string | null>;
+  confluenceSpaceKey: FormControl<string | null>;
+  confluenceIncludeChildren: FormControl<boolean>;
+  confluenceIncludeAttachments: FormControl<boolean>;
 }
 
 @Component({
@@ -109,7 +139,8 @@ interface AddSourceFormModel {
     MatSlideToggleModule,
     MatChipsModule,
     MatTooltipModule,
-    MatDividerModule
+    MatDividerModule,
+    TextFieldModule
   ],
   animations: [
     trigger('expandCollapse', [
@@ -185,18 +216,66 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
 
   // Processing mode selection (per-request override)
   selectedProcessingMode: 'auto' | 'subprocess' | 'inprocess' = 'auto';
-  processingModeOptions: Array<{value: 'auto' | 'subprocess' | 'inprocess', label: string, description: string, icon: string}> = [
-    { value: 'auto', label: 'Auto (Use Global Setting)', description: 'Use the global subprocess configuration to decide processing mode', icon: 'settings_suggest' },
-    { value: 'inprocess', label: 'In-Process (Same JVM)', description: 'Process in the main application - faster startup, better for debugging', icon: 'memory' },
-    { value: 'subprocess', label: 'Subprocess (Isolated JVM)', description: 'Process in separate JVM - crash isolation, better stability', icon: 'launch' }
+  processingModeOptions: Array<{ value: 'auto' | 'subprocess' | 'inprocess', label: string, description: string, icon: string }> = [
+    { value: 'auto', label: 'Auto (Use Global Setting)', description: 'Use the global subprocess configuration from Developer Hub > Processing Settings', icon: 'settings_suggest' },
+    { value: 'subprocess', label: 'Subprocess (Isolated JVM)', description: 'Process in separate JVM - crash isolation, better stability (Recommended)', icon: 'launch' },
+    { value: 'inprocess', label: 'In-Process (Same JVM)', description: 'Process in the main application - faster startup, better for debugging', icon: 'memory' }
   ];
 
   /**
    * Get the description for the currently selected processing mode.
+   * When 'auto' is selected, also shows what the current global setting is.
    */
   getSelectedProcessingModeDescription(): string {
     const mode = this.processingModeOptions.find(m => m.value === this.selectedProcessingMode);
-    return mode?.description || '';
+    if (!mode) return '';
+
+    // For 'auto' mode, show what the current global setting will result in
+    if (this.selectedProcessingMode === 'auto') {
+      const globalStatus = this.subprocessConfig.enabled ? 'Subprocess (isolated JVM)' : 'In-Process (same JVM)';
+      return `${mode.description}. Current global setting: ${globalStatus}`;
+    }
+
+    return mode.description;
+  }
+
+  /**
+   * Handle processing mode selection.
+   * Sets the selected processing mode for this specific upload request.
+   */
+  onProcessingModeSelect(mode: 'auto' | 'subprocess' | 'inprocess'): void {
+    this.selectedProcessingMode = mode;
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Determines if subprocess mode is active for configuration display purposes.
+   * Returns true when subprocess options should be shown (either explicit subprocess
+   * selection or auto mode with global subprocess enabled).
+   */
+  isSubprocessModeActive(): boolean {
+    if (this.selectedProcessingMode === 'subprocess') {
+      return true;
+    }
+    if (this.selectedProcessingMode === 'auto' && this.subprocessConfig.enabled) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Determines if in-process mode is active for warning display purposes.
+   * Returns true when in-process mode will be used (either explicit in-process
+   * selection or auto mode with global subprocess disabled).
+   */
+  isInProcessModeActive(): boolean {
+    if (this.selectedProcessingMode === 'inprocess') {
+      return true;
+    }
+    if (this.selectedProcessingMode === 'auto' && !this.subprocessConfig.enabled) {
+      return true;
+    }
+    return false;
   }
 
   private subscriptions: Subscription = new Subscription();
@@ -212,13 +291,68 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   ) {
     this.availableLoaders = this.data.availableLoaders;
     this.addSourceForm = this.fb.group<AddSourceFormModel>({
-      sourceType: new FormControl<'file' | 'url'>('file', { nonNullable: true, validators: Validators.required }),
+      sourceType: new FormControl<'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'confluence'>('file', { nonNullable: true, validators: Validators.required }),
       urlInput: new FormControl('', { validators: [Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)] }),
+      pathInput: new FormControl(''),
       fileNameInput: new FormControl(''),
       loaderSelect: new FormControl(''),
-      rebuildIndex: new FormControl(false, { nonNullable: true }) // Initialize checkbox form control
+      rebuildIndex: new FormControl(false, { nonNullable: true }), // Initialize checkbox form control
+      textInput: new FormControl(''), // For pasting text content
+      textSourceName: new FormControl(''), // Optional name for text source
+      youtubeUrl: new FormControl('', { validators: [Validators.pattern(/^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)[a-zA-Z0-9_-]{11}/)] }),
+      youtubeLanguage: new FormControl('en'),
+      saveTranscriptFile: new FormControl(true, { nonNullable: true }),
+      // Discord form controls
+      discordServerId: new FormControl(''),
+      discordChannelId: new FormControl(''),
+      discordBotToken: new FormControl(''),
+      discordMessageLimit: new FormControl(1000, { nonNullable: true }),
+      discordIncludeThreads: new FormControl(false, { nonNullable: true }),
+      saveDiscordMessages: new FormControl(true, { nonNullable: true }),
+      // Slack form controls
+      slackChannelId: new FormControl(''),
+      slackToken: new FormControl(''),
+      slackMessageLimit: new FormControl(100, { nonNullable: true }),
+      slackIncludeThreads: new FormControl(true, { nonNullable: true }),
+      slackStartDate: new FormControl(''),
+      slackEndDate: new FormControl(''),
+      slackDaysBack: new FormControl(30, { nonNullable: true }),
+      slackLoadAllChannels: new FormControl(false, { nonNullable: true }),
+      // Confluence form controls
+      confluenceBaseUrl: new FormControl('', { validators: [Validators.pattern(/^https?:\/\/.+/i)] }),
+      confluenceEmail: new FormControl('', { validators: [Validators.email] }),
+      confluenceApiToken: new FormControl(''),
+      confluenceSpaceKey: new FormControl(''),
+      confluenceIncludeChildren: new FormControl(true, { nonNullable: true }),
+      confluenceIncludeAttachments: new FormControl(false, { nonNullable: true })
     });
   }
+
+  // Available language options for YouTube transcripts
+  youtubeLanguages = [
+    { code: 'en', name: 'English' },
+    { code: 'es', name: 'Spanish' },
+    { code: 'fr', name: 'French' },
+    { code: 'de', name: 'German' },
+    { code: 'it', name: 'Italian' },
+    { code: 'pt', name: 'Portuguese' },
+    { code: 'ru', name: 'Russian' },
+    { code: 'ja', name: 'Japanese' },
+    { code: 'ko', name: 'Korean' },
+    { code: 'zh', name: 'Chinese' },
+    { code: 'ar', name: 'Arabic' },
+    { code: 'hi', name: 'Hindi' }
+  ];
+
+  // Discord message limit options
+  discordMessageLimitOptions = [
+    { value: 100, label: '100 messages' },
+    { value: 500, label: '500 messages' },
+    { value: 1000, label: '1,000 messages' },
+    { value: 5000, label: '5,000 messages' },
+    { value: 10000, label: '10,000 messages' },
+    { value: 0, label: 'All messages (no limit)' }
+  ];
 
   ngOnInit(): void {
     // Merge backend chunkers with static list if available
@@ -268,7 +402,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     for (const backendChunker of this.data.availableChunkers) {
       // Skip noop chunkers
       if (backendChunker.name.toLowerCase().includes('noop') ||
-          backendChunker.name.toLowerCase().includes('no-op')) {
+        backendChunker.name.toLowerCase().includes('no-op')) {
         continue;
       }
 
@@ -314,6 +448,15 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   private updateValidatorsBasedOnSourceType(): void {
     const sourceType = this.addSourceForm.controls.sourceType.value;
     const urlControl = this.addSourceForm.controls.urlInput;
+    const pathControl = this.addSourceForm.controls.pathInput;
+    const textInputControl = this.addSourceForm.controls.textInput;
+    const youtubeUrlControl = this.addSourceForm.controls.youtubeUrl;
+    const discordServerIdControl = this.addSourceForm.controls.discordServerId;
+    const discordBotTokenControl = this.addSourceForm.controls.discordBotToken;
+    const confluenceBaseUrlControl = this.addSourceForm.controls.confluenceBaseUrl;
+    const confluenceEmailControl = this.addSourceForm.controls.confluenceEmail;
+    const confluenceApiTokenControl = this.addSourceForm.controls.confluenceApiToken;
+    const confluenceSpaceKeyControl = this.addSourceForm.controls.confluenceSpaceKey;
 
     if (sourceType !== 'file') {
       this.selectedFile = null;
@@ -323,16 +466,66 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       if (fileInput) fileInput.value = '';
     }
 
+    // Clear all validators first
+    urlControl.clearValidators();
+    pathControl.clearValidators();
+    textInputControl.clearValidators();
+    youtubeUrlControl.clearValidators();
+    discordServerIdControl.clearValidators();
+    discordBotTokenControl.clearValidators();
+    confluenceBaseUrlControl.clearValidators();
+    confluenceEmailControl.clearValidators();
+    confluenceApiTokenControl.clearValidators();
+    confluenceSpaceKeyControl.clearValidators();
+
     if (sourceType === 'file') {
-      urlControl.clearValidators();
       urlControl.setValidators([Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)]);
-    } else { // 'url'
+    } else if (sourceType === 'url') {
       urlControl.setValidators([
         Validators.required,
         Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)
       ]);
+    } else if (sourceType === 'path') {
+      urlControl.setValidators([Validators.pattern(/^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i)]);
+      pathControl.setValidators([Validators.required]);
+    } else if (sourceType === 'text') {
+      textInputControl.setValidators([Validators.required, Validators.minLength(1)]);
+    } else if (sourceType === 'youtube') {
+      youtubeUrlControl.setValidators([
+        Validators.required,
+        Validators.pattern(/^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)[a-zA-Z0-9_-]{11}/)
+      ]);
+    } else if (sourceType === 'discord') {
+      discordServerIdControl.setValidators([
+        Validators.required,
+        Validators.pattern(/^\d{17,19}$/) // Discord IDs are 17-19 digit snowflakes
+      ]);
+      discordBotTokenControl.setValidators([Validators.required]);
+    } else if (sourceType === 'slack' || sourceType === 'slack_history') {
+      const slackChannelIdControl = this.addSourceForm.controls.slackChannelId;
+      slackChannelIdControl.setValidators([Validators.required]);
+    } else if (sourceType === 'confluence') {
+      confluenceBaseUrlControl.setValidators([
+        Validators.required,
+        Validators.pattern(/^https?:\/\/.+/i)
+      ]);
+      confluenceEmailControl.setValidators([Validators.required, Validators.email]);
+      confluenceApiTokenControl.setValidators([Validators.required]);
+      confluenceSpaceKeyControl.setValidators([Validators.required]);
     }
+
     urlControl.updateValueAndValidity({ emitEvent: false });
+    pathControl.updateValueAndValidity({ emitEvent: false });
+    textInputControl.updateValueAndValidity({ emitEvent: false });
+    youtubeUrlControl.updateValueAndValidity({ emitEvent: false });
+    discordServerIdControl.updateValueAndValidity({ emitEvent: false });
+    discordBotTokenControl.updateValueAndValidity({ emitEvent: false });
+    const slackChannelIdControl = this.addSourceForm.controls.slackChannelId;
+    slackChannelIdControl.updateValueAndValidity({ emitEvent: false });
+    confluenceBaseUrlControl.updateValueAndValidity({ emitEvent: false });
+    confluenceEmailControl.updateValueAndValidity({ emitEvent: false });
+    confluenceApiTokenControl.updateValueAndValidity({ emitEvent: false });
+    confluenceSpaceKeyControl.updateValueAndValidity({ emitEvent: false });
     this.updateSubmitButtonState();
     this.cdr.markForCheck();
   }
@@ -347,11 +540,102 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       }
     } else if (sourceType === 'url') {
       isValid = this.addSourceForm.controls.urlInput.valid;
+    } else if (sourceType === 'path') {
+      isValid = this.addSourceForm.controls.pathInput.valid;
+    } else if (sourceType === 'text') {
+      isValid = this.addSourceForm.controls.textInput.valid &&
+                !!this.addSourceForm.controls.textInput.value?.trim();
+    } else if (sourceType === 'youtube') {
+      isValid = this.addSourceForm.controls.youtubeUrl.valid &&
+                !!this.addSourceForm.controls.youtubeUrl.value;
+    } else if (sourceType === 'discord') {
+      isValid = this.addSourceForm.controls.discordServerId.valid &&
+                !!this.addSourceForm.controls.discordServerId.value &&
+                this.addSourceForm.controls.discordBotToken.valid &&
+                !!this.addSourceForm.controls.discordBotToken.value;
+    } else if (sourceType === 'slack' || sourceType === 'slack_history') {
+      isValid = this.addSourceForm.controls.slackChannelId.valid &&
+                !!this.addSourceForm.controls.slackChannelId.value;
+    } else if (sourceType === 'confluence') {
+      isValid = this.addSourceForm.controls.confluenceBaseUrl.valid &&
+                !!this.addSourceForm.controls.confluenceBaseUrl.value &&
+                this.addSourceForm.controls.confluenceEmail.valid &&
+                !!this.addSourceForm.controls.confluenceEmail.value &&
+                this.addSourceForm.controls.confluenceApiToken.valid &&
+                !!this.addSourceForm.controls.confluenceApiToken.value &&
+                this.addSourceForm.controls.confluenceSpaceKey.valid &&
+                !!this.addSourceForm.controls.confluenceSpaceKey.value;
     }
     this.isSubmitButtonDisabled = !isValid || this.isSubmitting;
     this.cdr.markForCheck();
   }
 
+  onSubmit(): void {
+    if (this.addSourceForm.invalid || this.isSubmitButtonDisabled) {
+      return;
+    }
+
+    const formValue = this.addSourceForm.getRawValue();
+    const result: AddSourceDialogResult = {
+      sourceType: formValue.sourceType,
+      selectedLoader: formValue.loaderSelect || undefined,
+      rebuildIndex: formValue.rebuildIndex,
+      chunkerName: this.chunkingConfig.strategy !== 'auto' ? this.chunkingConfig.strategy : undefined,
+      chunkerOptions: this.chunkingConfig.useCustomSettings ? this.buildChunkerOptions() : undefined,
+      largeDocumentConfig: this.largeDocConfig.mode !== 'standard' || this.documentAnalysis?.hasLargeFiles ? this.largeDocConfig : undefined,
+      // Pass tokenizer config if enabled
+      ...(this.enablePreTokenization ? {
+        tokenizerModel: this.selectedTokenizer,
+        maxTokenLength: this.maxTokenLength,
+        enablePreTokenization: true
+      } : {}),
+      // Pass adaptive config if enabled
+      adaptivePerformanceConfig: this.adaptiveMode ? this.adaptiveConfig : undefined,
+      subprocessConfig: this.subprocessConfig,
+      // Override the processing mode if user selected a specific one for this request
+      processingMode: this.selectedProcessingMode
+    };
+
+    if (formValue.sourceType === 'file') {
+      result.file = this.selectedFile || undefined;
+      result.files = this.selectedFiles.length > 0 ? this.selectedFiles : undefined; // Pass all selected files
+    } else if (formValue.sourceType === 'url') {
+      result.url = formValue.urlInput || undefined;
+      result.fileName = formValue.fileNameInput || undefined;
+    } else if (formValue.sourceType === 'path') {
+      result.path = formValue.pathInput || undefined;
+    } else if (formValue.sourceType === 'youtube') {
+      result.youtubeUrl = formValue.youtubeUrl || undefined;
+      result.youtubeLanguage = formValue.youtubeLanguage || 'en';
+      result.saveTranscriptFile = formValue.saveTranscriptFile;
+    } else if (formValue.sourceType === 'discord') {
+      result.discordServerId = formValue.discordServerId || undefined;
+      result.discordChannelId = formValue.discordChannelId || undefined;
+      result.discordBotToken = formValue.discordBotToken || undefined;
+      result.discordMessageLimit = formValue.discordMessageLimit;
+      result.discordIncludeThreads = formValue.discordIncludeThreads;
+      result.saveDiscordMessages = formValue.saveDiscordMessages;
+    } else if (formValue.sourceType === 'slack' || formValue.sourceType === 'slack_history') {
+      result.slackChannelId = formValue.slackChannelId || undefined;
+      result.slackToken = formValue.slackToken || undefined;
+      result.slackMessageLimit = formValue.slackMessageLimit;
+      result.slackIncludeThreads = formValue.slackIncludeThreads;
+      result.slackStartDate = formValue.slackStartDate || undefined;
+      result.slackEndDate = formValue.slackEndDate || undefined;
+      result.slackDaysBack = formValue.slackDaysBack;
+      result.slackLoadAllChannels = formValue.slackLoadAllChannels;
+      result.slackHistoryMode = formValue.sourceType === 'slack_history';
+    } else if (formValue.sourceType === 'confluence') {
+      result.confluenceBaseUrl = formValue.confluenceBaseUrl || undefined;
+      result.confluenceEmail = formValue.confluenceEmail || undefined;
+      result.confluenceApiToken = formValue.confluenceApiToken || undefined;
+      result.confluenceSpaceKey = formValue.confluenceSpaceKey || undefined;
+      result.confluenceIncludeChildren = formValue.confluenceIncludeChildren;
+      result.confluenceIncludeAttachments = formValue.confluenceIncludeAttachments;
+    }
+
+    this.dialogRef.close(result);
+  }
   onFileSelectedChange(event: Event): void {
     const element = event.target as HTMLInputElement;
     this.fileErrorMessage = null;
@@ -504,6 +788,90 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     } else {
       return `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // TEXT INPUT / CLIPBOARD METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  // State for clipboard functionality
+  isPasting: boolean = false;
+  clipboardError: string | null = null;
+  clipboardSupported: boolean = true;
+
+  /**
+   * Paste text from clipboard using the Clipboard API.
+   * Works on both desktop and mobile browsers.
+   */
+  async pasteFromClipboard(): Promise<void> {
+    if (this.isSubmitting || this.isPasting) return;
+
+    this.isPasting = true;
+    this.clipboardError = null;
+    this.cdr.markForCheck();
+
+    try {
+      // Check if Clipboard API is available
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        this.clipboardSupported = false;
+        this.clipboardError = 'Clipboard access not supported in this browser. Please paste manually using Ctrl+V or long-press.';
+        return;
+      }
+
+      // Request permission and read from clipboard
+      const text = await navigator.clipboard.readText();
+
+      if (text && text.trim()) {
+        // Set the text input value
+        this.addSourceForm.controls.textInput.setValue(text);
+        this.addSourceForm.controls.textInput.markAsTouched();
+        this.updateSubmitButtonState();
+        this.clipboardError = null;
+      } else {
+        this.clipboardError = 'Clipboard is empty or contains no text.';
+      }
+    } catch (err: any) {
+      console.error('Failed to read clipboard:', err);
+
+      // Handle specific error types
+      if (err.name === 'NotAllowedError') {
+        this.clipboardError = 'Permission denied. Please allow clipboard access or paste manually.';
+      } else if (err.name === 'NotFoundError') {
+        this.clipboardError = 'No text found in clipboard.';
+      } else {
+        this.clipboardError = 'Could not read clipboard. Please paste manually using Ctrl+V or long-press.';
+      }
+    } finally {
+      this.isPasting = false;
+      this.cdr.markForCheck();
+    }
+  }
+
+  /**
+   * Clear the text input field.
+   */
+  clearTextInput(): void {
+    this.addSourceForm.controls.textInput.setValue('');
+    this.addSourceForm.controls.textInput.markAsTouched();
+    this.clipboardError = null;
+    this.updateSubmitButtonState();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Get the character count of the text input.
+   */
+  getTextCharacterCount(): number {
+    return this.addSourceForm.controls.textInput.value?.length || 0;
+  }
+
+  /**
+   * Get the word count of the text input.
+   */
+  getTextWordCount(): number {
+    const text = this.addSourceForm.controls.textInput.value;
+    if (!text || !text.trim()) return 0;
+    return text.trim().split(/\s+/).filter(word => word.length > 0).length;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -778,7 +1146,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       }
 
       if ((typeInfo.category === 'document' || typeInfo.category === 'email') &&
-          this.chunkingConfig.strategy === 'auto') {
+        this.chunkingConfig.strategy === 'auto') {
         this.recommendations.push({
           id: 'sentence-strategy',
           severity: 'suggestion',
@@ -1248,6 +1616,41 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     } else if (sourceType === 'url') {
       this.addSourceForm.controls.urlInput.markAsTouched();
       return this.addSourceForm.controls.urlInput.valid;
+    } else if (sourceType === 'path') {
+      this.addSourceForm.controls.pathInput.markAsTouched();
+      return this.addSourceForm.controls.pathInput.valid;
+    } else if (sourceType === 'text') {
+      this.addSourceForm.controls.textInput.markAsTouched();
+      return this.addSourceForm.controls.textInput.valid &&
+             !!this.addSourceForm.controls.textInput.value?.trim();
+    } else if (sourceType === 'youtube') {
+      this.addSourceForm.controls.youtubeUrl.markAsTouched();
+      return this.addSourceForm.controls.youtubeUrl.valid &&
+             !!this.addSourceForm.controls.youtubeUrl.value;
+    } else if (sourceType === 'discord') {
+      this.addSourceForm.controls.discordServerId.markAsTouched();
+      this.addSourceForm.controls.discordBotToken.markAsTouched();
+      return this.addSourceForm.controls.discordServerId.valid &&
+             !!this.addSourceForm.controls.discordServerId.value &&
+             this.addSourceForm.controls.discordBotToken.valid &&
+             !!this.addSourceForm.controls.discordBotToken.value;
+    } else if (sourceType === 'slack' || sourceType === 'slack_history') {
+      this.addSourceForm.controls.slackChannelId.markAsTouched();
+      return this.addSourceForm.controls.slackChannelId.valid &&
+             !!this.addSourceForm.controls.slackChannelId.value;
+    } else if (sourceType === 'confluence') {
+      this.addSourceForm.controls.confluenceBaseUrl.markAsTouched();
+      this.addSourceForm.controls.confluenceEmail.markAsTouched();
+      this.addSourceForm.controls.confluenceApiToken.markAsTouched();
+      this.addSourceForm.controls.confluenceSpaceKey.markAsTouched();
+      return this.addSourceForm.controls.confluenceBaseUrl.valid &&
+             !!this.addSourceForm.controls.confluenceBaseUrl.value &&
+             this.addSourceForm.controls.confluenceEmail.valid &&
+             !!this.addSourceForm.controls.confluenceEmail.value &&
+             this.addSourceForm.controls.confluenceApiToken.valid &&
+             !!this.addSourceForm.controls.confluenceApiToken.value &&
+             this.addSourceForm.controls.confluenceSpaceKey.valid &&
+             !!this.addSourceForm.controls.confluenceSpaceKey.value;
     }
     return false;
   }
@@ -1295,8 +1698,8 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
 
     // Include large document handling config if not using standard mode
     if (this.largeDocConfig.mode !== 'standard' ||
-        this.largeDocConfig.enableStreaming ||
-        this.largeDocConfig.skipEmbeddedMedia) {
+      this.largeDocConfig.enableStreaming ||
+      this.largeDocConfig.skipEmbeddedMedia) {
       result.largeDocumentConfig = {
         mode: this.largeDocConfig.mode,
         enableStreaming: this.largeDocConfig.enableStreaming,
@@ -1346,10 +1749,50 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     } else if (formValues.sourceType === 'url') {
       result.url = formValues.urlInput ?? undefined;
       result.fileName = formValues.fileNameInput || undefined;
+    } else if (formValues.sourceType === 'text') {
+      result.sourceType = 'text';
+      result.textContent = formValues.textInput ?? undefined;
+      result.textSourceName = formValues.textSourceName || undefined;
+    } else if (formValues.sourceType === 'youtube') {
+      result.sourceType = 'youtube';
+      result.youtubeUrl = formValues.youtubeUrl ?? undefined;
+      result.youtubeLanguage = formValues.youtubeLanguage || 'en';
+      result.saveTranscriptFile = formValues.saveTranscriptFile;
+    } else if (formValues.sourceType === 'discord') {
+      result.sourceType = 'discord';
+      result.discordServerId = formValues.discordServerId ?? undefined;
+      result.discordChannelId = formValues.discordChannelId ?? undefined;
+      result.discordBotToken = formValues.discordBotToken ?? undefined;
+      result.discordMessageLimit = formValues.discordMessageLimit;
+      result.discordIncludeThreads = formValues.discordIncludeThreads;
+      result.saveDiscordMessages = formValues.saveDiscordMessages;
+    } else if (formValues.sourceType === 'slack' || formValues.sourceType === 'slack_history') {
+      result.sourceType = formValues.sourceType;
+      result.slackChannelId = formValues.slackChannelId ?? undefined;
+      result.slackToken = formValues.slackToken ?? undefined;
+      result.slackMessageLimit = formValues.slackMessageLimit;
+      result.slackIncludeThreads = formValues.slackIncludeThreads;
+      result.slackStartDate = formValues.slackStartDate ?? undefined;
+      result.slackEndDate = formValues.slackEndDate ?? undefined;
+      result.slackDaysBack = formValues.slackDaysBack;
+      result.slackLoadAllChannels = formValues.slackLoadAllChannels;
+      result.slackHistoryMode = formValues.sourceType === 'slack_history';
+    } else if (formValues.sourceType === 'confluence') {
+      result.sourceType = 'confluence';
+      result.confluenceBaseUrl = formValues.confluenceBaseUrl ?? undefined;
+      result.confluenceEmail = formValues.confluenceEmail ?? undefined;
+      result.confluenceApiToken = formValues.confluenceApiToken ?? undefined;
+      result.confluenceSpaceKey = formValues.confluenceSpaceKey ?? undefined;
+      result.confluenceIncludeChildren = formValues.confluenceIncludeChildren;
+      result.confluenceIncludeAttachments = formValues.confluenceIncludeAttachments;
     }
 
     // DEBUG: Log what we're sending
     console.log('=== ADD SOURCE DIALOG DEBUG ===');
+    console.log('selectedProcessingMode:', this.selectedProcessingMode);
+    console.log('result.processingMode:', result.processingMode);
+    console.log('subprocessConfig.enabled:', this.subprocessConfig.enabled);
+    console.log('result.subprocessConfig:', JSON.stringify(result.subprocessConfig));
     console.log('chunkingConfig.strategy:', this.chunkingConfig.strategy);
     console.log('chunkingConfig.useCustomSettings:', this.chunkingConfig.useCustomSettings);
     console.log('result.chunkerName:', result.chunkerName);

@@ -37,15 +37,15 @@ import java.util.Map;
 public class IndexerController {
 
     private static final Logger logger = LoggerFactory.getLogger(IndexerController.class);
-    private  IndexerService indexerService;
+    private IndexerService indexerService;
 
     @Autowired
     public IndexerController(List<IndexerService> indexerService) {
-        //yes this looks weird. Graalvm doesn't seem to like spring's
-        //conditional injection though qualifiers are also very brittle
-        if(indexerService.size() > 1) {
-            for(IndexerService indexerService1 : indexerService) {
-                if(indexerService1 instanceof NoOpIndexerService) {
+        // yes this looks weird. Graalvm doesn't seem to like spring's
+        // conditional injection though qualifiers are also very brittle
+        if (indexerService.size() > 1) {
+            for (IndexerService indexerService1 : indexerService) {
+                if (indexerService1 instanceof NoOpIndexerService) {
                     continue;
                 } else {
                     this.indexerService = indexerService1;
@@ -72,18 +72,57 @@ public class IndexerController {
         }
     }
 
+    @PostMapping("/vector-index/start")
+    public ResponseEntity<?> startVectorIndexCreation() {
+        try {
+            logger.info("Received REST request to start async vector index creation from Lucene.");
+            boolean started = indexerService.startVectorIndexCreationAsync();
+            if (started) {
+                return ResponseEntity.ok(Map.of("message", "Vector index creation job started."));
+            } else {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(Map.of("error", "A vector index creation job is already running."));
+            }
+        } catch (Exception e) {
+            logger.error("Failed to start vector index creation: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to start job: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/vector-index/cancel")
+    public ResponseEntity<?> cancelVectorIndexCreation() {
+        try {
+            indexerService.cancelCurrentJob();
+            return ResponseEntity.ok(Map.of("message", "Cancellation requested."));
+        } catch (Exception e) {
+            logger.error("Failed to cancel vector index creation: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to cancel job: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/vector-index/status")
+    public ResponseEntity<?> getVectorIndexJobStatus() {
+        return ResponseEntity.ok(indexerService.getJobStatus());
+    }
+
+    // Deprecated alias for backward compatibility or direct calls
+    @PostMapping("/index-from-lucene")
+    public ResponseEntity<?> indexFromLucene() {
+        return startVectorIndexCreation();
+    }
+
     @GetMapping("/status")
     public ResponseEntity<?> getIndexStatus() {
         try {
             boolean isAvailable = indexerService.isIndexAvailable(); // This method should exist
-            String statusMessage = isAvailable ?
-                    "The index is currently available and appears valid." :
-                    "The index is NOT available or is currently invalid. Indexing may be needed or might have failed.";
+            String statusMessage = isAvailable ? "The index is currently available and appears valid."
+                    : "The index is NOT available or is currently invalid. Indexing may be needed or might have failed.";
             logger.info("Reporting index status via REST: {}", statusMessage);
             return ResponseEntity.ok(Map.of(
                     "index_status", isAvailable ? "AVAILABLE" : "NOT_AVAILABLE_OR_INVALID",
-                    "message", statusMessage
-            ));
+                    "message", statusMessage));
         } catch (Exception e) {
             logger.error("REST call to check index status failed: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

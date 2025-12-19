@@ -163,6 +163,13 @@ public record PipelineProgress(
             return new WorkerStatus(id, type, "waiting", processed, 0, 0, null);
         }
 
+        /**
+         * Creates a waiting status with cumulative throughput.
+         */
+        public static WorkerStatus waitingWithThroughput(int id, String type, int processed, double throughput) {
+            return new WorkerStatus(id, type, "waiting", processed, 0, throughput, null);
+        }
+
         public static WorkerStatus complete(int id, String type, int processed, double throughput) {
             return new WorkerStatus(id, type, "complete", processed, 0, throughput, null);
         }

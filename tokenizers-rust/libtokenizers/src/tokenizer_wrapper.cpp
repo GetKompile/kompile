@@ -1,114 +1,92 @@
 #include "tokenizer_wrapper.h"
-#include <fstream>
-#include <sstream>
+#include "tokenizers_ffi.h"
 #include <stdexcept>
+#include <cstring>
 
 namespace tokenizers {
 
-// Placeholder implementation for the C++ wrapper
+// Implementation using Rust FFI
 class TokenizerWrapper::Impl {
 public:
+    TokenizerHandle* handle = nullptr;
     bool valid = false;
-    std::string model_path;
-    std::string json_config;
-    size_t vocab_size = 0;
-    
-    Impl(const std::string& path) : model_path(path) {
-        // For now, just check if file exists
-        std::ifstream file(path);
-        valid = file.good();
-        if (valid) {
-            // Mock vocab size
-            vocab_size = 50000;
+
+    Impl(const std::string& path) {
+        handle = ffi_tokenizer_from_file(path.c_str());
+        valid = (handle != nullptr);
+        if (!valid) {
+            const char* err = ffi_tokenizer_get_last_error();
+            throw TokenizerException(err ? err : "Failed to load tokenizer from file");
         }
     }
-    
-    Impl(const std::string& json, bool is_json) : json_config(json) {
-        // For now, just check if JSON is not empty
-        valid = !json.empty() && json.find("{") != std::string::npos;
-        if (valid) {
-            // Mock vocab size
-            vocab_size = 50000;
+
+    Impl(const std::string& json, bool is_json) {
+        (void)is_json; // Mark as intentionally unused
+        handle = ffi_tokenizer_from_json(json.c_str());
+        valid = (handle != nullptr);
+        if (!valid) {
+            const char* err = ffi_tokenizer_get_last_error();
+            throw TokenizerException(err ? err : "Failed to create tokenizer from JSON");
         }
     }
-    
+
+    ~Impl() {
+        if (handle) {
+            ffi_tokenizer_free(handle);
+            handle = nullptr;
+        }
+    }
+
     TokenizeResult encode(const std::string& text, bool add_special_tokens) {
         TokenizeResult result;
-        
-        if (!valid) {
+
+        if (!valid || !handle) {
             result.success = false;
             result.error_message = "Tokenizer is not valid";
             return result;
         }
-        
-        // Mock tokenization - split by spaces
-        std::istringstream iss(text);
-        std::string word;
-        uint32_t id = 100;  // Start with ID 100
-        
-        if (add_special_tokens) {
-            result.tokens.push_back("[CLS]");
-            result.ids.push_back(101);
+
+        EncodingHandle* encoding = ffi_tokenizer_encode(handle, text.c_str(), add_special_tokens);
+        if (!encoding) {
+            result.success = false;
+            const char* err = ffi_tokenizer_get_last_error();
+            result.error_message = err ? err : "Encoding failed";
+            return result;
+        }
+
+        // Get encoding data
+        size_t length = ffi_encoding_get_length(encoding);
+        const uint32_t* ids = ffi_encoding_get_ids(encoding);
+        const char* const* tokens = ffi_encoding_get_tokens(encoding);
+
+        // Copy to result
+        result.ids.assign(ids, ids + length);
+        for (size_t i = 0; i < length; ++i) {
+            result.tokens.push_back(tokens[i] ? tokens[i] : "");
+            // Offsets not available in simple FFI - use placeholder
             result.offsets.push_back({0, 0});
         }
-        
-        size_t pos = 0;
-        while (iss >> word) {
-            result.tokens.push_back(word);
-            result.ids.push_back(id++);
-            
-            // Find word position in original text
-            size_t word_pos = text.find(word, pos);
-            if (word_pos != std::string::npos) {
-                result.offsets.push_back({word_pos, word_pos + word.length()});
-                pos = word_pos + word.length();
-            } else {
-                result.offsets.push_back({pos, pos + word.length()});
-                pos += word.length();
-            }
-        }
-        
-        if (add_special_tokens) {
-            result.tokens.push_back("[SEP]");
-            result.ids.push_back(102);
-            result.offsets.push_back({text.length(), text.length()});
-        }
-        
+
+        ffi_encoding_free(encoding);
         result.success = true;
         return result;
     }
-    
+
     std::string decode(const std::vector<uint32_t>& ids, bool skip_special_tokens) {
-        if (!valid) {
+        if (!valid || !handle || ids.empty()) {
             return "";
         }
-        
-        std::ostringstream oss;
-        for (size_t i = 0; i < ids.size(); ++i) {
-            uint32_t id = ids[i];
-            
-            // Skip special tokens if requested
-            if (skip_special_tokens && (id == 101 || id == 102)) {
-                continue;
-            }
-            
-            if (i > 0) {
-                oss << " ";
-            }
-            
-            // Mock decoding - just use "token_" + id
-            if (id == 101) {
-                oss << "[CLS]";
-            } else if (id == 102) {
-                oss << "[SEP]";
-            } else {
-                oss << "token_" << id;
-            }
+
+        char* decoded = ffi_tokenizer_decode(handle, ids.data(), ids.size(), skip_special_tokens);
+        if (!decoded) {
+            return "";
         }
-        
-        return oss.str();
+
+        std::string result(decoded);
+        ffi_tokenizer_free_string(decoded);
+        return result;
     }
-    
+
     std::vector<TokenizeResult> encode_batch(const std::vector<std::string>& texts, bool add_special_tokens) {
         std::vector<TokenizeResult> results;
         for (const auto& text : texts) {
@@ -116,22 +94,23 @@ public:
         }
         return results;
     }
+
+    size_t get_vocab_size() const {
+        if (!valid || !handle) {
+            return 0;
+        }
+        return ffi_tokenizer_get_vocab_size(handle);
+    }
 };
 
 // TokenizerWrapper implementation
 TokenizerWrapper::TokenizerWrapper(const std::string& model_path)
     : pImpl(std::make_unique<Impl>(model_path)) {
-    if (!pImpl->valid) {
-        throw TokenizerException("Failed to load tokenizer from: " + model_path);
-    }
 }
 
 TokenizerWrapper TokenizerWrapper::from_json(const std::string& json_config) {
     TokenizerWrapper wrapper;
     wrapper.pImpl = std::make_unique<Impl>(json_config, true);
-    if (!wrapper.pImpl->valid) {
-        throw TokenizerException("Failed to create tokenizer from JSON config");
-    }
     return wrapper;
 }
 
@@ -148,7 +127,7 @@ TokenizerWrapper& TokenizerWrapper::operator=(TokenizerWrapper&& other) noexcept
 
 TokenizerWrapper::~TokenizerWrapper() = default;
 
-TokenizerWrapper::TokenizerWrapper() 
+TokenizerWrapper::TokenizerWrapper()
     : pImpl(nullptr) {
 }
 
@@ -180,7 +159,7 @@ size_t TokenizerWrapper::get_vocab_size() const {
     if (!pImpl) {
         return 0;
     }
-    return pImpl->vocab_size;
+    return pImpl->get_vocab_size();
 }
 
 bool TokenizerWrapper::is_valid() const {
@@ -188,7 +167,7 @@ bool TokenizerWrapper::is_valid() const {
 }
 
 void* TokenizerWrapper::get_handle() const {
-    return pImpl.get();
+    return pImpl ? pImpl->handle : nullptr;
 }
 
 } // namespace tokenizers

@@ -1,0 +1,92 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ */
+
+.app-container {
+  height: 100vh;
+}
+
+.app-sidenav {
+  width: 240px;
+  background: #fafafa;
+  border-right: 1px solid #e0e0e0;
+}
+
+.sidenav-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 16px;
+  background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+  color: white;
+}
+
+.logo-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+}
+
+.logo-text {
+  font-size: 1.2em;
+  font-weight: 500;
+}
+
+.app-sidenav mat-nav-list {
+  padding-top: 8px;
+}
+
+.app-sidenav mat-nav-list a {
+  margin: 4px 8px;
+  border-radius: 8px;
+}
+
+.app-sidenav mat-nav-list a.active {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.app-sidenav mat-nav-list a.active mat-icon {
+  color: #1976d2;
+}
+
+.sidenav-footer {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  padding: 16px;
+}
+
+.version-info {
+  text-align: center;
+  color: #888;
+  font-size: 0.85rem;
+  padding-top: 12px;
+}
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.toolbar-title {
+  margin-left: 16px;
+  font-weight: 400;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.content-area {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}

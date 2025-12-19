@@ -16,7 +16,8 @@
 
 <div mat-dialog-title class="dialog-header">
   <span>Add New Document Source</span>
-  <button mat-icon-button (click)="onCancelDialog()" [disabled]="isSubmitting" class="close-button" matTooltip="Close dialog">
+  <button mat-icon-button (click)="onCancelDialog()" [disabled]="isSubmitting" class="close-button"
+    matTooltip="Close dialog">
     <mat-icon>close</mat-icon>
   </button>
 </div>
@@ -34,27 +35,135 @@
     </mat-select>
   </mat-form-field>
 
-  <mat-radio-group formControlName="sourceType" aria-label="Select source type" class="source-type-radio-group" [disabled]="isSubmitting">
-    <mat-radio-button value="file" class="source-type-radio-button">Upload File</mat-radio-button>
-    <mat-radio-button value="url" class="source-type-radio-button">Add from URL</mat-radio-button>
-  </mat-radio-group>
+  <!-- Source Type Selection Cards -->
+  <div class="source-type-selector">
+    <label class="source-type-label">Select Source Type</label>
+    <div class="source-type-grid">
+      <!-- Local Sources -->
+      <div class="source-type-card"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'file'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('file')">
+        <mat-icon class="source-icon">cloud_upload</mat-icon>
+        <span class="source-name">Upload File</span>
+        <span class="source-desc">PDF, DOC, TXT, etc.</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'file'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'url'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('url')">
+        <mat-icon class="source-icon">link</mat-icon>
+        <span class="source-name">URL</span>
+        <span class="source-desc">Web page or file</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'url'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'text'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('text')">
+        <mat-icon class="source-icon">content_paste</mat-icon>
+        <span class="source-name">Paste Text</span>
+        <span class="source-desc">Clipboard content</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'text'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'path'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('path')">
+        <mat-icon class="source-icon">folder_open</mat-icon>
+        <span class="source-name">Server Path</span>
+        <span class="source-desc">Directory or index</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'path'">check_circle</mat-icon>
+      </div>
+
+      <!-- Media Sources -->
+      <div class="source-type-card youtube"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'youtube'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('youtube')">
+        <mat-icon class="source-icon">smart_display</mat-icon>
+        <span class="source-name">YouTube</span>
+        <span class="source-desc">Video transcripts</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'youtube'">check_circle</mat-icon>
+      </div>
+
+      <!-- Communication Sources -->
+      <div class="source-type-card discord"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'discord'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('discord')">
+        <mat-icon class="source-icon">forum</mat-icon>
+        <span class="source-name">Discord</span>
+        <span class="source-desc">Channel messages</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'discord'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card slack"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'slack'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('slack')">
+        <mat-icon class="source-icon">chat</mat-icon>
+        <span class="source-name">Slack</span>
+        <span class="source-desc">Channel messages</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'slack'">check_circle</mat-icon>
+      </div>
+
+      <div class="source-type-card slack"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'slack_history'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('slack_history')">
+        <mat-icon class="source-icon">history</mat-icon>
+        <span class="source-name">Slack History</span>
+        <span class="source-desc">Date range export</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'slack_history'">check_circle</mat-icon>
+      </div>
+
+      <!-- Enterprise Sources -->
+      <div class="source-type-card confluence"
+           [class.selected]="addSourceForm.get('sourceType')?.value === 'confluence'"
+           [class.disabled]="isSubmitting"
+           (click)="!isSubmitting && addSourceForm.get('sourceType')?.setValue('confluence')">
+        <mat-icon class="source-icon">article</mat-icon>
+        <span class="source-name">Confluence</span>
+        <span class="source-desc">Wiki pages</span>
+        <mat-icon class="check-icon" *ngIf="addSourceForm.get('sourceType')?.value === 'confluence'">check_circle</mat-icon>
+      </div>
+    </div>
+  </div>
+
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'path'" class="form-section">
+    <h4>Enter Server Path Details</h4>
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Server Path</mat-label>
+      <input matInput formControlName="pathInput" placeholder="/path/to/server/directory/or/lucene/index" required
+        [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('pathInput')?.valid && addSourceForm.get('pathInput')?.value"
+        color="primary">folder</mat-icon>
+      <mat-error
+        *ngIf="addSourceForm.get('pathInput')?.hasError('required') && addSourceForm.get('pathInput')?.touched">
+        Path is required.
+      </mat-error>
+    </mat-form-field>
+    <div class="path-hint">
+      <mat-icon inline>info</mat-icon> Use this to ingest an existing Lucene index or a large directory on the server.
+    </div>
+  </div>
 
   <div *ngIf="addSourceForm.get('sourceType')?.value === 'file'" class="form-section file-upload-section">
     <h4>Select Files to Upload</h4>
 
     <!-- Hidden file input -->
-    <input type="file" multiple (change)="onFileSelectedChange($event)" #fileUploadElement id="dialogInternalFileInput" class="file-input-hidden" [disabled]="isSubmitting">
+    <input type="file" multiple (change)="onFileSelectedChange($event)" #fileUploadElement id="dialogInternalFileInput"
+      class="file-input-hidden" [disabled]="isSubmitting">
 
     <!-- Drag and drop zone -->
-    <div
-      class="drop-zone"
-      [class.drop-zone-active]="isDragOver"
-      [class.drop-zone-disabled]="isSubmitting"
-      [class.drop-zone-has-files]="selectedFiles.length > 0"
-      (click)="triggerFileInput()"
-      (dragover)="onDragOver($event)"
-      (dragleave)="onDragLeave($event)"
-      (drop)="onDrop($event)">
+    <div class="drop-zone" [class.drop-zone-active]="isDragOver" [class.drop-zone-disabled]="isSubmitting"
+      [class.drop-zone-has-files]="selectedFiles.length > 0" (click)="triggerFileInput()"
+      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
 
       <div class="drop-zone-content" *ngIf="selectedFiles.length === 0">
         <div class="drop-zone-icon">
@@ -78,18 +187,21 @@
         <div class="selected-files-header">
           <mat-icon color="primary">folder</mat-icon>
           <span>{{ selectedFiles.length }} file(s) selected ({{ getTotalFileSize() }})</span>
-          <button mat-icon-button class="add-more-btn" (click)="triggerFileInput(); $event.stopPropagation()" [disabled]="isSubmitting" matTooltip="Add more files">
+          <button mat-icon-button class="add-more-btn" (click)="triggerFileInput(); $event.stopPropagation()"
+            [disabled]="isSubmitting" matTooltip="Add more files">
             <mat-icon>add</mat-icon>
           </button>
         </div>
         <div class="selected-files-list">
           <div *ngFor="let file of selectedFiles; let i = index" class="selected-file-item">
-            <mat-icon class="file-type-icon" [ngClass]="getFileIconClass(file.name)">{{ getFileIcon(file.name) }}</mat-icon>
+            <mat-icon class="file-type-icon" [ngClass]="getFileIconClass(file.name)">{{ getFileIcon(file.name)
+              }}</mat-icon>
             <div class="file-details">
               <span class="file-name">{{ file.name }}</span>
               <span class="file-size">{{ formatFileSize(file.size) }}</span>
             </div>
-            <button mat-icon-button class="remove-file-btn" (click)="removeFile(i); $event.stopPropagation()" [disabled]="isSubmitting" matTooltip="Remove file">
+            <button mat-icon-button class="remove-file-btn" (click)="removeFile(i); $event.stopPropagation()"
+              [disabled]="isSubmitting" matTooltip="Remove file">
               <mat-icon>close</mat-icon>
             </button>
           </div>
@@ -100,15 +212,18 @@
       </div>
     </div>
 
-    <mat-error *ngIf="fileErrorMessage && selectedFiles.length === 0" class="file-error-message">{{ fileErrorMessage }}</mat-error>
+    <mat-error *ngIf="fileErrorMessage && selectedFiles.length === 0" class="file-error-message">{{ fileErrorMessage
+      }}</mat-error>
   </div>
 
   <div *ngIf="addSourceForm.get('sourceType')?.value === 'url'" class="form-section">
     <h4>Enter URL Details</h4>
     <mat-form-field appearance="outline" class="full-width-field">
       <mat-label>Document URL</mat-label>
-      <input matInput formControlName="urlInput" placeholder="https://example.com/document.pdf" required [disabled]="isSubmitting">
-      <mat-icon matSuffix *ngIf="addSourceForm.get('urlInput')?.valid && addSourceForm.get('urlInput')?.value" color="primary">link</mat-icon>
+      <input matInput formControlName="urlInput" placeholder="https://example.com/document.pdf" required
+        [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('urlInput')?.valid && addSourceForm.get('urlInput')?.value"
+        color="primary">link</mat-icon>
       <mat-error *ngIf="addSourceForm.get('urlInput')?.hasError('required') && addSourceForm.get('urlInput')?.touched">
         URL is required.
       </mat-error>
@@ -123,6 +238,462 @@
     </mat-form-field>
   </div>
 
+  <!-- Text/Clipboard Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'text'" class="form-section text-section">
+    <h4>
+      <mat-icon class="section-icon">content_paste</mat-icon>
+      Paste or Enter Text
+    </h4>
+    <p class="section-description">
+      Paste text content directly from your clipboard or type/paste text manually. This is ideal for quick text snippets, notes, or content copied from other applications.
+    </p>
+
+    <!-- Paste from Clipboard Button - Large and touch-friendly for mobile -->
+    <div class="paste-button-container">
+      <button mat-flat-button color="primary" type="button" class="paste-clipboard-btn"
+        (click)="pasteFromClipboard()" [disabled]="isSubmitting || isPasting">
+        <mat-icon>{{ isPasting ? 'hourglass_empty' : 'content_paste_go' }}</mat-icon>
+        <span>{{ isPasting ? 'Reading Clipboard...' : 'Paste from Clipboard' }}</span>
+      </button>
+      <span class="paste-hint">Tap to paste text from your clipboard</span>
+    </div>
+
+    <!-- Clipboard Error Message -->
+    <div class="clipboard-error" *ngIf="clipboardError">
+      <mat-icon>error_outline</mat-icon>
+      <span>{{ clipboardError }}</span>
+    </div>
+
+    <!-- Text Name Field (Optional) -->
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Source Name (Optional)</mat-label>
+      <input matInput formControlName="textSourceName" placeholder="e.g., Meeting Notes, Research Summary"
+        [disabled]="isSubmitting">
+      <mat-hint>Give this text a descriptive name for easier identification</mat-hint>
+    </mat-form-field>
+
+    <!-- Text Input Area -->
+    <mat-form-field appearance="outline" class="full-width-field text-input-field">
+      <mat-label>Text Content</mat-label>
+      <textarea matInput formControlName="textInput"
+        placeholder="Paste or type your text content here...&#10;&#10;You can also use the 'Paste from Clipboard' button above for easier pasting on mobile devices."
+        rows="10" [disabled]="isSubmitting" cdkTextareaAutosize cdkAutosizeMinRows="6" cdkAutosizeMaxRows="20"></textarea>
+      <mat-error *ngIf="addSourceForm.get('textInput')?.hasError('required') && addSourceForm.get('textInput')?.touched">
+        Text content is required.
+      </mat-error>
+    </mat-form-field>
+
+    <!-- Text Stats -->
+    <div class="text-stats" *ngIf="getTextCharacterCount() > 0">
+      <div class="stat-item">
+        <mat-icon>text_fields</mat-icon>
+        <span>{{ getTextCharacterCount().toLocaleString() }} characters</span>
+      </div>
+      <div class="stat-item">
+        <mat-icon>notes</mat-icon>
+        <span>{{ getTextWordCount().toLocaleString() }} words</span>
+      </div>
+      <button mat-icon-button class="clear-text-btn" (click)="clearTextInput()" [disabled]="isSubmitting"
+        matTooltip="Clear text">
+        <mat-icon>clear</mat-icon>
+      </button>
+    </div>
+
+    <!-- Mobile-friendly info box -->
+    <div class="text-info-box">
+      <mat-icon>info</mat-icon>
+      <div class="info-content">
+        <strong>Tips:</strong>
+        <ul>
+          <li>On mobile: Use the "Paste from Clipboard" button for easier pasting</li>
+          <li>On desktop: You can also use Ctrl+V (or Cmd+V) directly in the text area</li>
+          <li>Large texts will be automatically chunked for optimal indexing</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- YouTube Transcript Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'youtube'" class="form-section youtube-section">
+    <h4>
+      <mat-icon class="section-icon">smart_display</mat-icon>
+      YouTube Transcript
+    </h4>
+    <p class="section-description">
+      Extract and index transcripts/captions from YouTube videos. The transcript will be fetched automatically from
+      YouTube's caption system.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>YouTube Video URL</mat-label>
+      <input matInput formControlName="youtubeUrl"
+        placeholder="https://www.youtube.com/watch?v=VIDEO_ID or youtu.be/VIDEO_ID" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('youtubeUrl')?.valid && addSourceForm.get('youtubeUrl')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Supports youtube.com/watch?v=, youtu.be/, and embed URLs</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('youtubeUrl')?.hasError('required') && addSourceForm.get('youtubeUrl')?.touched">
+        YouTube URL is required.
+      </mat-error>
+      <mat-error
+        *ngIf="addSourceForm.get('youtubeUrl')?.hasError('pattern') && addSourceForm.get('youtubeUrl')?.touched">
+        Please enter a valid YouTube URL.
+      </mat-error>
+    </mat-form-field>
+
+    <div class="youtube-options">
+      <mat-form-field appearance="outline" class="language-field">
+        <mat-label>Preferred Language</mat-label>
+        <mat-select formControlName="youtubeLanguage" [disabled]="isSubmitting">
+          <mat-option *ngFor="let lang of youtubeLanguages" [value]="lang.code">
+            {{ lang.name }} ({{ lang.code }})
+          </mat-option>
+        </mat-select>
+        <mat-hint>If available, transcript in this language will be fetched</mat-hint>
+      </mat-form-field>
+
+      <mat-checkbox formControlName="saveTranscriptFile" class="save-transcript-checkbox" [disabled]="isSubmitting">
+        Save transcript file
+        <mat-icon matTooltip="Save the transcript as a text file for processing and indexing" class="info-icon">
+          info_outline
+        </mat-icon>
+      </mat-checkbox>
+    </div>
+
+    <div class="youtube-info-box">
+      <mat-icon>info</mat-icon>
+      <div class="info-content">
+        <strong>Note:</strong> YouTube transcript extraction works best with videos that have:
+        <ul>
+          <li>Auto-generated captions (most videos)</li>
+          <li>Manually added subtitles</li>
+          <li>Community-contributed captions</li>
+        </ul>
+        Videos without any captions cannot have transcripts extracted.
+      </div>
+    </div>
+  </div>
+
+  <!-- Discord Messages Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'discord'" class="form-section discord-section">
+    <h4>
+      <mat-icon class="section-icon">forum</mat-icon>
+      Discord Messages
+    </h4>
+    <p class="section-description">
+      Import messages from a Discord server or channel. Requires a Discord bot token with message read permissions.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Server ID</mat-label>
+      <input matInput formControlName="discordServerId"
+        placeholder="Enter Discord server (guild) ID" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('discordServerId')?.valid && addSourceForm.get('discordServerId')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Right-click server > Copy Server ID (enable Developer Mode in settings)</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('discordServerId')?.hasError('required') && addSourceForm.get('discordServerId')?.touched">
+        Server ID is required.
+      </mat-error>
+      <mat-error
+        *ngIf="addSourceForm.get('discordServerId')?.hasError('pattern') && addSourceForm.get('discordServerId')?.touched">
+        Please enter a valid Discord ID (17-19 digits).
+      </mat-error>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Channel ID (Optional)</mat-label>
+      <input matInput formControlName="discordChannelId"
+        placeholder="Enter specific channel ID (optional)" [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('discordChannelId')?.valid && addSourceForm.get('discordChannelId')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Leave empty to fetch from all accessible channels</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('discordChannelId')?.hasError('pattern') && addSourceForm.get('discordChannelId')?.touched">
+        Please enter a valid Discord ID (17-19 digits).
+      </mat-error>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Bot Token</mat-label>
+      <input matInput formControlName="discordBotToken" type="password"
+        placeholder="Enter your Discord bot token" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('discordBotToken')?.valid && addSourceForm.get('discordBotToken')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Bot must have MESSAGE_CONTENT and READ_MESSAGE_HISTORY intents</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('discordBotToken')?.hasError('required') && addSourceForm.get('discordBotToken')?.touched">
+        Bot token is required.
+      </mat-error>
+    </mat-form-field>
+
+    <div class="discord-options">
+      <mat-form-field appearance="outline" class="message-limit-field">
+        <mat-label>Message Limit</mat-label>
+        <mat-select formControlName="discordMessageLimit" [disabled]="isSubmitting">
+          <mat-option *ngFor="let limit of discordMessageLimitOptions" [value]="limit.value">
+            {{ limit.label }}
+          </mat-option>
+        </mat-select>
+        <mat-hint>Maximum number of messages to fetch per channel</mat-hint>
+      </mat-form-field>
+
+      <div class="discord-toggles">
+        <mat-checkbox formControlName="discordIncludeThreads" [disabled]="isSubmitting">
+          Include thread messages
+          <mat-icon matTooltip="Also fetch messages from thread conversations" class="info-icon">
+            info_outline
+          </mat-icon>
+        </mat-checkbox>
+
+        <mat-checkbox formControlName="saveDiscordMessages" [disabled]="isSubmitting">
+          Save messages file
+          <mat-icon matTooltip="Save the fetched messages as a file for processing" class="info-icon">
+            info_outline
+          </mat-icon>
+        </mat-checkbox>
+      </div>
+    </div>
+
+    <div class="discord-info-box">
+      <mat-icon>info</mat-icon>
+      <div class="info-content">
+        <strong>Setup Instructions:</strong>
+        <ol>
+          <li>Create a bot at <a href="https://discord.com/developers/applications" target="_blank">Discord Developer Portal</a></li>
+          <li>Enable MESSAGE_CONTENT and SERVER_MEMBERS intents</li>
+          <li>Invite the bot to your server with Read Message History permissions</li>
+          <li>Copy the bot token from the Bot settings page</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slack Channel Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'slack'" class="form-section slack-section">
+    <h4>
+      <mat-icon class="section-icon">chat</mat-icon>
+      Slack Channel Messages
+    </h4>
+    <p class="section-description">
+      Import messages from a Slack channel. Requires a Slack Bot OAuth token with the channels:history scope.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Channel ID or Name</mat-label>
+      <input matInput formControlName="slackChannelId"
+        placeholder="Enter channel ID (e.g., C01234567) or #channel-name" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('slackChannelId')?.valid && addSourceForm.get('slackChannelId')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Channel ID starts with C (public) or G (private)</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('slackChannelId')?.hasError('required') && addSourceForm.get('slackChannelId')?.touched">
+        Channel ID or name is required.
+      </mat-error>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Bot OAuth Token (Optional)</mat-label>
+      <input matInput formControlName="slackToken" type="password"
+        placeholder="xoxb-your-token (uses config if empty)" [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('slackToken')?.value" color="primary">check_circle</mat-icon>
+      <mat-hint>Leave empty to use server-configured token</mat-hint>
+    </mat-form-field>
+
+    <div class="slack-options">
+      <mat-form-field appearance="outline" class="message-limit-field">
+        <mat-label>Message Limit</mat-label>
+        <input matInput type="number" formControlName="slackMessageLimit"
+          [disabled]="isSubmitting" min="1" max="10000">
+        <mat-hint>Maximum messages to fetch (default: 100)</mat-hint>
+      </mat-form-field>
+
+      <div class="slack-toggles">
+        <mat-checkbox formControlName="slackIncludeThreads" [disabled]="isSubmitting">
+          Include thread replies
+          <mat-icon matTooltip="Also fetch messages from thread conversations" class="info-icon">
+            info_outline
+          </mat-icon>
+        </mat-checkbox>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slack History Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'slack_history'" class="form-section slack-section">
+    <h4>
+      <mat-icon class="section-icon">history</mat-icon>
+      Slack Message History
+    </h4>
+    <p class="section-description">
+      Import historical messages from Slack channels with date range filtering. Supports multiple channels.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Channel ID(s) or Name(s)</mat-label>
+      <input matInput formControlName="slackChannelId"
+        placeholder="Enter channel IDs or names (comma-separated for multiple)" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('slackChannelId')?.valid && addSourceForm.get('slackChannelId')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>e.g., #general, #engineering or C01234567, C07654321</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('slackChannelId')?.hasError('required') && addSourceForm.get('slackChannelId')?.touched">
+        At least one channel is required.
+      </mat-error>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Bot OAuth Token (Optional)</mat-label>
+      <input matInput formControlName="slackToken" type="password"
+        placeholder="xoxb-your-token (uses config if empty)" [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('slackToken')?.value" color="primary">check_circle</mat-icon>
+      <mat-hint>Leave empty to use server-configured token</mat-hint>
+    </mat-form-field>
+
+    <div class="slack-date-range">
+      <mat-form-field appearance="outline" class="date-field">
+        <mat-label>Days Back</mat-label>
+        <input matInput type="number" formControlName="slackDaysBack"
+          [disabled]="isSubmitting" min="1" max="365">
+        <mat-hint>Load messages from the last N days</mat-hint>
+      </mat-form-field>
+
+      <span class="date-separator">or specify dates:</span>
+
+      <mat-form-field appearance="outline" class="date-field">
+        <mat-label>Start Date</mat-label>
+        <input matInput formControlName="slackStartDate" type="date" [disabled]="isSubmitting">
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="date-field">
+        <mat-label>End Date</mat-label>
+        <input matInput formControlName="slackEndDate" type="date" [disabled]="isSubmitting">
+      </mat-form-field>
+    </div>
+
+    <div class="slack-options">
+      <mat-form-field appearance="outline" class="message-limit-field">
+        <mat-label>Max Messages per Channel</mat-label>
+        <input matInput type="number" formControlName="slackMessageLimit"
+          [disabled]="isSubmitting" min="0" max="100000">
+        <mat-hint>0 = unlimited</mat-hint>
+      </mat-form-field>
+
+      <div class="slack-toggles">
+        <mat-checkbox formControlName="slackIncludeThreads" [disabled]="isSubmitting">
+          Include thread replies
+          <mat-icon matTooltip="Also fetch messages from thread conversations" class="info-icon">
+            info_outline
+          </mat-icon>
+        </mat-checkbox>
+
+        <mat-checkbox formControlName="slackLoadAllChannels" [disabled]="isSubmitting">
+          Load from all accessible channels
+          <mat-icon matTooltip="Ignore the channel list above and load from all channels the bot can access" class="info-icon">
+            info_outline
+          </mat-icon>
+        </mat-checkbox>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confluence Pages Section -->
+  <div *ngIf="addSourceForm.get('sourceType')?.value === 'confluence'" class="form-section confluence-section">
+    <h4>
+      <mat-icon class="section-icon">article</mat-icon>
+      Confluence Pages
+    </h4>
+    <p class="section-description">
+      Import pages from your Confluence workspace. Connect using your Atlassian API token to access and index Confluence content.
+    </p>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Confluence Base URL</mat-label>
+      <input matInput formControlName="confluenceBaseUrl"
+        placeholder="https://your-domain.atlassian.net/wiki" required [disabled]="isSubmitting">
+      <mat-icon matSuffix *ngIf="addSourceForm.get('confluenceBaseUrl')?.valid && addSourceForm.get('confluenceBaseUrl')?.value"
+        color="primary">check_circle</mat-icon>
+      <mat-hint>Your Confluence Cloud or Server URL (e.g., https://company.atlassian.net/wiki)</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('confluenceBaseUrl')?.hasError('required') && addSourceForm.get('confluenceBaseUrl')?.touched">
+        Confluence URL is required.
+      </mat-error>
+      <mat-error
+        *ngIf="addSourceForm.get('confluenceBaseUrl')?.hasError('pattern') && addSourceForm.get('confluenceBaseUrl')?.touched">
+        Please enter a valid URL starting with http:// or https://
+      </mat-error>
+    </mat-form-field>
+
+    <div class="confluence-auth-row">
+      <mat-form-field appearance="outline" class="email-field">
+        <mat-label>Email Address</mat-label>
+        <input matInput formControlName="confluenceEmail" type="email"
+          placeholder="user@example.com" required [disabled]="isSubmitting">
+        <mat-icon matSuffix>email</mat-icon>
+        <mat-error
+          *ngIf="addSourceForm.get('confluenceEmail')?.hasError('required') && addSourceForm.get('confluenceEmail')?.touched">
+          Email is required.
+        </mat-error>
+        <mat-error
+          *ngIf="addSourceForm.get('confluenceEmail')?.hasError('email') && addSourceForm.get('confluenceEmail')?.touched">
+          Please enter a valid email address.
+        </mat-error>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="token-field">
+        <mat-label>API Token</mat-label>
+        <input matInput formControlName="confluenceApiToken" type="password"
+          placeholder="Enter your Atlassian API token" required [disabled]="isSubmitting">
+        <mat-icon matSuffix>vpn_key</mat-icon>
+        <mat-error
+          *ngIf="addSourceForm.get('confluenceApiToken')?.hasError('required') && addSourceForm.get('confluenceApiToken')?.touched">
+          API token is required.
+        </mat-error>
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="full-width-field">
+      <mat-label>Space Key</mat-label>
+      <input matInput formControlName="confluenceSpaceKey"
+        placeholder="e.g., TEAM, DEV, DOCS" required [disabled]="isSubmitting">
+      <mat-icon matSuffix>folder_special</mat-icon>
+      <mat-hint>The key of the Confluence space to import (found in the space URL)</mat-hint>
+      <mat-error
+        *ngIf="addSourceForm.get('confluenceSpaceKey')?.hasError('required') && addSourceForm.get('confluenceSpaceKey')?.touched">
+        Space key is required.
+      </mat-error>
+    </mat-form-field>
+
+    <div class="confluence-options">
+      <mat-checkbox formControlName="confluenceIncludeChildren" [disabled]="isSubmitting">
+        Include child pages
+        <mat-icon matTooltip="Recursively import all child pages under the space" class="info-icon">
+          info_outline
+        </mat-icon>
+      </mat-checkbox>
+
+      <mat-checkbox formControlName="confluenceIncludeAttachments" [disabled]="isSubmitting">
+        Include attachments
+        <mat-icon matTooltip="Also import file attachments from pages (PDFs, images, etc.)" class="info-icon">
+          info_outline
+        </mat-icon>
+      </mat-checkbox>
+    </div>
+
+    <div class="confluence-info-box">
+      <mat-icon>info</mat-icon>
+      <div class="info-content">
+        <strong>Getting an API Token:</strong>
+        <ol>
+          <li>Go to <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API Tokens</a></li>
+          <li>Click "Create API token"</li>
+          <li>Give it a name and copy the generated token</li>
+        </ol>
+        <strong>Note:</strong> The token is tied to your Atlassian account and provides access to spaces you have permission to view.
+      </div>
+    </div>
+  </div>
+
   <!-- Document Analysis & Recommendations -->
   <div class="recommendations-section" *ngIf="documentAnalysis && getVisibleRecommendations().length > 0">
     <div class="recommendations-header">
@@ -134,26 +705,17 @@
     </div>
 
     <div class="recommendations-list" *ngIf="showRecommendations" [@expandCollapse]>
-      <div
-        *ngFor="let rec of getVisibleRecommendations()"
-        class="recommendation-card"
-        [class.rec-critical]="rec.severity === 'critical'"
-        [class.rec-warning]="rec.severity === 'warning'"
-        [class.rec-suggestion]="rec.severity === 'suggestion'"
-        [class.rec-info]="rec.severity === 'info'">
+      <div *ngFor="let rec of getVisibleRecommendations()" class="recommendation-card"
+        [class.rec-critical]="rec.severity === 'critical'" [class.rec-warning]="rec.severity === 'warning'"
+        [class.rec-suggestion]="rec.severity === 'suggestion'" [class.rec-info]="rec.severity === 'info'">
         <mat-icon class="rec-icon">{{ rec.icon }}</mat-icon>
         <div class="rec-content">
           <div class="rec-title">{{ rec.title }}</div>
           <div class="rec-description">{{ rec.description }}</div>
         </div>
         <div class="rec-actions">
-          <button
-            *ngIf="rec.action"
-            mat-stroked-button
-            color="primary"
-            class="rec-apply-btn"
-            (click)="applyRecommendation(rec)"
-            [disabled]="isSubmitting">
+          <button *ngIf="rec.action" mat-stroked-button color="primary" class="rec-apply-btn"
+            (click)="applyRecommendation(rec)" [disabled]="isSubmitting">
             {{ rec.action.label }}
           </button>
           <button mat-icon-button class="rec-dismiss-btn" (click)="dismissRecommendation(rec.id)" matTooltip="Dismiss">
@@ -297,33 +859,30 @@
 
       <div class="batch-note">
         <mat-icon>lightbulb_outline</mat-icon>
-        <span>For fine-tuned control, use the <strong>Batch Size Configuration</strong> panel in Model Debug to run benchmarks on your specific hardware.</span>
+        <span>For fine-tuned control, use the <strong>Batch Size Configuration</strong> panel in Model Debug to run
+          benchmarks on your specific hardware.</span>
       </div>
 
       <!-- Adaptive Performance Mode Toggle -->
       <div class="adaptive-mode-section">
         <div class="adaptive-toggle-row">
-          <mat-slide-toggle
-            [(ngModel)]="adaptiveMode"
-            (change)="toggleAdaptiveMode()"
-            [disabled]="isSubmitting"
+          <mat-slide-toggle [(ngModel)]="adaptiveMode" [ngModelOptions]="{standalone: true}" (change)="toggleAdaptiveMode()" [disabled]="isSubmitting"
             color="accent">
             <div class="adaptive-toggle-label">
               <mat-icon>auto_fix_high</mat-icon>
               <span>Adaptive Performance Mode</span>
             </div>
           </mat-slide-toggle>
-          <button mat-icon-button
-                  *ngIf="adaptiveMode"
-                  (click)="toggleAdaptiveOptions()"
-                  matTooltip="Configure adaptive settings">
+          <button mat-icon-button *ngIf="adaptiveMode" (click)="toggleAdaptiveOptions()"
+            matTooltip="Configure adaptive settings">
             <mat-icon>{{ showAdaptiveOptions ? 'expand_less' : 'settings' }}</mat-icon>
           </button>
         </div>
 
         <div class="adaptive-description" *ngIf="!adaptiveMode">
           <mat-icon>info_outline</mat-icon>
-          <span>Automatically monitors memory usage and adjusts batch sizes during processing for optimal performance.</span>
+          <span>Automatically monitors memory usage and adjusts batch sizes during processing for optimal
+            performance.</span>
         </div>
 
         <div class="adaptive-active-banner" *ngIf="adaptiveMode && !showAdaptiveOptions">
@@ -337,24 +896,21 @@
           <div class="adaptive-presets">
             <label class="preset-label">Performance Profile</label>
             <div class="preset-buttons">
-              <button mat-stroked-button
-                      (click)="applyAdaptivePreset('conservative')"
-                      [class.selected]="adaptiveConfig.targetMemoryPercent === 60"
-                      matTooltip="{{ getAdaptivePresetDescription('conservative') }}">
+              <button mat-stroked-button (click)="applyAdaptivePreset('conservative')"
+                [class.selected]="adaptiveConfig.targetMemoryPercent === 60"
+                matTooltip="{{ getAdaptivePresetDescription('conservative') }}">
                 <mat-icon>shield</mat-icon>
                 Conservative
               </button>
-              <button mat-stroked-button
-                      (click)="applyAdaptivePreset('balanced')"
-                      [class.selected]="adaptiveConfig.targetMemoryPercent === 75 || (adaptiveConfig.targetMemoryPercent > 60 && adaptiveConfig.targetMemoryPercent < 80)"
-                      matTooltip="{{ getAdaptivePresetDescription('balanced') }}">
+              <button mat-stroked-button (click)="applyAdaptivePreset('balanced')"
+                [class.selected]="adaptiveConfig.targetMemoryPercent === 75 || (adaptiveConfig.targetMemoryPercent > 60 && adaptiveConfig.targetMemoryPercent < 80)"
+                matTooltip="{{ getAdaptivePresetDescription('balanced') }}">
                 <mat-icon>balance</mat-icon>
                 Balanced
               </button>
-              <button mat-stroked-button
-                      (click)="applyAdaptivePreset('aggressive')"
-                      [class.selected]="adaptiveConfig.targetMemoryPercent >= 80"
-                      matTooltip="{{ getAdaptivePresetDescription('aggressive') }}">
+              <button mat-stroked-button (click)="applyAdaptivePreset('aggressive')"
+                [class.selected]="adaptiveConfig.targetMemoryPercent >= 80"
+                matTooltip="{{ getAdaptivePresetDescription('aggressive') }}">
                 <mat-icon>speed</mat-icon>
                 Aggressive
               </button>
@@ -389,7 +945,8 @@
                   <span class="batch-type-badge model-badge">NDArray</span>
                 </div>
                 <div class="limit-values">
-                  <span class="limit-range">{{ adaptiveConfig.minEmbeddingBatch }} - {{ adaptiveConfig.maxEmbeddingBatch }}</span>
+                  <span class="limit-range">{{ adaptiveConfig.minEmbeddingBatch }} - {{ adaptiveConfig.maxEmbeddingBatch
+                    }}</span>
                 </div>
               </div>
               <div class="limit-card index">
@@ -399,7 +956,8 @@
                   <span class="batch-type-badge storage-badge">Storage</span>
                 </div>
                 <div class="limit-values">
-                  <span class="limit-range">{{ adaptiveConfig.minIndexBatch }} - {{ adaptiveConfig.maxIndexBatch }}</span>
+                  <span class="limit-range">{{ adaptiveConfig.minIndexBatch }} - {{ adaptiveConfig.maxIndexBatch
+                    }}</span>
                 </div>
               </div>
             </div>
@@ -440,22 +998,18 @@
     <div class="tokenizer-content" *ngIf="showTokenizerOptions" [@expandCollapse]>
       <div class="tokenizer-description">
         <mat-icon>info</mat-icon>
-        <span>Pre-tokenization enables token-aware chunk boundaries, improving embedding quality for models like BERT.</span>
+        <span>Pre-tokenization enables token-aware chunk boundaries, improving embedding quality for models like
+          BERT.</span>
       </div>
 
-      <mat-slide-toggle
-        [(ngModel)]="enablePreTokenization"
-        [disabled]="isSubmitting"
-        class="tokenizer-toggle">
+      <mat-slide-toggle [(ngModel)]="enablePreTokenization" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting" class="tokenizer-toggle">
         Enable Pre-Tokenization
       </mat-slide-toggle>
 
       <div class="tokenizer-options" *ngIf="enablePreTokenization">
         <mat-form-field appearance="outline" class="tokenizer-select">
           <mat-label>Tokenizer Model</mat-label>
-          <mat-select
-            [(ngModel)]="selectedTokenizer"
-            (selectionChange)="onTokenizerChange($event.value)"
+          <mat-select [(ngModel)]="selectedTokenizer" [ngModelOptions]="{standalone: true}" (selectionChange)="onTokenizerChange($event.value)"
             [disabled]="isSubmitting">
             <mat-option *ngFor="let tokenizer of availableTokenizers" [value]="tokenizer.id">
               <span class="tokenizer-option-name">{{ tokenizer.name }}</span>
@@ -466,7 +1020,7 @@
 
         <mat-form-field appearance="outline" class="token-length-field">
           <mat-label>Max Token Length</mat-label>
-          <input matInput type="number" [(ngModel)]="maxTokenLength" [disabled]="isSubmitting" min="64" max="2048">
+          <input matInput type="number" [(ngModel)]="maxTokenLength" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting" min="64" max="2048">
           <mat-hint>Maximum tokens per segment</mat-hint>
         </mat-form-field>
       </div>
@@ -489,14 +1043,9 @@
       <div class="presets-section">
         <label class="presets-label">Quick Presets</label>
         <div class="presets-grid">
-          <button
-            *ngFor="let preset of chunkingPresets"
-            mat-stroked-button
-            class="preset-button"
-            [class.preset-active]="selectedPreset === preset.id"
-            (click)="applyPreset(preset.id)"
-            [disabled]="isSubmitting"
-            [matTooltip]="preset.description">
+          <button *ngFor="let preset of chunkingPresets" mat-stroked-button class="preset-button"
+            [class.preset-active]="selectedPreset === preset.id" (click)="applyPreset(preset.id)"
+            [disabled]="isSubmitting" [matTooltip]="preset.description">
             {{ preset.name }}
           </button>
         </div>
@@ -506,11 +1055,8 @@
       <div class="strategy-section">
         <label class="strategy-label">Chunking Strategy</label>
         <div class="strategy-cards">
-          <div
-            *ngFor="let strategy of chunkerStrategies"
-            class="strategy-card"
-            [class.strategy-selected]="chunkingConfig.strategy === strategy.id"
-            (click)="selectStrategy(strategy.id)"
+          <div *ngFor="let strategy of chunkerStrategies" class="strategy-card"
+            [class.strategy-selected]="chunkingConfig.strategy === strategy.id" (click)="selectStrategy(strategy.id)"
             [class.disabled]="isSubmitting">
             <mat-icon class="strategy-icon">{{ strategy.icon }}</mat-icon>
             <div class="strategy-info">
@@ -536,13 +1082,9 @@
               <label>Chunk Size</label>
               <span class="option-value">{{ chunkingConfig.options.chunkSize }} chars</span>
             </div>
-            <mat-slider
-              min="100"
-              max="4000"
-              step="100"
-              [disabled]="isSubmitting"
-              class="option-slider">
-              <input matSliderThumb [(ngModel)]="chunkingConfig.options.chunkSize" (ngModelChange)="onChunkingOptionChange()">
+            <mat-slider min="100" max="4000" step="100" [disabled]="isSubmitting" class="option-slider">
+              <input matSliderThumb [(ngModel)]="chunkingConfig.options.chunkSize" [ngModelOptions]="{standalone: true}"
+                (ngModelChange)="onChunkingOptionChange()">
             </mat-slider>
             <div class="slider-labels">
               <span>100</span>
@@ -557,13 +1099,9 @@
               <label>Overlap</label>
               <span class="option-value">{{ chunkingConfig.options.overlap }} chars</span>
             </div>
-            <mat-slider
-              min="0"
-              max="1000"
-              step="25"
-              [disabled]="isSubmitting"
-              class="option-slider">
-              <input matSliderThumb [(ngModel)]="chunkingConfig.options.overlap" (ngModelChange)="onChunkingOptionChange()">
+            <mat-slider min="0" max="1000" step="25" [disabled]="isSubmitting" class="option-slider">
+              <input matSliderThumb [(ngModel)]="chunkingConfig.options.overlap" [ngModelOptions]="{standalone: true}"
+                (ngModelChange)="onChunkingOptionChange()">
             </mat-slider>
             <div class="slider-labels">
               <span>0</span>
@@ -574,29 +1112,24 @@
 
           <!-- Toggles Row -->
           <div class="toggles-row">
-            <mat-slide-toggle
-              [(ngModel)]="chunkingConfig.options.preserveParagraphs"
-              [disabled]="isSubmitting"
+            <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveParagraphs" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
               (ngModelChange)="onChunkingOptionChange()">
               Preserve Paragraphs
             </mat-slide-toggle>
 
-            <mat-slide-toggle
-              *ngIf="chunkingConfig.strategy === 'custom_markdown'"
-              [(ngModel)]="chunkingConfig.options.splitOnHeadings"
-              [disabled]="isSubmitting"
+            <mat-slide-toggle *ngIf="chunkingConfig.strategy === 'custom_markdown'"
+              [(ngModel)]="chunkingConfig.options.splitOnHeadings" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
               (ngModelChange)="onChunkingOptionChange()">
               Split on Headings
             </mat-slide-toggle>
           </div>
 
           <!-- Language Selection (for OpenNLP) -->
-          <mat-form-field
-            appearance="outline"
-            class="language-field"
+          <mat-form-field appearance="outline" class="language-field"
             *ngIf="chunkingConfig.strategy === 'opennlp_sentence'">
             <mat-label>Language</mat-label>
-            <mat-select [(ngModel)]="chunkingConfig.options.language" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+            <mat-select [(ngModel)]="chunkingConfig.options.language" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+              (ngModelChange)="onChunkingOptionChange()">
               <mat-option value="en">English</mat-option>
               <mat-option value="de">German</mat-option>
               <mat-option value="es">Spanish</mat-option>
@@ -611,11 +1144,13 @@
           <div class="limits-row">
             <mat-form-field appearance="outline" class="limit-field">
               <mat-label>Min Chunk Size</mat-label>
-              <input matInput type="number" [(ngModel)]="chunkingConfig.options.minChunkSize" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+              <input matInput type="number" [(ngModel)]="chunkingConfig.options.minChunkSize" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()">
             </mat-form-field>
             <mat-form-field appearance="outline" class="limit-field">
               <mat-label>Max Chunk Size</mat-label>
-              <input matInput type="number" [(ngModel)]="chunkingConfig.options.maxChunkSize" [disabled]="isSubmitting" (ngModelChange)="onChunkingOptionChange()">
+              <input matInput type="number" [(ngModel)]="chunkingConfig.options.maxChunkSize" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()">
             </mat-form-field>
           </div>
         </div>
@@ -647,11 +1182,8 @@
       <div class="mode-section">
         <label class="mode-label">Processing Mode</label>
         <div class="mode-cards">
-          <div
-            *ngFor="let mode of largeDocumentModes"
-            class="mode-card"
-            [class.mode-selected]="largeDocConfig.mode === mode.id"
-            (click)="selectLargeDocMode(mode.id)"
+          <div *ngFor="let mode of largeDocumentModes" class="mode-card"
+            [class.mode-selected]="largeDocConfig.mode === mode.id" (click)="selectLargeDocMode(mode.id)"
             [class.disabled]="isSubmitting">
             <mat-icon class="mode-icon">{{ mode.icon }}</mat-icon>
             <div class="mode-info">
@@ -682,13 +1214,8 @@
             </label>
             <span class="option-value">{{ largeDocConfig.batchSize }} chunks</span>
           </div>
-          <mat-slider
-            min="10"
-            max="200"
-            step="10"
-            [disabled]="isSubmitting"
-            class="option-slider">
-            <input matSliderThumb [(ngModel)]="largeDocConfig.batchSize">
+          <mat-slider min="10" max="200" step="10" [disabled]="isSubmitting" class="option-slider">
+            <input matSliderThumb [(ngModel)]="largeDocConfig.batchSize" [ngModelOptions]="{standalone: true}">
           </mat-slider>
           <div class="slider-labels">
             <span>10</span>
@@ -697,15 +1224,14 @@
           </div>
           <div class="batch-type-note">
             <mat-icon>info_outline</mat-icon>
-            <span>This controls how many chunks are written to the index at once. For <strong>embedding batch size</strong> (NDArray inference), see the Batch Size Configuration panel in Model Debug.</span>
+            <span>This controls how many chunks are written to the index at once. For <strong>embedding batch
+                size</strong> (NDArray inference), see the Batch Size Configuration panel in Model Debug.</span>
           </div>
         </div>
 
         <!-- Hierarchical options -->
         <div class="toggles-row" *ngIf="largeDocConfig.mode === 'hierarchical'">
-          <mat-slide-toggle
-            [(ngModel)]="largeDocConfig.createSummaries"
-            [disabled]="isSubmitting">
+          <mat-slide-toggle [(ngModel)]="largeDocConfig.createSummaries" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
             Create Document Summaries
           </mat-slide-toggle>
         </div>
@@ -715,14 +1241,10 @@
       <div class="optimization-section">
         <label class="optimization-label">Optimization Options</label>
         <div class="toggles-row">
-          <mat-slide-toggle
-            [(ngModel)]="largeDocConfig.optimizeExtraction"
-            [disabled]="isSubmitting">
+          <mat-slide-toggle [(ngModel)]="largeDocConfig.optimizeExtraction" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
             Optimize Text Extraction
           </mat-slide-toggle>
-          <mat-slide-toggle
-            [(ngModel)]="largeDocConfig.skipEmbeddedMedia"
-            [disabled]="isSubmitting">
+          <mat-slide-toggle [(ngModel)]="largeDocConfig.skipEmbeddedMedia" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
             Skip Embedded Media
           </mat-slide-toggle>
         </div>
@@ -745,7 +1267,8 @@
           'disabled-chip': selectedProcessingMode === 'inprocess',
           'auto-chip': selectedProcessingMode === 'auto'
         }" *ngIf="!showSubprocessOptions">
-          {{ selectedProcessingMode === 'auto' ? 'Auto' : (selectedProcessingMode === 'subprocess' ? 'Subprocess' : 'In-Process') }}
+          {{ selectedProcessingMode === 'auto' ? 'Auto' : (selectedProcessingMode === 'subprocess' ? 'Subprocess' :
+          'In-Process') }}
         </mat-chip>
       </div>
       <mat-icon class="expand-icon">{{ showSubprocessOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
@@ -756,19 +1279,20 @@
       <div class="processing-mode-selector">
         <label class="mode-selector-label">
           <mat-icon>play_circle</mat-icon>
-          Select Processing Mode for This Upload
+          Processing Mode for This Upload
         </label>
         <div class="mode-options">
-          <button
-            *ngFor="let mode of processingModeOptions"
-            mat-stroked-button
-            class="mode-option-btn"
-            [class.selected]="selectedProcessingMode === mode.value"
-            (click)="selectedProcessingMode = mode.value"
-            [disabled]="isSubmitting"
-            [matTooltip]="mode.description">
+          <button *ngFor="let mode of processingModeOptions" mat-stroked-button class="mode-option-btn"
+            [class.selected]="selectedProcessingMode === mode.value" (click)="onProcessingModeSelect(mode.value)"
+            [disabled]="isSubmitting" [matTooltip]="mode.description">
             <mat-icon>{{ mode.icon }}</mat-icon>
             <span class="mode-label">{{ mode.label }}</span>
+            <!-- Show current global setting indicator for Auto mode -->
+            <span *ngIf="mode.value === 'auto'" class="auto-indicator"
+              [class.subprocess-active]="subprocessConfig.enabled"
+              [class.inprocess-active]="!subprocessConfig.enabled">
+              → {{ subprocessConfig.enabled ? 'Subprocess' : 'In-Process' }}
+            </span>
           </button>
         </div>
         <div class="mode-description">
@@ -777,37 +1301,8 @@
         </div>
       </div>
 
-      <mat-divider></mat-divider>
-
-      <!-- Global Configuration Section -->
-      <div class="global-config-header">
-        <mat-icon>settings</mat-icon>
-        <span>Global Subprocess Settings</span>
-        <span class="hint-text">(applies when mode is 'Auto')</span>
-      </div>
-
-      <!-- Mode Banner -->
-      <div class="subprocess-mode-banner" [ngClass]="{'mode-enabled': subprocessConfig.enabled, 'mode-disabled': !subprocessConfig.enabled}">
-        <mat-icon>{{ subprocessConfig.enabled ? 'security' : 'warning' }}</mat-icon>
-        <span>{{ getSubprocessModeDescription() }}</span>
-      </div>
-
-      <!-- Enable/Disable Toggle -->
-      <div class="subprocess-toggle-row">
-        <mat-slide-toggle
-          [checked]="subprocessConfig.enabled"
-          (change)="toggleSubprocessEnabled($event.checked)"
-          [disabled]="isSubmitting"
-          color="primary">
-          <div class="subprocess-toggle-label">
-            <mat-icon>{{ subprocessConfig.enabled ? 'check_circle' : 'cancel' }}</mat-icon>
-            <span>{{ subprocessConfig.enabled ? 'Subprocess Mode Enabled' : 'Subprocess Mode Disabled' }}</span>
-          </div>
-        </mat-slide-toggle>
-      </div>
-
-      <!-- Subprocess Options (only shown when enabled) -->
-      <div class="subprocess-options" *ngIf="subprocessConfig.enabled">
+      <!-- Subprocess Options - show when subprocess mode is active (explicit or via auto) -->
+      <div class="subprocess-options" *ngIf="isSubprocessModeActive()">
         <!-- Heap Size Selection -->
         <div class="subprocess-option-group">
           <label class="subprocess-option-label">
@@ -815,21 +1310,17 @@
             JVM Heap Size
           </label>
           <div class="heap-size-selector">
-            <button
-              *ngFor="let size of heapSizeOptions"
-              mat-stroked-button
-              class="heap-size-btn"
-              [class.selected]="subprocessConfig.heapSize === size"
-              [class.recommended]="isRecommendedHeapSize(size)"
-              (click)="subprocessConfig.heapSize = size"
-              [disabled]="isSubmitting">
+            <button *ngFor="let size of heapSizeOptions" mat-stroked-button class="heap-size-btn"
+              [class.selected]="subprocessConfig.heapSize === size" [class.recommended]="isRecommendedHeapSize(size)"
+              (click)="subprocessConfig.heapSize = size" [disabled]="isSubmitting">
               {{ size }}
               <span class="recommended-label" *ngIf="isRecommendedHeapSize(size)">Recommended</span>
             </button>
           </div>
           <div class="heap-size-hint">
             <mat-icon>info_outline</mat-icon>
-            <span>Based on your system's {{ (systemMemoryMB / 1024).toFixed(1) }}GB RAM, {{ getRecommendedHeapSizeLabel() }} is recommended</span>
+            <span>Based on your system's {{ (systemMemoryMB / 1024).toFixed(1) }}GB RAM, {{
+              getRecommendedHeapSizeLabel() }} is recommended</span>
           </div>
         </div>
 
@@ -842,7 +1333,8 @@
           <div class="timeout-row">
             <mat-form-field appearance="outline" class="timeout-field">
               <mat-label>Minutes</mat-label>
-              <input matInput type="number" [(ngModel)]="subprocessConfig.timeoutMinutes" [disabled]="isSubmitting" min="1" max="1440">
+              <input matInput type="number" [(ngModel)]="subprocessConfig.timeoutMinutes" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                min="1" max="1440">
             </mat-form-field>
             <span class="timeout-hint">Maximum time before job is terminated (1-1440 min)</span>
           </div>
@@ -858,14 +1350,16 @@
             <div class="advanced-item">
               <mat-form-field appearance="outline" class="compact-field">
                 <mat-label>Heartbeat Interval (sec)</mat-label>
-                <input matInput type="number" [(ngModel)]="subprocessConfig.heartbeatIntervalSeconds" [disabled]="isSubmitting" min="5" max="60">
+                <input matInput type="number" [(ngModel)]="subprocessConfig.heartbeatIntervalSeconds" [ngModelOptions]="{standalone: true}"
+                  [disabled]="isSubmitting" min="5" max="60">
               </mat-form-field>
               <span class="advanced-hint">How often process reports status</span>
             </div>
             <div class="advanced-item">
               <mat-form-field appearance="outline" class="compact-field">
                 <mat-label>Stale Threshold (sec)</mat-label>
-                <input matInput type="number" [(ngModel)]="subprocessConfig.staleThresholdSeconds" [disabled]="isSubmitting" min="30" max="600">
+                <input matInput type="number" [(ngModel)]="subprocessConfig.staleThresholdSeconds" [ngModelOptions]="{standalone: true}"
+                  [disabled]="isSubmitting" min="30" max="600">
               </mat-form-field>
               <span class="advanced-hint">Time without heartbeat before force-kill</span>
             </div>
@@ -873,18 +1367,20 @@
         </div>
       </div>
 
-      <!-- In-Process Mode Warning (when subprocess is disabled) -->
-      <div class="in-process-warning" *ngIf="!subprocessConfig.enabled">
+      <!-- In-Process Mode Warning (when in-process mode will be used) -->
+      <div class="in-process-warning" *ngIf="isInProcessModeActive()">
         <mat-icon>warning</mat-icon>
         <div class="warning-content">
-          <strong>In-Process Mode</strong>
-          <span>Document processing will run in the main application process. A crash or out-of-memory error during processing may affect the entire application.</span>
+          <strong>In-Process Mode Active</strong>
+          <span>Document processing will run in the main application process. A crash or out-of-memory error during
+            processing may affect the entire application.</span>
         </div>
       </div>
     </div>
   </div>
 
-  <mat-checkbox formControlName="rebuildIndex" class="full-width-field" style="margin-top: 16px;" [disabled]="isSubmitting">
+  <mat-checkbox formControlName="rebuildIndex" class="full-width-field" style="margin-top: 16px;"
+    [disabled]="isSubmitting">
     Rebuild index after adding this source
   </mat-checkbox>
 
@@ -892,7 +1388,8 @@
 
 <mat-dialog-actions align="end">
   <button mat-stroked-button (click)="onCancelDialog()" [disabled]="isSubmitting">Cancel</button>
-  <button mat-flat-button color="primary" (click)="onSubmitDialog()" [disabled]="isSubmitting || isSubmitButtonDisabled">
+  <button mat-flat-button color="primary" (click)="onSubmitDialog()"
+    [disabled]="isSubmitting || isSubmitButtonDisabled">
     <mat-icon>add_circle_outline</mat-icon> Add Source
   </button>
 </mat-dialog-actions>

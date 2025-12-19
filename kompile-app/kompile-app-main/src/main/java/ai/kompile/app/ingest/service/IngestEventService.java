@@ -69,8 +69,8 @@ public class IngestEventService {
     // Track task start times
     private final Map<String, Instant> taskStartTimes = new ConcurrentHashMap<>();
 
-    @Value("${kompile.ingest.eventlog.retention-hours:24}")
-    private int retentionHours;
+    @Value("${kompile.ingest.eventlog.retention-days:7}")
+    private int retentionDays;
 
     @Value("${kompile.ingest.eventlog.max-database-size-mb:500}")
     private long maxDatabaseSizeMb;
@@ -98,8 +98,8 @@ public class IngestEventService {
             logger.warn("IngestEventRepository not available - event logging disabled");
             enabled = false;
         } else {
-            logger.info("IngestEventService initialized: retention={}h, maxDbSize={}MB, enabled={}",
-                    retentionHours, maxDatabaseSizeMb, enabled);
+            logger.info("IngestEventService initialized: retention={}d, maxDbSize={}MB, enabled={}",
+                    retentionDays, maxDatabaseSizeMb, enabled);
             // Perform startup cleanup if database is too large
             startupCleanup();
         }
@@ -137,7 +137,8 @@ public class IngestEventService {
                 if (dbFile.exists()) {
                     long sizeAfterMb = dbFile.length() / (1024 * 1024);
                     if (sizeAfterMb > maxDatabaseSizeMb) {
-                        logger.warn("Database still too large after normal cleanup - doing aggressive cleanup (6 hours retention)");
+                        logger.warn(
+                                "Database still too large after normal cleanup - doing aggressive cleanup (6 hours retention)");
                         try {
                             forceCleanup(6);
                         } catch (Exception e) {
@@ -160,7 +161,8 @@ public class IngestEventService {
      * Broadcast an event via WebSocket to all subscribers.
      */
     private void broadcastEvent(IngestEvent event) {
-        if (messagingTemplate == null) return;
+        if (messagingTemplate == null)
+            return;
 
         try {
             // Send to task-specific topic
@@ -193,7 +195,8 @@ public class IngestEventService {
         broadcastEvent(event);
 
         if (nd4jEnvJson != null) {
-            logger.info("[{}] QUEUED event saved with ND4J environment snapshot ({} chars)", taskId, nd4jEnvJson.length());
+            logger.info("[{}] QUEUED event saved with ND4J environment snapshot ({} chars)", taskId,
+                    nd4jEnvJson.length());
         } else {
             logger.warn("[{}] QUEUED event saved WITHOUT ND4J environment snapshot (nd4jEnvironmentConfigService={})",
                     taskId, nd4jEnvironmentConfigService != null ? "present" : "null");
@@ -202,8 +205,10 @@ public class IngestEventService {
 
     /**
      * Log that a task has been queued, using a provided ND4J environment snapshot.
-     * This is primarily used for subprocess mode, where the parent process may intentionally
-     * avoid initializing ND4J, but still needs to persist the exact configuration that was
+     * This is primarily used for subprocess mode, where the parent process may
+     * intentionally
+     * avoid initializing ND4J, but still needs to persist the exact configuration
+     * that was
      * passed to the subprocess at invocation time.
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
@@ -264,7 +269,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logPhaseStarted(String taskId, String fileName, IngestPhase phase, IngestPhase previousPhase) {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
 
         // Track phase start time
         phaseStartTimes.computeIfAbsent(taskId, k -> new ConcurrentHashMap<>())
@@ -282,8 +288,9 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logProgress(String taskId, String fileName, IngestPhase phase,
-                            int itemsProcessed, int totalItems, String message) {
-        if (!isEnabled()) return;
+            int itemsProcessed, int totalItems, String message) {
+        if (!isEnabled())
+            return;
 
         IngestEvent event = IngestEvent.progress(taskId, fileName, phase, itemsProcessed, totalItems, message);
         repository.save(event);
@@ -296,8 +303,9 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logPhaseCompleted(String taskId, String fileName, IngestPhase phase,
-                                   int itemsProcessed, String message) {
-        if (!isEnabled()) return;
+            int itemsProcessed, String message) {
+        if (!isEnabled())
+            return;
 
         // Calculate duration
         long durationMs = calculatePhaseDuration(taskId, phase);
@@ -313,7 +321,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logStateTransition(String taskId, String fileName, IngestPhase fromPhase, IngestPhase toPhase) {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
 
         long phaseDuration = calculatePhaseDuration(taskId, fromPhase);
         String message = String.format("Transition %s -> %s", fromPhase, toPhase);
@@ -328,8 +337,9 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logError(String taskId, String fileName, IngestPhase phase,
-                         String errorMessage, Throwable exception) {
-        if (!isEnabled()) return;
+            String errorMessage, Throwable exception) {
+        if (!isEnabled())
+            return;
 
         IngestEvent event = IngestEvent.error(taskId, fileName, phase, errorMessage, exception);
         repository.save(event);
@@ -342,7 +352,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logCompleted(String taskId, String fileName, int totalItemsProcessed, String summary) {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
 
         long totalDuration = calculateTaskDuration(taskId);
         IngestEvent event = IngestEvent.completed(taskId, fileName, totalDuration, totalItemsProcessed, summary);
@@ -359,8 +370,9 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logFailed(String taskId, String fileName, IngestPhase failedPhase,
-                          String errorMessage, Throwable exception) {
-        if (!isEnabled()) return;
+            String errorMessage, Throwable exception) {
+        if (!isEnabled())
+            return;
 
         long totalDuration = calculateTaskDuration(taskId);
         IngestEvent event = IngestEvent.failed(taskId, fileName, failedPhase, totalDuration, errorMessage, exception);
@@ -377,7 +389,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logCancelled(String taskId, String fileName, IngestPhase currentPhase, String reason) {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
 
         long duration = calculateTaskDuration(taskId);
         IngestEvent event = IngestEvent.cancelled(taskId, fileName, currentPhase, duration, reason);
@@ -390,21 +403,24 @@ public class IngestEventService {
     }
 
     /**
-     * Log that a task was forcibly killed due to memory pressure exceeding kill threshold.
-     * This is a critical audit event that indicates system memory protection kicked in.
+     * Log that a task was forcibly killed due to memory pressure exceeding kill
+     * threshold.
+     * This is a critical audit event that indicates system memory protection kicked
+     * in.
      *
-     * @param taskId          The task identifier
-     * @param fileName        The file being processed
-     * @param killedPhase     The phase in which the job was killed
-     * @param memoryPercent   Memory usage percentage at time of kill
-     * @param killThreshold   The configured kill threshold percentage
-     * @param itemsProcessed  Number of items processed before kill
-     * @param details         Additional details about the job state at kill time
+     * @param taskId         The task identifier
+     * @param fileName       The file being processed
+     * @param killedPhase    The phase in which the job was killed
+     * @param memoryPercent  Memory usage percentage at time of kill
+     * @param killThreshold  The configured kill threshold percentage
+     * @param itemsProcessed Number of items processed before kill
+     * @param details        Additional details about the job state at kill time
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void logMemoryKilled(String taskId, String fileName, IngestPhase killedPhase,
-                                 double memoryPercent, int killThreshold, int itemsProcessed, String details) {
-        if (!isEnabled()) return;
+            double memoryPercent, int killThreshold, int itemsProcessed, String details) {
+        if (!isEnabled())
+            return;
 
         long duration = calculateTaskDuration(taskId);
         IngestEvent event = IngestEvent.memoryKilled(taskId, fileName, killedPhase, duration,
@@ -417,7 +433,7 @@ public class IngestEventService {
 
         // Log at WARN level since this is a significant system event
         logger.warn("[{}] MEMORY_KILLED event logged: Job killed in {} phase after {}ms. " +
-                        "Memory: {}% exceeded threshold {}%. Items processed: {}",
+                "Memory: {}% exceeded threshold {}%. Items processed: {}",
                 taskId, killedPhase, duration, String.format("%.1f", memoryPercent), killThreshold, itemsProcessed);
     }
 
@@ -428,7 +444,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public List<IngestEvent> getEventsForTask(String taskId) {
-        if (!isEnabled()) return List.of();
+        if (!isEnabled())
+            return List.of();
         return repository.findByTaskIdOrderByTimestampAsc(taskId);
     }
 
@@ -437,7 +454,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public IngestEvent getLatestEvent(String taskId) {
-        if (!isEnabled()) return null;
+        if (!isEnabled())
+            return null;
         return repository.findLatestByTaskId(taskId);
     }
 
@@ -446,11 +464,13 @@ public class IngestEventService {
      * This is useful for reproducing environment-specific issues.
      *
      * @param taskId The task identifier
-     * @return The ND4J environment config JSON, or null if not found or not captured
+     * @return The ND4J environment config JSON, or null if not found or not
+     *         captured
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public String getNd4jEnvironmentSnapshot(String taskId) {
-        if (!isEnabled()) return null;
+        if (!isEnabled())
+            return null;
 
         // Find the QUEUED event which contains the environment snapshot
         List<IngestEvent> events = repository.findByTaskIdOrderByTimestampAsc(taskId);
@@ -487,7 +507,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public List<IngestEvent> getRecentTerminalEvents(Duration since) {
-        if (!isEnabled()) return List.of();
+        if (!isEnabled())
+            return List.of();
         return repository.findRecentTerminalEvents(Instant.now().minus(since));
     }
 
@@ -496,7 +517,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public List<IngestEvent> getEventsBetween(Instant start, Instant end) {
-        if (!isEnabled()) return List.of();
+        if (!isEnabled())
+            return List.of();
         return repository.findByTimestampBetweenOrderByTimestampAsc(start, end);
     }
 
@@ -505,7 +527,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public List<IngestEvent> getErrorEvents(Instant start, Instant end) {
-        if (!isEnabled()) return List.of();
+        if (!isEnabled())
+            return List.of();
         return repository.findByEventTypeAndTimestampBetweenOrderByTimestampDesc(
                 EventType.ERROR, start, end);
     }
@@ -515,7 +538,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public List<String> getTaskIds(Instant start, Instant end) {
-        if (!isEnabled()) return List.of();
+        if (!isEnabled())
+            return List.of();
         return repository.findDistinctTaskIdsByTimestampBetween(start, end);
     }
 
@@ -524,7 +548,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager", readOnly = true)
     public long getTotalEventCount() {
-        if (!isEnabled()) return 0;
+        if (!isEnabled())
+            return 0;
         return repository.countTotalEvents();
     }
 
@@ -537,9 +562,10 @@ public class IngestEventService {
     @Scheduled(fixedRate = 3600000) // Run every hour (3600000 ms)
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void cleanupOldEvents() {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
 
-        Instant cutoff = Instant.now().minus(Duration.ofHours(retentionHours));
+        Instant cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
 
         try {
             long countBefore = repository.countTotalEvents();
@@ -547,8 +573,8 @@ public class IngestEventService {
             long countAfter = repository.countTotalEvents();
 
             if (deleted > 0) {
-                logger.info("Ingest event cleanup: deleted {} entries older than {} hours (before: {}, after: {})",
-                        deleted, retentionHours, countBefore, countAfter);
+                logger.info("Ingest event cleanup: deleted {} entries older than {} days (before: {}, after: {})",
+                        deleted, retentionDays, countBefore, countAfter);
             }
         } catch (Exception e) {
             logger.error("Failed to cleanup ingest events: {}", e.getMessage(), e);
@@ -557,12 +583,14 @@ public class IngestEventService {
 
     /**
      * Manually trigger cleanup (for testing or immediate need).
+     * 
      * @param hoursToKeep Number of hours of logs to retain
      * @return Number of entries deleted
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public int forceCleanup(int hoursToKeep) {
-        if (!isEnabled()) return 0;
+        if (!isEnabled())
+            return 0;
 
         Instant cutoff = Instant.now().minus(Duration.ofHours(hoursToKeep));
         int deleted = repository.deleteEventsOlderThan(cutoff);
@@ -573,8 +601,8 @@ public class IngestEventService {
     /**
      * Get current retention setting.
      */
-    public int getRetentionHours() {
-        return retentionHours;
+    public int getRetentionDays() {
+        return retentionDays;
     }
 
     /**
@@ -582,7 +610,8 @@ public class IngestEventService {
      */
     @Transactional(transactionManager = "ingestEventTransactionManager")
     public void deleteTaskEvents(String taskId) {
-        if (!isEnabled()) return;
+        if (!isEnabled())
+            return;
         repository.deleteByTaskId(taskId);
         logger.info("Deleted all events for task: {}", taskId);
     }

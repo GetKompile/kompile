@@ -134,6 +134,15 @@ public interface EmbeddingModel extends AutoCloseable {
     }
 
     /**
+     * Gets the model identifier (e.g., "bge-base-en-v1.5").
+     * Default implementation returns the model name.
+     * @return The model identifier.
+     */
+    default String getModelIdentifier() {
+        return getModelName();
+    }
+
+    /**
      * Information about the current batch being processed.
      * Provides visibility into the actual tensor shapes during inference.
      */

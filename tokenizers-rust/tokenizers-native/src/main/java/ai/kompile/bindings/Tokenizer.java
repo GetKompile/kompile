@@ -95,38 +95,75 @@ public class Tokenizer implements AutoCloseable {
     
     private Tokenizer(String jsonConfig, boolean isJson) throws IOException {
         this.nativeLib = new TokenizersNative();
+
+        // Debug: Log JSON config info before passing to native code
+        System.err.println("[Tokenizer.fromJson] JSON config length: " + jsonConfig.length() + " chars");
+        System.err.println("[Tokenizer.fromJson] JSON first 200 chars: " + jsonConfig.substring(0, Math.min(200, jsonConfig.length())));
+
+        // Count vocab entries in JSON (rough estimate)
+        int vocabStart = jsonConfig.indexOf("\"vocab\":");
+        if (vocabStart >= 0) {
+            int colonCount = 0;
+            for (int i = vocabStart; i < jsonConfig.length() && i < vocabStart + 600000; i++) {
+                if (jsonConfig.charAt(i) == ':') colonCount++;
+            }
+            System.err.println("[Tokenizer.fromJson] Estimated vocab entries (colons after vocab): " + (colonCount - 1));
+        }
+        System.err.flush();
+
         this.nativeTokenizer = nativeLib.createTokenizerFromJson(jsonConfig);
-        
+
         if (nativeTokenizer == null || nativeTokenizer.isNull()) {
             TokenizersNative.TokenizerResult lastError = nativeLib.getLastError();
             String errorMessage = "Failed to create tokenizer from JSON";
             if (lastError != null && lastError.error_message() != null) {
                 errorMessage += " - " + lastError.error_message();
             }
+            System.err.println("[Tokenizer.fromJson] ERROR: " + errorMessage);
             throw new IOException(errorMessage);
         }
-        
+
         if (!nativeLib.tokenizerIsValid(nativeTokenizer)) {
+            System.err.println("[Tokenizer.fromJson] ERROR: Created tokenizer is not valid");
             throw new IOException("Created tokenizer is not valid");
         }
+
+        // Verify vocab size after creation
+        long vocabSize = nativeLib.getVocabSize(nativeTokenizer);
+        System.err.println("[Tokenizer.fromJson] SUCCESS: Tokenizer created with vocab size: " + vocabSize);
+        System.err.flush();
     }
     
     /**
-     * Get the vocabulary size of this tokenizer
+     * Get the vocabulary size of this tokenizer.
+     * This method acquires the write lock to ensure thread-safe access to native code.
      * @return vocabulary size
      */
     public long getVocabSize() {
-        ensureNotClosed();
-        return nativeLib.getVocabSize(nativeTokenizer);
+        // Acquire write lock for exclusive access - native tokenizer is NOT thread-safe
+        operationLock.writeLock().lock();
+        try {
+            ensureNotClosed();
+            return nativeLib.getVocabSize(nativeTokenizer);
+        } finally {
+            operationLock.writeLock().unlock();
+        }
     }
 
     /**
      * Check if this tokenizer is valid and not shutting down.
+     * This method acquires the write lock to ensure thread-safe access to native code.
      * @return true if valid and available for operations, false otherwise
      */
     public boolean isValid() {
         if (shuttingDown.get()) return false;
-        return nativeLib.tokenizerIsValid(nativeTokenizer);
+        // Acquire write lock for exclusive access - native tokenizer is NOT thread-safe
+        operationLock.writeLock().lock();
+        try {
+            return nativeLib.tokenizerIsValid(nativeTokenizer);
+        } finally {
+            operationLock.writeLock().unlock();
+        }
     }
 
     /**

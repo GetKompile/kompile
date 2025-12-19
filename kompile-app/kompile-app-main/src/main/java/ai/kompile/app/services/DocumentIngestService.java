@@ -44,7 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
+
 import org.springframework.context.annotation.Lazy;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
@@ -124,8 +124,6 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     private final AtomicLong lastProgressUpdateTime = new AtomicLong(0);
 
     // Parallel processing configuration
-    private static final int PARALLEL_BATCH_THRESHOLD = 100; // Min chunks to enable parallelism
-    private static final int OPTIMAL_BATCH_SIZE = 100; // Larger batches for efficiency
 
     @Autowired
     public DocumentIngestService(
@@ -425,6 +423,23 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     @Async("taskExecutor")
     public void processDocumentAsync(String taskId, Path filePath, String loaderName, String chunkerName,
             ProcessingMode mode) {
+        processDocumentAsync(taskId, filePath, loaderName, chunkerName, mode, null);
+    }
+
+    /**
+     * Asynchronously processes a document file with progress updates via WebSocket.
+     *
+     * @param taskId            unique task identifier for progress tracking
+     * @param filePath          path to the document file
+     * @param loaderName        name of the document loader to use (optional)
+     * @param chunkerName       name of the text chunker to use (optional)
+     * @param mode              processing mode - AUTO (use global config), SUBPROCESS
+     *                          (force isolation), or INPROCESS (force same JVM)
+     * @param subprocessOptions per-request subprocess configuration (heapSize, timeoutMinutes, etc.)
+     */
+    @Async("taskExecutor")
+    public void processDocumentAsync(String taskId, Path filePath, String loaderName, String chunkerName,
+            ProcessingMode mode, Map<String, Object> subprocessOptions) {
         String fileName = filePath.getFileName().toString();
         long startTime = System.currentTimeMillis();
 
@@ -440,9 +455,11 @@ public class DocumentIngestService implements org.springframework.beans.factory.
         // ========== SUBPROCESS MODE DELEGATION ==========
         // Decision logic based on ProcessingMode:
         // - AUTO: use global SubprocessConfigService.isEnabled() setting
-        // - SUBPROCESS: force subprocess mode (with fallback to in-process if
-        // unavailable)
+        // - SUBPROCESS: force subprocess mode (with fallback to in-process if unavailable)
         // - INPROCESS: force in-process mode, skip subprocess entirely
+        //
+        // NO IMPLICIT OVERRIDES: User's choice is respected. The subprocess handles
+        // all document types including large/streaming documents.
         boolean useSubprocess = determineUseSubprocess(mode, taskId);
 
         logger.info("[Task {}] Processing mode: {} -> useSubprocess={} (service available: {}, launcher available: {})",
@@ -451,7 +468,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
         if (useSubprocess && subprocessIngestLauncher != null) {
             logger.info("[Task {}] Delegating to SUBPROCESS mode for crash isolation", taskId);
             try {
-                subprocessIngestLauncher.launchIngest(taskId, filePath, loaderName, chunkerName, null)
+                subprocessIngestLauncher.launchIngest(taskId, filePath, loaderName, chunkerName, subprocessOptions)
                         .whenComplete((result, error) -> {
                             if (error != null) {
                                 logger.error("[Task {}] Subprocess ingest failed: {}", taskId, error.getMessage());
@@ -1171,43 +1188,6 @@ public class DocumentIngestService implements org.springframework.beans.factory.
      * This checks both the watchdog signal and current memory state.
      * Throws MemoryKilledException if the job has been forcibly killed.
      */
-    private boolean shouldStopDueToMemoryPressure(String taskId) {
-        // Check kill flag first - this is highest priority
-        if (memoryWatchdogService != null && memoryWatchdogService.isJobKilled(taskId)) {
-            IngestConfiguration.MemoryInfo memInfo = ingestConfiguration.getMemoryInfo();
-            throw new MemoryKilledException(
-                    String.format("Job forcibly killed: memory %.1f%% exceeded kill threshold %d%%",
-                            memInfo.usagePercent(), ingestConfiguration.getMemoryKillThresholdPercent()),
-                    memInfo.usagePercent(),
-                    ingestConfiguration.getMemoryKillThresholdPercent());
-        }
-
-        // Check watchdog stop signal (graceful stop)
-        if (memoryWatchdogService != null && memoryWatchdogService.shouldJobStop(taskId)) {
-            return true;
-        }
-
-        // Also check current memory state directly
-        IngestConfiguration.MemoryInfo memInfo = ingestConfiguration.getMemoryInfo();
-
-        // Check kill threshold directly
-        if (memInfo.killThresholdExceeded()) {
-            throw new MemoryKilledException(
-                    String.format("Job forcibly killed: memory %.1f%% exceeded kill threshold %d%%",
-                            memInfo.usagePercent(), ingestConfiguration.getMemoryKillThresholdPercent()),
-                    memInfo.usagePercent(),
-                    ingestConfiguration.getMemoryKillThresholdPercent());
-        }
-
-        if (memInfo.thresholdExceeded()) {
-            logger.warn("[Task {}] Direct memory check: {}% exceeds threshold {}%",
-                    taskId, String.format("%.1f", memInfo.usagePercent()),
-                    ingestConfiguration.getMemoryThresholdPercent());
-            return true;
-        }
-
-        return false;
-    }
 
     /**
      * Determines whether to use subprocess mode based on the requested
@@ -1316,13 +1296,15 @@ public class DocumentIngestService implements org.springframework.beans.factory.
     public boolean cancelTask(String taskId) {
         IngestProgressUpdate currentStatus = activeTasksStatus.get(taskId);
         if (currentStatus == null) {
-            // Task may be running in subprocess mode (tracked by SubprocessIngestLauncher/IngestProgressTracker)
+            // Task may be running in subprocess mode (tracked by
+            // SubprocessIngestLauncher/IngestProgressTracker)
             if (subprocessIngestLauncher != null && subprocessIngestLauncher.cancelIngest(taskId)) {
                 logger.info("[Task {}] Subprocess task marked for cancellation", taskId);
                 return true;
             }
 
-            // Defensive fallback: if we have an active pipeline but no status entry, still attempt cancellation
+            // Defensive fallback: if we have an active pipeline but no status entry, still
+            // attempt cancellation
             ParallelIngestPipeline pipeline = activePipelines.get(taskId);
             if (pipeline != null) {
                 cancelledTasks.add(taskId);
@@ -2013,14 +1995,6 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                 className.contains("mock") || className.contains("stub") ||
                 chunkerName.contains("noop") || chunkerName.contains("no-op") ||
                 chunkerName.contains("dummy") || chunkerName.equals("none");
-    }
-
-    private RetrievedDoc convertToRetrievedDoc(Document document) {
-        return RetrievedDoc.builder()
-                .id(document.getId())
-                .text(document.getText())
-                .metadata(document.getMetadata())
-                .build();
     }
 
     /**

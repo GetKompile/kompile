@@ -162,6 +162,65 @@ public class IngestConfiguration {
      */
     private String stateDirectory = System.getProperty("user.home") + "/.kompile/state";
 
+    // ========== Pipeline Threading Settings ==========
+
+    /**
+     * Number of threads for chunking operations.
+     * Chunking is CPU-bound and can be parallelized across cores.
+     * Default: half of available cores, capped at 16.
+     */
+    private int chunkingThreads = Math.min(Runtime.getRuntime().availableProcessors() / 2, 16);
+
+    /**
+     * Number of threads for embedding operations.
+     * NOTE: For OpenMP-based models (SameDiff), set to 1 - OpenMP handles internal parallelism.
+     * For non-OpenMP models, can be increased.
+     * Default: 1 for OpenMP compatibility.
+     */
+    private int embeddingThreads = 1;
+
+    /**
+     * Number of threads for indexing operations.
+     * Indexing involves I/O and can benefit from moderate parallelism.
+     * Default: 4
+     */
+    private int indexingThreads = 4;
+
+    /**
+     * Queue capacity for chunks waiting to be embedded.
+     * Larger queues allow more buffering but use more memory.
+     * Default: 1000 (each chunk ~2KB = ~2MB total)
+     */
+    private int pipelineQueueCapacity = 1000;
+
+    /**
+     * Number of batches to accumulate before bulk indexing.
+     * Higher values improve indexing efficiency but increase latency.
+     * Default: 8
+     */
+    private int indexingBatchAccumulationSize = 8;
+
+    /**
+     * Maximum batch wait time in milliseconds.
+     * Time to wait for batch accumulation before processing partial batch.
+     * Default: 500ms
+     */
+    private long maxBatchWaitMs = 500;
+
+    /**
+     * Minimum batch wait time in milliseconds.
+     * Minimum delay between queue checks to prevent busy-waiting.
+     * Default: 25ms
+     */
+    private long minBatchWaitMs = 25;
+
+    /**
+     * Enable parallel indexing of keyword and vector stores.
+     * When true, keyword and vector indexes are updated concurrently.
+     * Default: true
+     */
+    private boolean parallelIndexingEnabled = true;
+
     // Track active jobs
     private final AtomicInteger activeJobCount = new AtomicInteger(0);
 
@@ -361,6 +420,80 @@ public class IngestConfiguration {
     public void setStateDirectory(String stateDirectory) {
         this.stateDirectory = stateDirectory != null ? stateDirectory : System.getProperty("user.home") + "/.kompile/state";
         logger.info("State directory set to: {}", this.stateDirectory);
+    }
+
+    // ========== Pipeline Threading Getters/Setters ==========
+
+    public int getChunkingThreads() {
+        return chunkingThreads;
+    }
+
+    public void setChunkingThreads(int chunkingThreads) {
+        this.chunkingThreads = Math.max(1, Math.min(chunkingThreads, 64));
+        logger.info("Chunking threads set to: {}", this.chunkingThreads);
+    }
+
+    public int getEmbeddingThreads() {
+        return embeddingThreads;
+    }
+
+    public void setEmbeddingThreads(int embeddingThreads) {
+        this.embeddingThreads = Math.max(1, Math.min(embeddingThreads, 16));
+        logger.info("Embedding threads set to: {}", this.embeddingThreads);
+    }
+
+    public int getIndexingThreads() {
+        return indexingThreads;
+    }
+
+    public void setIndexingThreads(int indexingThreads) {
+        this.indexingThreads = Math.max(1, Math.min(indexingThreads, 32));
+        logger.info("Indexing threads set to: {}", this.indexingThreads);
+    }
+
+    public int getPipelineQueueCapacity() {
+        return pipelineQueueCapacity;
+    }
+
+    public void setPipelineQueueCapacity(int pipelineQueueCapacity) {
+        this.pipelineQueueCapacity = Math.max(100, Math.min(pipelineQueueCapacity, 10000));
+        logger.info("Pipeline queue capacity set to: {}", this.pipelineQueueCapacity);
+    }
+
+    public int getIndexingBatchAccumulationSize() {
+        return indexingBatchAccumulationSize;
+    }
+
+    public void setIndexingBatchAccumulationSize(int indexingBatchAccumulationSize) {
+        this.indexingBatchAccumulationSize = Math.max(1, Math.min(indexingBatchAccumulationSize, 64));
+        logger.info("Indexing batch accumulation size set to: {}", this.indexingBatchAccumulationSize);
+    }
+
+    public long getMaxBatchWaitMs() {
+        return maxBatchWaitMs;
+    }
+
+    public void setMaxBatchWaitMs(long maxBatchWaitMs) {
+        this.maxBatchWaitMs = Math.max(100, Math.min(maxBatchWaitMs, 5000));
+        logger.info("Max batch wait set to: {}ms", this.maxBatchWaitMs);
+    }
+
+    public long getMinBatchWaitMs() {
+        return minBatchWaitMs;
+    }
+
+    public void setMinBatchWaitMs(long minBatchWaitMs) {
+        this.minBatchWaitMs = Math.max(10, Math.min(minBatchWaitMs, this.maxBatchWaitMs / 2));
+        logger.info("Min batch wait set to: {}ms", this.minBatchWaitMs);
+    }
+
+    public boolean isParallelIndexingEnabled() {
+        return parallelIndexingEnabled;
+    }
+
+    public void setParallelIndexingEnabled(boolean parallelIndexingEnabled) {
+        this.parallelIndexingEnabled = parallelIndexingEnabled;
+        logger.info("Parallel indexing enabled: {}", parallelIndexingEnabled);
     }
 
     /**

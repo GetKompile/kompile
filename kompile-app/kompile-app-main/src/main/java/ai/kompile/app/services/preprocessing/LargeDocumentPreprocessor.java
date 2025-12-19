@@ -292,6 +292,16 @@ public class LargeDocumentPreprocessor {
                 Document convertedPage = conversionResult.documents().isEmpty() ?
                     page : conversionResult.documents().get(0);
 
+                // Skip pages with no text content (e.g., image-only pages, scanned PDFs)
+                String pageText = convertedPage.getText();
+                if (pageText == null || pageText.trim().isEmpty()) {
+                    logger.debug("Skipping page {} - no text content (possibly image-only)", currentPage);
+                    // Update state without creating chunks
+                    state = state.withPage(currentPage);
+                    stateRepository.save(state);
+                    continue;
+                }
+
                 // Create RetrievedDoc for chunking
                 RetrievedDoc pageDoc = createPageDoc(convertedPage, source, currentPage, docInfo);
 

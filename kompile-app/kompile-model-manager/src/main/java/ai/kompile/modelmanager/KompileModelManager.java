@@ -192,6 +192,137 @@ public class KompileModelManager {
     }
 
     /**
+     * Ensures a cross-encoder reranking model is available in the cache.
+     * Downloads both the model (.sdz) and vocabulary files if not present.
+     *
+     * @param modelId The cross-encoder model identifier (e.g., "ms-marco-MiniLM-L-6-v2")
+     * @return CrossEncoderBundle containing paths to model and vocabulary, plus metadata
+     * @throws IOException if download or caching fails
+     */
+    public CrossEncoderBundle ensureCrossEncoderModelAvailable(String modelId) throws IOException {
+        ModelDescriptor modelDescriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
+        ModelDescriptor vocabDescriptor = ModelConstants.getCrossEncoderVocabDescriptor(modelId);
+
+        if (modelDescriptor == null) {
+            throw new IOException("No cross-encoder model descriptor found for model ID: " + modelId);
+        }
+        if (vocabDescriptor == null) {
+            throw new IOException("No cross-encoder vocabulary descriptor found for model ID: " + modelId);
+        }
+
+        // Ensure both model and vocabulary are downloaded
+        Path modelPath = ensureModelAvailable(modelDescriptor);
+        Path vocabPath = ensureModelAvailable(vocabDescriptor);
+        TokenizerConfig tokenizerConfig = TokenizerConfig.fromMetadata(modelDescriptor.getMetadata());
+
+        LOGGER.info("Cross-encoder model bundle ready for {}: model={}, vocab={}", modelId, modelPath, vocabPath);
+
+        return new CrossEncoderBundle(modelId, modelPath, vocabPath, modelDescriptor.getMetadata(), tokenizerConfig);
+    }
+
+    /**
+     * Checks if a cross-encoder model is cached locally.
+     *
+     * @param modelId The cross-encoder model identifier
+     * @return true if the model is already cached
+     */
+    public boolean isCrossEncoderModelCached(String modelId) {
+        ModelDescriptor descriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
+        if (descriptor == null) {
+            return false;
+        }
+        Path modelPathInCache = baseCachePath.resolve(descriptor.getExpectedCacheSubpath());
+        return Files.exists(modelPathInCache);
+    }
+
+    /**
+     * Gets the cached path for a cross-encoder model without downloading.
+     *
+     * @param modelId The cross-encoder model identifier
+     * @return The path to the cached model, or null if not cached
+     */
+    public Path getCrossEncoderModelPath(String modelId) {
+        ModelDescriptor descriptor = ModelConstants.getCrossEncoderModelDescriptor(modelId);
+        if (descriptor == null) {
+            return null;
+        }
+        Path modelPathInCache = baseCachePath.resolve(descriptor.getExpectedCacheSubpath());
+        return Files.exists(modelPathInCache) ? modelPathInCache : null;
+    }
+
+    /**
+     * Container for cross-encoder model bundle (SameDiff format with vocabulary)
+     */
+    public static class CrossEncoderBundle {
+        private final String modelId;
+        private final Path modelPath;
+        private final Path vocabularyPath;
+        private final Map<String, Object> metadata;
+        private final TokenizerConfig tokenizerConfig;
+
+        public CrossEncoderBundle(String modelId, Path modelPath, Path vocabularyPath, Map<String, Object> metadata, TokenizerConfig tokenizerConfig) {
+            this.modelId = modelId;
+            this.modelPath = modelPath;
+            this.vocabularyPath = vocabularyPath;
+            this.metadata = metadata;
+            this.tokenizerConfig = tokenizerConfig;
+        }
+
+        public String getModelId() { return modelId; }
+        public Path getModelPath() { return modelPath; }
+        public Path getVocabularyPath() { return vocabularyPath; }
+        public Map<String, Object> getMetadata() { return metadata; }
+        public TokenizerConfig getTokenizerConfig() { return tokenizerConfig; }
+
+        public String getDescription() {
+            return metadata != null ? (String) metadata.get("description") : null;
+        }
+
+        public Integer getHiddenSize() {
+            Object val = metadata != null ? metadata.get("hidden_size") : null;
+            return val instanceof Integer ? (Integer) val : null;
+        }
+
+        public Integer getNumLayers() {
+            Object val = metadata != null ? metadata.get("num_layers") : null;
+            return val instanceof Integer ? (Integer) val : null;
+        }
+
+        public Integer getMaxSequenceLength() {
+            Object val = metadata != null ? metadata.get("max_sequence_length") : null;
+            return val instanceof Integer ? (Integer) val : null;
+        }
+
+        public String getFramework() {
+            return metadata != null ? (String) metadata.get("framework") : null;
+        }
+
+        public String getHuggingFaceSource() {
+            return metadata != null ? (String) metadata.get("huggingface_source") : null;
+        }
+
+        public String getInputFormat() {
+            return metadata != null ? (String) metadata.get("input_format") : null;
+        }
+
+        public String getOutputType() {
+            return metadata != null ? (String) metadata.get("output_type") : null;
+        }
+
+        @Override
+        public String toString() {
+            return "CrossEncoderBundle{" +
+                    "modelId='" + modelId + '\'' +
+                    ", modelPath=" + modelPath +
+                    ", vocabularyPath=" + vocabularyPath +
+                    ", framework=" + getFramework() +
+                    ", hiddenSize=" + getHiddenSize() +
+                    ", numLayers=" + getNumLayers() +
+                    '}';
+        }
+    }
+
+    /**
      * Container for model bundle containing model and vocabulary paths
      */
     public static class ModelBundle {

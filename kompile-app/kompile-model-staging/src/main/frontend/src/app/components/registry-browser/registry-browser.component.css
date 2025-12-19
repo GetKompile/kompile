@@ -1,0 +1,382 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.registry-container {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Page Header */
+.page-header {
+  margin-bottom: 32px;
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px 0;
+  font-weight: 400;
+  font-size: 28px;
+}
+
+.page-header h1 mat-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  color: #1a237e;
+}
+
+.subtitle {
+  color: #666;
+  margin: 0;
+  font-size: 14px;
+}
+
+/* Stats Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+}
+
+.stat-card mat-icon {
+  font-size: 40px;
+  width: 40px;
+  height: 40px;
+  color: #1a237e;
+}
+
+.stat-card.highlight {
+  background: #e8f5e9;
+  border-color: #4caf50;
+}
+
+.stat-card.highlight mat-icon {
+  color: #2e7d32;
+}
+
+.stat-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 500;
+  color: #333;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: #666;
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.search-field {
+  flex: 1;
+  min-width: 250px;
+  max-width: 400px;
+}
+
+.type-toggles {
+  flex-shrink: 0;
+}
+
+/* Loading State */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 16px;
+  color: #666;
+}
+
+/* Error State */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 16px;
+  text-align: center;
+}
+
+.error-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #f44336;
+}
+
+.error-state p {
+  color: #666;
+  max-width: 400px;
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 16px;
+  text-align: center;
+  background: #fafafa;
+  border-radius: 8px;
+  padding: 48px;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #ccc;
+}
+
+.empty-state p {
+  color: #666;
+  margin: 0;
+}
+
+/* Model Grid */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+}
+
+.model-card {
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.model-card:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+  transform: translateY(-2px);
+}
+
+.model-card mat-card-header {
+  margin-bottom: 12px;
+}
+
+.model-card mat-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+
+.model-card .copy-btn {
+  opacity: 0;
+  transition: opacity 0.2s;
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+}
+
+.model-card:hover .copy-btn {
+  opacity: 0.6;
+}
+
+.model-card .copy-btn:hover {
+  opacity: 1;
+}
+
+.model-card .copy-btn mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+/* Type Icons */
+.type-icon {
+  width: 40px !important;
+  height: 40px !important;
+  font-size: 24px !important;
+  line-height: 40px;
+  text-align: center;
+  border-radius: 8px;
+}
+
+.type-icon.type-encoder {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.type-icon.type-cross_encoder {
+  background: #f3e5f5;
+  color: #7b1fa2;
+}
+
+.type-icon.type-reranker {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+/* Status Row */
+.status-row {
+  margin-bottom: 12px;
+}
+
+.status-chip-active {
+  background-color: #e8f5e9 !important;
+  color: #2e7d32 !important;
+}
+
+.status-chip-staged,
+.status-chip-pending {
+  background-color: #fff3e0 !important;
+  color: #ef6c00 !important;
+}
+
+.status-chip-failed {
+  background-color: #ffebee !important;
+  color: #c62828 !important;
+}
+
+/* Metadata Row */
+.metadata-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.metadata-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #666;
+}
+
+.metadata-item mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #1a237e;
+}
+
+/* Tokenizer Row */
+.tokenizer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.tokenizer-row mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #666;
+}
+
+/* Vocab Row */
+.vocab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #666;
+}
+
+.vocab-row mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #666;
+}
+
+/* Registry Info Footer */
+.registry-info {
+  display: flex;
+  justify-content: flex-end;
+  gap: 24px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #888;
+}
+
+.info-item mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search-field {
+    max-width: none;
+  }
+
+  .type-toggles {
+    align-self: center;
+  }
+}
+
+@media (max-width: 600px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .model-grid {
+    grid-template-columns: 1fr;
+  }
+}

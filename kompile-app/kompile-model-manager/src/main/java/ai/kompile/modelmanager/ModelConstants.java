@@ -338,6 +338,209 @@ public class ModelConstants {
         ANSERINI_ENCODER_VOCAB_DESCRIPTORS = Collections.unmodifiableMap(vocabModels);
     }
 
+    // Cross-Encoder Reranking Models - SameDiff format (.sdz)
+    // These models are converted from HuggingFace PyTorch models to SameDiff format.
+    //
+    // Source URLs for model conversion:
+    // - ms-marco-MiniLM-L-6-v2:      https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2
+    // - ms-marco-MiniLM-L-12-v2:     https://huggingface.co/cross-encoder/ms-marco-MiniLM-L12-v2
+    // - stsb-TinyBERT-L-4:           https://huggingface.co/cross-encoder/stsb-TinyBERT-L-4
+    // - mmarco-mMiniLMv2-L12-H384-v1: https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+    // - qnli-distilroberta-base:     https://huggingface.co/cross-encoder/qnli-distilroberta-base
+    //
+    // ONNX versions (for reference, Xenova conversions):
+    // - https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
+    // - https://huggingface.co/Xenova/ms-marco-MiniLM-L-12-v2
+    //
+    private static final Map<String, ModelDescriptor> CROSS_ENCODER_MODEL_DESCRIPTORS;
+    private static final Map<String, ModelDescriptor> CROSS_ENCODER_VOCAB_DESCRIPTORS;
+
+    static {
+        Map<String, ModelDescriptor> crossEncoderModels = new HashMap<>();
+        Map<String, ModelDescriptor> crossEncoderVocabs = new HashMap<>();
+
+        // MS MARCO MiniLM L-6 - Lightweight, fast cross-encoder for passage reranking
+        // Source: https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2
+        crossEncoderModels.put("ms-marco-MiniLM-L-6-v2", new ModelDescriptor(
+                "ms-marco-MiniLM-L-6-v2",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "ms-marco-MiniLM-L-6-v2.sdz",
+                "anserini/cross-encoders/ms-marco-MiniLM-L-6-v2/ms-marco-MiniLM-L-6-v2.sdz",
+                "v2", null,
+                Map.ofEntries(
+                        Map.entry("description", "MS MARCO MiniLM L-6 v2 Cross-Encoder for passage reranking"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "cross_encoder"),
+                        Map.entry("hidden_size", 384),
+                        Map.entry("num_layers", 6),
+                        Map.entry("max_sequence_length", 512),
+                        Map.entry("embedding_dim", 384),
+                        Map.entry("tokenizer_do_lower_case", true),
+                        Map.entry("tokenizer_add_special_tokens", true),
+                        Map.entry("tokenizer_max_sequence_length", 512),
+                        Map.entry("tokenizer_strip_accents", true),
+                        Map.entry("input_format", "query [SEP] document"),
+                        Map.entry("output_type", "relevance_score"),
+                        Map.entry("training_data", "ms-marco-passage"),
+                        Map.entry("huggingface_source", "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2")
+                )
+        ));
+        crossEncoderVocabs.put("ms-marco-MiniLM-L-6-v2", new ModelDescriptor(
+                "ms-marco-MiniLM-L-6-v2-vocab",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "ms-marco-MiniLM-L-6-v2-vocab.txt",
+                "anserini/cross-encoders/ms-marco-MiniLM-L-6-v2/vocab.txt",
+                "v2", null,
+                Map.of("description", "MS MARCO MiniLM L-6 v2 vocabulary file")
+        ));
+
+        // MS MARCO MiniLM L-12 - Higher quality, slightly slower
+        // Source: https://huggingface.co/cross-encoder/ms-marco-MiniLM-L12-v2
+        crossEncoderModels.put("ms-marco-MiniLM-L-12-v2", new ModelDescriptor(
+                "ms-marco-MiniLM-L-12-v2",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "ms-marco-MiniLM-L-12-v2.sdz",
+                "anserini/cross-encoders/ms-marco-MiniLM-L-12-v2/ms-marco-MiniLM-L-12-v2.sdz",
+                "v2", null,
+                Map.ofEntries(
+                        Map.entry("description", "MS MARCO MiniLM L-12 v2 Cross-Encoder for passage reranking"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "cross_encoder"),
+                        Map.entry("hidden_size", 384),
+                        Map.entry("num_layers", 12),
+                        Map.entry("max_sequence_length", 512),
+                        Map.entry("embedding_dim", 384),
+                        Map.entry("tokenizer_do_lower_case", true),
+                        Map.entry("tokenizer_add_special_tokens", true),
+                        Map.entry("tokenizer_max_sequence_length", 512),
+                        Map.entry("tokenizer_strip_accents", true),
+                        Map.entry("input_format", "query [SEP] document"),
+                        Map.entry("output_type", "relevance_score"),
+                        Map.entry("training_data", "ms-marco-passage"),
+                        Map.entry("huggingface_source", "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L12-v2")
+                )
+        ));
+        crossEncoderVocabs.put("ms-marco-MiniLM-L-12-v2", new ModelDescriptor(
+                "ms-marco-MiniLM-L-12-v2-vocab",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "ms-marco-MiniLM-L-12-v2-vocab.txt",
+                "anserini/cross-encoders/ms-marco-MiniLM-L-12-v2/vocab.txt",
+                "v2", null,
+                Map.of("description", "MS MARCO MiniLM L-12 v2 vocabulary file")
+        ));
+
+        // TinyBERT for STS-B - Very lightweight for semantic similarity
+        // Source: https://huggingface.co/cross-encoder/stsb-TinyBERT-L-4
+        crossEncoderModels.put("stsb-TinyBERT-L-4", new ModelDescriptor(
+                "stsb-TinyBERT-L-4",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "stsb-TinyBERT-L-4.sdz",
+                "anserini/cross-encoders/stsb-TinyBERT-L-4/stsb-TinyBERT-L-4.sdz",
+                "latest", null,
+                Map.ofEntries(
+                        Map.entry("description", "TinyBERT L-4 Cross-Encoder for semantic text similarity"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "cross_encoder"),
+                        Map.entry("hidden_size", 312),
+                        Map.entry("num_layers", 4),
+                        Map.entry("max_sequence_length", 512),
+                        Map.entry("embedding_dim", 312),
+                        Map.entry("tokenizer_do_lower_case", true),
+                        Map.entry("tokenizer_add_special_tokens", true),
+                        Map.entry("tokenizer_max_sequence_length", 512),
+                        Map.entry("tokenizer_strip_accents", true),
+                        Map.entry("input_format", "sentence1 [SEP] sentence2"),
+                        Map.entry("output_type", "similarity_score"),
+                        Map.entry("training_data", "stsb"),
+                        Map.entry("huggingface_source", "https://huggingface.co/cross-encoder/stsb-TinyBERT-L-4")
+                )
+        ));
+        crossEncoderVocabs.put("stsb-TinyBERT-L-4", new ModelDescriptor(
+                "stsb-TinyBERT-L-4-vocab",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "stsb-TinyBERT-L-4-vocab.txt",
+                "anserini/cross-encoders/stsb-TinyBERT-L-4/vocab.txt",
+                "latest", null,
+                Map.of("description", "TinyBERT L-4 vocabulary file")
+        ));
+
+        // Multilingual cross-encoder for mMARCO
+        // Source: https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+        crossEncoderModels.put("mmarco-mMiniLMv2-L12-H384-v1", new ModelDescriptor(
+                "mmarco-mMiniLMv2-L12-H384-v1",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "mmarco-mMiniLMv2-L12-H384-v1.sdz",
+                "anserini/cross-encoders/mmarco-mMiniLMv2-L12-H384-v1/mmarco-mMiniLMv2-L12-H384-v1.sdz",
+                "v1", null,
+                Map.ofEntries(
+                        Map.entry("description", "Multilingual MiniLM Cross-Encoder for mMARCO passage reranking"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "cross_encoder"),
+                        Map.entry("hidden_size", 384),
+                        Map.entry("num_layers", 12),
+                        Map.entry("max_sequence_length", 512),
+                        Map.entry("embedding_dim", 384),
+                        Map.entry("tokenizer_do_lower_case", false),
+                        Map.entry("tokenizer_add_special_tokens", true),
+                        Map.entry("tokenizer_max_sequence_length", 512),
+                        Map.entry("tokenizer_strip_accents", false),
+                        Map.entry("input_format", "query [SEP] document"),
+                        Map.entry("output_type", "relevance_score"),
+                        Map.entry("training_data", "mmarco"),
+                        Map.entry("languages", "multilingual"),
+                        Map.entry("huggingface_source", "https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+                )
+        ));
+        crossEncoderVocabs.put("mmarco-mMiniLMv2-L12-H384-v1", new ModelDescriptor(
+                "mmarco-mMiniLMv2-L12-H384-v1-vocab",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "mmarco-mMiniLMv2-L12-H384-v1-vocab.txt",
+                "anserini/cross-encoders/mmarco-mMiniLMv2-L12-H384-v1/vocab.txt",
+                "v1", null,
+                Map.of("description", "Multilingual MiniLM vocabulary file")
+        ));
+
+        // QNLI DistilRoBERTa - For question-answer relevance
+        // Source: https://huggingface.co/cross-encoder/qnli-distilroberta-base
+        // Note: RoBERTa uses BPE tokenization with merges.txt, not WordPiece with vocab.txt
+        crossEncoderModels.put("qnli-distilroberta-base", new ModelDescriptor(
+                "qnli-distilroberta-base",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "qnli-distilroberta-base.sdz",
+                "anserini/cross-encoders/qnli-distilroberta-base/qnli-distilroberta-base.sdz",
+                "latest", null,
+                Map.ofEntries(
+                        Map.entry("description", "DistilRoBERTa Cross-Encoder for Question-NLI"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "cross_encoder"),
+                        Map.entry("hidden_size", 768),
+                        Map.entry("num_layers", 6),
+                        Map.entry("max_sequence_length", 512),
+                        Map.entry("embedding_dim", 768),
+                        Map.entry("tokenizer_do_lower_case", false),
+                        Map.entry("tokenizer_add_special_tokens", true),
+                        Map.entry("tokenizer_max_sequence_length", 512),
+                        Map.entry("tokenizer_strip_accents", false),
+                        Map.entry("tokenizer_type", "roberta"), // Uses BPE, not WordPiece
+                        Map.entry("input_format", "question [SEP] answer"),
+                        Map.entry("output_type", "entailment_score"),
+                        Map.entry("training_data", "qnli"),
+                        Map.entry("huggingface_source", "https://huggingface.co/cross-encoder/qnli-distilroberta-base")
+                )
+        ));
+        crossEncoderVocabs.put("qnli-distilroberta-base", new ModelDescriptor(
+                "qnli-distilroberta-base-vocab",
+                ModelType.CROSS_ENCODER_MODEL,
+                KOMPILE_MODEL_BASE_URL + "qnli-distilroberta-base-vocab.json",
+                "anserini/cross-encoders/qnli-distilroberta-base/vocab.json",
+                "latest", null,
+                Map.of("description", "DistilRoBERTa vocabulary file (BPE)")
+        ));
+
+        CROSS_ENCODER_MODEL_DESCRIPTORS = Collections.unmodifiableMap(crossEncoderModels);
+        CROSS_ENCODER_VOCAB_DESCRIPTORS = Collections.unmodifiableMap(crossEncoderVocabs);
+    }
+
     public static ModelDescriptor getAnseriniEncoderModelDescriptor(String modelId) {
         return ANSERINI_ENCODER_MODEL_DESCRIPTORS.get(modelId);
     }
@@ -379,5 +582,91 @@ public class ModelConstants {
             return TokenizerConfig.fromMetadata(descriptor.getMetadata());
         }
         return TokenizerConfig.defaultConfig();
+    }
+
+    // Cross-Encoder Model Accessors
+
+    /**
+     * Get a cross-encoder model descriptor by ID.
+     * @param modelId The model identifier (e.g., "ms-marco-MiniLM-L-6-v2")
+     * @return ModelDescriptor for the cross-encoder, or null if not found
+     */
+    public static ModelDescriptor getCrossEncoderModelDescriptor(String modelId) {
+        return CROSS_ENCODER_MODEL_DESCRIPTORS.get(modelId);
+    }
+
+    /**
+     * Get a cross-encoder vocabulary descriptor by model ID.
+     * @param modelId The model identifier (e.g., "ms-marco-MiniLM-L-6-v2")
+     * @return ModelDescriptor for the vocabulary, or null if not found
+     */
+    public static ModelDescriptor getCrossEncoderVocabDescriptor(String modelId) {
+        return CROSS_ENCODER_VOCAB_DESCRIPTORS.get(modelId);
+    }
+
+    /**
+     * Get all available cross-encoder model IDs.
+     * @return Set of cross-encoder model IDs
+     */
+    public static Set<String> getAvailableCrossEncoderModelIds() {
+        return CROSS_ENCODER_MODEL_DESCRIPTORS.keySet();
+    }
+
+    /**
+     * Check if a cross-encoder model is available.
+     * @param modelId The model identifier
+     * @return true if the model is available
+     */
+    public static boolean isCrossEncoderModelAvailable(String modelId) {
+        return CROSS_ENCODER_MODEL_DESCRIPTORS.containsKey(modelId);
+    }
+
+    /**
+     * Get the default cross-encoder model ID.
+     * @return The recommended default cross-encoder model
+     */
+    public static String getDefaultCrossEncoderModelId() {
+        return "ms-marco-MiniLM-L-6-v2";
+    }
+
+    /**
+     * Get tokenizer configuration for a cross-encoder model.
+     * @param modelId The cross-encoder model identifier
+     * @return TokenizerConfig for the model, or default config if model not found
+     */
+    public static TokenizerConfig getCrossEncoderTokenizerConfig(String modelId) {
+        ModelDescriptor descriptor = getCrossEncoderModelDescriptor(modelId);
+        if (descriptor != null) {
+            return TokenizerConfig.fromMetadata(descriptor.getMetadata());
+        }
+        return TokenizerConfig.defaultConfig();
+    }
+
+    /**
+     * Get all model descriptors including encoders, cross-encoders, and indexes.
+     * Useful for model management UI that needs to display all available models.
+     * @return Map of model ID to ModelDescriptor for all model types
+     */
+    public static Map<String, ModelDescriptor> getAllModelDescriptors() {
+        Map<String, ModelDescriptor> allModels = new HashMap<>();
+        allModels.putAll(ANSERINI_ENCODER_MODEL_DESCRIPTORS);
+        allModels.putAll(CROSS_ENCODER_MODEL_DESCRIPTORS);
+        allModels.putAll(ANSERINI_INDEX_DESCRIPTORS);
+        return Collections.unmodifiableMap(allModels);
+    }
+
+    /**
+     * Get model descriptors filtered by type.
+     * @param type The model type to filter by
+     * @return Map of model ID to ModelDescriptor for the specified type
+     */
+    public static Map<String, ModelDescriptor> getModelDescriptorsByType(ModelType type) {
+        Map<String, ModelDescriptor> filtered = new HashMap<>();
+        for (Map.Entry<String, ModelDescriptor> entry : getAllModelDescriptors().entrySet()) {
+            if (entry.getValue().getModelType() == type) {
+                filtered.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return Collections.unmodifiableMap(filtered);
     }
 }

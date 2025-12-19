@@ -28,26 +28,32 @@ public abstract class IndexerService {
 
     /**
      * Indexes documents with pre-computed embeddings.
-     * This allows the embedding step to be separated from the indexing step for better parallelization.
+     * This allows the embedding step to be separated from the indexing step for
+     * better parallelization.
      *
      * @param documents  The documents to index
-     * @param embeddings Pre-computed embeddings for each document (same order as documents)
+     * @param embeddings Pre-computed embeddings for each document (same order as
+     *                   documents)
      * @throws IOException if there is an error during indexing
      */
-    public abstract void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings) throws IOException;
+    public abstract void indexDocumentsWithEmbeddings(List<Document> documents, List<List<Float>> embeddings)
+            throws IOException;
 
     /**
      * Indexes RetrievedDoc documents with pre-computed float[] embeddings.
-     * This is the most efficient method for bulk indexing as it avoids boxing overhead.
+     * This is the most efficient method for bulk indexing as it avoids boxing
+     * overhead.
      * <p>
      * The embedding and indexing stages can run in parallel when using this method,
      * as embeddings are computed ahead of time by a separate worker.
      *
      * @param documents  The documents to index
-     * @param embeddings Pre-computed embeddings as float[] arrays (same order as documents)
+     * @param embeddings Pre-computed embeddings as float[] arrays (same order as
+     *                   documents)
      * @throws IOException if there is an error during indexing
      */
-    public void indexDocumentsWithFloatEmbeddings(List<RetrievedDoc> documents, List<float[]> embeddings) throws IOException {
+    public void indexDocumentsWithFloatEmbeddings(List<RetrievedDoc> documents, List<float[]> embeddings)
+            throws IOException {
         // Default implementation converts to List<Float> for backward compatibility
         if (documents == null || documents.isEmpty()) {
             return;
@@ -97,11 +103,29 @@ public abstract class IndexerService {
      *
      * @param documents  The documents to index
      * @param embeddings Pre-computed embeddings as float[] arrays
+     * @return The actual number of documents successfully persisted to the vector store.
+     *         This may be less than documents.size() if some documents were skipped.
      * @throws IOException if there is an error during indexing
      */
-    public void indexToVectorStoreOnly(List<RetrievedDoc> documents, List<float[]> embeddings) throws IOException {
-        // Default: delegates to full indexDocumentsWithFloatEmbeddings (implementations should override)
+    public int indexToVectorStoreOnly(List<RetrievedDoc> documents, List<float[]> embeddings) throws IOException {
+        // Default: delegates to full indexDocumentsWithFloatEmbeddings (implementations
+        // should override)
         indexDocumentsWithFloatEmbeddings(documents, embeddings);
+        return documents != null ? documents.size() : 0; // Default assumes all succeeded
+    }
+
+    /**
+     * Result of a parallel indexing operation containing actual counts of
+     * documents persisted to each store.
+     */
+    public record IndexingResult(int keywordIndexed, int vectorIndexed) {
+        /**
+         * Returns the minimum of keyword and vector indexed counts.
+         * This represents the guaranteed number of documents fully indexed.
+         */
+        public int minIndexed() {
+            return Math.min(keywordIndexed, vectorIndexed);
+        }
     }
 
     /**
@@ -113,37 +137,47 @@ public abstract class IndexerService {
      *
      * @param documents  The documents to index
      * @param embeddings Pre-computed embeddings as float[] arrays
-     * @return A CompletableFuture that completes when both indexes are updated
+     * @return A CompletableFuture that completes with the actual counts of documents indexed
      */
-    public java.util.concurrent.CompletableFuture<Void> indexDocumentsParallel(
+    public java.util.concurrent.CompletableFuture<IndexingResult> indexDocumentsParallel(
             List<RetrievedDoc> documents, List<float[]> embeddings) {
         // Default implementation runs keyword and vector indexing in parallel
         if (documents == null || documents.isEmpty()) {
-            return java.util.concurrent.CompletableFuture.completedFuture(null);
+            return java.util.concurrent.CompletableFuture.completedFuture(new IndexingResult(0, 0));
         }
 
-        java.util.concurrent.CompletableFuture<Void> keywordFuture = java.util.concurrent.CompletableFuture.runAsync(() -> {
-            try {
-                indexToKeywordIndexOnly(documents);
-            } catch (IOException e) {
-                throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
-            }
-        });
+        // Use atomic integers to capture actual counts from each async task
+        java.util.concurrent.atomic.AtomicInteger keywordCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger vectorCount = new java.util.concurrent.atomic.AtomicInteger(0);
 
-        java.util.concurrent.CompletableFuture<Void> vectorFuture = java.util.concurrent.CompletableFuture.runAsync(() -> {
-            try {
-                indexToVectorStoreOnly(documents, embeddings);
-            } catch (IOException e) {
-                throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
-            }
-        });
+        java.util.concurrent.CompletableFuture<Void> keywordFuture = java.util.concurrent.CompletableFuture
+                .runAsync(() -> {
+                    try {
+                        indexToKeywordIndexOnly(documents);
+                        keywordCount.set(documents.size()); // Keyword indexing doesn't return count yet
+                    } catch (IOException e) {
+                        throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
+                    }
+                });
 
-        return java.util.concurrent.CompletableFuture.allOf(keywordFuture, vectorFuture);
+        java.util.concurrent.CompletableFuture<Void> vectorFuture = java.util.concurrent.CompletableFuture
+                .runAsync(() -> {
+                    try {
+                        int indexed = indexToVectorStoreOnly(documents, embeddings);
+                        vectorCount.set(indexed);
+                    } catch (IOException e) {
+                        throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
+                    }
+                });
+
+        return java.util.concurrent.CompletableFuture.allOf(keywordFuture, vectorFuture)
+                .thenApply(v -> new IndexingResult(keywordCount.get(), vectorCount.get()));
     }
 
     public abstract void indexFile(Path filePath, String sourceId, String collectionNameParam) throws IOException;
 
-    public abstract void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam) throws IOException;
+    public abstract void indexDirectory(Path directoryPath, String sourceIdPrefix, String collectionNameParam)
+            throws IOException;
 
     public abstract boolean deleteDocuments(List<String> documentIds, String collectionNameParam);
 
@@ -153,19 +187,22 @@ public abstract class IndexerService {
 
     /**
      * Indexes the provided list of RetrievedDoc documents.
-     * Implementations will handle any necessary staging (e.g., to JSON) and the actual indexing logic.
+     * Implementations will handle any necessary staging (e.g., to JSON) and the
+     * actual indexing logic.
      */
     public abstract void indexDocuments(List<RetrievedDoc> documents) throws IOException;
 
     /**
      * Triggers a full re-indexing process.
      * This typically involves using a DocumentLoadingService to fetch all documents
-     * and then passing them to the indexDocuments(List<RetrievedDoc> documents) method.
+     * and then passing them to the indexDocuments(List<RetrievedDoc> documents)
+     * method.
      */
     public abstract void reprocessAndIndexAllSources() throws IOException;
 
     /**
      * Checks if the underlying index is considered valid and ready for querying.
+     * 
      * @return true if the index is available, false otherwise.
      */
     public abstract boolean isIndexAvailable();
@@ -173,15 +210,18 @@ public abstract class IndexerService {
     // New methods for Index Browser
     /**
      * Retrieves a list of information about documents/chunks in the index.
+     * 
      * @param offset the starting offset for pagination
-     * @param limit the maximum number of documents to return
-     * @return a list of maps, where each map represents an indexed document's info (e.g., id, stored fields).
+     * @param limit  the maximum number of documents to return
+     * @return a list of maps, where each map represents an indexed document's info
+     *         (e.g., id, stored fields).
      * @throws IOException if there is an error reading from the index
      */
     public abstract List<Map<String, Object>> listIndexedDocuments(int offset, int limit) throws IOException;
 
     /**
      * Retrieves a specific document/chunk from the index by its ID.
+     * 
      * @param docId The ID of the document/chunk to retrieve.
      * @return A map representing the document's fields, or null if not found.
      * @throws IOException if there is an error reading from the index
@@ -192,10 +232,130 @@ public abstract class IndexerService {
      * Updates the content of a specific document/chunk in the keyword index.
      * Note: This is intended for debugging and directly modifies the Lucene index.
      * It does not update the original source document or the vector store.
-     * @param docId The ID of the document/chunk to update.
+     * 
+     * @param docId      The ID of the document/chunk to update.
      * @param newContent The new content for the document.
      * @return true if the update was successful, false otherwise.
      * @throws IOException if there is an error updating the index
      */
     public abstract boolean updateIndexedDocumentContent(String docId, String newContent) throws IOException;
+
+    /**
+     * Returns the filesystem path where the index is stored.
+     *
+     * @return The absolute path to the index directory, or a descriptive string if
+     *         not applicable.
+     */
+    public abstract String getIndexPath();
+
+    /**
+     * Switches the indexer to use a different index path.
+     * <p>
+     * This allows dynamic switching between different keyword indices at runtime,
+     * which is useful for per-fact-sheet index storage. After switching, the indexer
+     * will read from and write to the new location.
+     * </p>
+     * <p>
+     * Implementations should close any existing resources for the old path and
+     * open/create resources for the new path. If the new path doesn't exist,
+     * implementations should create it.
+     * </p>
+     *
+     * @param newPath The new index path to switch to
+     * @return true if the switch was successful, false otherwise
+     */
+    public boolean switchIndexPath(String newPath) {
+        // Default implementation does nothing - implementations that support
+        // index path switching should override this
+        return false;
+    }
+
+    /**
+     * Indexes all documents directly from the underlying keyword index (e.g.
+     * Lucene)
+     * into the Vector Store.
+     * This avoids re-parsing original source files and allows bootstrapping
+     * detailed
+     * vector indices from existing text indices.
+     * 
+     * @throws IOException if there is an error reading the source index or writing
+     *                     to
+     *                     the vector store.
+     */
+    /**
+     * Indexes all documents directly from the underlying keyword index (e.g.
+     * Lucene)
+     * into the Vector Store.
+     * This avoids re-parsing original source files and allows bootstrapping
+     * detailed
+     * vector indices from existing text indices.
+     * 
+     * @throws IOException if there is an error reading the source index or writing
+     *                     to
+     *                     the vector store.
+     */
+    public abstract void indexFromLucene() throws IOException;
+
+    // --- Async Job Management ---
+
+    public enum JobState {
+        IDLE,
+        RUNNING,
+        COMPLETED,
+        FAILED,
+        CANCELLED
+    }
+
+    public static class JobStatus {
+        private JobState state;
+        private String message;
+        private int percentComplete;
+        private long documentsProcessed;
+
+        public JobStatus(JobState state, String message, int percentComplete, long documentsProcessed) {
+            this.state = state;
+            this.message = message;
+            this.percentComplete = percentComplete;
+            this.documentsProcessed = documentsProcessed;
+        }
+
+        public static JobStatus idle() {
+            return new JobStatus(JobState.IDLE, "No active job", 0, 0);
+        }
+
+        public JobState getState() {
+            return state;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public int getPercentComplete() {
+            return percentComplete;
+        }
+
+        public long getDocumentsProcessed() {
+            return documentsProcessed;
+        }
+    }
+
+    /**
+     * Starts the vector index creation process asynchronously.
+     * 
+     * @return true if job started, false if a job is already running.
+     */
+    public abstract boolean startVectorIndexCreationAsync();
+
+    /**
+     * Requests cancellation of the current async job.
+     */
+    public abstract void cancelCurrentJob();
+
+    /**
+     * Gets the current status of the async job.
+     * 
+     * @return JobStatus object.
+     */
+    public abstract JobStatus getJobStatus();
 }

@@ -17,24 +17,94 @@
 <div class="app-container">
   <header>
     <h1>{{ title }}</h1>
+
+    <!-- Fact Sheet Selector -->
+    <div class="fact-sheet-selector">
+      <button mat-button [matMenuTriggerFor]="factSheetMenu" class="fact-sheet-button">
+        <mat-icon [style.color]="activeFactSheet?.color || '#1976d2'">{{ activeFactSheet?.icon || 'folder' }}</mat-icon>
+        <span class="fact-sheet-name">{{ activeFactSheet?.name || 'No Fact Sheet' }}</span>
+        <mat-icon>arrow_drop_down</mat-icon>
+      </button>
+      <mat-menu #factSheetMenu="matMenu" class="fact-sheet-menu">
+        <div class="menu-header">
+          <span>Switch Fact Sheet</span>
+        </div>
+        <mat-divider></mat-divider>
+        <button mat-menu-item *ngFor="let sheet of factSheets"
+                (click)="selectFactSheet(sheet)"
+                [class.active-sheet]="sheet.id === activeFactSheet?.id">
+          <mat-icon [style.color]="sheet.color">{{ sheet.icon }}</mat-icon>
+          <span>{{ sheet.name }}</span>
+          <span class="fact-count">({{ sheet.factCount }} facts)</span>
+          <mat-icon *ngIf="sheet.id === activeFactSheet?.id" class="check-icon">check</mat-icon>
+        </button>
+        <mat-divider></mat-divider>
+        <button mat-menu-item (click)="openCreateFactSheetDialog()">
+          <mat-icon>add</mat-icon>
+          <span>Create New Fact Sheet</span>
+        </button>
+      </mat-menu>
+    </div>
   </header>
 
-  <nav>
-    <button (click)="activeTab = 'unifiedChat'" [class.active]="activeTab === 'unifiedChat'">Chat</button>
-    <button (click)="activeTab = 'search'" [class.active]="activeTab === 'search'">Search</button>
-    <button (click)="activeTab = 'mcp'" [class.active]="activeTab === 'mcp'">MCP</button>
-    <button (click)="activeTab = 'orchestrator'" [class.active]="activeTab === 'orchestrator'">Orchestrator</button>
-    <button (click)="activeTab = 'modelDebug'" [class.active]="activeTab === 'modelDebug'">Model Debug</button>
-    <button (click)="activeTab = 'batchConfig'" [class.active]="activeTab === 'batchConfig'">Batch Config</button>
-    <button (click)="activeTab = 'subprocessConfig'" [class.active]="activeTab === 'subprocessConfig'">Subprocess</button>
+  <!-- Create Fact Sheet Dialog -->
+  <div class="dialog-overlay" *ngIf="showCreateFactSheetDialog" (click)="closeCreateFactSheetDialog()">
+    <div class="dialog-content" (click)="$event.stopPropagation()">
+      <h2>Create New Fact Sheet</h2>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="newFactSheetName" placeholder="My Fact Sheet">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Description (optional)</mat-label>
+        <textarea matInput [(ngModel)]="newFactSheetDescription" rows="2" placeholder="What is this fact sheet for?"></textarea>
+      </mat-form-field>
+      <div class="dialog-actions">
+        <button mat-button (click)="closeCreateFactSheetDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="createFactSheet()" [disabled]="!newFactSheetName.trim()">
+          Create
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <nav mat-tab-nav-bar [tabPanel]="tabPanel" backgroundColor="primary">
+    <a mat-tab-link (click)="activeTab = 'unifiedChat'" [active]="activeTab === 'unifiedChat'">
+      Chat
+    </a>
+    <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'">
+      Fact Sheets
+    </a>
+    <a mat-tab-link (click)="activeTab = 'mcp'" [active]="activeTab === 'mcp'">
+      MCP
+    </a>
+    <a mat-tab-link (click)="activeTab = 'orchestrator'" [active]="activeTab === 'orchestrator'">
+      Orchestrator
+    </a>
+    <a mat-tab-link (click)="activeTab = 'developer'" [active]="activeTab === 'developer'">
+      Developer
+    </a>
+    <a mat-tab-link (click)="activeTab = 'graph'" [active]="activeTab === 'graph'">
+      Knowledge Graph
+    </a>
+    <a mat-tab-link (click)="activeTab = 'connections'" [active]="activeTab === 'connections'">
+      Connections
+    </a>
+    <a mat-tab-link (click)="activeTab = 'stagingConfig'" [active]="activeTab === 'stagingConfig'">
+      Model Staging
+    </a>
+    <a mat-tab-link (click)="activeTab = 'archiveAssembly'" [active]="activeTab === 'archiveAssembly'">
+      Archive Assembly
+    </a>
   </nav>
+  <mat-tab-nav-panel #tabPanel></mat-tab-nav-panel>
 
   <main>
     <div *ngIf="activeTab === 'unifiedChat'">
       <app-unified-chat></app-unified-chat>
     </div>
-    <div *ngIf="activeTab === 'search'">
-      <app-unified-data-management></app-unified-data-management>
+    <div *ngIf="activeTab === 'sources'">
+      <app-fact-sheet-manager></app-fact-sheet-manager>
     </div>
     <div *ngIf="activeTab === 'mcp'">
       <app-mcp-hub></app-mcp-hub>
@@ -42,15 +112,22 @@
     <div *ngIf="activeTab === 'orchestrator'">
       <app-orchestrator-hub></app-orchestrator-hub>
     </div>
-    <div *ngIf="activeTab === 'modelDebug'">
-      <app-model-debug></app-model-debug>
+    <div *ngIf="activeTab === 'developer'">
+      <app-developer-hub></app-developer-hub>
     </div>
-    <div *ngIf="activeTab === 'batchConfig'">
-      <app-batch-size-config></app-batch-size-config>
+    <div *ngIf="activeTab === 'graph'" class="graph-container">
+      <app-graph-visualizer></app-graph-visualizer>
     </div>
-    <div *ngIf="activeTab === 'subprocessConfig'">
-      <app-subprocess-config></app-subprocess-config>
+    <div *ngIf="activeTab === 'connections'">
+      <app-connections-manager></app-connections-manager>
     </div>
+    <div *ngIf="activeTab === 'stagingConfig'">
+      <app-staging-config></app-staging-config>
+    </div>
+    <div *ngIf="activeTab === 'archiveAssembly'">
+      <app-archive-assembly></app-archive-assembly>
+    </div>
+
   </main>
 
   <footer>

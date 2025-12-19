@@ -38,6 +38,128 @@ export interface AddUrlRequest {
   url: string;
   fileName?: string;
   loader?: string;
+  loaderName?: string;
+  chunkerName?: string;
+  rebuildIndex?: boolean;
+}
+
+export interface AddPathRequest {
+  path: string;
+  loader?: string;
+  chunkerName?: string;
+}
+
+// YouTube transcript request/response models
+export interface AddYouTubeRequest {
+  url: string;
+  language?: string;
+  chunkerName?: string;
+  saveTranscriptFile?: boolean;
+  rebuildIndex?: boolean;
+}
+
+export interface YouTubeTranscriptResponse {
+  message: string;
+  videoId: string;
+  videoTitle: string;
+  language: string;
+  transcriptLength: number;
+  segmentCount: number;
+  metadata?: { [key: string]: any };
+  savedToFile?: string;
+  filePath?: string;
+  taskId?: string;
+  processingStarted?: boolean;
+  processingNote?: string;
+  error?: string;
+  details?: string;
+}
+
+// Text/Clipboard content request/response models
+export interface AddTextRequest {
+  content: string;
+  sourceName?: string;
+  chunkerName?: string;
+  processingMode?: ProcessingMode;
+  rebuildIndex?: boolean;
+}
+
+export interface AddTextResponse {
+  message: string;
+  sourceName: string;
+  contentLength: number;
+  wordCount: number;
+  taskId?: string;
+  processingStarted?: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+// Discord channel/server request/response models
+export interface AddDiscordRequest {
+  serverId: string;
+  channelId?: string;
+  botToken: string;
+  messageLimit?: number;
+  includeThreads?: boolean;
+  chunkerName?: string;
+  saveMessagesFile?: boolean;
+}
+
+export interface DiscordResponse {
+  message: string;
+  serverId: string;
+  serverName?: string;
+  channelId?: string;
+  channelName?: string;
+  messageCount: number;
+  userCount?: number;
+  metadata?: { [key: string]: any };
+  savedToFile?: string;
+  filePath?: string;
+  taskId?: string;
+  processingStarted?: boolean;
+  processingNote?: string;
+  error?: string;
+  details?: string;
+}
+
+// Slack channel/workspace request/response models
+export interface AddSlackRequest {
+  channelId: string;         // Slack channel ID or name
+  token?: string;            // Optional: Slack Bot OAuth token (if not in config)
+  messageLimit?: number;     // Maximum messages to fetch
+  includeThreads?: boolean;  // Whether to include thread replies
+  chunkerName?: string;      // Chunker to use for processing
+}
+
+export interface AddSlackHistoryRequest {
+  channelId: string;         // Slack channel ID, name, or comma-separated list
+  token?: string;            // Optional: Slack Bot OAuth token (if not in config)
+  startDate?: string;        // Start date (ISO format) or days back
+  endDate?: string;          // End date (ISO format), defaults to now
+  daysBack?: number;         // Alternative to startDate: number of days to look back
+  maxMessages?: number;      // Maximum messages to fetch (0 = unlimited)
+  includeThreads?: boolean;  // Whether to include thread replies
+  loadAllChannels?: boolean; // Whether to load from all accessible channels
+  chunkerName?: string;      // Chunker to use for processing
+}
+
+export interface SlackResponse {
+  message: string;
+  channelId: string;
+  channelName?: string;
+  messageCount: number;
+  threadCount?: number;
+  userCount?: number;
+  startDate?: string;
+  endDate?: string;
+  metadata?: { [key: string]: any };
+  taskId?: string;
+  processingStarted?: boolean;
+  processingNote?: string;
+  error?: string;
+  details?: string;
 }
 
 export interface FileUploadResponse {
@@ -414,6 +536,7 @@ export interface UpdateDocRequest {
 export interface SearchRequest {
   query: string;
   maxResults?: number;
+  similarityThreshold?: number;  // For vector search - minimum cosine similarity (0.0 to 1.0)
 }
 
 export interface SearchResult {
@@ -434,6 +557,7 @@ export interface SearchResponse {
 
 // New interface for Index Browser Status
 export interface IndexBrowserStatus {
+  // Keyword Index fields
   indexerImplementation: string;
   indexerFullClassName: string;
   retrieverImplementation: string;
@@ -442,7 +566,33 @@ export interface IndexBrowserStatus {
   approximateDocumentCount: number | string;
   isNoOpIndexer: boolean;
   isNoOpRetriever: boolean;
+  indexPath?: string;
   warning?: string;
+
+  // Vector Store fields
+  vectorStoreImplementation?: string;
+  vectorStoreFullClassName?: string;
+  vectorStoreAvailable?: boolean;
+  vectorStorePath?: string;
+  approximateVectorCount?: number | string;
+  isNoOpVectorStore?: boolean;
+  isUsingFallbackIndex?: boolean;
+}
+
+// Vector Indexing Job Status
+export enum JobState {
+  IDLE = 'IDLE',
+  RUNNING = 'RUNNING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+  CANCELLED = 'CANCELLED'
+}
+
+export interface JobStatus {
+  state: JobState;
+  message: string;
+  percentComplete: number;
+  documentsProcessed: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -879,6 +1029,8 @@ export interface AddSourceDialogResult {
   file?: File;
   files?: File[]; // Support for multiple file upload
   url?: string;
+  path?: string; // Server-side path
+  sourceType?: 'file' | 'url' | 'path' | 'text' | 'youtube' | 'discord' | 'slack' | 'slack_history' | 'confluence';
   fileName?: string;
   selectedLoader?: string;
   rebuildIndex?: boolean; // Added flag for optional rebuild
@@ -900,6 +1052,39 @@ export interface AddSourceDialogResult {
    * - 'inprocess': Force in-process mode (same JVM)
    */
   processingMode?: ProcessingMode;
+  // Text/Clipboard source configuration
+  textContent?: string; // Raw text content pasted by user
+  textSourceName?: string; // Optional name for the text source
+  // YouTube transcript configuration
+  youtubeUrl?: string; // YouTube video URL or video ID
+  youtubeLanguage?: string; // Preferred language code (e.g., 'en', 'es')
+  saveTranscriptFile?: boolean; // Whether to save transcript to file for processing
+  // Discord channel/server configuration
+  discordServerId?: string; // Discord server (guild) ID
+  discordChannelId?: string; // Optional specific channel ID (if empty, fetches all channels)
+  discordBotToken?: string; // Discord bot token for authentication
+  discordMessageLimit?: number; // Maximum messages to fetch per channel
+  discordIncludeThreads?: boolean; // Whether to include thread messages
+  saveDiscordMessages?: boolean; // Whether to save messages to file for processing
+  // Slack channel/workspace configuration
+  slackChannelId?: string; // Slack channel ID or name (supports comma-separated list)
+  slackToken?: string; // Slack Bot OAuth token for authentication
+  slackMessageLimit?: number; // Maximum messages to fetch per channel
+  slackIncludeThreads?: boolean; // Whether to include thread replies
+  slackStartDate?: string; // Start date for history (ISO format)
+  slackEndDate?: string; // End date for history (ISO format)
+  slackDaysBack?: number; // Alternative to startDate: days to look back
+  slackLoadAllChannels?: boolean; // Whether to load from all accessible channels
+  slackHistoryMode?: boolean; // Whether this is a history load (vs. current messages)
+  // Confluence page/space configuration
+  confluenceBaseUrl?: string; // Confluence instance base URL
+  confluenceEmail?: string; // User email for authentication
+  confluenceApiToken?: string; // API token for authentication
+  confluenceSpaceKey?: string; // Confluence space key to ingest
+  confluencePageIds?: string[]; // Specific page IDs to ingest
+  confluenceIncludeChildren?: boolean; // Whether to include child pages
+  confluenceIncludeAttachments?: boolean; // Whether to include page attachments
+  confluenceMaxDepth?: number; // Maximum depth for child page traversal
 }
 
 /**
@@ -954,7 +1139,7 @@ export interface SubprocessIngestConfig {
  * Default subprocess ingest configuration.
  */
 export const DEFAULT_SUBPROCESS_CONFIG: SubprocessIngestConfig = {
-  enabled: false,  // Default to in-process mode for simplicity
+  enabled: false,  // Default to in-process mode; configure in Developer Hub > Processing Settings
   heapSize: '4g',
   offHeapMaxBytes: '',
   timeoutMinutes: 60,
@@ -1203,6 +1388,8 @@ export interface IngestProgressUpdate {
   stats: IngestStats;
   errorMessage: string | null;
   timestamp: string;
+  /** The ID of the fact sheet this task is associated with */
+  factSheetId: number | null;
 }
 
 export interface BatchAsyncUploadResponse {
@@ -1475,7 +1662,7 @@ export const DEFAULT_RAG_OPTIONS: ConversationalRagOptions = {
 /**
  * Available reranker types.
  */
-export type RerankerType = 'none' | 'rm3' | 'bm25prf' | 'rocchio' | 'score_ties';
+export type RerankerType = 'none' | 'rm3' | 'bm25prf' | 'rocchio' | 'axiom' | 'score_ties' | 'cross_encoder' | 'rrf' | 'normalize' | 'mmr';
 
 /**
  * Reranker configuration options.
@@ -1493,12 +1680,20 @@ export interface RerankerConfig {
   /** Number of feedback terms to use */
   fbTerms: number;
 
+  /** Top-K results to rerank (-1 for all) */
+  topK?: number;
+
+  // RM3-specific parameters
   /** Weight for original query in RM3 interpolation (0.0-1.0) */
   originalQueryWeight: number;
 
   /** Whether to filter non-alphanumeric expansion terms */
   filterTerms: boolean;
 
+  /** Whether to output expanded query for debugging */
+  outputQuery?: boolean;
+
+  // BM25-PRF parameters
   /** BM25 k1 parameter */
   k1: number;
 
@@ -1508,6 +1703,7 @@ export interface RerankerConfig {
   /** Weight boost for newly added expansion terms */
   newTermWeight: number;
 
+  // Rocchio parameters
   /** Rocchio alpha parameter (original query weight) */
   alpha: number;
 
@@ -1519,6 +1715,34 @@ export interface RerankerConfig {
 
   /** Whether to use negative feedback in Rocchio */
   useNegative: boolean;
+
+  // Axiom parameters
+  /** Axiom R parameter - number of terms from top passages */
+  r?: number;
+
+  /** Axiom N parameter - number of documents to consider */
+  n?: number;
+
+  /** Axiom beta parameter - interpolation weight */
+  axiomBeta?: number;
+
+  /** Use deterministic random for Axiom */
+  deterministic?: boolean;
+
+  /** Random seed for deterministic mode */
+  seed?: number;
+
+  // Cross-encoder parameters
+  /** Model ID for cross-encoder reranking */
+  crossEncoderModel?: string;
+
+  // RRF parameters
+  /** RRF k constant (typically 60) */
+  rrfK?: number;
+
+  // MMR parameters
+  /** MMR lambda: 1.0 = pure relevance, 0.0 = pure diversity */
+  lambda?: number;
 }
 
 /**
@@ -1529,15 +1753,32 @@ export const DEFAULT_RERANKER_CONFIG: RerankerConfig = {
   type: 'rm3',
   fbDocs: 10,
   fbTerms: 10,
+  topK: -1,
+  // RM3 defaults
   originalQueryWeight: 0.5,
   filterTerms: true,
+  outputQuery: false,
+  // BM25-PRF defaults
   k1: 0.9,
   b: 0.4,
   newTermWeight: 0.2,
+  // Rocchio defaults
   alpha: 1.0,
   beta: 0.75,
   gamma: 0.15,
-  useNegative: false
+  useNegative: false,
+  // Axiom defaults
+  r: 20,
+  n: 30,
+  axiomBeta: 0.4,
+  deterministic: true,
+  seed: 42,
+  // Cross-encoder defaults
+  crossEncoderModel: '',
+  // RRF defaults
+  rrfK: 60,
+  // MMR defaults
+  lambda: 0.5
 };
 
 /**
@@ -1574,9 +1815,34 @@ export const RERANKER_TYPES: RerankerTypeInfo[] = [
     description: 'Vector space model query expansion'
   },
   {
+    id: 'axiom',
+    name: 'Axiom',
+    description: 'Semantic term matching using external corpus'
+  },
+  {
     id: 'score_ties',
     name: 'Score Ties',
     description: 'Deterministic tie-breaking for reproducibility'
+  },
+  {
+    id: 'cross_encoder',
+    name: 'Cross-Encoder',
+    description: 'Neural reranking using cross-encoder models (BERT-based)'
+  },
+  {
+    id: 'rrf',
+    name: 'RRF',
+    description: 'Reciprocal Rank Fusion - Combines multiple ranked lists for hybrid search'
+  },
+  {
+    id: 'normalize',
+    name: 'Normalize',
+    description: 'Min-max score normalization to [0, 1] range'
+  },
+  {
+    id: 'mmr',
+    name: 'MMR',
+    description: 'Maximal Marginal Relevance - Reduces redundancy for diverse results'
   }
 ];
 
@@ -2614,10 +2880,13 @@ export interface Nd4jEnvironmentConfig {
   variableTracingEnabled?: boolean;
   javacppLoggerDebug?: boolean;
   javacppPathsFirst?: boolean;
+  // BLAS configuration
+  blasSerializationEnabled?: boolean;
+  openBlasThreads?: number;
 }
 
 /**
- * Response for task environment snapshot endpoint.
+ * Response for task environment snapshot endpoint (ingest tasks).
  */
 export interface TaskEnvironmentResponse {
   taskId: string;
@@ -2628,6 +2897,22 @@ export interface TaskEnvironmentResponse {
   nd4jEnvironmentRaw?: string;
   message?: string;
   parseError?: string;
+}
+
+/**
+ * Response for vector population task environment snapshot endpoint.
+ */
+export interface VectorPopulationTaskEnvironment {
+  available: boolean;
+  found: boolean;
+  taskId: string;
+  keywordIndexPath?: string;
+  vectorIndexPath?: string;
+  timestamp?: string;
+  environmentCaptured: boolean;
+  nd4jEnvironment?: Nd4jEnvironmentConfig;
+  nd4jEnvironmentRaw?: string;
+  message?: string;
 }
 
 /**
@@ -3420,3 +3705,1365 @@ export interface ProcessingModeInfo {
  * Processing mode type for easier type checking
  */
 export type ProcessingMode = 'auto' | 'subprocess' | 'inprocess';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VECTOR POPULATION MODELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Vector population phases (matches backend VectorPopulationPhase enum).
+ */
+export enum VectorPopulationPhase {
+  LOADING = 'LOADING',
+  EMBEDDING = 'EMBEDDING',
+  INDEXING = 'INDEXING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+  CANCELLED = 'CANCELLED'
+}
+
+/**
+ * Vector population status (matches backend VectorPopulationStatus enum).
+ */
+export enum VectorPopulationStatus {
+  PENDING = 'PENDING',
+  IN_PROGRESS = 'IN_PROGRESS',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+  CANCELLED = 'CANCELLED'
+}
+
+/**
+ * Worker status for vector population subprocess.
+ */
+export interface VectorPopulationWorkerStatus {
+  workerId: number;
+  workerType: string;
+  status: string;
+  itemsProcessed: number;
+  currentBatchSize: number;
+  throughput: number;
+  currentItem?: string;
+}
+
+/**
+ * Queue status for vector population subprocess.
+ */
+export interface VectorPopulationQueueStatus {
+  chunkQueueSize: number;
+  chunkQueueCapacity: number;
+  embeddedQueueSize: number;
+  embeddedQueueCapacity: number;
+}
+
+/**
+ * Embedding batch metrics for vector population.
+ */
+export interface VectorPopulationEmbeddingBatchMetrics {
+  batchNumber: number;
+  totalBatches: number;
+  inputTexts: number;
+  currentStep: string;
+  heartbeatSeconds: number;
+  forwardPassTimeMs: number;
+  totalBatchTimeMs: number;
+  isStuck: boolean;
+  sourceDocuments?: string;
+  sourceDocumentCount?: number;
+  inputTensorShape?: string;
+  outputTensorShape?: string;
+  embeddingDimension?: number;
+  inferenceTimeMs?: number;
+  batchThroughput?: number;
+  modelName?: string;
+  deviceType?: string;
+  // Additional timing metrics
+  tokensProcessed?: number;
+  maxTokenLength?: number;
+  avgTokenLength?: number;
+  inputTokens?: number;
+  tokenizationTimeMs?: number;
+  paddingTimeMs?: number;
+  tensorCreationTimeMs?: number;
+  extractionTimeMs?: number;
+}
+
+/**
+ * Statistics for vector population progress.
+ */
+export interface VectorPopulationStats {
+  documentsLoaded: number;
+  chunksCreated: number;
+  chunksEmbedded: number;
+  chunksIndexed: number;
+  totalDocuments: number;
+  elapsedTimeMs: number;
+  throughputDocsPerSec: number;
+  memoryUsagePercent: number;
+  // Actual index store counts (verified after commit to persistence)
+  actualKeywordIndexCount?: number;
+  actualVectorStoreCount?: number;
+  workerStatuses?: VectorPopulationWorkerStatus[];
+  queueStatus?: VectorPopulationQueueStatus;
+  currentEmbeddingBatch?: VectorPopulationEmbeddingBatchMetrics;
+}
+
+/**
+ * Vector population progress update (WebSocket message).
+ */
+export interface VectorPopulationUpdate {
+  taskId: string;
+  phase: VectorPopulationPhase;
+  status: VectorPopulationStatus;
+  progressPercent: number;
+  currentStep: string;
+  message: string;
+  keywordIndexPath?: string;
+  vectorIndexPath?: string;
+  stats?: VectorPopulationStats;
+  errorMessage?: string;
+  timestamp: string;
+}
+
+/**
+ * Vector population subprocess status.
+ */
+export interface VectorPopulationSubprocessStatus {
+  taskId: string;
+  keywordIndexPath: string;
+  vectorIndexPath: string;
+  pid: number;
+  alive: boolean;
+  cancelled: boolean;
+  oomDetected: boolean;
+  currentPhase: string;
+  progressPercent: number;
+  lastMessage: string;
+  startTime: string;
+  lastHeartbeat: string;
+}
+
+/**
+ * Vector population launch request.
+ */
+export interface VectorPopulationLaunchRequest {
+  keywordIndexPath: string;
+  vectorIndexPath: string;
+  taskId?: string;
+  embeddingBatchSize?: number;
+  parallelIndexing?: boolean;
+  indexingWorkers?: number;
+}
+
+/**
+ * Vector population service status response.
+ */
+export interface VectorPopulationServiceStatus {
+  populationServiceAvailable: boolean;
+  trackerAvailable: boolean;
+  subprocessLauncherAvailable: boolean;
+  activeTaskCount?: number;
+  totalTrackedTasks?: number;
+  activeSubprocessCount?: number;
+}
+
+/**
+ * Vector population summary response.
+ */
+export interface VectorPopulationSummary {
+  available: boolean;
+  message?: string;
+  legacyActiveTaskCount?: number;
+  trackedTaskCount?: number;
+  activeCount?: number;
+  completedCount?: number;
+  failedCount?: number;
+  cancelledCount?: number;
+  subprocessCount?: number;
+  aliveSubprocessCount?: number;
+}
+
+/**
+ * Get display name for vector population phase.
+ */
+export function getVectorPopulationPhaseDisplayName(phase: VectorPopulationPhase | string): string {
+  const displayNames: { [key: string]: string } = {
+    'LOADING': 'Loading Documents',
+    'EMBEDDING': 'Generating Embeddings',
+    'INDEXING': 'Writing to Vector Store',
+    'COMPLETED': 'Completed',
+    'FAILED': 'Failed',
+    'CANCELLED': 'Cancelled'
+  };
+  return displayNames[phase] || phase;
+}
+
+/**
+ * Get icon for vector population phase.
+ */
+export function getVectorPopulationPhaseIcon(phase: VectorPopulationPhase | string): string {
+  const icons: { [key: string]: string } = {
+    'LOADING': 'folder_open',
+    'EMBEDDING': 'memory',
+    'INDEXING': 'storage',
+    'COMPLETED': 'check_circle',
+    'FAILED': 'error',
+    'CANCELLED': 'cancel'
+  };
+  return icons[phase] || 'info';
+}
+
+/**
+ * Get color for vector population status.
+ */
+export function getVectorPopulationStatusColor(status: VectorPopulationStatus | string): string {
+  const colors: { [key: string]: string } = {
+    'PENDING': 'gray',
+    'IN_PROGRESS': 'blue',
+    'COMPLETED': 'green',
+    'FAILED': 'red',
+    'CANCELLED': 'orange'
+  };
+  return colors[status] || 'gray';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOURCE VIEWER INTERFACES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * View mode for source files.
+ */
+export type SourceViewMode = 'TEXT' | 'IMAGE' | 'EMBEDDED' | 'DOWNLOAD_ONLY';
+
+/**
+ * Source type indicating where the document came from.
+ */
+export type SourceType = 'UPLOAD' | 'STORED' | 'URL';
+
+/**
+ * Information about a source file.
+ */
+export interface SourceInfo {
+  /** File name */
+  fileName: string;
+  /** Full path to file */
+  path: string;
+  /** SHA-256 checksum (for stored documents) */
+  checksum: string | null;
+  /** Source type (UPLOAD, STORED, or URL) */
+  sourceType: SourceType;
+  /** File extension (lowercase, without dot) */
+  extension: string;
+  /** MIME type */
+  mimeType: string;
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Last modified timestamp (ISO format) */
+  lastModified: string;
+  /** How this file can be viewed */
+  viewMode: SourceViewMode;
+  /** Whether this file can be previewed inline */
+  canPreview: boolean;
+  /** Original URL if downloaded from web */
+  sourceUrl: string | null;
+}
+
+/**
+ * Response for listing sources.
+ */
+export interface SourceListResponse {
+  /** List of sources */
+  sources: SourceInfo[];
+  /** Total count (before pagination) */
+  totalCount: number;
+  /** Current offset */
+  offset: number;
+  /** Page limit */
+  limit: number;
+}
+
+/**
+ * Response for text content retrieval.
+ */
+export interface TextContentResponse {
+  /** Text content of the file */
+  content: string | null;
+  /** File name */
+  fileName: string;
+  /** File extension */
+  extension: string | null;
+  /** Original file size in bytes */
+  fileSize: number;
+  /** Number of lines returned */
+  lineCount: number;
+  /** Error message if any */
+  error: string | null;
+  /** Whether content was truncated */
+  truncated: boolean;
+}
+
+/**
+ * Supported file types response.
+ */
+export interface SupportedTypesResponse {
+  /** Extensions supported for text viewing */
+  textExtensions: string[];
+  /** Extensions supported for image viewing */
+  imageExtensions: string[];
+  /** Extensions supported for embedded viewing (PDF) */
+  viewableExtensions: string[];
+  /** All supported extensions */
+  allSupported: string[];
+}
+
+/**
+ * Get icon for source view mode.
+ */
+export function getSourceViewModeIcon(viewMode: SourceViewMode): string {
+  switch (viewMode) {
+    case 'TEXT': return 'description';
+    case 'IMAGE': return 'image';
+    case 'EMBEDDED': return 'picture_as_pdf';
+    case 'DOWNLOAD_ONLY': return 'download';
+    default: return 'insert_drive_file';
+  }
+}
+
+/**
+ * Get display name for source view mode.
+ */
+export function getSourceViewModeDisplayName(viewMode: SourceViewMode): string {
+  switch (viewMode) {
+    case 'TEXT': return 'Text File';
+    case 'IMAGE': return 'Image';
+    case 'EMBEDDED': return 'Document';
+    case 'DOWNLOAD_ONLY': return 'Download Only';
+    default: return 'Unknown';
+  }
+}
+
+/**
+ * Format file size for display.
+ */
+export function formatFileSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FACT SHEET MODELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A fact sheet - a named collection of facts that users can switch between.
+ */
+export interface FactSheet {
+  /** Unique ID */
+  id: number;
+  /** Name of the fact sheet */
+  name: string;
+  /** Optional description */
+  description: string | null;
+  /** Whether this is the currently active sheet */
+  isActive: boolean;
+  /** ID of the sheet this was derived from (if any) */
+  derivedFromId: number | null;
+  /** Color for UI display (hex) */
+  color: string;
+  /** Icon name for UI display */
+  icon: string;
+  /** Path to vector (dense) store for this sheet */
+  vectorStorePath: string | null;
+  /** Path to keyword (sparse) index for this sheet */
+  keywordIndexPath: string | null;
+
+  // ==================== Retrieval Configuration ====================
+  /** Embedding model ID for retrieval (e.g., "bge-base-en-v1.5") */
+  embeddingModel: string | null;
+  /** Source of the embedding model: 'archive', 'registry', or 'default' */
+  embeddingModelSource: string | null;
+  /** Archive ID if embeddingModelSource is 'archive' */
+  embeddingArchiveId: string | null;
+
+  // ==================== Reranking Configuration ====================
+  /** Whether reranking is enabled for this fact sheet */
+  rerankingEnabled: boolean;
+  /** Type of reranker: 'none', 'cross_encoder', 'rrf', 'mmr', 'rm3', 'bm25prf' */
+  rerankerType: string | null;
+  /** Cross-encoder model ID for reranking */
+  crossEncoderModel: string | null;
+  /** Source of the cross-encoder model: 'archive', 'registry', or 'default' */
+  crossEncoderModelSource: string | null;
+  /** Archive ID if crossEncoderModelSource is 'archive' */
+  crossEncoderArchiveId: string | null;
+  /** Number of top results to rerank */
+  rerankTopK: number | null;
+  /** MMR lambda parameter (diversity vs relevance trade-off) */
+  mmrLambda: number | null;
+
+  // ==================== Stats ====================
+  /** Number of facts in this sheet */
+  factCount: number;
+  /** Number of indexed facts in this sheet */
+  indexedCount: number;
+  /** Number of unindexed facts in this sheet */
+  unindexedCount: number;
+  /** Total size of all facts in bytes */
+  totalSizeBytes: number;
+  /** When created */
+  createdAt: string;
+  /** When last modified */
+  updatedAt: string;
+}
+
+/**
+ * A fact - a document or file that belongs to a fact sheet.
+ */
+export interface Fact {
+  /** Unique ID */
+  id: number;
+  /** ID of the parent fact sheet */
+  factSheetId: number;
+  /** Original file name */
+  fileName: string;
+  /** Full path to the file */
+  filePath: string;
+  /** SHA-256 checksum */
+  checksum: string | null;
+  /** Source type (UPLOAD, STORED, URL, TEXT, IMPORT) */
+  sourceType: FactSourceType;
+  /** File extension (lowercase, without dot) */
+  extension: string | null;
+  /** MIME type */
+  mimeType: string | null;
+  /** File size in bytes */
+  sizeBytes: number | null;
+  /** How this fact can be viewed */
+  viewMode: SourceViewMode;
+  /** Whether this fact can be previewed inline */
+  canPreview: boolean;
+  /** User-provided title */
+  title: string | null;
+  /** User-provided notes */
+  notes: string | null;
+  /** Comma-separated tags */
+  tags: string | null;
+  /** Original URL if downloaded from web */
+  sourceUrl: string | null;
+  /** Whether this fact has been indexed in the vector store */
+  indexed: boolean;
+  /** When this fact was indexed (null if not indexed) */
+  indexedAt: string | null;
+  /** When added to the sheet */
+  createdAt: string;
+  /** When last modified */
+  updatedAt: string;
+  /** When last accessed/viewed */
+  lastAccessedAt: string | null;
+}
+
+/**
+ * Fact source types.
+ */
+export type FactSourceType = 'UPLOAD' | 'STORED' | 'URL' | 'TEXT' | 'IMPORT';
+
+/**
+ * Request to create a new fact sheet.
+ */
+export interface CreateFactSheetRequest {
+  name: string;
+  description?: string;
+  color?: string;
+  icon?: string;
+  vectorStorePath?: string;
+  keywordIndexPath?: string;
+  // Retrieval configuration
+  embeddingModel?: string;
+  embeddingModelSource?: string;
+  embeddingArchiveId?: string;
+  // Reranking configuration
+  rerankingEnabled?: boolean;
+  rerankerType?: string;
+  crossEncoderModel?: string;
+  crossEncoderModelSource?: string;
+  crossEncoderArchiveId?: string;
+  rerankTopK?: number;
+  mmrLambda?: number;
+}
+
+/**
+ * Request to derive a new fact sheet from an existing one.
+ */
+export interface DeriveFactSheetRequest {
+  name: string;
+  description?: string;
+}
+
+/**
+ * Request to update a fact sheet.
+ */
+export interface UpdateFactSheetRequest {
+  name?: string;
+  description?: string;
+  color?: string;
+  icon?: string;
+  vectorStorePath?: string;
+  keywordIndexPath?: string;
+  // Retrieval configuration
+  embeddingModel?: string;
+  embeddingModelSource?: string;
+  embeddingArchiveId?: string;
+  // Reranking configuration
+  rerankingEnabled?: boolean;
+  rerankerType?: string;
+  crossEncoderModel?: string;
+  crossEncoderModelSource?: string;
+  crossEncoderArchiveId?: string;
+  rerankTopK?: number;
+  mmrLambda?: number;
+}
+
+/**
+ * Request to update a fact.
+ */
+export interface UpdateFactRequest {
+  title?: string;
+  notes?: string;
+  tags?: string;
+}
+
+/**
+ * Request to copy or move facts between sheets.
+ */
+export interface CopyFactsRequest {
+  factIds: number[];
+}
+
+/**
+ * Response from copy/move operations.
+ */
+export interface CopyFactsResponse {
+  copiedCount?: number;
+  movedCount?: number;
+}
+
+/**
+ * Request to mark facts as indexed.
+ */
+export interface MarkIndexedRequest {
+  factIds: number[];
+}
+
+/**
+ * Response from mark indexed operations.
+ */
+export interface MarkIndexedResponse {
+  markedCount: number;
+}
+
+/**
+ * Indexing statistics for a fact sheet.
+ */
+export interface IndexingStats {
+  /** Total number of facts */
+  totalFacts: number;
+  /** Number of facts that have been indexed */
+  indexedFacts: number;
+  /** Number of facts that have not been indexed */
+  unindexedFacts: number;
+  /** Percentage of facts that have been indexed */
+  indexedPercentage: number;
+  /** Whether all facts have been indexed */
+  allIndexed: boolean;
+  /** Whether there are unindexed facts */
+  hasUnindexed: boolean;
+}
+
+/**
+ * A fact ready for indexing with its file path information.
+ */
+export interface FactForIndexing {
+  id: number;
+  fileName: string;
+  filePath: string;
+  sourceType: string;
+  extension: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+}
+
+/**
+ * Get icon for fact source type.
+ */
+export function getFactSourceTypeIcon(sourceType: FactSourceType): string {
+  switch (sourceType) {
+    case 'UPLOAD': return 'upload_file';
+    case 'STORED': return 'inventory_2';
+    case 'URL': return 'link';
+    case 'TEXT': return 'text_snippet';
+    case 'IMPORT': return 'import_export';
+    default: return 'description';
+  }
+}
+
+/**
+ * Get display name for fact source type.
+ */
+export function getFactSourceTypeDisplayName(sourceType: FactSourceType): string {
+  switch (sourceType) {
+    case 'UPLOAD': return 'Uploaded';
+    case 'STORED': return 'Stored';
+    case 'URL': return 'From URL';
+    case 'TEXT': return 'Text Input';
+    case 'IMPORT': return 'Imported';
+    default: return 'Unknown';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-INDEX STATUS MODELS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Overall index status for a document across all indexes.
+ */
+export type OverallIndexStatus = 'NOT_INDEXED' | 'PARTIAL' | 'FULLY_INDEXED' | 'OUT_OF_SYNC' | 'FAILED';
+
+/**
+ * Status for a document in a single index.
+ */
+export type IndexStatus = 'NOT_INDEXED' | 'INDEXING' | 'INDEXED' | 'FAILED' | 'STALE';
+
+/**
+ * Sync job status.
+ */
+export type SyncStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CANCELLED';
+
+/**
+ * Cross-index summary response.
+ */
+export interface CrossIndexSummary {
+  factSheetId: number | null;
+  factSheetName: string | null;
+  totalDocuments: number;
+  totalPassages: number;
+  fullyIndexedDocuments: number;
+  partiallyIndexedDocuments: number;
+  notIndexedDocuments: number;
+  outOfSyncDocuments: number;
+  documentsNeedingSync: number;
+  passagesMissingFromVector: number;
+  passagesMissingFromGraph: number;
+  autoSyncEnabled: boolean;
+  lastSyncAt: string | null;
+}
+
+/**
+ * Cross-index statistics response.
+ */
+export interface CrossIndexStatistics {
+  factSheetId: number;
+  documentStats: DocumentStats;
+  passageStats: PassageStats;
+  statusDistribution: { [key in OverallIndexStatus]?: number };
+}
+
+/**
+ * Document statistics.
+ */
+export interface DocumentStats {
+  total: number;
+  fullyIndexed: number;
+  partial: number;
+  notIndexed: number;
+  failed: number;
+}
+
+/**
+ * Passage statistics.
+ */
+export interface PassageStats {
+  total: number;
+  inKeywordIndex: number;
+  inVectorStore: number;
+  inGraph: number;
+}
+
+/**
+ * Single indexed document.
+ */
+export interface IndexedDocumentItem {
+  id: number;
+  sourceId: string;
+  fileName: string | null;
+  factId: number | null;
+  overallStatus: OverallIndexStatus;
+  keywordIndexStatus: IndexStatus;
+  vectorStoreStatus: IndexStatus;
+  graphStatus: IndexStatus;
+  keywordPassageCount: number;
+  vectorPassageCount: number;
+  graphNodeCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Paginated indexed document list response.
+ */
+export interface IndexedDocumentResponse {
+  documents: IndexedDocumentItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * Indexed document detail response with passages.
+ */
+export interface IndexedDocumentDetail {
+  document: IndexedDocumentItem;
+  passages: IndexedPassageItem[];
+  statusCounts: {
+    fullyIndexed: number;
+    inKeywordOnly: number;
+    inVectorOnly: number;
+    notIndexed: number;
+  };
+}
+
+/**
+ * Single indexed passage item.
+ */
+export interface IndexedPassageItem {
+  id: number;
+  chunkId: string;
+  chunkIndex: number | null;
+  contentPreview: string | null;
+  keywordIndexStatus: IndexStatus;
+  vectorStoreStatus: IndexStatus;
+  graphStatus: IndexStatus;
+  vectorId: string | null;
+  graphNodeId: string | null;
+}
+
+/**
+ * Paginated indexed passage list response.
+ */
+export interface IndexedPassageResponse {
+  passages: IndexedPassageItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * Passage status response for bulk check.
+ */
+export interface PassageStatusResponse {
+  chunkId: string;
+  inKeywordIndex: boolean;
+  inVectorStore: boolean;
+  inKnowledgeGraph: boolean;
+  fullyIndexed: boolean;
+}
+
+/**
+ * Sync request.
+ */
+export interface SyncRequest {
+  factSheetId?: number;
+  documentIds?: number[];
+  chunkIds?: string[];
+  async: boolean;
+}
+
+/**
+ * Sync job response.
+ */
+export interface SyncJobResponse {
+  jobId: string | null;
+  status: string;
+  startedAt: string;
+  message: string;
+}
+
+/**
+ * Sync job status response.
+ */
+export interface SyncJobStatusResponse {
+  jobId: string;
+  status: SyncStatus;
+  progress: number;
+  message: string;
+  documentsProcessed: number;
+  passagesProcessed: number;
+  totalDocuments: number;
+  totalPassages: number;
+  progressPercent: number;
+  errors: string[];
+}
+
+/**
+ * Auto-sync configuration request.
+ */
+export interface AutoSyncConfigRequest {
+  factSheetId: number;
+  enabled: boolean;
+  maxPassagesPerSync?: number;
+  syncTimeoutSeconds?: number;
+  syncOnSearch?: boolean;
+  syncOnIngest?: boolean;
+}
+
+/**
+ * Auto-sync configuration response.
+ */
+export interface AutoSyncConfigResponse {
+  factSheetId: number;
+  enabled: boolean;
+  maxPassagesPerSync: number;
+  syncTimeoutSeconds: number;
+  syncOnSearch: boolean;
+  syncOnIngest: boolean;
+}
+
+/**
+ * Get CSS class for overall index status.
+ */
+export function getCrossIndexStatusColor(status: OverallIndexStatus): string {
+  switch (status) {
+    case 'FULLY_INDEXED': return 'status-green';
+    case 'PARTIAL': return 'status-yellow';
+    case 'OUT_OF_SYNC': return 'status-blue';
+    case 'NOT_INDEXED': return 'status-red';
+    case 'FAILED': return 'status-red';
+    default: return 'status-gray';
+  }
+}
+
+/**
+ * Get icon for overall index status.
+ */
+export function getCrossIndexStatusIcon(status: OverallIndexStatus): string {
+  switch (status) {
+    case 'FULLY_INDEXED': return 'check_circle';
+    case 'PARTIAL': return 'warning';
+    case 'OUT_OF_SYNC': return 'sync_problem';
+    case 'NOT_INDEXED': return 'cancel';
+    case 'FAILED': return 'error';
+    default: return 'help';
+  }
+}
+
+/**
+ * Get label for overall index status.
+ */
+export function getCrossIndexStatusLabel(status: OverallIndexStatus): string {
+  switch (status) {
+    case 'FULLY_INDEXED': return 'Fully Synced';
+    case 'PARTIAL': return 'Partially Synced';
+    case 'OUT_OF_SYNC': return 'Out of Sync';
+    case 'NOT_INDEXED': return 'Not Indexed';
+    case 'FAILED': return 'Failed';
+    default: return 'Unknown';
+  }
+}
+
+/**
+ * Get CSS class for individual index status.
+ */
+export function getIndexStatusColor(status: IndexStatus): string {
+  switch (status) {
+    case 'INDEXED': return 'status-green';
+    case 'INDEXING': return 'status-blue';
+    case 'STALE': return 'status-yellow';
+    case 'NOT_INDEXED': return 'status-gray';
+    case 'FAILED': return 'status-red';
+    default: return 'status-gray';
+  }
+}
+
+/**
+ * Get icon for individual index status.
+ */
+export function getIndexStatusIcon(status: IndexStatus): string {
+  switch (status) {
+    case 'INDEXED': return 'check_circle';
+    case 'INDEXING': return 'sync';
+    case 'STALE': return 'update';
+    case 'NOT_INDEXED': return 'remove_circle_outline';
+    case 'FAILED': return 'error';
+    default: return 'help';
+  }
+}
+
+// ==============================================================================
+// Model Registry Types (for kompile-model-staging integration)
+// ==============================================================================
+
+/**
+ * Model type in the registry.
+ */
+export type ModelType = 'encoder' | 'cross_encoder' | 'reranker';
+
+/**
+ * Model status in the registry.
+ */
+export type ModelRegistryStatus = 'active' | 'staged' | 'pending' | 'failed' | 'deprecated';
+
+/**
+ * Model metadata including dimensions, architecture, and provenance.
+ */
+export interface ModelMetadata {
+  embeddingDim?: number;
+  hiddenSize?: number;
+  numLayers?: number;
+  maxSequenceLength: number;
+  modelType?: string;  // 'dense' | 'sparse'
+  framework: string;   // Always 'samediff' for production models
+  trainingData?: string;
+  sourceOrigin?: string;  // 'huggingface' | 'github' | 'custom'
+  sourceRepository?: string;
+  originalFormat?: string;  // 'onnx' | 'tensorflow' | 'keras'
+  conversionDate?: string;
+  description?: string;
+  vocabSize?: number;
+  version?: string;
+}
+
+/**
+ * Tokenizer configuration for a model.
+ */
+export interface TokenizerConfig {
+  doLowerCase: boolean;
+  addSpecialTokens: boolean;
+  stripAccents: boolean;
+  maxLength: number;
+  padding?: string;
+  truncation?: boolean;
+}
+
+/**
+ * A single model entry in the registry.
+ */
+export interface ModelRegistryEntry {
+  modelId: string;
+  type: ModelType;
+  path: string;
+  modelFile: string;
+  vocabFile: string;
+  checksum: string;
+  status: ModelRegistryStatus;
+  promotedAt?: string;
+  metadata: ModelMetadata;
+  tokenizer: TokenizerConfig;
+}
+
+/**
+ * The root model registry structure.
+ */
+export interface ModelRegistry {
+  version: string;
+  updatedAt: string;
+  models: { [modelId: string]: ModelRegistryEntry };
+}
+
+/**
+ * Staging status for a model being processed.
+ */
+export type StagingStatus = 'pending' | 'downloading' | 'converting' | 'validating' | 'ready' | 'promoting' | 'completed' | 'failed';
+
+/**
+ * Information about a model in the staging pipeline.
+ */
+export interface StagingModelInfo {
+  modelId: string;
+  status: StagingStatus;
+  progress: number;
+  error?: string;
+  source: string;
+  type?: ModelType;
+  startedAt: string;
+  completedAt?: string;
+  message?: string;
+}
+
+/**
+ * Response from the staging service status endpoint.
+ */
+export interface StagingStatusResponse {
+  connected: boolean;
+  stagingServiceUrl?: string;
+  modelsInStaging: StagingModelInfo[];
+  lastSync?: string;
+}
+
+/**
+ * Get CSS class for model registry status.
+ */
+export function getModelRegistryStatusColor(status: ModelRegistryStatus): string {
+  switch (status) {
+    case 'active': return 'status-green';
+    case 'staged': return 'status-blue';
+    case 'pending': return 'status-yellow';
+    case 'failed': return 'status-red';
+    case 'deprecated': return 'status-gray';
+    default: return 'status-gray';
+  }
+}
+
+/**
+ * Get icon for model registry status.
+ */
+export function getModelRegistryStatusIcon(status: ModelRegistryStatus): string {
+  switch (status) {
+    case 'active': return 'check_circle';
+    case 'staged': return 'schedule';
+    case 'pending': return 'hourglass_empty';
+    case 'failed': return 'error';
+    case 'deprecated': return 'archive';
+    default: return 'help';
+  }
+}
+
+/**
+ * Get icon for staging status.
+ */
+export function getStagingStatusIcon(status: StagingStatus): string {
+  switch (status) {
+    case 'pending': return 'hourglass_empty';
+    case 'downloading': return 'cloud_download';
+    case 'converting': return 'transform';
+    case 'validating': return 'verified';
+    case 'ready': return 'check_circle';
+    case 'promoting': return 'publish';
+    case 'completed': return 'done_all';
+    case 'failed': return 'error';
+    default: return 'help';
+  }
+}
+
+/**
+ * Get CSS class for staging status.
+ */
+export function getStagingStatusColor(status: StagingStatus): string {
+  switch (status) {
+    case 'pending': return 'status-gray';
+    case 'downloading':
+    case 'converting':
+    case 'validating':
+    case 'promoting': return 'status-blue';
+    case 'ready':
+    case 'completed': return 'status-green';
+    case 'failed': return 'status-red';
+    default: return 'status-gray';
+  }
+}
+
+// ==================== Archive Types ====================
+
+/**
+ * Information about a Kompile Archive (.karch).
+ */
+export interface ArchiveInfo {
+  /** Archive file name */
+  name: string;
+  /** Full path to the archive */
+  path: string;
+  /** Unique archive ID from manifest */
+  archiveId: string | null;
+  /** Version of the archive content */
+  version: string | null;
+  /** Description of the archive */
+  description: string | null;
+  /** Number of models in the archive */
+  modelCount: number;
+  /** Size of the archive in bytes */
+  sizeBytes: number;
+  /** Last modification timestamp */
+  lastModified: string;
+  /** Whether this archive is currently loaded */
+  loaded: boolean;
+}
+
+/**
+ * Status of the currently loaded archive.
+ */
+export interface ArchiveStatus {
+  /** Whether an archive is loaded */
+  loaded: boolean;
+  /** Path to the loaded archive */
+  archivePath: string | null;
+  /** Archive ID from manifest */
+  archiveId: string | null;
+  /** Content version */
+  contentVersion: string | null;
+  /** Description */
+  description: string | null;
+  /** Total number of models */
+  modelCount: number;
+  /** Number of encoder models */
+  encoderCount: number;
+  /** Number of cross-encoder models */
+  crossEncoderCount: number;
+  /** When the archive was loaded */
+  loadedAt: string | null;
+}
+
+/**
+ * Model information from an archive.
+ */
+export interface ArchiveModelInfo {
+  /** Model ID */
+  modelId: string;
+  /** Model type (encoder, cross_encoder) */
+  type: string;
+  /** Path within archive */
+  path: string;
+  /** Embedding dimension */
+  embeddingDim: number | null;
+  /** Max sequence length */
+  maxSequenceLength: number | null;
+  /** Description */
+  description: string | null;
+}
+
+/**
+ * Request to load an archive.
+ */
+export interface LoadArchiveRequest {
+  archivePath: string;
+}
+
+/**
+ * Request to extract a model from an archive.
+ */
+export interface ExtractModelRequest {
+  modelId: string;
+  destinationPath?: string;
+}
+
+/**
+ * Result of extracting a model from an archive.
+ */
+export interface ExtractResult {
+  success: boolean;
+  modelId: string;
+  destinationPath: string;
+  filesExtracted: number;
+  error?: string;
+}
+
+/**
+ * Model source type for fact sheet configuration.
+ */
+export type ModelSourceType = 'default' | 'archive' | 'registry';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL CATALOG TYPES (for Archive Assembly)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Model type classification.
+ */
+export type CatalogModelType = 'dense_encoder' | 'sparse_encoder' | 'cross_encoder';
+
+/**
+ * RAG pipeline category.
+ */
+export type RagPipelineCategory = 'retrieval' | 'reranking';
+
+/**
+ * Comprehensive model information from the built-in catalog.
+ */
+export interface BuiltInModelInfo {
+  /** Model ID (e.g., "bge-base-en-v1.5") */
+  modelId: string;
+  /** Model type: "dense_encoder", "sparse_encoder", "cross_encoder" */
+  modelType: CatalogModelType;
+  /** RAG pipeline category: "retrieval" or "reranking" */
+  category: RagPipelineCategory;
+  /** Human-readable description */
+  description: string | null;
+  /** Framework (e.g., "samediff", "onnx") */
+  framework: string | null;
+  /** Model version */
+  version: string | null;
+  /** Embedding dimension (for encoders) */
+  embeddingDim: number | null;
+  /** Maximum sequence length */
+  maxSequenceLength: number | null;
+  /** Hidden layer size (for cross-encoders) */
+  hiddenSize: number | null;
+  /** Number of transformer layers */
+  numLayers: number | null;
+  /** Training dataset (e.g., "ms-marco-passage") */
+  trainingData: string | null;
+  /** Input format (e.g., "query [SEP] document") */
+  inputFormat: string | null;
+  /** Output type (e.g., "relevance_score", "similarity_score") */
+  outputType: string | null;
+  /** Tokenizer type (e.g., "bert", "roberta") */
+  tokenizerType: string | null;
+  /** Whether tokenizer lowercases text */
+  doLowerCase: boolean;
+  /** Whether tokenizer strips accents */
+  stripAccents: boolean;
+  /** URL to download model file */
+  downloadUrl: string | null;
+  /** URL to download vocabulary file */
+  vocabUrl: string | null;
+  /** HuggingFace source URL */
+  huggingfaceSource: string | null;
+  /** Supported languages (e.g., "multilingual") */
+  languages: string | null;
+}
+
+/**
+ * Complete model catalog grouped by RAG pipeline phase.
+ */
+export interface BuiltInModelCatalog {
+  /** Dense encoder models (for semantic/vector retrieval) */
+  denseEncoders: BuiltInModelInfo[];
+  /** Sparse encoder models (for learned sparse/lexical retrieval) */
+  sparseEncoders: BuiltInModelInfo[];
+  /** Cross-encoder models (for reranking) */
+  crossEncoders: BuiltInModelInfo[];
+  /** Count summary */
+  counts: {
+    denseEncoders: number;
+    sparseEncoders: number;
+    crossEncoders: number;
+    total: number;
+  };
+}
+
+/**
+ * Request to assemble a custom archive with selected models.
+ */
+export interface AssembleArchiveRequest {
+  /** Custom archive ID (optional, auto-generated if not provided) */
+  archiveId?: string;
+  /** Archive display name */
+  archiveName?: string;
+  /** Archive description */
+  description?: string;
+  /** Archive version */
+  version?: string;
+  /** Dense encoder model IDs to include */
+  denseEncoderIds?: string[];
+  /** Sparse encoder model IDs to include */
+  sparseEncoderIds?: string[];
+  /** Cross-encoder model IDs to include */
+  crossEncoderIds?: string[];
+}
+
+/**
+ * Response from archive assembly request.
+ */
+export interface AssembleArchiveResponse {
+  /** Whether assembly was successful */
+  success: boolean;
+  /** Generated archive ID */
+  archiveId: string | null;
+  /** Path where archive will be created */
+  archivePath: string | null;
+  /** Total size of included models in bytes */
+  totalSizeBytes: number;
+  /** Number of models included */
+  modelCount: number;
+  /** List of included model IDs */
+  includedModelIds: string[];
+  /** Detailed info about included models */
+  includedModels: BuiltInModelInfo[];
+  /** Error message if failed */
+  error: string | null;
+}
+
+/**
+ * Helper function to get icon for model type.
+ */
+export function getModelTypeIcon(modelType: CatalogModelType): string {
+  switch (modelType) {
+    case 'dense_encoder': return 'memory';
+    case 'sparse_encoder': return 'scatter_plot';
+    case 'cross_encoder': return 'swap_horiz';
+    default: return 'extension';
+  }
+}
+
+/**
+ * Helper function to get display name for model type.
+ */
+export function getModelTypeDisplayName(modelType: CatalogModelType): string {
+  switch (modelType) {
+    case 'dense_encoder': return 'Dense Encoder';
+    case 'sparse_encoder': return 'Sparse Encoder';
+    case 'cross_encoder': return 'Cross-Encoder';
+    default: return 'Unknown';
+  }
+}
+
+/**
+ * Helper function to get description for model type.
+ */
+export function getModelTypeDescription(modelType: CatalogModelType): string {
+  switch (modelType) {
+    case 'dense_encoder':
+      return 'Transforms text into dense vector embeddings for semantic similarity search.';
+    case 'sparse_encoder':
+      return 'Creates sparse term-weighted representations for lexical matching with learned weights.';
+    case 'cross_encoder':
+      return 'Jointly encodes query-document pairs to compute relevance scores for reranking.';
+    default:
+      return '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STAGING ARCHIVE EXPORT TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Request to export models to a staging archive.
+ * Sent to /api/staging/archives/export
+ */
+export interface StagingArchiveExportRequest {
+  /** Model IDs to include in the archive */
+  modelIds: string[];
+  /** Output file path (optional) */
+  outputPath?: string;
+  /** Archive identifier */
+  archiveId?: string;
+  /** Archive version */
+  version?: string;
+  /** Archive description */
+  description?: string;
+  /** Publisher name */
+  publisherName?: string;
+  /** Publisher URL */
+  publisherUrl?: string;
+  /** Minimum Kompile version compatibility */
+  minKompileVersion?: string;
+  /** Export all models in registry */
+  exportAll?: boolean;
+}
+
+/**
+ * Response from staging archive export.
+ */
+export interface StagingArchiveExportResponse {
+  success: boolean;
+  archivePath?: string;
+  archiveId?: string;
+  version?: string;
+  modelCount?: number;
+  archiveSize?: number;
+  checksum?: string;
+  error?: string;
+}

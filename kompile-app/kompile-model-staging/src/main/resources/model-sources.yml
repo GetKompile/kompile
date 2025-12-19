@@ -1,0 +1,109 @@
+# Model Sources Configuration
+# Defines external sources for downloading models
+
+sources:
+  huggingface:
+    base_url: https://huggingface.co
+    enabled: true
+
+  github:
+    base_url: https://github.com/GetKompile/kompile/releases/download
+    enabled: true
+
+  custom:
+    base_url: ${KOMPILE_MODEL_MIRROR_URL:}
+    enabled: ${KOMPILE_MODEL_MIRROR_ENABLED:false}
+
+# Model Catalog
+# Pre-defined models that can be downloaded and converted
+
+model_catalog:
+  encoders:
+    - id: bge-base-en-v1.5
+      source: huggingface
+      repo: BAAI/bge-base-en-v1.5
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        embedding_dim: 768
+        max_sequence_length: 512
+        description: "BGE Base English v1.5 - Dense retrieval encoder"
+
+    - id: bge-small-en-v1.5
+      source: huggingface
+      repo: BAAI/bge-small-en-v1.5
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        embedding_dim: 384
+        max_sequence_length: 512
+        description: "BGE Small English v1.5 - Lightweight encoder"
+
+    - id: bge-large-en-v1.5
+      source: huggingface
+      repo: BAAI/bge-large-en-v1.5
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        embedding_dim: 1024
+        max_sequence_length: 512
+        description: "BGE Large English v1.5 - High-quality encoder"
+
+    - id: arctic-embed-l
+      source: huggingface
+      repo: Snowflake/arctic-embed-l
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: tokenizer.json
+      metadata:
+        embedding_dim: 1024
+        max_sequence_length: 8192
+        description: "Snowflake Arctic Embed L - Long context encoder"
+
+    - id: e5-base-v2
+      source: huggingface
+      repo: intfloat/e5-base-v2
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        embedding_dim: 768
+        max_sequence_length: 512
+        description: "E5 Base v2 - General purpose encoder"
+
+  cross_encoders:
+    - id: ms-marco-MiniLM-L-6-v2
+      source: huggingface
+      repo: cross-encoder/ms-marco-MiniLM-L6-v2
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        hidden_size: 384
+        num_layers: 6
+        max_sequence_length: 512
+        training_data: "MS MARCO"
+        description: "MiniLM L6 cross-encoder for reranking"
+
+    - id: ms-marco-MiniLM-L-12-v2
+      source: huggingface
+      repo: cross-encoder/ms-marco-MiniLM-L12-v2
+      format: onnx
+      files:
+        model: onnx/model.onnx
+        vocab: vocab.txt
+      metadata:
+        hidden_size: 384
+        num_layers: 12
+        max_sequence_length: 512
+        training_data: "MS MARCO"
+        description: "MiniLM L12 cross-encoder for reranking"

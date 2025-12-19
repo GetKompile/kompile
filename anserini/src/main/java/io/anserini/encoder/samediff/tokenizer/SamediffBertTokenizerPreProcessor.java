@@ -366,6 +366,36 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
             this.attentionMask = attentionMask;
             this.tokenTypeIds = tokenTypeIds;
         }
+
+        // Getters for compatibility with code expecting method access
+        public long[] inputIds() { return inputIds; }
+        public long[] attentionMask() { return attentionMask; }
+        public long[] tokenTypeIds() { return tokenTypeIds; }
+
+        // Helper methods for ND4J compatibility (expects int[])
+        public int[] inputIdsAsInt() {
+            int[] result = new int[inputIds.length];
+            for (int i = 0; i < inputIds.length; i++) {
+                result[i] = (int) inputIds[i];
+            }
+            return result;
+        }
+
+        public int[] attentionMaskAsInt() {
+            int[] result = new int[attentionMask.length];
+            for (int i = 0; i < attentionMask.length; i++) {
+                result[i] = (int) attentionMask[i];
+            }
+            return result;
+        }
+
+        public int[] tokenTypeIdsAsInt() {
+            int[] result = new int[tokenTypeIds.length];
+            for (int i = 0; i < tokenTypeIds.length; i++) {
+                result[i] = (int) tokenTypeIds[i];
+            }
+            return result;
+        }
     }
 
     /**
@@ -380,7 +410,30 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
 
         // Use the Rust tokenizer to encode the text
         int[] tokenIds = tokenizer.encode(text, addSpecialTokens);
-        
+
+        // DIAGNOSTIC: Log actual token IDs from Rust tokenizer
+        if (tokenIds.length > 0 && tokenIds.length <= 20) {
+            StringBuilder sb = new StringBuilder("[TokenizerDiag] Text='").append(text).append("' -> TokenIDs=[");
+            for (int i = 0; i < tokenIds.length; i++) {
+                if (i > 0) sb.append(", ");
+                sb.append(tokenIds[i]);
+                // Look up token name if we have vocabulary
+                if (vocabulary != null) {
+                    String tokenName = vocabulary.getToken(tokenIds[i]);
+                    if (tokenName != null) {
+                        sb.append("('").append(tokenName).append("')");
+                    }
+                }
+            }
+            sb.append("]");
+            System.err.println(sb.toString());
+            System.err.flush();
+        } else if (tokenIds.length > 20) {
+            System.err.println("[TokenizerDiag] Text='" + text + "' -> " + tokenIds.length + " tokens, first 5: " +
+                tokenIds[0] + ", " + tokenIds[1] + ", " + tokenIds[2] + ", " + tokenIds[3] + ", " + tokenIds[4]);
+            System.err.flush();
+        }
+
         // Handle max length truncation and padding
         int actualLength = maxLength > 0 ? maxLength : tokenIds.length;
         long[] inputIds = new long[actualLength];
@@ -453,6 +506,101 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      */
     public boolean isValid() {
         return tokenizer.isValid();
+    }
+
+    /**
+     * Encode a query-document pair for cross-encoder models.
+     * Format: [CLS] query [SEP] document [SEP]
+     *
+     * @param query The query text
+     * @param document The document text
+     * @return BertEncoding with token type IDs distinguishing query (0) from document (1)
+     */
+    public BertEncoding encodePair(String query, String document) {
+        if (query == null) query = "";
+        if (document == null) document = "";
+
+        // Encode query with [CLS] at start
+        int[] queryTokens = tokenizer.encode(query, addSpecialTokens);
+
+        // Encode document (no CLS, will add SEP manually)
+        int[] docTokens = tokenizer.encode(document, false);
+
+        // Get special token IDs
+        int sepId = vocabulary.getTokenId(SEP_TOKEN);
+
+        // Calculate total length
+        int totalLength = queryTokens.length + 1 + docTokens.length; // +1 for second SEP
+
+        // Truncate if necessary (prioritize query, then truncate document)
+        int actualLength = maxLength > 0 ? maxLength : totalLength;
+        if (totalLength > actualLength && maxLength > 0) {
+            // Calculate how much space is available for document
+            int availableForDoc = actualLength - queryTokens.length - 1; // Reserve 1 for final SEP
+            if (availableForDoc < 0) {
+                // Query is too long, truncate query
+                int newQueryLength = actualLength - 2; // Reserve for SEP tokens
+                int[] truncatedQuery = new int[newQueryLength];
+                System.arraycopy(queryTokens, 0, truncatedQuery, 0, newQueryLength);
+                queryTokens = truncatedQuery;
+                docTokens = new int[0];
+            } else if (availableForDoc < docTokens.length) {
+                // Truncate document
+                int[] truncatedDoc = new int[availableForDoc];
+                System.arraycopy(docTokens, 0, truncatedDoc, 0, availableForDoc);
+                docTokens = truncatedDoc;
+            }
+        }
+
+        // Build combined sequence
+        int combinedLength = maxLength > 0 ? maxLength : (queryTokens.length + 1 + docTokens.length);
+        long[] inputIds = new long[combinedLength];
+        long[] attentionMask = new long[combinedLength];
+        long[] tokenTypeIds = new long[combinedLength];
+
+        int pos = 0;
+
+        // Copy query tokens (token type = 0)
+        for (int i = 0; i < queryTokens.length && pos < combinedLength; i++, pos++) {
+            inputIds[pos] = queryTokens[i];
+            attentionMask[pos] = 1L;
+            tokenTypeIds[pos] = 0L;
+        }
+
+        // Add SEP after query if space available
+        if (pos < combinedLength) {
+            inputIds[pos] = sepId;
+            attentionMask[pos] = 1L;
+            tokenTypeIds[pos] = 0L;
+            pos++;
+        }
+
+        // Copy document tokens (token type = 1)
+        for (int i = 0; i < docTokens.length && pos < combinedLength; i++, pos++) {
+            inputIds[pos] = docTokens[i];
+            attentionMask[pos] = 1L;
+            tokenTypeIds[pos] = 1L;
+        }
+
+        // Add final SEP if space available
+        if (pos < combinedLength) {
+            inputIds[pos] = sepId;
+            attentionMask[pos] = 1L;
+            tokenTypeIds[pos] = 1L;
+            pos++;
+        }
+
+        // Fill remaining with PAD tokens
+        if (maxLength > 0) {
+            long padId = vocabulary.getTokenId(PAD_TOKEN);
+            for (; pos < combinedLength; pos++) {
+                inputIds[pos] = padId;
+                attentionMask[pos] = 0L;
+                tokenTypeIds[pos] = 0L;
+            }
+        }
+
+        return new BertEncoding(inputIds, attentionMask, tokenTypeIds);
     }
 
     /**

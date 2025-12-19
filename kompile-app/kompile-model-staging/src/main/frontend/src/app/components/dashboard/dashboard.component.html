@@ -1,0 +1,189 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="dashboard-container">
+  <div class="dashboard-header">
+    <h1>Dashboard</h1>
+    <div class="header-actions">
+      <button mat-stroked-button (click)="toggleAutoRefresh()" [color]="autoRefresh ? 'primary' : 'basic'">
+        <mat-icon>{{ autoRefresh ? 'sync' : 'sync_disabled' }}</mat-icon>
+        {{ autoRefresh ? 'Auto-refresh ON' : 'Auto-refresh OFF' }}
+      </button>
+      <button mat-raised-button color="primary" (click)="refresh()" [disabled]="isLoading">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="isLoading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading dashboard data...</span>
+  </div>
+
+  <!-- Main Content -->
+  <div class="dashboard-content" *ngIf="!isLoading">
+
+    <!-- Registry Stats -->
+    <section class="stats-section">
+      <h2 class="section-title">
+        <mat-icon>inventory_2</mat-icon>
+        Registry Overview
+      </h2>
+      <div class="stats-grid">
+        <mat-card class="stat-card">
+          <mat-card-content>
+            <mat-icon class="stat-icon">storage</mat-icon>
+            <div class="stat-value">{{ getRegistryModelCount() }}</div>
+            <div class="stat-label">Total Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card encoder">
+          <mat-card-content>
+            <mat-icon class="stat-icon">transform</mat-icon>
+            <div class="stat-value">{{ getEncoderCount() }}</div>
+            <div class="stat-label">Encoders</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card cross-encoder">
+          <mat-card-content>
+            <mat-icon class="stat-icon">compare_arrows</mat-icon>
+            <div class="stat-value">{{ getCrossEncoderCount() }}</div>
+            <div class="stat-label">Cross-Encoders</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card active">
+          <mat-card-content>
+            <mat-icon class="stat-icon">check_circle</mat-icon>
+            <div class="stat-value">{{ getActiveCount() }}</div>
+            <div class="stat-label">Active</div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Staging Stats -->
+    <section class="stats-section">
+      <h2 class="section-title">
+        <mat-icon>pending_actions</mat-icon>
+        Staging Pipeline
+      </h2>
+      <div class="stats-grid">
+        <mat-card class="stat-card staging">
+          <mat-card-content>
+            <mat-icon class="stat-icon">inventory</mat-icon>
+            <div class="stat-value">{{ getStagingCount() }}</div>
+            <div class="stat-label">In Staging</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card processing">
+          <mat-card-content>
+            <mat-icon class="stat-icon">sync</mat-icon>
+            <div class="stat-value">{{ getProcessingCount() }}</div>
+            <div class="stat-label">Processing</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card ready">
+          <mat-card-content>
+            <mat-icon class="stat-icon">verified</mat-icon>
+            <div class="stat-value">{{ getReadyCount() }}</div>
+            <div class="stat-label">Ready</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card failed">
+          <mat-card-content>
+            <mat-icon class="stat-icon">error</mat-icon>
+            <div class="stat-value">{{ getFailedCount() }}</div>
+            <div class="stat-label">Failed</div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Models in Staging -->
+    <section class="staging-section" *ngIf="modelsInStaging.length > 0">
+      <h2 class="section-title">
+        <mat-icon>pending</mat-icon>
+        Models in Staging
+      </h2>
+      <div class="staging-list">
+        <mat-card *ngFor="let model of modelsInStaging" class="staging-item" [ngClass]="getStatusColor(model.status)">
+          <mat-card-content>
+            <div class="staging-item-header">
+              <mat-icon [ngClass]="getStatusColor(model.status)">{{ getStatusIcon(model.status) }}</mat-icon>
+              <span class="model-id">{{ model.model_id }}</span>
+              <span class="model-status badge" [ngClass]="'badge-' + getStatusColor(model.status).replace('status-', '')">
+                {{ model.status }}
+              </span>
+            </div>
+            <mat-progress-bar *ngIf="model.progress > 0 && model.status !== 'completed' && model.status !== 'failed'"
+                              mode="determinate"
+                              [value]="model.progress">
+            </mat-progress-bar>
+            <div class="staging-item-details" *ngIf="model.message || model.error">
+              <span class="message" *ngIf="model.message">{{ model.message }}</span>
+              <span class="error" *ngIf="model.error">{{ model.error }}</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section class="actions-section">
+      <h2 class="section-title">
+        <mat-icon>bolt</mat-icon>
+        Quick Actions
+      </h2>
+      <div class="action-buttons">
+        <button mat-raised-button color="primary" routerLink="/catalog">
+          <mat-icon>store</mat-icon>
+          Browse Model Catalog
+        </button>
+        <button mat-raised-button routerLink="/staging">
+          <mat-icon>pending_actions</mat-icon>
+          View Staging Details
+        </button>
+        <button mat-raised-button routerLink="/registry">
+          <mat-icon>inventory_2</mat-icon>
+          Browse Registry
+        </button>
+        <button mat-raised-button routerLink="/export-import">
+          <mat-icon>import_export</mat-icon>
+          Export/Import
+        </button>
+      </div>
+    </section>
+
+    <!-- System Info -->
+    <section class="info-section" *ngIf="stagingStatus">
+      <h2 class="section-title">
+        <mat-icon>info</mat-icon>
+        System Information
+      </h2>
+      <mat-card class="info-card">
+        <mat-card-content>
+          <div class="info-row">
+            <span class="info-label">Model Directory:</span>
+            <code class="info-value">{{ stagingStatus.modelDir }}</code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Staging Directory:</span>
+            <code class="info-value">{{ stagingStatus.stagingDir }}</code>
+          </div>
+          <div class="info-row" *ngIf="registry">
+            <span class="info-label">Registry Version:</span>
+            <span class="info-value">{{ registry.version }}</span>
+          </div>
+          <div class="info-row" *ngIf="registry?.updated_at">
+            <span class="info-label">Last Updated:</span>
+            <span class="info-value">{{ registry?.updated_at }}</span>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </section>
+
+  </div>
+</div>

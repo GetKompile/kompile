@@ -50,6 +50,7 @@ public class IngestProgressTracker implements DisposableBean {
     private final SimpMessagingTemplate messagingTemplate;
     private final Map<String, IngestProgressUpdate> activeTasks = new ConcurrentHashMap<>();
     private final Map<String, Long> taskStartTimes = new ConcurrentHashMap<>();
+    private final Map<String, Long> taskFactSheetIds = new ConcurrentHashMap<>();
     private final Map<String, java.util.concurrent.atomic.AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cleanupScheduler = Executors.newSingleThreadScheduledExecutor();
 
@@ -103,9 +104,26 @@ public class IngestProgressTracker implements DisposableBean {
      * Starts tracking a new ingest task.
      */
     public void startTask(String taskId, String fileName) {
+        startTask(taskId, fileName, null);
+    }
+
+    /**
+     * Starts tracking a new ingest task associated with a specific fact sheet.
+     */
+    public void startTask(String taskId, String fileName, Long factSheetId) {
         taskStartTimes.put(taskId, System.currentTimeMillis());
-        sendProgress(IngestProgressUpdate.queued(taskId, fileName));
-        logger.info("[Task {}] Started tracking: {}", taskId, fileName);
+        if (factSheetId != null) {
+            taskFactSheetIds.put(taskId, factSheetId);
+        }
+        sendProgress(IngestProgressUpdate.queued(taskId, fileName, factSheetId));
+        logger.info("[Task {}] Started tracking: {} (factSheetId={})", taskId, fileName, factSheetId);
+    }
+
+    /**
+     * Gets the fact sheet ID associated with a task, if any.
+     */
+    public Long getTaskFactSheetId(String taskId) {
+        return taskFactSheetIds.get(taskId);
     }
 
     /**
@@ -113,8 +131,9 @@ public class IngestProgressTracker implements DisposableBean {
      */
     public void updateProgress(String taskId, String fileName, IngestPhase phase,
                                int progressPercent, String currentStep, String message, IngestStats stats) {
+        Long factSheetId = taskFactSheetIds.get(taskId);
         IngestProgressUpdate update = IngestProgressUpdate.progress(
-                taskId, fileName, phase, progressPercent, currentStep, message, stats);
+                taskId, fileName, phase, progressPercent, currentStep, message, stats, factSheetId);
         sendProgress(update);
     }
 
@@ -133,7 +152,25 @@ public class IngestProgressTracker implements DisposableBean {
             taskStartTimes.put(update.taskId(), System.currentTimeMillis());
         }
 
-        sendProgress(update);
+        // Track factSheetId if provided and not already tracked
+        if (update.factSheetId() != null && !taskFactSheetIds.containsKey(update.taskId())) {
+            taskFactSheetIds.put(update.taskId(), update.factSheetId());
+        }
+
+        // Ensure factSheetId is included if we have it
+        IngestProgressUpdate updateWithFactSheet = update;
+        if (update.factSheetId() == null) {
+            Long factSheetId = taskFactSheetIds.get(update.taskId());
+            if (factSheetId != null) {
+                // Create a new update with the factSheetId
+                updateWithFactSheet = new IngestProgressUpdate(
+                        update.taskId(), update.fileName(), update.phase(), update.status(),
+                        update.progressPercent(), update.currentStep(), update.message(),
+                        update.stats(), update.errorMessage(), update.timestamp(), factSheetId);
+            }
+        }
+
+        sendProgress(updateWithFactSheet);
     }
 
     /**
@@ -163,11 +200,12 @@ public class IngestProgressTracker implements DisposableBean {
      * Marks a task as completed.
      */
     public void completeTask(String taskId, String fileName, IngestStats finalStats) {
-        IngestProgressUpdate update = IngestProgressUpdate.completed(taskId, fileName, finalStats);
+        Long factSheetId = taskFactSheetIds.get(taskId);
+        IngestProgressUpdate update = IngestProgressUpdate.completed(taskId, fileName, finalStats, factSheetId);
         sendProgress(update);
-        logger.info("[Task {}] Completed: {} - {} docs, {} chunks in {}ms",
+        logger.info("[Task {}] Completed: {} - {} docs, {} chunks in {}ms (factSheetId={})",
                 taskId, fileName, finalStats.documentsLoaded(), finalStats.chunksCreated(),
-                finalStats.totalProcessingTimeMs());
+                finalStats.totalProcessingTimeMs(), factSheetId);
         scheduleTaskCleanup(taskId);
     }
 
@@ -176,10 +214,11 @@ public class IngestProgressTracker implements DisposableBean {
      */
     public void failTask(String taskId, String fileName, IngestPhase failedPhase, String errorMessage) {
         long elapsedMs = getElapsedTime(taskId);
+        Long factSheetId = taskFactSheetIds.get(taskId);
         IngestStats stats = IngestStats.builder().totalProcessingTimeMs(elapsedMs).build();
-        IngestProgressUpdate update = IngestProgressUpdate.failed(taskId, fileName, failedPhase, errorMessage, stats);
+        IngestProgressUpdate update = IngestProgressUpdate.failed(taskId, fileName, failedPhase, errorMessage, stats, factSheetId);
         sendProgress(update);
-        logger.error("[Task {}] Failed at {}: {} - {}", taskId, failedPhase, fileName, errorMessage);
+        logger.error("[Task {}] Failed at {}: {} - {} (factSheetId={})", taskId, failedPhase, fileName, errorMessage, factSheetId);
         scheduleTaskCleanup(taskId);
     }
 
@@ -187,9 +226,10 @@ public class IngestProgressTracker implements DisposableBean {
      * Marks a task as cancelled.
      */
     public void cancelTask(String taskId, String fileName, IngestPhase currentPhase, String reason, IngestStats stats) {
-        IngestProgressUpdate update = IngestProgressUpdate.cancelled(taskId, fileName, currentPhase, reason, stats);
+        Long factSheetId = taskFactSheetIds.get(taskId);
+        IngestProgressUpdate update = IngestProgressUpdate.cancelled(taskId, fileName, currentPhase, reason, stats, factSheetId);
         sendProgress(update);
-        logger.warn("[Task {}] Cancelled at {}: {} - {}", taskId, currentPhase, fileName, reason);
+        logger.warn("[Task {}] Cancelled at {}: {} - {} (factSheetId={})", taskId, currentPhase, fileName, reason, factSheetId);
         scheduleTaskCleanup(taskId);
     }
 
@@ -349,6 +389,7 @@ public class IngestProgressTracker implements DisposableBean {
         cleanupScheduler.schedule(() -> {
             activeTasks.remove(taskId);
             taskStartTimes.remove(taskId);
+            taskFactSheetIds.remove(taskId);
             logSequenceCounters.remove(taskId);
             logger.debug("[Task {}] Cleaned up from tracking", taskId);
         }, COMPLETED_TASK_RETENTION_MS, TimeUnit.MILLISECONDS);
@@ -375,6 +416,7 @@ public class IngestProgressTracker implements DisposableBean {
         for (String taskId : toRemove) {
             activeTasks.remove(taskId);
             taskStartTimes.remove(taskId);
+            taskFactSheetIds.remove(taskId);
         }
 
         if (!toRemove.isEmpty()) {
@@ -448,6 +490,14 @@ public class IngestProgressTracker implements DisposableBean {
      */
     public TaskProgressContext createContext(String taskId, String fileName) {
         startTask(taskId, fileName);
+        return new TaskProgressContext(taskId, fileName);
+    }
+
+    /**
+     * Creates a new progress context for tracking a task associated with a specific fact sheet.
+     */
+    public TaskProgressContext createContext(String taskId, String fileName, Long factSheetId) {
+        startTask(taskId, fileName, factSheetId);
         return new TaskProgressContext(taskId, fileName);
     }
 }

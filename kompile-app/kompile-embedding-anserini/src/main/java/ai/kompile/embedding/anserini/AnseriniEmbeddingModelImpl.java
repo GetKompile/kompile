@@ -1,6 +1,7 @@
 package ai.kompile.embedding.anserini;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.embedding.anserini.config.AnseriniEmbeddingConfiguration.AnseriniEmbeddingProperties;
 import io.anserini.encoder.samediff.ArcticEmbedSameDiffEncoder;
 import io.anserini.encoder.samediff.BgeSameDiffEncoder;
 import io.anserini.encoder.samediff.CosDprDistilSameDiffEncoder;
@@ -38,29 +39,48 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     // All batching is now handled directly via encoder.encodeBatch() which does
     // TRUE batch inference (single forward pass for all texts).
 
-    private final SameDiffEncoder<float[]> encoder;
-    private final String modelIdentifier;
-    private final int embeddingDimensions;
-    private final AnseriniEncoderFactory.EncoderType encoderType;
+    private volatile SameDiffEncoder<float[]> encoder;
+    private volatile String modelIdentifier;
+    private volatile int embeddingDimensions;
+    private volatile AnseriniEncoderFactory.EncoderType encoderType;
+    private final Object switchLock = new Object();
 
     /** No-arg for Spring AOT */
     public AnseriniEmbeddingModelImpl() {
-        this(DEFAULT_MODEL_IDENTIFIER);
+        this(DEFAULT_MODEL_IDENTIFIER, DEFAULT_OPTIMAL_BATCH_512, DEFAULT_MAX_BATCH_512);
     }
 
-    /** Main constructor: model-identifier injection */
+    /** Main constructor: uses AnseriniEmbeddingProperties for persisted batch size configuration */
     @Autowired
     public AnseriniEmbeddingModelImpl(
-            @Value("${kompile.embedding.anserini.model-identifier:" + DEFAULT_MODEL_IDENTIFIER + "}")
-            String modelIdentifier) {
+            @Autowired(required = false) AnseriniEmbeddingProperties embeddingProperties) {
 
-        this.modelIdentifier = (modelIdentifier != null && !modelIdentifier.isBlank())
-                ? modelIdentifier : DEFAULT_MODEL_IDENTIFIER;
+        // Get model identifier from properties or use default
+        String configuredModelId = (embeddingProperties != null && embeddingProperties.getModelIdentifier() != null
+                && !embeddingProperties.getModelIdentifier().isBlank())
+                ? embeddingProperties.getModelIdentifier()
+                : DEFAULT_MODEL_IDENTIFIER;
+
+        this.modelIdentifier = configuredModelId;
+
+        // Get batch sizes from persisted configuration (supports per-model overrides from benchmark)
+        int optimalBatchSize = embeddingProperties != null
+                ? embeddingProperties.getEffectiveOptimalBatchSize(modelIdentifier)
+                : DEFAULT_OPTIMAL_BATCH_512;
+        int maxBatchSize = embeddingProperties != null
+                ? embeddingProperties.getEffectiveMaxBatchSize(modelIdentifier)
+                : DEFAULT_MAX_BATCH_512;
+
+        // Configure batch sizes (ensure valid ranges)
+        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
+        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
 
         this.encoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(this.modelIdentifier);
 
         log.info("Initializing AnseriniEmbeddingModel with model: {} (type: {})",
                 this.modelIdentifier, encoderType);
+        log.info("Batch size configuration from persisted config: optimal={}, max={}",
+                configuredOptimalBatch, configuredMaxBatch);
         logModelInfo();
 
         try {
@@ -80,8 +100,50 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                         + this.modelIdentifier);
             }
 
-            log.info("Successfully initialized. Model: {}, Type: {}, Dimensions: {}",
-                    this.modelIdentifier, encoderType, embeddingDimensions);
+            log.info("Successfully initialized. Model: {}, Type: {}, Dimensions: {}, OptimalBatch: {}, MaxBatch: {}",
+                    this.modelIdentifier, encoderType, embeddingDimensions, configuredOptimalBatch, configuredMaxBatch);
+
+        } catch (IOException e) {
+            log.error("Failed to initialize AnseriniEmbeddingModel with model: {}",
+                    this.modelIdentifier, e);
+            throw new RuntimeException("Could not initialize Anserini embedding model: " + e.getMessage(), e);
+        }
+    }
+
+    /** Constructor with explicit batch sizes (for subprocess use) */
+    public AnseriniEmbeddingModelImpl(String modelIdentifier, int optimalBatchSize, int maxBatchSize) {
+        this.modelIdentifier = (modelIdentifier != null && !modelIdentifier.isBlank())
+                ? modelIdentifier : DEFAULT_MODEL_IDENTIFIER;
+
+        // Configure batch sizes (ensure valid ranges)
+        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
+        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
+
+        this.encoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(this.modelIdentifier);
+
+        log.info("Initializing AnseriniEmbeddingModel with model: {} (type: {})",
+                this.modelIdentifier, encoderType);
+        log.info("Batch size configuration (explicit): optimal={}, max={}", configuredOptimalBatch, configuredMaxBatch);
+        logModelInfo();
+
+        try {
+            // pick the correct factory overload
+            if (AnseriniEncoderFactory.usesAutoModelManagement(this.modelIdentifier)) {
+                this.encoder = AnseriniEncoderFactory.createEncoder(this.modelIdentifier);
+            } else {
+                this.encoder = AnseriniEncoderFactory.createEncoder(encoderType, this.modelIdentifier);
+            }
+
+            float[] testEmbedding = this.encoder.encode("test");
+            this.embeddingDimensions = testEmbedding != null ? testEmbedding.length : -1;
+
+            if (this.embeddingDimensions <= 0) {
+                throw new IOException("Could not determine embedding dimensions for model: "
+                        + this.modelIdentifier);
+            }
+
+            log.info("Successfully initialized. Model: {}, Type: {}, Dimensions: {}, OptimalBatch: {}, MaxBatch: {}",
+                    this.modelIdentifier, encoderType, embeddingDimensions, configuredOptimalBatch, configuredMaxBatch);
 
         } catch (IOException e) {
             log.error("Failed to initialize AnseriniEmbeddingModel with model: {}",
@@ -93,6 +155,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     /**
      * Advanced, explicit-path constructor.
      * Directly instantiates the right SameDiffEncoder subtype based on encoderType.
+     * Uses default batch sizes - for custom batch sizes use the other constructors.
      */
     public AnseriniEmbeddingModelImpl(String modelIdentifier,
                                       String modelPath,
@@ -106,6 +169,8 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
         this.modelIdentifier = modelIdentifier;
         this.encoderType     = AnseriniEncoderFactory.getEncoderTypeFromModelId(modelIdentifier);
+        this.configuredOptimalBatch = DEFAULT_OPTIMAL_BATCH_512;
+        this.configuredMaxBatch = DEFAULT_MAX_BATCH_512;
 
         log.info("Advanced init: model={} type={}", modelIdentifier, encoderType);
 
@@ -190,7 +255,24 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
                 log.debug("Encoder returned null or empty result, likely due to interrupt or shutdown");
                 return Nd4j.empty(DataType.FLOAT);
             }
+            // Validate embedding magnitude - zero vectors indicate model failure
+            double mag = 0.0;
+            for (float v : emb) mag += v * v;
+            if (mag < 1e-18) {
+                String textPreview = text.length() > 100 ? text.substring(0, 100) + "..." : text;
+                throw new IllegalArgumentException(String.format(
+                        "Embedding model '%s' (type=%s, dims=%d) produced zero-magnitude vector. " +
+                        "This indicates the model forward pass completed but output is all zeros. " +
+                        "Possible causes: (1) Model file corrupted or incompatible, (2) Input tokenization failed silently, " +
+                        "(3) Model requires different input format, (4) SameDiff graph execution error. " +
+                        "Input text length: %d chars, preview: '%s'",
+                        modelIdentifier, encoderType, embeddingDimensions, text.length(),
+                        textPreview.replace("\n", "\\n")));
+            }
             return Nd4j.create(emb);
+        } catch (IllegalArgumentException e) {
+            // Validation errors should propagate
+            throw e;
         } catch (IllegalStateException e) {
             // Tokenizer shutdown - expected during graceful shutdown
             log.debug("Embed operation rejected - encoder shutting down: {}", e.getMessage());
@@ -289,7 +371,34 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             log.info("EMBED_BATCH_DONE: batch_size={}, returned={}, elapsed={}ms, {:.2f}ms/text, {:.1f} texts/sec, {:.0f} chars/sec",
                     texts.size(), result.size(), elapsed, msPerText, textsPerSec, charsPerSec);
 
+            // Validate embeddings - zero vectors indicate model failure
+            for (int i = 0; i < result.size(); i++) {
+                float[] emb = result.get(i);
+                if (emb != null) {
+                    double mag = 0.0;
+                    for (float v : emb) mag += v * v;
+                    if (mag < 1e-18) {
+                        String originalText = i < texts.size() ? texts.get(i) : "?";
+                        String textPreview = originalText.length() > 100
+                                ? originalText.substring(0, 100) + "..."
+                                : originalText;
+                        throw new IllegalArgumentException(String.format(
+                                "Embedding model '%s' (type=%s, dims=%d) produced zero-magnitude vector at batch index %d/%d. " +
+                                "This indicates the model forward pass completed but output is all zeros for this item. " +
+                                "Possible causes: (1) Model file corrupted or incompatible, (2) Input tokenization failed silently, " +
+                                "(3) Batch padding/attention mask issue, (4) SameDiff graph execution error. " +
+                                "Input text length: %d chars, preview: '%s'",
+                                modelIdentifier, encoderType, embeddingDimensions,
+                                i, result.size(), originalText.length(),
+                                textPreview.replace("\n", "\\n")));
+                    }
+                }
+            }
+
             return result;
+        } catch (IllegalArgumentException e) {
+            // Validation errors should propagate - don't silently index garbage
+            throw e;
         } catch (IllegalStateException e) {
             // Tokenizer shutdown - expected during graceful shutdown
             log.info("embedBatch rejected - encoder shutting down: {}", e.getMessage());
@@ -379,47 +488,55 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
     // CPU inference is memory-bandwidth limited, not compute limited.
     // Transformer attention is O(n²) in sequence length.
-    // For 512-token sequences on CPU, batch sizes should be VERY small.
+    // For 512-token sequences on CPU, batch sizes should be conservative.
     //
-    // Base batch sizes for 512-token sequences:
-    private static final int BASE_OPTIMAL_BATCH_512 = 4;   // Very conservative for CPU
-    private static final int BASE_MAX_BATCH_512 = 8;       // Never exceed this for 512 tokens
+    // Base batch sizes for 512-token sequences (configurable via properties):
+    // kompile.embedding.anserini.optimal-batch-size - optimal batch for 512 tokens
+    // kompile.embedding.anserini.max-batch-size - maximum batch for 512 tokens
+    private static final int DEFAULT_OPTIMAL_BATCH_512 = 8;   // Default for CPU
+    private static final int DEFAULT_MAX_BATCH_512 = 32;      // Default max for 512 tokens
     private static final int REFERENCE_SEQ_LENGTH = 512;
+
+    // Configurable batch sizes (set via constructor or properties)
+    private final int configuredOptimalBatch;
+    private final int configuredMaxBatch;
 
     /**
      * Returns optimal batch size for embedding operations.
      *
      * <p><b>IMPORTANT:</b> The actual batch size used depends on sequence length.
      * The encoder uses dynamic batch sizing based on the maximum sequence length
-     * in each batch. This method returns a conservative default for 512-token sequences.</p>
+     * in each batch. This method returns the configured value for 512-token sequences.</p>
      *
-     * <p>For different sequence lengths (approximate):
+     * <p>Configure via property: kompile.embedding.anserini.optimal-batch-size</p>
+     *
+     * <p>For different sequence lengths (approximate scaling):
      * <ul>
-     *   <li>512 tokens: ~4 texts/batch</li>
-     *   <li>256 tokens: ~16 texts/batch</li>
-     *   <li>128 tokens: ~64 texts/batch</li>
+     *   <li>512 tokens: uses configured optimal batch</li>
+     *   <li>256 tokens: ~4x configured optimal batch</li>
+     *   <li>128 tokens: ~16x configured optimal batch</li>
      * </ul>
      *
-     * @return Optimal batch size for 512-token sequences (conservative default)
+     * @return Optimal batch size for 512-token sequences
      */
     @Override
     public int getOptimalBatchSize() {
-        // Return very conservative default for CPU inference with long sequences
-        return BASE_OPTIMAL_BATCH_512;
+        return configuredOptimalBatch;
     }
 
     /**
      * Returns maximum batch size for embedding operations.
      *
+     * <p>Configure via property: kompile.embedding.anserini.max-batch-size</p>
+     *
      * <p>Like {@link #getOptimalBatchSize()}, the actual maximum depends on
-     * sequence length. This returns a conservative default.</p>
+     * sequence length. This returns the configured maximum.</p>
      *
      * @return Maximum batch size for 512-token sequences
      */
     @Override
     public int getMaxBatchSize() {
-        // Return conservative default for long sequences on CPU
-        return BASE_MAX_BATCH_512;
+        return configuredMaxBatch;
     }
 
     /**
@@ -428,13 +545,13 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
      * <p>Use this method when you know the approximate sequence length
      * of your texts to get a more accurate batch size recommendation.</p>
      *
-     * <p>Formula: batch = base_batch × (512/seqLen)² × memoryScale</p>
+     * <p>Formula: batch = configured_optimal × (512/seqLen)²</p>
      *
      * @param maxSeqLength Maximum sequence length expected
      * @return Optimal batch size for that sequence length
      */
     public int getOptimalBatchSizeForSeqLength(int maxSeqLength) {
-        return calculateBatchSizeForSeqLength(maxSeqLength, BASE_OPTIMAL_BATCH_512);
+        return calculateBatchSizeForSeqLength(maxSeqLength, configuredOptimalBatch);
     }
 
     /**
@@ -444,7 +561,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
      * @return Maximum batch size for that sequence length
      */
     public int getMaxBatchSizeForSeqLength(int maxSeqLength) {
-        return calculateBatchSizeForSeqLength(maxSeqLength, BASE_MAX_BATCH_512);
+        return calculateBatchSizeForSeqLength(maxSeqLength, configuredMaxBatch);
     }
 
     /**
@@ -459,7 +576,7 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         double ratio = (double) REFERENCE_SEQ_LENGTH / maxSeqLength;
         double scaleFactor = ratio * ratio;
         int batch = (int) Math.round(baseBatch * scaleFactor);
-        return Math.max(1, Math.min(batch, 128)); // Clamp to [1, 128]
+        return Math.max(1, Math.min(batch, configuredMaxBatch * 4)); // Clamp to reasonable range
     }
 
     public String getModelIdentifier() { return modelIdentifier; }
@@ -577,5 +694,122 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     private void logModelInfo() {
         log.info("Model Info: {}", getModelInfo());
         log.info("Auto-Managed: {}", usesAutoModelManagement());
+    }
+
+    // ========== MODEL SWITCHING ==========
+
+    /**
+     * Switches the embedding model to a different encoder.
+     * <p>
+     * This method allows dynamically switching between different embedding models
+     * at runtime, for example when activating a fact sheet that uses a different
+     * encoder model.
+     * </p>
+     * <p>
+     * <b>WARNING:</b> Switching models invalidates any existing embeddings in the
+     * vector store that were created with the previous model. You must reindex
+     * documents after switching models.
+     * </p>
+     *
+     * @param newModelIdentifier The model ID to switch to (e.g., "bge-base-en-v1.5", "arctic-embed-m-v2.0")
+     * @return true if the switch was successful, false otherwise
+     * @throws IllegalArgumentException if the model identifier is null or empty
+     */
+    public boolean switchModel(String newModelIdentifier) {
+        if (newModelIdentifier == null || newModelIdentifier.isBlank()) {
+            throw new IllegalArgumentException("Model identifier cannot be null or empty");
+        }
+
+        // Check if we're already using this model
+        if (newModelIdentifier.equals(this.modelIdentifier)) {
+            log.debug("Already using model: {}, no switch needed", newModelIdentifier);
+            return true;
+        }
+
+        synchronized (switchLock) {
+            log.info("Switching embedding model from '{}' to '{}'", this.modelIdentifier, newModelIdentifier);
+
+            // Close the existing encoder
+            SameDiffEncoder<float[]> oldEncoder = this.encoder;
+            if (oldEncoder != null) {
+                try {
+                    oldEncoder.initiateShutdown();
+                    oldEncoder.close();
+                    log.info("Closed previous encoder: {}", this.modelIdentifier);
+                } catch (Exception e) {
+                    log.warn("Error closing previous encoder: {}", e.getMessage());
+                }
+            }
+
+            // Create new encoder
+            try {
+                AnseriniEncoderFactory.EncoderType newEncoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(newModelIdentifier);
+
+                SameDiffEncoder<float[]> newEncoder;
+                if (AnseriniEncoderFactory.usesAutoModelManagement(newModelIdentifier)) {
+                    newEncoder = AnseriniEncoderFactory.createEncoder(newModelIdentifier);
+                } else {
+                    newEncoder = AnseriniEncoderFactory.createEncoder(newEncoderType, newModelIdentifier);
+                }
+
+                // Test the new encoder
+                float[] testEmbedding = newEncoder.encode("test");
+                int newDimensions = testEmbedding != null ? testEmbedding.length : -1;
+
+                if (newDimensions <= 0) {
+                    log.error("New encoder produced invalid embeddings, reverting to previous");
+                    try {
+                        newEncoder.close();
+                    } catch (Exception ignored) {}
+                    return false;
+                }
+
+                // Update fields atomically
+                this.encoder = newEncoder;
+                this.modelIdentifier = newModelIdentifier;
+                this.encoderType = newEncoderType;
+                this.embeddingDimensions = newDimensions;
+
+                log.info("Successfully switched to model: {} (type={}, dims={})",
+                        newModelIdentifier, newEncoderType, newDimensions);
+                return true;
+
+            } catch (Exception e) {
+                log.error("Failed to switch to model '{}': {}", newModelIdentifier, e.getMessage(), e);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Gets the currently active model identifier.
+     *
+     * @return The model identifier (e.g., "bge-base-en-v1.5")
+     */
+    public String getActiveModelId() {
+        return this.modelIdentifier;
+    }
+
+    /**
+     * Checks if the specified model is compatible with the current index.
+     * <p>
+     * Two models are compatible if they produce embeddings of the same dimension.
+     * </p>
+     *
+     * @param otherModelId The model ID to check compatibility with
+     * @return true if the models produce embeddings of the same dimension
+     */
+    public boolean isModelCompatible(String otherModelId) {
+        if (otherModelId == null || otherModelId.equals(this.modelIdentifier)) {
+            return true;
+        }
+
+        Integer otherDims = AnseriniEncoderFactory.getEmbeddingDimension(otherModelId);
+        if (otherDims == null) {
+            log.warn("Unknown embedding dimension for model: {}", otherModelId);
+            return false;
+        }
+
+        return otherDims == this.embeddingDimensions;
     }
 }

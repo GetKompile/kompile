@@ -1,0 +1,73 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="staging-container">
+  <div class="staging-header">
+    <h1>Staging Progress</h1>
+    <p class="subtitle">Monitor models being downloaded, converted, and validated</p>
+  </div>
+
+  <div class="loading-container" *ngIf="isLoading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading staging models...</span>
+  </div>
+
+  <div class="staging-content" *ngIf="!isLoading">
+    <div class="empty-state" *ngIf="modelsInStaging.length === 0">
+      <mat-icon>hourglass_empty</mat-icon>
+      <p>No models currently in staging</p>
+      <button mat-raised-button color="primary" routerLink="/catalog">
+        Browse Model Catalog
+      </button>
+    </div>
+
+    <div class="staging-list" *ngIf="modelsInStaging.length > 0">
+      <mat-card *ngFor="let model of modelsInStaging" class="staging-card" [ngClass]="getStatusColor(model.status)">
+        <mat-card-header>
+          <mat-icon mat-card-avatar [ngClass]="getStatusColor(model.status)">
+            {{ getStatusIcon(model.status) }}
+          </mat-icon>
+          <mat-card-title>{{ model.model_id }}</mat-card-title>
+          <mat-card-subtitle>
+            <span class="status-badge" [ngClass]="'badge-' + getStatusColor(model.status).replace('status-', '')">
+              {{ model.status }}
+            </span>
+          </mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-progress-bar *ngIf="model.progress > 0 && model.progress < 100"
+                            mode="determinate"
+                            [value]="model.progress">
+          </mat-progress-bar>
+          <mat-progress-bar *ngIf="model.status === 'downloading' && model.progress === 0"
+                            mode="indeterminate">
+          </mat-progress-bar>
+          <div class="progress-text" *ngIf="model.progress > 0">
+            {{ model.progress }}% complete
+          </div>
+          <div class="message" *ngIf="model.message">{{ model.message }}</div>
+          <div class="error" *ngIf="model.error">{{ model.error }}</div>
+          <div class="timestamps">
+            <span *ngIf="model.started_at">Started: {{ model.started_at }}</span>
+            <span *ngIf="model.completed_at">Completed: {{ model.completed_at }}</span>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-raised-button color="primary"
+                  *ngIf="canPromote(model)"
+                  (click)="promoteModel(model.model_id)">
+            <mat-icon>publish</mat-icon>
+            Promote to Registry
+          </button>
+          <button mat-stroked-button color="warn"
+                  *ngIf="canCancel(model)"
+                  (click)="cancelStaging(model.model_id)">
+            <mat-icon>cancel</mat-icon>
+            Cancel
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  </div>
+</div>
