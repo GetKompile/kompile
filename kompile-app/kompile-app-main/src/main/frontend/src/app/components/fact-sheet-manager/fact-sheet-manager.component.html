@@ -1,0 +1,1557 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="fact-sheet-manager">
+  <!-- Hidden file input (always available) -->
+  <input type="file" #fileInput multiple hidden (change)="onFileSelected($event)" accept="*/*">
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" *ngIf="isLoading">
+    <mat-spinner diameter="32"></mat-spinner>
+  </div>
+
+  <!-- Tab Navigation -->
+  <mat-tab-group [selectedIndex]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)">
+
+    <!-- Facts Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>description</mat-icon>
+        <span class="tab-label">Facts</span>
+        <mat-chip *ngIf="activeSheet" class="tab-count">{{ activeSheet.factCount }}</mat-chip>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Active Sheet Header -->
+        <div class="active-sheet-header" *ngIf="activeSheet">
+          <div class="sheet-badge" [style.border-color]="activeSheet.color">
+            <mat-icon [style.color]="activeSheet.color">{{ activeSheet.icon }}</mat-icon>
+            <div class="sheet-badge-info">
+              <span class="sheet-badge-name">{{ activeSheet.name }}</span>
+              <span class="sheet-badge-meta">{{ activeSheet.factCount }} facts &bull; {{ formatSize(activeSheet.totalSizeBytes) }}</span>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button mat-raised-button color="primary" (click)="openAddFactDialog()" [disabled]="hasActiveProcessing()">
+              <mat-icon>add_circle</mat-icon>
+              Add Facts
+            </button>
+          </div>
+        </div>
+
+        <!-- WebSocket Connection Status -->
+        <div class="ws-status-bar" [ngClass]="{
+          'ws-connected': wsConnectionState === 'CONNECTED',
+          'ws-disconnected': wsConnectionState === 'DISCONNECTED',
+          'ws-connecting': wsConnectionState === 'CONNECTING',
+          'ws-error': wsConnectionState === 'ERROR'
+        }">
+          <mat-icon>{{ wsConnectionState === 'CONNECTED' ? 'wifi' : (wsConnectionState === 'CONNECTING' ? 'wifi_find' : 'wifi_off') }}</mat-icon>
+          <span class="ws-status-text">
+            {{ wsConnectionState === 'CONNECTED' ? 'Live updates active' :
+               wsConnectionState === 'CONNECTING' ? 'Connecting...' :
+               wsConnectionState === 'ERROR' ? 'Connection error (using polling)' : 'Using polling mode' }}
+          </span>
+          <span class="ws-status-badge" *ngIf="activeUploadsArray.length > 0">
+            {{ activeUploadsArray.length }} active job{{ activeUploadsArray.length !== 1 ? 's' : '' }}
+          </span>
+        </div>
+
+        <!-- Active Uploads Progress Panel (same granularity as document-manager) -->
+        <mat-card class="active-uploads-card" *ngIf="activeUploadsArray.length > 0">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon class="spinning-icon" *ngIf="hasActiveProcessing()">sync</mat-icon>
+              <mat-icon *ngIf="!hasActiveProcessing()">cloud_done</mat-icon>
+              Active Processing ({{ activeUploadsArray.length }})
+            </mat-card-title>
+            <mat-card-subtitle>Real-time progress tracking - jobs persist across page refreshes</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="upload-progress-list">
+              <div class="upload-progress-item" *ngFor="let upload of activeUploadsArray; trackBy: trackByTaskId"
+                   [ngClass]="{
+                     'in-progress': upload.status === 'IN_PROGRESS',
+                     'completed': upload.status === 'COMPLETED',
+                     'failed': upload.status === 'FAILED',
+                     'cancelled': upload.status === 'CANCELLED'
+                   }">
+
+                <!-- Header Row -->
+                <div class="upload-header">
+                  <div class="phase-icon-container" [ngClass]="'phase-' + upload.phase.toLowerCase()">
+                    <mat-icon>{{ getPhaseIcon(upload.phase) }}</mat-icon>
+                  </div>
+                  <div class="upload-info">
+                    <span class="file-name" [matTooltip]="upload.fileName">
+                      {{ upload.fileName | slice:0:35 }}{{ upload.fileName.length > 35 ? '...' : '' }}
+                    </span>
+                    <span class="task-id">Task: {{ upload.taskId | slice:0:8 }}...</span>
+                  </div>
+                  <div class="progress-indicator">
+                    <span class="progress-percent" *ngIf="upload.progressPercent >= 0">{{ upload.progressPercent }}%</span>
+                    <mat-spinner *ngIf="upload.status === 'IN_PROGRESS' && upload.progressPercent < 0" diameter="20"></mat-spinner>
+                  </div>
+                  <button mat-icon-button
+                          class="cancel-button"
+                          color="warn"
+                          *ngIf="canCancelTask(upload)"
+                          (click)="cancelIngestTask(upload.taskId)"
+                          matTooltip="Stop processing">
+                    <mat-icon>stop</mat-icon>
+                  </button>
+                </div>
+
+                <!-- Overall Progress Bar -->
+                <div class="progress-bar-container">
+                  <mat-progress-bar
+                    class="main-progress-bar"
+                    [mode]="upload.progressPercent >= 0 ? 'determinate' : 'indeterminate'"
+                    [value]="upload.progressPercent"
+                    [color]="getProgressColor(upload.phase)">
+                  </mat-progress-bar>
+                </div>
+
+                <!-- Current Step Message -->
+                <div class="upload-details">
+                  <span class="current-step">{{ upload.currentStep }}</span>
+                  <span class="step-message">{{ upload.message }}</span>
+                </div>
+
+                <!-- Stage Progress Summary (Pipeline Stages) -->
+                <div class="stage-summary" *ngIf="upload.stats?.chunksCreated || upload.stats?.documentsLoaded || upload.phase === 'LOADING'">
+                  <!-- Loading Stage -->
+                  <div class="stage-chip" [ngClass]="{
+                    'active': upload.phase === 'LOADING',
+                    'complete': upload.phase !== 'LOADING' && upload.phase !== 'QUEUED'
+                  }" *ngIf="upload.stats?.documentsLoaded || upload.phase === 'LOADING'">
+                    <mat-icon>description</mat-icon>
+                    <span>{{ upload.stats?.documentsLoaded || 0 }} pages</span>
+                  </div>
+                  <mat-icon class="stage-arrow" *ngIf="upload.stats?.documentsLoaded || upload.phase === 'LOADING'">chevron_right</mat-icon>
+
+                  <!-- Chunking Stage -->
+                  <div class="stage-chip" [ngClass]="{
+                    'active': upload.phase === 'CHUNKING',
+                    'complete': (upload.stats?.chunksCreated || 0) > 0 && upload.phase !== 'CHUNKING' && upload.phase !== 'LOADING'
+                  }">
+                    <mat-icon>content_cut</mat-icon>
+                    <span>{{ upload.stats?.chunksCreated || 0 }} chunks</span>
+                  </div>
+                  <mat-icon class="stage-arrow">chevron_right</mat-icon>
+
+                  <!-- Embedding Stage -->
+                  <div class="stage-chip" [ngClass]="{
+                    'active': upload.phase === 'EMBEDDING',
+                    'complete': (upload.stats?.chunksEmbedded || 0) >= (upload.stats?.chunksCreated || 1) && (upload.stats?.chunksCreated || 0) > 0
+                  }">
+                    <mat-icon>memory</mat-icon>
+                    <span>{{ upload.stats?.chunksEmbedded || 0 }}<span *ngIf="upload.stats?.chunksCreated">/{{ upload.stats.chunksCreated }}</span> embedded</span>
+                  </div>
+                  <mat-icon class="stage-arrow">chevron_right</mat-icon>
+
+                  <!-- Indexing Stage -->
+                  <div class="stage-chip" [ngClass]="{
+                    'active': upload.phase === 'INDEXING',
+                    'complete': upload.phase === 'COMPLETED'
+                  }">
+                    <mat-icon>storage</mat-icon>
+                    <span>{{ upload.stats?.chunksIndexed || upload.stats?.documentsIndexed || 0 }}<span *ngIf="upload.stats?.chunksCreated">/{{ upload.stats.chunksCreated }}</span> indexed</span>
+                  </div>
+                </div>
+
+                <!-- ================================= -->
+                <!-- JOB INFORMATION EXPANDABLE PANE  -->
+                <!-- ================================= -->
+                <div class="job-info-panel" *ngIf="upload.status === 'IN_PROGRESS' || upload.stats?.subprocessRuntimeInfo || upload.stats?.currentEmbeddingBatch">
+                  <div class="job-info-header" (click)="toggleJobInfo(upload.taskId)">
+                    <mat-icon>{{ isJobInfoExpanded(upload.taskId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+                    <mat-icon class="info-icon">info</mat-icon>
+                    <span class="job-info-title">Job Information</span>
+                    <span class="job-info-summary">
+                      <span *ngIf="upload.stats?.workerThreads">{{ upload.stats.workerThreads }} workers</span>
+                      <span *ngIf="upload.stats?.chunksPerSecond"> | {{ upload.stats.chunksPerSecond | number:'1.1-1' }}/s</span>
+                      <span *ngIf="upload.stats?.memoryUsagePercent"> | {{ upload.stats.memoryUsagePercent | number:'1.0-0' }}% mem</span>
+                      <mat-chip *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'" class="mode-chip-small subprocess-mode">SUBPROCESS</mat-chip>
+                      <mat-chip *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode !== 'SUBPROCESS'" class="mode-chip-small in-memory-mode">IN-PROCESS</mat-chip>
+                    </span>
+                  </div>
+
+                  <div class="job-info-content" *ngIf="isJobInfoExpanded(upload.taskId)">
+                    <!-- Worker Status Section -->
+                    <div class="worker-status-section" *ngIf="upload.status === 'IN_PROGRESS'">
+                      <div class="worker-section-header">
+                        <mat-icon>engineering</mat-icon>
+                        <span>Pipeline Workers</span>
+                        <span class="worker-count-badge" *ngIf="upload.stats?.workerThreads">
+                          {{ upload.stats.workerThreads }} active
+                        </span>
+                      </div>
+
+                      <!-- Worker Grid -->
+                      <div class="worker-grid">
+                        <!-- Embedding Worker -->
+                        <div class="worker-card embedding-worker" [ngClass]="{'active': upload.phase === 'EMBEDDING'}">
+                          <div class="worker-header">
+                            <mat-icon>memory</mat-icon>
+                            <span class="worker-type">Embedding</span>
+                          </div>
+                          <div class="worker-metrics">
+                            <div class="metric">
+                              <span class="metric-label">Processed:</span>
+                              <span class="metric-value">{{ upload.stats?.chunksEmbedded || 0 }}</span>
+                            </div>
+                            <div class="metric">
+                              <span class="metric-label">Queued:</span>
+                              <span class="metric-value">{{ upload.stats?.queueStatus?.chunkQueueSize || 0 }}</span>
+                            </div>
+                            <div class="metric" *ngIf="upload.stats?.currentEmbeddingBatch as batch">
+                              <span class="metric-label">Batch:</span>
+                              <span class="metric-value">{{ batch.batchNumber || '?' }}</span>
+                            </div>
+                          </div>
+                          <mat-progress-bar
+                            class="worker-progress"
+                            [mode]="upload.phase === 'EMBEDDING' && (upload.stats?.chunksEmbedded || 0) === 0 ? 'indeterminate' : 'determinate'"
+                            [value]="calculateStagePercent(upload.stats?.chunksEmbedded, upload.stats?.chunksCreated)"
+                            color="accent">
+                          </mat-progress-bar>
+                          <div class="worker-status-text">
+                            <span *ngIf="upload.phase === 'EMBEDDING' && upload.stats?.currentEmbeddingBatch as batch" class="status-active">
+                              <mat-icon class="spinning-icon-small">sync</mat-icon>
+                              Batch {{ batch.batchNumber || '?' }} ({{ batch.inputTexts || '?' }} texts)
+                            </span>
+                            <span *ngIf="upload.phase === 'EMBEDDING' && !upload.stats?.currentEmbeddingBatch" class="status-active">
+                              <mat-icon class="spinning-icon-small">sync</mat-icon>
+                              Starting embedding...
+                            </span>
+                            <span *ngIf="upload.phase !== 'EMBEDDING' && (upload.stats?.chunksEmbedded || 0) > 0" class="status-complete">
+                              <mat-icon>check_circle</mat-icon> Complete
+                            </span>
+                            <span *ngIf="upload.phase !== 'EMBEDDING' && (upload.stats?.chunksEmbedded || 0) === 0" class="status-waiting">
+                              <mat-icon>hourglass_empty</mat-icon> Waiting
+                            </span>
+                          </div>
+                        </div>
+
+                        <!-- Indexing Worker -->
+                        <div class="worker-card indexing-worker" [ngClass]="{'active': upload.phase === 'INDEXING'}">
+                          <div class="worker-header">
+                            <mat-icon>storage</mat-icon>
+                            <span class="worker-type">Indexing</span>
+                          </div>
+                          <div class="worker-metrics">
+                            <div class="metric">
+                              <span class="metric-label">Indexed:</span>
+                              <span class="metric-value">{{ upload.stats?.documentsIndexed || upload.stats?.chunksIndexed || 0 }}</span>
+                            </div>
+                            <div class="metric">
+                              <span class="metric-label">Queued:</span>
+                              <span class="metric-value">{{ upload.stats?.queueStatus?.embeddedQueueSize || 0 }}</span>
+                            </div>
+                            <div class="metric" *ngIf="upload.stats?.chunksPerSecond">
+                              <span class="metric-label">Rate:</span>
+                              <span class="metric-value">{{ upload.stats.chunksPerSecond | number:'1.1-1' }}/s</span>
+                            </div>
+                          </div>
+                          <mat-progress-bar
+                            class="worker-progress"
+                            [mode]="upload.phase === 'INDEXING' && (upload.stats?.chunksIndexed || 0) === 0 ? 'indeterminate' : 'determinate'"
+                            [value]="calculateStagePercent(upload.stats?.chunksIndexed || upload.stats?.documentsIndexed, upload.stats?.chunksCreated)"
+                            color="primary">
+                          </mat-progress-bar>
+                          <div class="worker-status-text">
+                            <span *ngIf="upload.phase === 'INDEXING'" class="status-active">
+                              <mat-icon class="spinning-icon-small">sync</mat-icon> Writing to index...
+                            </span>
+                            <span *ngIf="upload.phase !== 'INDEXING' && (upload.stats?.chunksIndexed || upload.stats?.documentsIndexed || 0) > 0" class="status-complete">
+                              <mat-icon>check_circle</mat-icon> Complete
+                            </span>
+                            <span *ngIf="upload.phase !== 'INDEXING' && (upload.stats?.chunksIndexed || 0) === 0 && (upload.stats?.documentsIndexed || 0) === 0" class="status-waiting">
+                              <mat-icon>hourglass_empty</mat-icon> Waiting for embeddings
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Detailed Worker Status -->
+                      <div class="detailed-worker-status" *ngIf="upload.stats?.workerStatuses as workers">
+                        <div class="worker-status-row" *ngFor="let worker of workers; trackBy: trackByWorkerId">
+                          <span class="worker-id-badge" [ngClass]="'type-' + worker.workerType">
+                            {{ worker.workerType }}-{{ worker.workerId }}
+                          </span>
+                          <span class="worker-status-indicator" [ngClass]="'status-' + worker.status">
+                            {{ worker.status }}
+                          </span>
+                          <span class="worker-processed-count">{{ worker.itemsProcessed }} processed</span>
+                          <span class="worker-throughput" *ngIf="worker.throughput > 0">
+                            {{ worker.throughput | number:'1.1-1' }}/s
+                          </span>
+                        </div>
+                      </div>
+
+                      <!-- Queue Status Bar -->
+                      <div class="queue-status-bar" *ngIf="upload.stats?.queueStatus as qs">
+                        <div class="queue-visualization">
+                          <div class="queue-item">
+                            <span class="queue-name">Chunk Queue</span>
+                            <div class="queue-bar-container">
+                              <div class="queue-bar" [style.width.%]="(qs.chunkQueueSize / (qs.chunkQueueCapacity || 1)) * 100"></div>
+                            </div>
+                            <span class="queue-count">{{ qs.chunkQueueSize }}/{{ qs.chunkQueueCapacity }}</span>
+                          </div>
+                          <mat-icon class="queue-arrow">arrow_forward</mat-icon>
+                          <div class="queue-item">
+                            <span class="queue-name">Embed Queue</span>
+                            <div class="queue-bar-container">
+                              <div class="queue-bar" [style.width.%]="(qs.embeddedQueueSize / (qs.embeddedQueueCapacity || 1)) * 100"></div>
+                            </div>
+                            <span class="queue-count">{{ qs.embeddedQueueSize }}/{{ qs.embeddedQueueCapacity }}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Throughput & Memory Summary -->
+                      <div class="throughput-summary" *ngIf="upload.stats">
+                        <div class="throughput-item" *ngIf="upload.stats.chunksPerSecond">
+                          <mat-icon>speed</mat-icon>
+                          <span>{{ upload.stats.chunksPerSecond | number:'1.1-1' }} chunks/sec</span>
+                        </div>
+                        <div class="throughput-item memory" *ngIf="upload.stats.memoryUsagePercent"
+                             [ngClass]="'memory-' + (upload.stats.memoryStatus || 'ok').toLowerCase()">
+                          <mat-icon>memory</mat-icon>
+                          <span>{{ upload.stats.memoryUsagePercent | number:'1.0-0' }}% mem</span>
+                        </div>
+                        <div class="throughput-item" *ngIf="calculateETA(upload) as eta">
+                          <mat-icon>timer</mat-icon>
+                          <span>ETA: {{ eta }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Subprocess Runtime Info -->
+                    <div class="subprocess-runtime-panel" *ngIf="upload.stats?.subprocessRuntimeInfo as runtime">
+                      <div class="subprocess-header" (click)="toggleSubprocessDetails(upload.taskId)">
+                        <mat-icon>{{ isSubprocessDetailsExpanded(upload.taskId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+                        <mat-icon class="process-icon">terminal</mat-icon>
+                        <span class="subprocess-title">Subprocess Runtime</span>
+                        <mat-chip class="process-mode-chip" [ngClass]="runtime.processMode === 'SUBPROCESS' ? 'subprocess-mode' : 'in-memory-mode'">
+                          {{ runtime.processMode }}
+                        </mat-chip>
+                      </div>
+                      <div class="subprocess-content" *ngIf="isSubprocessDetailsExpanded(upload.taskId)">
+                        <div class="runtime-stat" *ngIf="runtime.pid">
+                          <span class="stat-label">PID:</span>
+                          <span class="stat-value">{{ runtime.pid }}</span>
+                        </div>
+                        <div class="runtime-stat" *ngIf="runtime.heapUsedBytes">
+                          <span class="stat-label">Heap Used:</span>
+                          <span class="stat-value">{{ formatBytes(runtime.heapUsedBytes) }}</span>
+                        </div>
+                        <div class="runtime-stat" *ngIf="runtime.heapUsagePercent">
+                          <span class="stat-label">Heap %:</span>
+                          <span class="stat-value">{{ runtime.heapUsagePercent | number:'1.0-0' }}%</span>
+                        </div>
+                        <div class="runtime-stat" *ngIf="runtime.uptimeMs">
+                          <span class="stat-label">Uptime:</span>
+                          <span class="stat-value">{{ formatTime(runtime.uptimeMs) }}</span>
+                        </div>
+                        <div class="runtime-stat" *ngIf="runtime.javaVersion">
+                          <span class="stat-label">Java:</span>
+                          <span class="stat-value">{{ runtime.javaVersion }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Subprocess Logs Viewer -->
+                    <div class="subprocess-logs-panel" *ngIf="upload.status === 'IN_PROGRESS' || upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'">
+                      <div class="logs-header" (click)="toggleSubprocessLogs(upload.taskId)">
+                        <mat-icon>{{ isSubprocessLogsExpanded(upload.taskId) ? 'expand_less' : 'expand_more' }}</mat-icon>
+                        <mat-icon class="logs-icon">terminal</mat-icon>
+                        <span class="logs-title">Process Logs</span>
+                        <mat-chip class="live-chip" *ngIf="upload.status === 'IN_PROGRESS'">LIVE</mat-chip>
+                        <mat-chip class="mode-chip-small subprocess-mode" *ngIf="upload.stats?.subprocessRuntimeInfo?.processMode === 'SUBPROCESS'">SUBPROCESS</mat-chip>
+                      </div>
+                      <div class="logs-viewer-container" *ngIf="isSubprocessLogsExpanded(upload.taskId)">
+                        <app-subprocess-logs
+                          [taskId]="upload.taskId"
+                          [height]="'250px'"
+                          [maxLogs]="500">
+                        </app-subprocess-logs>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Error Message -->
+                <div class="error-message" *ngIf="upload.status === 'FAILED' && upload.errorMessage">
+                  <mat-icon color="warn">error</mat-icon>
+                  <span>{{ upload.errorMessage }}</span>
+                </div>
+
+                <!-- Completion Message -->
+                <div class="completion-message" *ngIf="upload.status === 'COMPLETED'">
+                  <mat-icon color="primary">check_circle</mat-icon>
+                  <span>Processing complete</span>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- No Active Sheet -->
+        <div class="empty-state" *ngIf="!activeSheet && !isLoading">
+          <mat-icon>folder_off</mat-icon>
+          <h3>No Fact Sheet Selected</h3>
+          <p>Create a fact sheet to start adding facts</p>
+          <button mat-raised-button color="primary" (click)="selectedTabIndex = 1; openCreateForm()">
+            <mat-icon>add</mat-icon>
+            Create Fact Sheet
+          </button>
+        </div>
+
+        <!-- Facts List -->
+        <div class="facts-container" *ngIf="activeSheet">
+          <!-- Facts Loading -->
+          <div class="facts-loading" *ngIf="factsLoading">
+            <mat-spinner diameter="24"></mat-spinner>
+            <span>Loading facts...</span>
+          </div>
+
+          <!-- Empty Facts State -->
+          <div class="empty-facts" *ngIf="!factsLoading && facts.length === 0">
+            <mat-icon>cloud_upload</mat-icon>
+            <h3>No facts yet</h3>
+            <p>Add documents, URLs, or other sources to "{{ activeSheet.name }}"</p>
+            <button mat-raised-button color="primary" (click)="openAddFactDialog()">
+              <mat-icon>add_circle</mat-icon>
+              Add Facts
+            </button>
+          </div>
+
+          <!-- Facts Grid -->
+          <div class="facts-grid" *ngIf="!factsLoading && facts.length > 0">
+            <div class="fact-card"
+                 *ngFor="let fact of facts"
+                 [class.selected]="selectedFact?.id === fact.id"
+                 (click)="selectFact(fact)">
+
+              <div class="fact-icon" [class]="getFileIconClass(fact)">
+                <mat-icon>{{ getFileIcon(fact) }}</mat-icon>
+              </div>
+
+              <div class="fact-info">
+                <span class="fact-name" [matTooltip]="fact.fileName">{{ fact.title || fact.fileName }}</span>
+                <span class="fact-meta">
+                  {{ getSourceTypeLabel(fact.sourceType) }}
+                  <span *ngIf="fact.sizeBytes"> &bull; {{ formatSize(fact.sizeBytes) }}</span>
+                </span>
+              </div>
+
+              <button mat-icon-button class="fact-delete" (click)="deleteFact(fact, $event)" matTooltip="Delete">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Selected Fact Details -->
+        <mat-card class="fact-details" *ngIf="selectedFact">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class]="getFileIconClass(selectedFact)">{{ getFileIcon(selectedFact) }}</mat-icon>
+            <mat-card-title>{{ selectedFact.title || selectedFact.fileName }}</mat-card-title>
+            <mat-card-subtitle>{{ getSourceTypeLabel(selectedFact.sourceType) }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="detail-row" *ngIf="selectedFact.fileName">
+              <span class="detail-label">File Name:</span>
+              <span class="detail-value">{{ selectedFact.fileName }}</span>
+            </div>
+            <div class="detail-row" *ngIf="selectedFact.extension">
+              <span class="detail-label">Type:</span>
+              <span class="detail-value">.{{ selectedFact.extension }}</span>
+            </div>
+            <div class="detail-row" *ngIf="selectedFact.sizeBytes">
+              <span class="detail-label">Size:</span>
+              <span class="detail-value">{{ formatSize(selectedFact.sizeBytes) }}</span>
+            </div>
+            <div class="detail-row" *ngIf="selectedFact.sourceUrl">
+              <span class="detail-label">Source URL:</span>
+              <a class="detail-value url" [href]="selectedFact.sourceUrl" target="_blank">{{ selectedFact.sourceUrl }}</a>
+            </div>
+            <div class="detail-row" *ngIf="selectedFact.notes">
+              <span class="detail-label">Notes:</span>
+              <span class="detail-value">{{ selectedFact.notes }}</span>
+            </div>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-button color="warn" (click)="deleteFact(selectedFact, $event)">
+              <mat-icon>delete</mat-icon>
+              Delete
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- Sheets Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>library_books</mat-icon>
+        <span class="tab-label">All Sheets</span>
+        <mat-chip class="tab-count">{{ sheets.length }}</mat-chip>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Header -->
+        <div class="sheets-header">
+          <h3>Manage Fact Sheets</h3>
+          <button mat-raised-button color="primary" (click)="openCreateForm()">
+            <mat-icon>add</mat-icon>
+            New Sheet
+          </button>
+        </div>
+
+        <!-- Create Form -->
+        <mat-card class="form-card" *ngIf="showCreateForm">
+          <mat-card-header>
+            <mat-card-title>Create New Fact Sheet</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <form [formGroup]="sheetForm" (ngSubmit)="createSheet()">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Name</mat-label>
+                <input matInput formControlName="name" placeholder="My Fact Sheet">
+                <mat-error *ngIf="sheetForm.get('name')?.hasError('required')">Name is required</mat-error>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <textarea matInput formControlName="description" rows="2"></textarea>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Color</mat-label>
+                  <mat-select formControlName="color">
+                    <mat-option *ngFor="let color of colors" [value]="color.value">
+                      <span class="color-dot" [style.background-color]="color.value"></span>
+                      {{ color.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Icon</mat-label>
+                  <mat-select formControlName="icon">
+                    <mat-option *ngFor="let icon of icons" [value]="icon.value">
+                      <mat-icon>{{ icon.value }}</mat-icon>
+                      {{ icon.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+              </div>
+
+              <div class="form-actions">
+                <button mat-button type="button" (click)="cancelCreate()">Cancel</button>
+                <button mat-raised-button color="primary" type="submit" [disabled]="sheetForm.invalid">
+                  Create
+                </button>
+              </div>
+            </form>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Edit Form -->
+        <mat-card class="form-card" *ngIf="showEditForm && editingSheet">
+          <mat-card-header>
+            <mat-card-title>Edit "{{ editingSheet.name }}"</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <form [formGroup]="sheetForm" (ngSubmit)="updateSheet()">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Name</mat-label>
+                <input matInput formControlName="name">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <textarea matInput formControlName="description" rows="2"></textarea>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Color</mat-label>
+                  <mat-select formControlName="color">
+                    <mat-option *ngFor="let color of colors" [value]="color.value">
+                      <span class="color-dot" [style.background-color]="color.value"></span>
+                      {{ color.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Icon</mat-label>
+                  <mat-select formControlName="icon">
+                    <mat-option *ngFor="let icon of icons" [value]="icon.value">
+                      <mat-icon>{{ icon.value }}</mat-icon>
+                      {{ icon.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+              </div>
+
+              <div class="form-actions">
+                <button mat-button type="button" (click)="cancelEdit()">Cancel</button>
+                <button mat-raised-button color="primary" type="submit" [disabled]="sheetForm.invalid">
+                  Save
+                </button>
+              </div>
+            </form>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Sheets Grid -->
+        <div class="sheets-grid" *ngIf="!showCreateForm && !showEditForm">
+          <div class="sheet-card"
+               *ngFor="let sheet of sheets"
+               [class.active]="sheet.isActive"
+               [style.border-left-color]="sheet.color"
+               (click)="selectSheet(sheet)">
+
+            <div class="sheet-header">
+              <mat-icon [style.color]="sheet.color">{{ sheet.icon }}</mat-icon>
+              <div class="sheet-info">
+                <span class="sheet-name">{{ sheet.name }}</span>
+                <span class="sheet-meta">{{ sheet.factCount }} facts &bull; {{ formatSize(sheet.totalSizeBytes) }}</span>
+              </div>
+              <mat-chip *ngIf="sheet.isActive" class="active-chip">Active</mat-chip>
+            </div>
+
+            <p class="sheet-description" *ngIf="sheet.description">{{ sheet.description }}</p>
+
+            <div class="sheet-footer">
+              <span class="sheet-date">{{ sheet.createdAt | date:'mediumDate' }}</span>
+              <div class="sheet-actions" (click)="$event.stopPropagation()">
+                <button mat-icon-button [matMenuTriggerFor]="sheetMenu">
+                  <mat-icon>more_vert</mat-icon>
+                </button>
+                <mat-menu #sheetMenu="matMenu">
+                  <button mat-menu-item (click)="selectSheet(sheet)" [disabled]="sheet.isActive">
+                    <mat-icon>check_circle</mat-icon>
+                    <span>Set Active</span>
+                  </button>
+                  <button mat-menu-item (click)="openEditForm(sheet)">
+                    <mat-icon>edit</mat-icon>
+                    <span>Edit</span>
+                  </button>
+                  <mat-divider></mat-divider>
+                  <button mat-menu-item (click)="deleteSheet(sheet)" [disabled]="sheet.name === 'Default'" class="delete-action">
+                    <mat-icon color="warn">delete</mat-icon>
+                    <span>Delete</span>
+                  </button>
+                </mat-menu>
+              </div>
+            </div>
+          </div>
+
+          <!-- Empty state -->
+          <div class="empty-state" *ngIf="sheets.length === 0">
+            <mat-icon>library_books</mat-icon>
+            <p>No fact sheets yet</p>
+            <button mat-raised-button color="primary" (click)="openCreateForm()">
+              Create Your First Sheet
+            </button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- INDEX BROWSER TAB -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>search</mat-icon>
+        <span class="tab-label">Index Browser</span>
+      </ng-template>
+
+      <div class="tab-content index-browser-content">
+        <!-- Status Section -->
+        <div class="status-section" *ngIf="!statusLoading">
+          <div class="status-header">
+            <mat-icon>info</mat-icon>
+            <h3>Index Status</h3>
+            <button mat-icon-button (click)="refreshIndexerStatus()" matTooltip="Refresh status">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+          <div class="status-content" *ngIf="indexerStatus">
+            <div class="status-row">
+              <strong>Keyword Index:</strong>
+              <span *ngIf="indexerStatus.approximateDocumentCount !== undefined" class="status-count">{{ indexerStatus.approximateDocumentCount }} docs</span>
+            </div>
+            <div class="status-row">
+              <strong>Vector Store:</strong>
+              <span *ngIf="indexerStatus.approximateVectorCount !== undefined" class="status-count">{{ indexerStatus.approximateVectorCount }} docs</span>
+            </div>
+            <div class="status-row" *ngIf="indexerStatus.indexPath">
+              <strong>Index Path:</strong>
+              <span class="path-display">{{ indexerStatus.indexPath }}</span>
+            </div>
+          </div>
+          <div class="status-loading" *ngIf="!indexerStatus">
+            <mat-icon>warning</mat-icon>
+            <span>Could not load index status</span>
+          </div>
+        </div>
+
+        <!-- Loading status -->
+        <div class="status-loading" *ngIf="statusLoading">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading index status...</span>
+        </div>
+
+        <!-- Search Tabs (Keyword + Vector) -->
+        <mat-tab-group class="index-tabs">
+          <!-- Keyword Index Tab -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon class="tab-icon">text_fields</mat-icon>
+              <span>Keyword Index</span>
+              <span class="tab-badge" *ngIf="keywordTotalResults">({{ keywordTotalResults }})</span>
+            </ng-template>
+
+            <div class="search-tab-content">
+              <!-- Search Section -->
+              <div class="search-section">
+                <mat-form-field appearance="outline" class="search-field">
+                  <mat-label>Search keyword index</mat-label>
+                  <input matInput [formControl]="keywordSearchControl" placeholder="Enter search query...">
+                  <mat-icon matPrefix>search</mat-icon>
+                  <button mat-icon-button matSuffix *ngIf="keywordSearchQuery" (click)="clearKeywordSearch()">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </mat-form-field>
+
+                <div class="search-controls" *ngIf="keywordSearchQuery.length >= 2">
+                  <div class="search-info">
+                    <mat-icon>search</mat-icon>
+                    <span *ngIf="keywordSearchLoading">Searching...</span>
+                    <span *ngIf="!keywordSearchLoading">{{ keywordTotalResults }} result{{ keywordTotalResults !== 1 ? 's' : '' }} found</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Loading -->
+              <mat-progress-bar mode="indeterminate" *ngIf="keywordSearchLoading" class="page-progress-bar"></mat-progress-bar>
+
+              <!-- Results Table -->
+              <div class="table-container" *ngIf="keywordDocuments.length > 0">
+                <table mat-table [dataSource]="keywordDataSource" class="mat-elevation-z2">
+                  <ng-container matColumnDef="id">
+                    <th mat-header-cell *matHeaderCellDef>ID</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="doc-id">{{ truncateContent(doc.id, 12) }}</span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="content">
+                    <th mat-header-cell *matHeaderCellDef>Content Preview</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <div class="doc-preview">
+                        <span class="preview-text">{{ getDocPreview(doc) }}</span>
+                      </div>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="score">
+                    <th mat-header-cell *matHeaderCellDef>Score</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="score-badge" [ngClass]="getScoreClass(doc.score)">
+                        {{ doc.score | number:'1.3-3' }}
+                      </span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="originalDoc">
+                    <th mat-header-cell *matHeaderCellDef>Source</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="original-doc">{{ doc.originalDocument || '-' }}</span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="actions">
+                    <th mat-header-cell *matHeaderCellDef>Actions</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <button mat-icon-button matTooltip="View details" (click)="selectDocument(doc)">
+                        <mat-icon>visibility</mat-icon>
+                      </button>
+                    </td>
+                  </ng-container>
+
+                  <tr mat-header-row *matHeaderRowDef="keywordDisplayedColumns"></tr>
+                  <tr mat-row *matRowDef="let row; columns: keywordDisplayedColumns;"
+                      class="search-result-row"
+                      [class.selected]="selectedDocument?.id === row.id"
+                      (click)="selectDocument(row)"></tr>
+                </table>
+
+                <mat-paginator #keywordPaginator
+                               [length]="keywordTotalResults"
+                               [pageSize]="keywordPageSize"
+                               [pageSizeOptions]="[5, 10, 25, 50]"
+                               (page)="onKeywordPageChange($event)">
+                </mat-paginator>
+              </div>
+
+              <!-- Empty State -->
+              <div class="empty-state-message" *ngIf="!keywordSearchLoading && keywordDocuments.length === 0 && keywordSearchQuery.length >= 2">
+                <mat-icon>search_off</mat-icon>
+                <p>No results found for "{{ keywordSearchQuery }}"</p>
+              </div>
+
+              <!-- Initial State -->
+              <div class="empty-state-message" *ngIf="keywordDocuments.length === 0 && keywordSearchQuery.length < 2">
+                <mat-icon>search</mat-icon>
+                <p>Enter at least 2 characters to search the keyword index</p>
+              </div>
+            </div>
+          </mat-tab>
+
+          <!-- Vector Store Tab -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon class="tab-icon">psychology</mat-icon>
+              <span>Vector Store</span>
+              <span class="tab-badge" *ngIf="vectorTotalResults">({{ vectorTotalResults }})</span>
+            </ng-template>
+
+            <div class="search-tab-content">
+              <!-- Search Section -->
+              <div class="search-section">
+                <div class="search-row">
+                  <mat-form-field appearance="outline" class="search-field">
+                    <mat-label>Semantic search</mat-label>
+                    <input matInput [formControl]="vectorSearchControl" placeholder="Enter a question or phrase...">
+                    <mat-icon matPrefix>psychology</mat-icon>
+                    <button mat-icon-button matSuffix *ngIf="vectorSearchQuery" (click)="clearVectorSearch()">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </mat-form-field>
+
+                  <div class="threshold-control">
+                    <span class="threshold-label">Similarity threshold: {{ similarityThreshold | number:'1.2-2' }}</span>
+                    <mat-slider min="0" max="1" step="0.05" discrete [displayWith]="formatThreshold">
+                      <input matSliderThumb [value]="similarityThreshold" (valueChange)="onSimilarityThresholdChange($event)">
+                    </mat-slider>
+                  </div>
+                </div>
+
+                <div class="search-controls" *ngIf="vectorSearchQuery.length >= 2">
+                  <div class="search-info">
+                    <mat-icon>psychology</mat-icon>
+                    <span *ngIf="vectorSearchLoading">Computing embeddings and searching...</span>
+                    <span *ngIf="!vectorSearchLoading">{{ vectorTotalResults }} similar document{{ vectorTotalResults !== 1 ? 's' : '' }} found</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Loading -->
+              <mat-progress-bar mode="indeterminate" *ngIf="vectorSearchLoading" class="page-progress-bar"></mat-progress-bar>
+
+              <!-- Results Table -->
+              <div class="table-container" *ngIf="vectorDocuments.length > 0">
+                <table mat-table [dataSource]="vectorDataSource" class="mat-elevation-z2">
+                  <ng-container matColumnDef="id">
+                    <th mat-header-cell *matHeaderCellDef>ID</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="doc-id">{{ truncateContent(doc.id, 12) }}</span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="content">
+                    <th mat-header-cell *matHeaderCellDef>Content Preview</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <div class="doc-preview">
+                        <span class="preview-text">{{ getDocPreview(doc) }}</span>
+                      </div>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="score">
+                    <th mat-header-cell *matHeaderCellDef>Similarity</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="score-badge vector-score" [ngClass]="getScoreClass(doc.score)">
+                        {{ (doc.score * 100) | number:'1.1-1' }}%
+                      </span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="originalDoc">
+                    <th mat-header-cell *matHeaderCellDef>Source</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <span class="original-doc">{{ doc.originalDocument || '-' }}</span>
+                    </td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="actions">
+                    <th mat-header-cell *matHeaderCellDef>Actions</th>
+                    <td mat-cell *matCellDef="let doc">
+                      <button mat-icon-button matTooltip="View details" (click)="selectDocument(doc)">
+                        <mat-icon>visibility</mat-icon>
+                      </button>
+                    </td>
+                  </ng-container>
+
+                  <tr mat-header-row *matHeaderRowDef="vectorDisplayedColumns"></tr>
+                  <tr mat-row *matRowDef="let row; columns: vectorDisplayedColumns;"
+                      class="search-result-row"
+                      [class.selected]="selectedDocument?.id === row.id"
+                      (click)="selectDocument(row)"></tr>
+                </table>
+
+                <mat-paginator #vectorPaginator
+                               [length]="vectorTotalResults"
+                               [pageSize]="vectorPageSize"
+                               [pageSizeOptions]="[5, 10, 25, 50]"
+                               (page)="onVectorPageChange($event)">
+                </mat-paginator>
+              </div>
+
+              <!-- Empty State -->
+              <div class="empty-state-message" *ngIf="!vectorSearchLoading && vectorDocuments.length === 0 && vectorSearchQuery.length >= 2">
+                <mat-icon>search_off</mat-icon>
+                <p>No similar documents found for "{{ vectorSearchQuery }}"</p>
+                <p class="empty-hint">Try lowering the similarity threshold or using different search terms</p>
+              </div>
+
+              <!-- Initial State -->
+              <div class="empty-state-message" *ngIf="vectorDocuments.length === 0 && vectorSearchQuery.length < 2">
+                <mat-icon>psychology</mat-icon>
+                <p>Enter at least 2 characters for semantic search</p>
+                <p class="empty-hint">Semantic search finds conceptually similar content using AI embeddings</p>
+              </div>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+
+        <!-- Document Detail View -->
+        <mat-card class="document-detail-view" *ngIf="selectedDocument">
+          <mat-card-header>
+            <mat-card-title class="document-title">
+              Document Details
+              <mat-chip class="score-chip" *ngIf="selectedDocument.score">
+                Score: {{ selectedDocument.score | number:'1.3-3' }}
+              </mat-chip>
+            </mat-card-title>
+            <div class="document-header-actions">
+              <span class="original-doc-info" *ngIf="selectedDocument.originalDocument">
+                <mat-icon>description</mat-icon>
+                {{ selectedDocument.originalDocument }}
+              </span>
+              <button mat-icon-button class="close-button" (click)="closeDocumentDetail()" matTooltip="Close">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width-field content-textarea">
+              <mat-label>Content</mat-label>
+              <textarea matInput [value]="selectedDocument.content || selectedDocument.text || ''" rows="10" readonly></textarea>
+            </mat-form-field>
+
+            <div class="metadata-section" *ngIf="selectedDocument.metadata">
+              <h3>Metadata</h3>
+              <div class="metadata-display">
+                <div class="metadata-item" *ngFor="let key of objectKeys(selectedDocument.metadata)">
+                  <strong>{{ key }}:</strong>
+                  <span class="metadata-value">{{ selectedDocument.metadata[key] }}</span>
+                </div>
+                <p class="no-metadata" *ngIf="objectKeys(selectedDocument.metadata).length === 0">No metadata available</p>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- SETTINGS TAB -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>settings</mat-icon>
+        <span class="tab-label">Settings</span>
+      </ng-template>
+
+      <div class="tab-content settings-tab-content">
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <!-- SYSTEM CONFIGURATION SECTION -->
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <div class="settings-section system-config-section">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>settings_applications</mat-icon>
+              <h3>System Configuration</h3>
+              <button mat-icon-button (click)="loadSystemConfig()" [disabled]="isLoadingSystemConfig" matTooltip="Refresh">
+                <mat-icon>refresh</mat-icon>
+              </button>
+            </div>
+            <p class="settings-description">
+              Currently loaded models in the system. These are the defaults used when no per-sheet override is configured.
+            </p>
+          </div>
+
+          <mat-card class="system-config-card">
+            <mat-card-content>
+              <!-- Loading State -->
+              <div class="system-config-loading" *ngIf="isLoadingSystemConfig">
+                <mat-spinner diameter="24"></mat-spinner>
+                <span>Loading system configuration...</span>
+              </div>
+
+              <div class="system-config-grid" *ngIf="!isLoadingSystemConfig">
+                <!-- System Embedding Model -->
+                <div class="system-config-item">
+                  <div class="config-header">
+                    <mat-icon>memory</mat-icon>
+                    <span class="config-label">Embedding Model</span>
+                  </div>
+                  <div class="config-value" [class.disabled]="systemConfig.embeddingModel?.isNoOp">
+                    <span class="config-name">{{ getSystemEncoderDisplayName() }}</span>
+                    <mat-chip *ngIf="systemConfig.embeddingModel && !systemConfig.embeddingModel.isNoOp" class="loaded-chip">Loaded</mat-chip>
+                    <mat-chip *ngIf="!systemConfig.embeddingModel || systemConfig.embeddingModel.isNoOp" class="disabled-chip">Not Active</mat-chip>
+                  </div>
+                  <div class="config-details" *ngIf="systemConfig.embeddingModel && !systemConfig.embeddingModel.isNoOp">
+                    <span class="config-class">{{ systemConfig.embeddingModel.className }}</span>
+                  </div>
+                </div>
+
+                <!-- System Reranker -->
+                <div class="system-config-item">
+                  <div class="config-header">
+                    <mat-icon>swap_vert</mat-icon>
+                    <span class="config-label">Reranker</span>
+                  </div>
+                  <div class="config-value" [class.disabled]="!systemConfig.reranker?.available">
+                    <span class="config-name">{{ getSystemRerankerDisplayName() }}</span>
+                    <mat-chip *ngIf="systemConfig.reranker?.available" class="loaded-chip">Available</mat-chip>
+                    <mat-chip *ngIf="!systemConfig.reranker?.available" class="disabled-chip">Disabled</mat-chip>
+                  </div>
+                  <div class="config-details" *ngIf="systemConfig.reranker?.available && systemConfig.reranker?.supportedTypes?.length">
+                    <span class="config-types">Types: {{ systemConfig.reranker?.supportedTypes?.join(', ') }}</span>
+                  </div>
+                </div>
+
+                <!-- System Vector Store -->
+                <div class="system-config-item">
+                  <div class="config-header">
+                    <mat-icon>storage</mat-icon>
+                    <span class="config-label">Vector Store</span>
+                  </div>
+                  <div class="config-value" [class.disabled]="!systemConfig.vectorStore?.available">
+                    <span class="config-name">{{ getSystemVectorStoreDisplayName() }}</span>
+                    <mat-chip *ngIf="systemConfig.vectorStore?.available" class="loaded-chip">Connected</mat-chip>
+                    <mat-chip *ngIf="!systemConfig.vectorStore?.available" class="disabled-chip">Not Available</mat-chip>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Archive Models Section -->
+              <div class="archive-models-section" *ngIf="allArchiveModels.length > 0">
+                <h4>
+                  <mat-icon>inventory_2</mat-icon>
+                  Models in Loaded Archive
+                  <span class="model-count">({{ allArchiveModels.length }})</span>
+                </h4>
+                <div class="loaded-models-list">
+                  <div class="loaded-model-chip" *ngFor="let model of allArchiveModels"
+                       [ngClass]="{'encoder-model': model.type === 'encoder', 'cross-encoder-model': model.type === 'cross_encoder'}">
+                    <mat-icon>{{ model.type === 'encoder' ? 'memory' : 'compare_arrows' }}</mat-icon>
+                    <span class="model-id">{{ model.modelId }}</span>
+                    <span class="model-dim" *ngIf="model.embeddingDim">({{ model.embeddingDim }}d)</span>
+                    <mat-chip class="type-chip">{{ model.type === 'encoder' ? 'Encoder' : 'Cross-Encoder' }}</mat-chip>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <!-- SHEET-SPECIFIC OVERRIDES SECTION -->
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <div class="settings-section active-models-section" *ngIf="activeSheet">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>tune</mat-icon>
+              <h3>Sheet Overrides</h3>
+              <span class="sheet-context-badge">
+                "{{ activeSheet.name }}"
+              </span>
+            </div>
+            <p class="settings-description">
+              Per-sheet model configuration. When set, these override the system defaults for this fact sheet.
+            </p>
+          </div>
+
+          <mat-card class="active-models-card">
+            <mat-card-content>
+              <div class="active-models-grid">
+                <!-- Sheet Encoder Override -->
+                <div class="active-model-item encoder" [class.has-override]="activeSheet?.embeddingModel">
+                  <div class="model-header">
+                    <mat-icon>memory</mat-icon>
+                    <span class="model-type">Embedding Model Override</span>
+                  </div>
+                  <div class="model-value">
+                    <span class="model-name" *ngIf="activeSheet?.embeddingModel">{{ activeSheet?.embeddingModel }}</span>
+                    <span class="model-name default-text" *ngIf="!activeSheet?.embeddingModel">Using System Default</span>
+                    <mat-chip *ngIf="activeSheet?.embeddingModel" class="override-chip">Override</mat-chip>
+                    <mat-chip *ngIf="!activeSheet?.embeddingModel" class="default-chip">Default</mat-chip>
+                  </div>
+                  <div class="model-details" *ngIf="activeSheet?.embeddingModel">
+                    <span class="model-source">Source: {{ activeSheet?.embeddingModelSource || 'registry' }}</span>
+                    <span class="model-archive" *ngIf="activeSheet?.embeddingArchiveId">Archive: {{ activeSheet?.embeddingArchiveId }}</span>
+                  </div>
+                </div>
+
+                <!-- Sheet Reranker Override -->
+                <div class="active-model-item reranker" [class.has-override]="activeSheet?.rerankingEnabled">
+                  <div class="model-header">
+                    <mat-icon>swap_vert</mat-icon>
+                    <span class="model-type">Reranker Override</span>
+                  </div>
+                  <div class="model-value">
+                    <span class="model-name" *ngIf="activeSheet?.rerankingEnabled">{{ activeSheet?.rerankerType || 'Enabled' }}</span>
+                    <span class="model-name default-text" *ngIf="!activeSheet?.rerankingEnabled">Using System Default</span>
+                    <mat-chip *ngIf="activeSheet?.rerankingEnabled" class="override-chip">Override</mat-chip>
+                    <mat-chip *ngIf="!activeSheet?.rerankingEnabled" class="default-chip">Default</mat-chip>
+                  </div>
+                  <div class="model-details" *ngIf="activeSheet?.rerankingEnabled && activeSheet?.rerankerType === 'cross_encoder'">
+                    <span class="model-type-info">Cross-Encoder: {{ activeSheet?.crossEncoderModel || 'Default' }}</span>
+                    <span class="model-topk" *ngIf="activeSheet?.rerankTopK">Top-K: {{ activeSheet?.rerankTopK }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <!-- AVAILABLE ARCHIVES SECTION -->
+        <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+        <div class="settings-section archives-section">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>archive</mat-icon>
+              <h3>Available Archives</h3>
+            </div>
+            <p class="settings-description">
+              Kompile Archives (.karch) containing pre-converted models. Load an archive to use its models for embedding and reranking.
+            </p>
+          </div>
+
+          <mat-card class="archives-card">
+            <mat-card-content>
+              <!-- Loading State -->
+              <div class="loading-shade" *ngIf="isLoadingArchives">
+                <mat-spinner diameter="40"></mat-spinner>
+              </div>
+
+              <!-- Current Archive Status -->
+              <div class="current-archive-status" *ngIf="currentArchiveStatus?.loaded">
+                <div class="status-header">
+                  <mat-icon class="status-icon loaded">check_circle</mat-icon>
+                  <span class="status-title">Loaded Archive</span>
+                </div>
+                <div class="status-details">
+                  <div class="status-row">
+                    <span class="status-label">Archive ID:</span>
+                    <span class="status-value">{{ currentArchiveStatus?.archiveId || 'Unknown' }}</span>
+                  </div>
+                  <div class="status-row" *ngIf="currentArchiveStatus?.contentVersion">
+                    <span class="status-label">Version:</span>
+                    <span class="status-value">{{ currentArchiveStatus?.contentVersion }}</span>
+                  </div>
+                  <div class="status-row" *ngIf="currentArchiveStatus?.description">
+                    <span class="status-label">Description:</span>
+                    <span class="status-value">{{ currentArchiveStatus?.description }}</span>
+                  </div>
+                  <div class="status-row">
+                    <span class="status-label">Models:</span>
+                    <span class="status-value">{{ encoderOptions.length }} encoders, {{ crossEncoderOptions.length }} cross-encoders</span>
+                  </div>
+                </div>
+                <div class="status-actions">
+                  <button mat-stroked-button color="warn" (click)="unloadArchive()" [disabled]="isLoadingArchives">
+                    <mat-icon>eject</mat-icon>
+                    Unload Archive
+                  </button>
+                </div>
+              </div>
+
+              <!-- No Archive Loaded -->
+              <div class="no-archive-message" *ngIf="!currentArchiveStatus?.loaded && !isLoadingArchives">
+                <mat-icon>info_outline</mat-icon>
+                <span>No archive currently loaded. Select an archive below to load it.</span>
+              </div>
+
+              <!-- Available Archives List -->
+              <div class="archives-list" *ngIf="availableArchives.length > 0 && !isLoadingArchives">
+                <h4>
+                  <mat-icon>folder</mat-icon>
+                  Available Archives ({{ availableArchives.length }})
+                </h4>
+                <div class="archive-item" *ngFor="let archive of availableArchives"
+                     [ngClass]="{'active': currentArchiveStatus?.archivePath === archive.path}">
+                  <div class="archive-info">
+                    <div class="archive-name">
+                      <mat-icon>inventory_2</mat-icon>
+                      {{ archive.name }}
+                    </div>
+                    <div class="archive-details">
+                      <span class="archive-id" *ngIf="archive.archiveId">ID: {{ archive.archiveId }}</span>
+                      <span class="archive-version" *ngIf="archive.version">v{{ archive.version }}</span>
+                      <span class="archive-models" *ngIf="archive.modelCount">{{ archive.modelCount }} models</span>
+                    </div>
+                    <div class="archive-path">{{ archive.path }}</div>
+                  </div>
+                  <div class="archive-actions">
+                    <button mat-raised-button color="primary"
+                            *ngIf="currentArchiveStatus?.archivePath !== archive.path"
+                            (click)="loadArchive(archive.path)"
+                            [disabled]="isLoadingArchives">
+                      <mat-icon>download</mat-icon>
+                      Load
+                    </button>
+                    <mat-chip *ngIf="currentArchiveStatus?.archivePath === archive.path" class="loaded-chip">
+                      <mat-icon>check</mat-icon>
+                      Loaded
+                    </mat-chip>
+                  </div>
+                </div>
+              </div>
+
+              <!-- No Archives Available -->
+              <div class="no-archives-message" *ngIf="availableArchives.length === 0 && !isLoadingArchives && !currentArchiveStatus?.loaded">
+                <mat-icon>folder_off</mat-icon>
+                <p>No archives found.</p>
+                <p class="hint">Place .karch files in ~/.kompile/archives/ or use the kompile-model-staging service to create archives.</p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+        <!-- Index Storage Settings Section (per-sheet) -->
+        <div class="settings-section index-storage-section">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>storage</mat-icon>
+              <h3>Index Storage</h3>
+              <span class="sheet-context-badge" *ngIf="activeSheet">
+                for "{{ activeSheet.name }}"
+              </span>
+            </div>
+            <p class="settings-description">
+              Configure where document vectors and keyword indices are stored for this fact sheet.
+              Each fact sheet can have its own dedicated storage locations.
+            </p>
+          </div>
+
+          <mat-card class="index-storage-card">
+            <mat-card-content>
+              <!-- No Active Sheet Warning -->
+              <div class="no-sheet-warning" *ngIf="!activeSheet">
+                <mat-icon>warning</mat-icon>
+                <span>No fact sheet is currently active. Please select or create a fact sheet first.</span>
+              </div>
+
+              <!-- Loading State -->
+              <div class="loading-shade" *ngIf="isIndexStorageSaving">
+                <mat-spinner diameter="40"></mat-spinner>
+              </div>
+
+              <div class="config-form" *ngIf="activeSheet && !isIndexStorageSaving">
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Vector (Dense) Store Path</mat-label>
+                  <input matInput [(ngModel)]="editVectorStorePath"
+                         placeholder="e.g. ~/.kompile/{{ activeSheet.name | lowercase }}-vector-index">
+                  <mat-icon matPrefix>folder</mat-icon>
+                  <mat-hint>Location for embedding vectors. Leave empty to use global default.</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="full-width" style="margin-top: 16px;">
+                  <mat-label>Keyword (Sparse) Index Path</mat-label>
+                  <input matInput [(ngModel)]="editKeywordIndexPath"
+                         placeholder="e.g. ~/.kompile/{{ activeSheet.name | lowercase }}-keyword-index">
+                  <mat-icon matPrefix>text_fields</mat-icon>
+                  <mat-hint>Location for Lucene keyword index. Leave empty to use global default.</mat-hint>
+                </mat-form-field>
+
+                <div class="form-actions">
+                  <button mat-raised-button color="primary"
+                          (click)="saveIndexStorageSettings()"
+                          [disabled]="isIndexStorageSaving || !hasIndexStorageChanges()">
+                    <mat-icon>save</mat-icon>
+                    Save Storage Settings
+                  </button>
+
+                  <div *ngIf="indexStorageSaveMessage" class="save-message">
+                    <mat-icon>check_circle</mat-icon>
+                    <span>{{ indexStorageSaveMessage }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+        <!-- Model Configuration Section (per-sheet) -->
+        <div class="settings-section model-config-section">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>psychology</mat-icon>
+              <h3>Model Configuration</h3>
+              <span class="sheet-context-badge" *ngIf="activeSheet">
+                for "{{ activeSheet.name }}"
+              </span>
+            </div>
+            <p class="settings-description">
+              Configure embedding models for retrieval and reranking models for improving search results.
+              Each fact sheet can use different models.
+            </p>
+          </div>
+
+          <mat-card class="model-config-card">
+            <mat-card-content>
+              <!-- No Active Sheet Warning -->
+              <div class="no-sheet-warning" *ngIf="!activeSheet">
+                <mat-icon>warning</mat-icon>
+                <span>No fact sheet is currently active. Please select or create a fact sheet first.</span>
+              </div>
+
+              <!-- Loading State -->
+              <div class="loading-shade" *ngIf="isModelConfigSaving">
+                <mat-spinner diameter="40"></mat-spinner>
+              </div>
+
+              <div class="config-form" *ngIf="activeSheet && !isModelConfigSaving">
+                <!-- ==================== Retrieval (Embedding) Configuration ==================== -->
+                <div class="config-section">
+                  <h4 class="config-section-title">
+                    <mat-icon>memory</mat-icon>
+                    Retrieval (Embedding Model)
+                  </h4>
+                  <p class="config-section-description">
+                    Choose the embedding model used to convert text into vectors for semantic search.
+                  </p>
+
+                  <div class="form-row">
+                    <mat-form-field appearance="outline" class="half-width">
+                      <mat-label>Model Source</mat-label>
+                      <mat-select [(ngModel)]="editEmbeddingModelSource" (selectionChange)="onEmbeddingModelSourceChange()">
+                        <mat-option *ngFor="let opt of modelSourceOptions" [value]="opt.value">
+                          {{ opt.label }}
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint>Where to load the embedding model from</mat-hint>
+                    </mat-form-field>
+
+                    <!-- Archive Model Selection -->
+                    <mat-form-field appearance="outline" class="half-width" *ngIf="editEmbeddingModelSource === 'archive'">
+                      <mat-label>Embedding Model</mat-label>
+                      <mat-select [(ngModel)]="editEmbeddingModel">
+                        <mat-option [value]="null">-- Select Model --</mat-option>
+                        <mat-option *ngFor="let model of encoderOptions" [value]="model.modelId">
+                          {{ model.modelId }}
+                          <span *ngIf="model.embeddingDim"> ({{ model.embeddingDim }}d)</span>
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint *ngIf="!isArchiveLoaded">Load an archive in Archive Manager to see models</mat-hint>
+                      <mat-hint *ngIf="isArchiveLoaded && encoderOptions.length === 0">No encoders in loaded archive</mat-hint>
+                    </mat-form-field>
+
+                    <!-- Registry/Custom Model ID -->
+                    <mat-form-field appearance="outline" class="half-width" *ngIf="editEmbeddingModelSource === 'registry'">
+                      <mat-label>Embedding Model ID</mat-label>
+                      <input matInput [(ngModel)]="editEmbeddingModel" placeholder="e.g., bge-base-en-v1.5">
+                      <mat-hint>Enter the model ID from the registry</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <!-- Archive ID (if using archive source) -->
+                  <mat-form-field appearance="outline" class="full-width" *ngIf="editEmbeddingModelSource === 'archive'" style="margin-top: 16px;">
+                    <mat-label>Archive ID (optional)</mat-label>
+                    <input matInput [(ngModel)]="editEmbeddingArchiveId" placeholder="Leave empty to use currently loaded archive">
+                    <mat-hint>Specify a specific archive ID, or leave empty for the active archive</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <mat-divider style="margin: 24px 0;"></mat-divider>
+
+                <!-- ==================== Reranking Configuration ==================== -->
+                <div class="config-section">
+                  <h4 class="config-section-title">
+                    <mat-icon>swap_vert</mat-icon>
+                    Reranking
+                  </h4>
+                  <p class="config-section-description">
+                    Reranking improves search quality by re-scoring initial results using a more sophisticated model.
+                  </p>
+
+                  <div class="form-row">
+                    <mat-form-field appearance="outline" class="half-width">
+                      <mat-label>Reranker Type</mat-label>
+                      <mat-select [(ngModel)]="editRerankerType" (selectionChange)="onRerankerTypeChange()">
+                        <mat-option *ngFor="let type of rerankerTypes" [value]="type.value">
+                          {{ type.label }}
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint>Select the reranking algorithm</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline" class="half-width">
+                      <mat-label>Rerank Top-K</mat-label>
+                      <input matInput type="number" [(ngModel)]="editRerankTopK" min="1" max="100">
+                      <mat-hint>Number of results to rerank (1-100)</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <!-- Cross-Encoder Configuration (only for cross_encoder type) -->
+                  <div class="cross-encoder-config" *ngIf="needsCrossEncoder()">
+                    <div class="form-row" style="margin-top: 16px;">
+                      <mat-form-field appearance="outline" class="half-width">
+                        <mat-label>Cross-Encoder Source</mat-label>
+                        <mat-select [(ngModel)]="editCrossEncoderModelSource" (selectionChange)="onCrossEncoderModelSourceChange()">
+                          <mat-option *ngFor="let opt of modelSourceOptions" [value]="opt.value">
+                            {{ opt.label }}
+                          </mat-option>
+                        </mat-select>
+                      </mat-form-field>
+
+                      <!-- Archive Cross-Encoder Selection -->
+                      <mat-form-field appearance="outline" class="half-width" *ngIf="editCrossEncoderModelSource === 'archive'">
+                        <mat-label>Cross-Encoder Model</mat-label>
+                        <mat-select [(ngModel)]="editCrossEncoderModel">
+                          <mat-option [value]="null">-- Select Model --</mat-option>
+                          <mat-option *ngFor="let model of crossEncoderOptions" [value]="model.modelId">
+                            {{ model.modelId }}
+                          </mat-option>
+                        </mat-select>
+                        <mat-hint *ngIf="!isArchiveLoaded">Load an archive to see cross-encoders</mat-hint>
+                        <mat-hint *ngIf="isArchiveLoaded && crossEncoderOptions.length === 0">No cross-encoders in archive</mat-hint>
+                      </mat-form-field>
+
+                      <!-- Registry Cross-Encoder ID -->
+                      <mat-form-field appearance="outline" class="half-width" *ngIf="editCrossEncoderModelSource === 'registry'">
+                        <mat-label>Cross-Encoder Model ID</mat-label>
+                        <input matInput [(ngModel)]="editCrossEncoderModel" placeholder="e.g., ms-marco-MiniLM-L-6-v2">
+                      </mat-form-field>
+                    </div>
+
+                    <!-- Archive ID for Cross-Encoder -->
+                    <mat-form-field appearance="outline" class="full-width" *ngIf="editCrossEncoderModelSource === 'archive'" style="margin-top: 16px;">
+                      <mat-label>Cross-Encoder Archive ID (optional)</mat-label>
+                      <input matInput [(ngModel)]="editCrossEncoderArchiveId" placeholder="Leave empty to use currently loaded archive">
+                    </mat-form-field>
+                  </div>
+
+                  <!-- MMR Lambda (only for MMR type) -->
+                  <div class="mmr-config" *ngIf="needsMmrLambda()" style="margin-top: 16px;">
+                    <mat-form-field appearance="outline" class="half-width">
+                      <mat-label>MMR Lambda (Diversity)</mat-label>
+                      <input matInput type="number" [(ngModel)]="editMmrLambda" min="0" max="1" step="0.1">
+                      <mat-hint>0 = max diversity, 1 = max relevance</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="form-actions" style="margin-top: 24px;">
+                  <button mat-raised-button color="primary"
+                          (click)="saveModelConfig()"
+                          [disabled]="isModelConfigSaving || !hasModelConfigChanges()">
+                    <mat-icon>save</mat-icon>
+                    Save Model Configuration
+                  </button>
+
+                  <div *ngIf="modelConfigSaveMessage" class="save-message">
+                    <mat-icon>check_circle</mat-icon>
+                    <span>{{ modelConfigSaveMessage }}</span>
+                  </div>
+                </div>
+
+                <!-- Current Configuration Summary -->
+                <div class="config-summary" *ngIf="activeSheet" style="margin-top: 24px;">
+                  <h5>Current Configuration:</h5>
+                  <div class="summary-row">
+                    <span class="summary-label">Embedding Model:</span>
+                    <span class="summary-value">{{ activeSheet.embeddingModel || 'Default (System)' }}</span>
+                    <mat-chip *ngIf="activeSheet.embeddingModelSource && activeSheet.embeddingModelSource !== 'default'" class="source-chip">
+                      {{ activeSheet.embeddingModelSource }}
+                    </mat-chip>
+                  </div>
+                  <div class="summary-row">
+                    <span class="summary-label">Reranking:</span>
+                    <span class="summary-value">
+                      {{ activeSheet.rerankingEnabled ? (activeSheet.rerankerType || 'Enabled') : 'Disabled' }}
+                    </span>
+                  </div>
+                  <div class="summary-row" *ngIf="activeSheet.rerankingEnabled && activeSheet.rerankerType === 'cross_encoder'">
+                    <span class="summary-label">Cross-Encoder:</span>
+                    <span class="summary-value">{{ activeSheet.crossEncoderModel || 'Default' }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+        <!-- Pipeline Settings Section -->
+        <div class="settings-section pipeline-section">
+          <div class="settings-header">
+            <div class="settings-title">
+              <mat-icon>tune</mat-icon>
+              <h3>Pipeline Settings</h3>
+            </div>
+            <p class="settings-description">
+              Configure document processing pipeline settings including chunking, embedding, and indexing parameters.
+            </p>
+          </div>
+
+          <!-- Pipeline Settings Panel Component -->
+          <app-pipeline-settings-panel
+            [showAdvanced]="true"
+            [availableLoaders]="availableLoaders">
+          </app-pipeline-settings-panel>
+        </div>
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+</div>

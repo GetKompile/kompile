@@ -1,0 +1,219 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="archive-config-container">
+  <div class="page-header">
+    <h1>
+      <mat-icon>settings</mat-icon>
+      Model Source Configuration
+    </h1>
+    <p class="subtitle">Configure how models are loaded - from archives, registry, or both</p>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading configuration...</p>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-state" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <p>{{ error }}</p>
+    <button mat-button color="primary" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+      Retry
+    </button>
+  </div>
+
+  <!-- Configuration Content -->
+  <div class="config-content" *ngIf="config && !loading">
+
+    <!-- Source Type Card -->
+    <mat-card class="source-type-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [color]="getStatusColor(config.archive.initialized)">
+          {{ getSourceTypeIcon(config.sourceType) }}
+        </mat-icon>
+        <mat-card-title>Model Source Type</mat-card-title>
+        <mat-card-subtitle>{{ getSourceTypeLabel(config.sourceType) }}</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="source-info-grid">
+          <div class="info-item">
+            <span class="label">Archive Source</span>
+            <span class="value">
+              <mat-icon [class.enabled]="config.hasArchiveSource">
+                {{ config.hasArchiveSource ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              {{ config.hasArchiveSource ? 'Configured' : 'Not configured' }}
+            </span>
+          </div>
+          <div class="info-item">
+            <span class="label">Registry Source</span>
+            <span class="value">
+              <mat-icon [class.enabled]="config.hasRegistrySource">
+                {{ config.hasRegistrySource ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              {{ config.hasRegistrySource ? 'Configured' : 'Not configured' }}
+            </span>
+          </div>
+          <div class="info-item">
+            <span class="label">Offline Mode</span>
+            <span class="value">
+              <mat-icon [class.enabled]="config.archiveOnly">
+                {{ config.archiveOnly ? 'airplanemode_active' : 'cloud' }}
+              </mat-icon>
+              {{ config.archiveOnly ? 'Enabled (air-gapped)' : 'Disabled' }}
+            </span>
+          </div>
+          <div class="info-item">
+            <span class="label">Fallback Allowed</span>
+            <span class="value">
+              <mat-icon [class.enabled]="config.allowFallback">
+                {{ config.allowFallback ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              {{ config.allowFallback ? 'Yes' : 'No' }}
+            </span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Archive Status Card -->
+    <mat-card class="archive-status-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>archive</mat-icon>
+        <mat-card-title>Archive Status</mat-card-title>
+        <mat-card-subtitle>
+          {{ config.archive.loaded ? 'Archive loaded and ready' : 'No archive loaded' }}
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="archive-details" *ngIf="config.archive.loaded">
+          <div class="detail-row">
+            <span class="label">Archive ID</span>
+            <span class="value">{{ config.archive.archiveId || 'Unknown' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Version</span>
+            <span class="value">{{ config.archive.archiveVersion || 'Unknown' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Total Models</span>
+            <span class="value">{{ config.archive.totalModels }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Extracted Models</span>
+            <span class="value">{{ config.archive.extractedModels }}</span>
+          </div>
+        </div>
+
+        <div class="no-archive" *ngIf="!config.archive.loaded">
+          <mat-icon>inbox</mat-icon>
+          <p>No archive is currently loaded</p>
+          <span>Load an archive below to enable offline model access</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Paths Card -->
+    <mat-card class="paths-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>folder</mat-icon>
+        <mat-card-title>Configuration Paths</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="path-list">
+          <div class="path-item" *ngIf="config.archivePath">
+            <span class="path-label">Archive Path</span>
+            <code class="path-value">{{ config.archivePath }}</code>
+          </div>
+          <div class="path-item" *ngIf="config.embeddedArchive">
+            <span class="path-label">Embedded Archive</span>
+            <code class="path-value">{{ config.embeddedArchive }}</code>
+          </div>
+          <div class="path-item">
+            <span class="path-label">Cache Directory</span>
+            <code class="path-value">{{ config.cacheDir }}</code>
+          </div>
+        </div>
+
+        <div class="registry-urls" *ngIf="config.registryUrls && config.registryUrls.length > 0">
+          <h4>Registry URLs</h4>
+          <div class="url-list">
+            <div class="url-item" *ngFor="let url of config.registryUrls">
+              <mat-icon>link</mat-icon>
+              <code>{{ url }}</code>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Load Archive Card -->
+    <mat-card class="load-archive-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>unarchive</mat-icon>
+        <mat-card-title>Load Archive</mat-card-title>
+        <mat-card-subtitle>Load a .karch archive from the file system</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="load-archive-form">
+          <mat-form-field appearance="outline" class="archive-path-field">
+            <mat-label>Archive Path</mat-label>
+            <input matInput [(ngModel)]="archivePathInput"
+                   placeholder="/path/to/models.karch"
+                   [disabled]="loadingArchive">
+            <mat-icon matSuffix>folder_open</mat-icon>
+            <mat-hint>Enter the full path to a .karch archive file</mat-hint>
+          </mat-form-field>
+
+          <button mat-raised-button color="primary"
+                  (click)="loadArchive()"
+                  [disabled]="!archivePathInput.trim() || loadingArchive">
+            <mat-icon>{{ loadingArchive ? 'sync' : 'upload_file' }}</mat-icon>
+            {{ loadingArchive ? 'Loading...' : 'Load Archive' }}
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Options Card -->
+    <mat-card class="options-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>tune</mat-icon>
+        <mat-card-title>Options</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="options-list">
+          <div class="option-item">
+            <mat-icon [class.enabled]="config.verifyChecksums">
+              {{ config.verifyChecksums ? 'verified' : 'gpp_maybe' }}
+            </mat-icon>
+            <div class="option-info">
+              <span class="option-label">Verify Checksums</span>
+              <span class="option-desc">
+                {{ config.verifyChecksums ? 'Model files are verified for integrity' : 'Checksum verification disabled' }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+  </div>
+</div>

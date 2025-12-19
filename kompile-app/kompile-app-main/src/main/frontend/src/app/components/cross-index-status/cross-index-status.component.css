@@ -1,0 +1,422 @@
+/* Cross-Index Status Component Styles */
+
+.cross-index-container {
+  padding: 16px;
+  position: relative;
+}
+
+/* Loading */
+.loading-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  gap: 16px;
+  color: #666;
+}
+
+/* Error Banner */
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #ffebee;
+  border-radius: 4px;
+  color: #c62828;
+  margin-bottom: 16px;
+}
+
+.error-banner mat-icon {
+  color: #c62828;
+}
+
+/* Summary Cards */
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.summary-card {
+  text-align: center;
+  padding: 8px;
+}
+
+.summary-card .card-icon {
+  margin-bottom: 4px;
+}
+
+.summary-card .card-icon mat-icon {
+  font-size: 32px;
+  height: 32px;
+  width: 32px;
+}
+
+.summary-card .card-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.summary-card .card-label {
+  font-size: 13px;
+  color: #666;
+  margin-top: 4px;
+}
+
+.summary-card .card-sublabel {
+  font-size: 11px;
+  color: #999;
+}
+
+.summary-card.total {
+  background: #f5f5f5;
+}
+
+.summary-card.synced {
+  background: #e8f5e9;
+}
+
+.summary-card.synced .card-icon mat-icon {
+  color: #4caf50;
+}
+
+.summary-card.partial {
+  background: #fff3e0;
+}
+
+.summary-card.partial .card-icon mat-icon {
+  color: #ff9800;
+}
+
+.summary-card.not-indexed {
+  background: #ffebee;
+}
+
+.summary-card.not-indexed .card-icon mat-icon {
+  color: #f44336;
+}
+
+.summary-card.out-of-sync {
+  background: #e3f2fd;
+}
+
+.summary-card.out-of-sync .card-icon mat-icon {
+  color: #2196f3;
+}
+
+/* Sync Progress */
+.sync-progress {
+  margin-bottom: 16px;
+}
+
+.sync-progress mat-card {
+  background: #e3f2fd;
+}
+
+.sync-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sync-header mat-icon {
+  color: #1976d2;
+}
+
+.sync-header mat-icon.success {
+  color: #4caf50;
+}
+
+.sync-header mat-icon.error {
+  color: #f44336;
+}
+
+.sync-message {
+  flex: 1;
+  font-weight: 500;
+}
+
+.sync-status {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-field {
+  width: 280px;
+}
+
+.status-filter {
+  width: 180px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Documents Table */
+.documents-table {
+  margin-bottom: 16px;
+}
+
+.documents-table table {
+  width: 100%;
+}
+
+.file-info {
+  padding: 8px 0;
+}
+
+.file-name {
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.source-id {
+  font-size: 11px;
+  color: #999;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.index-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.index-header mat-icon {
+  font-size: 18px;
+  height: 18px;
+  width: 18px;
+}
+
+.index-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.passage-count {
+  font-size: 12px;
+  color: #666;
+}
+
+/* Status Colors */
+.status-icon {
+  font-size: 16px !important;
+  height: 16px !important;
+  width: 16px !important;
+  margin-right: 4px;
+}
+
+.status-green,
+mat-icon.status-green {
+  color: #4caf50;
+}
+
+.status-yellow,
+mat-icon.status-yellow {
+  color: #ff9800;
+}
+
+.status-red,
+mat-icon.status-red {
+  color: #f44336;
+}
+
+.status-blue,
+mat-icon.status-blue {
+  color: #2196f3;
+}
+
+.status-gray,
+mat-icon.status-gray {
+  color: #9e9e9e;
+}
+
+/* Expanded Row */
+.expanded-row {
+  background: #fafafa;
+}
+
+.detail-row {
+  height: 0;
+}
+
+.detail-row td {
+  padding: 0 !important;
+  border-bottom: none !important;
+}
+
+.expanded-content {
+  overflow: hidden;
+  padding: 0 16px;
+  max-height: 0;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+}
+
+.expanded-row + .detail-row .expanded-content {
+  max-height: 400px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.passages-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  color: #666;
+}
+
+.passages-list h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.passages-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.passages-table th,
+.passages-table td {
+  padding: 8px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.passages-table th {
+  font-weight: 500;
+  background: #f5f5f5;
+}
+
+.preview-cell {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #666;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.pagination-info {
+  font-size: 13px;
+  color: #666;
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  text-align: center;
+  color: #999;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  height: 64px;
+  width: 64px;
+  margin-bottom: 16px;
+}
+
+.empty-state h3 {
+  margin: 0 0 8px 0;
+  color: #666;
+}
+
+.empty-state p {
+  margin: 0;
+}
+
+/* Mat Chip Status Colors */
+mat-chip.status-green {
+  background-color: #e8f5e9 !important;
+  color: #2e7d32 !important;
+}
+
+mat-chip.status-yellow {
+  background-color: #fff3e0 !important;
+  color: #ef6c00 !important;
+}
+
+mat-chip.status-red {
+  background-color: #ffebee !important;
+  color: #c62828 !important;
+}
+
+mat-chip.status-blue {
+  background-color: #e3f2fd !important;
+  color: #1565c0 !important;
+}
+
+mat-chip.status-gray {
+  background-color: #f5f5f5 !important;
+  color: #616161 !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .summary-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search-field,
+  .status-filter {
+    width: 100%;
+  }
+
+  .actions {
+    justify-content: flex-end;
+  }
+}

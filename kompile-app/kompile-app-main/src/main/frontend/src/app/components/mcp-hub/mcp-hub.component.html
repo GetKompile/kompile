@@ -1,0 +1,98 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="mcp-hub">
+  <div class="hub-header">
+    <h2>MCP Hub</h2>
+    <p class="subtitle">Model Context Protocol tools, servers, and debugging</p>
+  </div>
+
+  <div class="sub-tabs">
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'tools'"
+      (click)="activeSubTab = 'tools'">
+      <span class="tab-icon">🔧</span>
+      <span class="tab-label">Tools</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'serverBuilder'"
+      (click)="activeSubTab = 'serverBuilder'">
+      <span class="tab-icon">🏗️</span>
+      <span class="tab-label">Server Builder</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'externalServers'"
+      (click)="activeSubTab = 'externalServers'">
+      <span class="tab-icon">🔌</span>
+      <span class="tab-label">External Servers</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'restBridge'"
+      (click)="activeSubTab = 'restBridge'">
+      <span class="tab-icon">🌉</span>
+      <span class="tab-label">REST Bridge</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'debugger'"
+      (click)="activeSubTab = 'debugger'">
+      <span class="tab-icon">🐛</span>
+      <span class="tab-label">Debugger</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'toolManager'"
+      (click)="activeSubTab = 'toolManager'">
+      <span class="tab-icon">🛠️</span>
+      <span class="tab-label">Tool Manager</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'promptTemplates'"
+      (click)="activeSubTab = 'promptTemplates'">
+      <span class="tab-icon">📝</span>
+      <span class="tab-label">Prompt Templates</span>
+    </button>
+  </div>
+
+  <div class="sub-tab-content">
+    <div *ngIf="activeSubTab === 'tools'">
+      <app-mcp-tools-viewer></app-mcp-tools-viewer>
+    </div>
+    <div *ngIf="activeSubTab === 'serverBuilder'">
+      <app-mcp-server-builder></app-mcp-server-builder>
+    </div>
+    <div *ngIf="activeSubTab === 'externalServers'">
+      <app-mcp-config-manager></app-mcp-config-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'restBridge'">
+      <app-rest-mcp-bridge></app-rest-mcp-bridge>
+    </div>
+    <div *ngIf="activeSubTab === 'debugger'">
+      <app-mcp-debugger></app-mcp-debugger>
+    </div>
+    <div *ngIf="activeSubTab === 'toolManager'">
+      <app-tool-manager></app-tool-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'promptTemplates'">
+      <app-prompt-template-manager></app-prompt-template-manager>
+    </div>
+  </div>
+</div>

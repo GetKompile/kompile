@@ -1,0 +1,378 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<h2 mat-dialog-title class="dialog-title">
+  <mat-icon [class]="'status-' + model.status">{{ getStatusIcon(model.status) }}</mat-icon>
+  {{ model.model_id }}
+  <span class="model-type-badge">{{ getModelTypeDisplayName(model.type) }}</span>
+</h2>
+
+<mat-dialog-content>
+  <mat-tab-group>
+    <!-- Overview Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>info</mat-icon>
+        <span>Overview</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Status & Basic Info - Read Only View -->
+        <div class="info-section" *ngIf="!isEditingMetadata">
+          <div class="section-header">
+            <h4>Status & Type</h4>
+            <button mat-icon-button *ngIf="editable" (click)="toggleMetadataEdit()"
+                    matTooltip="Edit metadata">
+              <mat-icon>edit</mat-icon>
+            </button>
+          </div>
+          <div class="status-row">
+            <mat-chip [class]="'status-chip-' + model.status">
+              <mat-icon>{{ getStatusIcon(model.status) }}</mat-icon>
+              {{ model.status | titlecase }}
+            </mat-chip>
+            <span class="promoted-date" *ngIf="model.promoted_at">
+              Promoted: {{ model.promoted_at | date:'medium' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Metadata Edit Form -->
+        <div class="info-section edit-section" *ngIf="isEditingMetadata">
+          <div class="section-header">
+            <h4>Edit Model Metadata</h4>
+            <button mat-icon-button (click)="toggleMetadataEdit()"
+                    matTooltip="Cancel">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+
+          <form [formGroup]="metadataForm" class="edit-form">
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Model Type</mat-label>
+                <mat-select formControlName="type">
+                  <mat-option *ngFor="let t of modelTypes" [value]="t.value">
+                    {{ t.label }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Status</mat-label>
+                <mat-select formControlName="status">
+                  <mat-option *ngFor="let s of modelStatuses" [value]="s.value">
+                    {{ s.label }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Description</mat-label>
+              <textarea matInput formControlName="description" rows="2"
+                        placeholder="Model description"></textarea>
+            </mat-form-field>
+
+            <div class="form-row three-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Embedding Dim</mat-label>
+                <input matInput type="number" formControlName="embeddingDim">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Hidden Size</mat-label>
+                <input matInput type="number" formControlName="hiddenSize">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Num Layers</mat-label>
+                <input matInput type="number" formControlName="numLayers">
+              </mat-form-field>
+            </div>
+
+            <div class="form-row three-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Max Sequence Length</mat-label>
+                <input matInput type="number" formControlName="maxSequenceLength">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Framework</mat-label>
+                <input matInput formControlName="framework" placeholder="e.g., SameDiff">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Vocab Size</mat-label>
+                <input matInput type="number" formControlName="vocabSize">
+              </mat-form-field>
+            </div>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Training Data</mat-label>
+              <input matInput formControlName="trainingData" placeholder="e.g., MS MARCO">
+            </mat-form-field>
+
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Source Origin</mat-label>
+                <input matInput formControlName="sourceOrigin" placeholder="e.g., huggingface">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Source Repository</mat-label>
+                <input matInput formControlName="sourceRepository" placeholder="e.g., BAAI/bge-base-en-v1.5">
+              </mat-form-field>
+            </div>
+
+            <div class="form-actions">
+              <button mat-button (click)="toggleMetadataEdit()">Cancel</button>
+              <button mat-raised-button color="primary" (click)="saveMetadata()"
+                      [disabled]="isSaving || metadataForm.invalid">
+                <mat-icon *ngIf="isSaving">hourglass_empty</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Changes' }}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Description -->
+        <div class="info-section" *ngIf="!isEditingMetadata && model.metadata?.description">
+          <h4>Description</h4>
+          <p class="description">{{ model.metadata.description }}</p>
+        </div>
+
+        <!-- Metadata Grid -->
+        <div class="info-section" *ngIf="!isEditingMetadata && getMetadataItems().length > 0">
+          <h4>Model Metadata</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item" *ngFor="let item of getMetadataItems()">
+              <mat-icon>{{ item.icon }}</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">{{ item.label }}</span>
+                <span class="metadata-value">{{ item.value }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- No Metadata Message -->
+        <div class="info-section empty-metadata" *ngIf="!isEditingMetadata && getMetadataItems().length === 0 && !model.metadata?.description">
+          <p>No metadata available for this model.</p>
+          <button mat-stroked-button color="primary" *ngIf="editable" (click)="toggleMetadataEdit()">
+            <mat-icon>add</mat-icon>
+            Add Metadata
+          </button>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Files Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>folder</mat-icon>
+        <span>Files</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <h4>Model Files</h4>
+          <mat-list class="file-list">
+            <mat-list-item *ngFor="let file of getFileInfo()">
+              <mat-icon matListItemIcon>{{ file.icon }}</mat-icon>
+              <div matListItemTitle>{{ file.label }}</div>
+              <div matListItemLine class="file-path">
+                {{ file.value }}
+                <button mat-icon-button (click)="copyToClipboard(file.value)"
+                        matTooltip="Copy to clipboard" class="copy-button">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+            </mat-list-item>
+          </mat-list>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tokenizer Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>text_fields</mat-icon>
+        <span>Tokenizer</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <div class="section-header">
+            <h4>Tokenizer Configuration</h4>
+            <button mat-icon-button *ngIf="editable && !isEditingTokenizer" (click)="toggleTokenizerEdit()"
+                    matTooltip="Edit configuration">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button *ngIf="isEditingTokenizer" (click)="toggleTokenizerEdit()"
+                    matTooltip="Cancel">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+
+          <!-- Read-only view -->
+          <div class="tokenizer-config" *ngIf="!isEditingTokenizer">
+            <div class="config-row">
+              <mat-icon>text_format</mat-icon>
+              <span class="config-label">Lowercase Text</span>
+              <mat-chip [class]="model.tokenizer?.do_lower_case ? 'chip-enabled' : 'chip-disabled'">
+                {{ model.tokenizer?.do_lower_case ? 'Yes' : 'No' }}
+              </mat-chip>
+            </div>
+
+            <div class="config-row">
+              <mat-icon>add_circle</mat-icon>
+              <span class="config-label">Add Special Tokens</span>
+              <mat-chip [class]="model.tokenizer?.add_special_tokens ? 'chip-enabled' : 'chip-disabled'">
+                {{ model.tokenizer?.add_special_tokens ? 'Yes' : 'No' }}
+              </mat-chip>
+            </div>
+
+            <div class="config-row">
+              <mat-icon>format_strikethrough</mat-icon>
+              <span class="config-label">Strip Accents</span>
+              <mat-chip [class]="model.tokenizer?.strip_accents ? 'chip-enabled' : 'chip-disabled'">
+                {{ model.tokenizer?.strip_accents ? 'Yes' : 'No' }}
+              </mat-chip>
+            </div>
+
+            <div class="config-row">
+              <mat-icon>straighten</mat-icon>
+              <span class="config-label">Max Length</span>
+              <span class="config-value">{{ model.tokenizer?.max_length || 512 }} tokens</span>
+            </div>
+          </div>
+
+          <!-- Edit form -->
+          <form [formGroup]="tokenizerForm" class="tokenizer-form" *ngIf="isEditingTokenizer">
+            <div class="form-row">
+              <mat-checkbox formControlName="do_lower_case" color="primary">
+                Lowercase text before tokenization
+              </mat-checkbox>
+            </div>
+
+            <div class="form-row">
+              <mat-checkbox formControlName="add_special_tokens" color="primary">
+                Add special tokens ([CLS], [SEP], etc.)
+              </mat-checkbox>
+            </div>
+
+            <div class="form-row">
+              <mat-checkbox formControlName="strip_accents" color="primary">
+                Strip accents from text
+              </mat-checkbox>
+            </div>
+
+            <mat-form-field appearance="outline" class="max-length-field">
+              <mat-label>Max Sequence Length</mat-label>
+              <input matInput type="number" formControlName="max_length" min="1" max="8192">
+              <mat-hint>Maximum number of tokens per sequence</mat-hint>
+            </mat-form-field>
+
+            <div class="form-actions">
+              <button mat-button (click)="toggleTokenizerEdit()">Cancel</button>
+              <button mat-raised-button color="primary" (click)="saveTokenizerConfig()"
+                      [disabled]="isSaving || tokenizerForm.invalid">
+                <mat-icon *ngIf="isSaving">hourglass_empty</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Vocabulary Info -->
+        <div class="info-section">
+          <h4>Vocabulary</h4>
+          <div class="vocab-info">
+            <div class="vocab-item">
+              <mat-icon>description</mat-icon>
+              <div class="vocab-content">
+                <span class="vocab-label">Vocabulary File</span>
+                <span class="vocab-value">{{ model.vocab_file || 'vocab.txt' }}</span>
+              </div>
+            </div>
+            <div class="vocab-item" *ngIf="model.metadata?.vocabSize">
+              <mat-icon>format_list_numbered</mat-icon>
+              <div class="vocab-content">
+                <span class="vocab-label">Vocabulary Size</span>
+                <span class="vocab-value">{{ model.metadata.vocabSize | number }} tokens</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- JSON Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>data_object</mat-icon>
+        <span>JSON</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <div class="section-header">
+            <h4>Raw Model Entry</h4>
+            <button mat-icon-button (click)="copyModelJson()"
+                    matTooltip="Copy JSON">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+          <pre class="json-view">{{ model | json }}</pre>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Danger Zone Tab -->
+    <mat-tab *ngIf="editable">
+      <ng-template mat-tab-label>
+        <mat-icon color="warn">warning</mat-icon>
+        <span>Danger Zone</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section danger-zone">
+          <h4>Danger Zone</h4>
+          <p class="warning-text">
+            Actions in this section are irreversible. Please proceed with caution.
+          </p>
+
+          <div class="danger-action">
+            <div class="danger-info">
+              <strong>Delete this model</strong>
+              <p>Once deleted, this model cannot be recovered. You will need to re-download and re-stage it.</p>
+            </div>
+            <button mat-raised-button color="warn" (click)="confirmDelete()"
+                    [disabled]="isDeleting">
+              <mat-icon>delete_forever</mat-icon>
+              {{ isDeleting ? 'Deleting...' : 'Delete Model' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">Close</button>
+</mat-dialog-actions>

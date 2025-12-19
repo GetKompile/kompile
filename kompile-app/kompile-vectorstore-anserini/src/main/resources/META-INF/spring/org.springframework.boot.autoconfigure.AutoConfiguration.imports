@@ -1,0 +1,2 @@
+ai.kompile.vectorstore.anserini.AnseriniVectorStoreAutoConfiguration
+ai.kompile.vectorstore.anserini.reranking.RerankerConfiguration

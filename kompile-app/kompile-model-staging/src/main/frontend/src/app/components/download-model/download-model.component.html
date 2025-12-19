@@ -1,0 +1,269 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="download-model-container">
+  <div class="page-header">
+    <h1>
+      <mat-icon>cloud_download</mat-icon>
+      Download Model
+    </h1>
+    <p class="subtitle">Download and convert models from HuggingFace, GitHub, or custom URLs</p>
+  </div>
+
+  <div class="content-grid">
+    <!-- Download Form -->
+    <mat-card class="download-form-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>download</mat-icon>
+        <mat-card-title>Model Source</mat-card-title>
+        <mat-card-subtitle>Configure the model download</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <form [formGroup]="downloadForm" class="download-form">
+          <!-- Source Selection -->
+          <div class="source-selector">
+            <label class="field-label">Source</label>
+            <mat-button-toggle-group formControlName="source" class="source-toggles">
+              <mat-button-toggle *ngFor="let source of sources" [value]="source.value">
+                <mat-icon>{{ source.icon }}</mat-icon>
+                <span>{{ source.label }}</span>
+              </mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+
+          <!-- Repository/URL -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Repository / URL</mat-label>
+            <input matInput formControlName="repository"
+                   [placeholder]="getSelectedSource()?.placeholder || 'Enter repository or URL'">
+            <mat-hint>{{ getSelectedSource()?.hint }}</mat-hint>
+            <mat-error *ngIf="downloadForm.get('repository')?.hasError('required')">
+              Repository is required
+            </mat-error>
+          </mat-form-field>
+
+          <!-- Model ID -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Model ID</mat-label>
+            <input matInput formControlName="modelId" placeholder="my-model-name">
+            <button mat-icon-button matSuffix type="button"
+                    (click)="generateModelId()"
+                    matTooltip="Auto-generate from repository">
+              <mat-icon>auto_fix_high</mat-icon>
+            </button>
+            <mat-hint>Unique identifier for this model in the registry</mat-hint>
+            <mat-error *ngIf="downloadForm.get('modelId')?.hasError('required')">
+              Model ID is required
+            </mat-error>
+          </mat-form-field>
+
+          <!-- Model Type and Format -->
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Model Type</mat-label>
+              <mat-select formControlName="modelType">
+                <mat-option *ngFor="let type of modelTypes" [value]="type.value">
+                  {{ type.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Format</mat-label>
+              <mat-select formControlName="format">
+                <mat-option *ngFor="let format of formats" [value]="format.value">
+                  {{ format.label }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <!-- HuggingFace Options (conditionally shown) -->
+          <mat-expansion-panel *ngIf="downloadForm.get('source')?.value === 'huggingface'" class="options-panel">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>settings</mat-icon>
+                HuggingFace Options
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>HuggingFace Token (Optional)</mat-label>
+              <input matInput formControlName="hfToken" type="password"
+                     placeholder="hf_xxxxx">
+              <mat-hint>Required for private repositories</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Revision/Branch</mat-label>
+              <input matInput formControlName="revision" placeholder="main">
+              <mat-hint>Branch, tag, or commit hash (default: main)</mat-hint>
+            </mat-form-field>
+          </mat-expansion-panel>
+
+          <!-- Auto-promote checkbox -->
+          <div class="checkbox-row">
+            <mat-checkbox formControlName="autoPromote" color="primary">
+              Auto-promote to registry after conversion
+            </mat-checkbox>
+          </div>
+        </form>
+      </mat-card-content>
+
+      <mat-card-actions align="end">
+        <button mat-button (click)="resetForm()" [disabled]="isDownloading">
+          <mat-icon>refresh</mat-icon>
+          Reset
+        </button>
+        <button mat-raised-button color="primary"
+                (click)="startDownload()"
+                [disabled]="downloadForm.invalid || isDownloading">
+          <mat-icon>cloud_download</mat-icon>
+          {{ isDownloading ? 'Downloading...' : 'Download & Convert' }}
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Progress Card -->
+    <mat-card class="progress-card" *ngIf="isDownloading || currentStaging">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [class]="'status-' + currentStaging?.status">
+          {{ getStatusIcon() }}
+        </mat-icon>
+        <mat-card-title>{{ currentStaging?.model_id || 'Processing...' }}</mat-card-title>
+        <mat-card-subtitle>{{ getStatusMessage() }}</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <div class="progress-section">
+          <mat-progress-bar
+            [mode]="currentStaging?.status === 'converting' ? 'indeterminate' : 'determinate'"
+            [value]="getProgressPercent()"
+            [color]="currentStaging?.status === 'failed' ? 'warn' : 'primary'">
+          </mat-progress-bar>
+
+          <div class="progress-details">
+            <span class="progress-percent" *ngIf="currentStaging?.status !== 'converting'">
+              {{ getProgressPercent() }}%
+            </span>
+            <span class="progress-status">{{ currentStaging?.status | titlecase }}</span>
+          </div>
+        </div>
+
+        <!-- Stage details -->
+        <div class="stage-timeline" *ngIf="currentStaging">
+          <div class="stage-item" [class.active]="currentStaging.status === 'downloading'"
+               [class.completed]="['converting', 'validating', 'ready', 'promoting', 'completed'].includes(currentStaging.status)">
+            <mat-icon>cloud_download</mat-icon>
+            <span>Download</span>
+          </div>
+          <div class="stage-connector"></div>
+          <div class="stage-item" [class.active]="currentStaging.status === 'converting'"
+               [class.completed]="['validating', 'ready', 'promoting', 'completed'].includes(currentStaging.status)">
+            <mat-icon>transform</mat-icon>
+            <span>Convert</span>
+          </div>
+          <div class="stage-connector"></div>
+          <div class="stage-item" [class.active]="currentStaging.status === 'validating'"
+               [class.completed]="['ready', 'promoting', 'completed'].includes(currentStaging.status)">
+            <mat-icon>fact_check</mat-icon>
+            <span>Validate</span>
+          </div>
+          <div class="stage-connector"></div>
+          <div class="stage-item" [class.active]="currentStaging.status === 'promoting'"
+               [class.completed]="currentStaging.status === 'completed'">
+            <mat-icon>check_circle</mat-icon>
+            <span>Complete</span>
+          </div>
+        </div>
+
+        <!-- Error display -->
+        <div class="error-message" *ngIf="currentStaging?.status === 'failed'">
+          <mat-icon>error</mat-icon>
+          <span>{{ currentStaging?.error }}</span>
+        </div>
+      </mat-card-content>
+
+      <mat-card-actions align="end" *ngIf="isDownloading">
+        <button mat-button color="warn" (click)="cancelDownload()">
+          <mat-icon>cancel</mat-icon>
+          Cancel
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Recent Downloads -->
+    <mat-card class="recent-card" *ngIf="recentDownloads.length > 0">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>history</mat-icon>
+        <mat-card-title>Recent Activity</mat-card-title>
+      </mat-card-header>
+
+      <mat-card-content>
+        <mat-list>
+          <mat-list-item *ngFor="let item of recentDownloads">
+            <mat-icon matListItemIcon [class]="'status-' + item.status">
+              {{ item.status === 'completed' ? 'check_circle' :
+                 item.status === 'failed' ? 'error' : 'hourglass_empty' }}
+            </mat-icon>
+            <div matListItemTitle>{{ item.model_id }}</div>
+            <div matListItemLine>
+              <span class="status-badge" [class]="'status-' + item.status">
+                {{ item.status | titlecase }}
+              </span>
+              <span class="time-ago" *ngIf="item.completed_at">
+                {{ item.completed_at | date:'short' }}
+              </span>
+            </div>
+          </mat-list-item>
+        </mat-list>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Help Section -->
+  <mat-expansion-panel class="help-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon>help_outline</mat-icon>
+        Help & Examples
+      </mat-panel-title>
+    </mat-expansion-panel-header>
+
+    <div class="help-content">
+      <h4>HuggingFace Examples</h4>
+      <ul>
+        <li><code>BAAI/bge-base-en-v1.5</code> - BGE Base English encoder</li>
+        <li><code>Snowflake/snowflake-arctic-embed-l</code> - Arctic Embed Large</li>
+        <li><code>intfloat/e5-base-v2</code> - E5 Base v2 encoder</li>
+        <li><code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> - Cross-encoder for reranking</li>
+      </ul>
+
+      <h4>GitHub Examples</h4>
+      <ul>
+        <li><code>org/repo/releases/download/v1.0/model.onnx</code></li>
+      </ul>
+
+      <h4>Supported Formats</h4>
+      <ul>
+        <li><strong>ONNX</strong> - Most common format from HuggingFace</li>
+        <li><strong>TensorFlow</strong> - SavedModel (.pb) format</li>
+        <li><strong>SameDiff</strong> - Native format (no conversion needed)</li>
+      </ul>
+    </div>
+  </mat-expansion-panel>
+</div>

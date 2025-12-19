@@ -1,0 +1,243 @@
+<!-- Folder Files Dialog -->
+<div class="folder-files-dialog">
+  <h2 mat-dialog-title>
+    <mat-icon>folder</mat-icon>
+    {{ folder.name }}
+  </h2>
+
+  <mat-dialog-content>
+    <!-- Error Display -->
+    <div class="error-message" *ngIf="error">
+      <mat-icon>error</mat-icon>
+      <span>{{ error }}</span>
+      <button mat-icon-button (click)="error = null">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+      <button
+        class="tab-btn"
+        [class.active]="activeTab === 'files'"
+        (click)="switchTab('files')">
+        <mat-icon>insert_drive_file</mat-icon>
+        Files ({{ files.length }})
+      </button>
+      <button
+        class="tab-btn"
+        [class.active]="activeTab === 'chats'"
+        (click)="switchTab('chats')">
+        <mat-icon>chat</mat-icon>
+        Chats ({{ folderSessions.length }})
+      </button>
+    </div>
+
+    <!-- FILES TAB -->
+    <div class="tab-content" *ngIf="activeTab === 'files'">
+
+    <!-- Drop Zone -->
+    <div class="drop-zone"
+         [class.drag-over]="isDragOver"
+         [class.uploading]="isUploading"
+         (dragover)="onDragOver($event)"
+         (dragleave)="onDragLeave($event)"
+         (drop)="onDrop($event)"
+         (click)="triggerFileInput()">
+
+      <input #fileInput
+             type="file"
+             multiple
+             hidden
+             (change)="onFileSelected($event)">
+
+      <div class="drop-zone-content" *ngIf="!isUploading">
+        <mat-icon>cloud_upload</mat-icon>
+        <p class="primary-text">Drag & drop files here</p>
+        <p class="secondary-text">or click to browse</p>
+      </div>
+
+      <div class="upload-progress" *ngIf="isUploading">
+        <mat-spinner diameter="40"></mat-spinner>
+        <p>Uploading files...</p>
+        <div class="progress-items">
+          <div *ngFor="let item of uploadProgress | keyvalue" class="progress-item">
+            <mat-icon>insert_drive_file</mat-icon>
+            <span>{{ item.key }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div class="loading-state" *ngIf="isLoading">
+      <mat-spinner diameter="30"></mat-spinner>
+      <span>Loading files...</span>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state" *ngIf="!isLoading && files.length === 0">
+      <mat-icon>folder_off</mat-icon>
+      <p>No files in this folder</p>
+      <p class="hint">Upload files to make them available for agent reference</p>
+    </div>
+
+    <!-- File List -->
+    <div class="file-list" *ngIf="!isLoading && files.length > 0">
+      <div class="file-count">{{ files.length }} file{{ files.length !== 1 ? 's' : '' }}</div>
+
+      <div class="file-item" *ngFor="let file of files; trackBy: trackByFileId">
+        <div class="file-icon">
+          <mat-icon>{{ getFileIcon(file.fileName) }}</mat-icon>
+        </div>
+
+        <div class="file-info">
+          <div class="file-name">{{ file.fileName }}</div>
+          <div class="file-meta">
+            <span class="file-size">{{ formatFileSize(file.fileSize) }}</span>
+            <span class="file-date">{{ formatDate(file.uploadedAt) }}</span>
+          </div>
+          <div class="file-path" (click)="copyPath(file)" matTooltip="Click to copy path">
+            <mat-icon>content_copy</mat-icon>
+            <code>{{ file.storedPath }}</code>
+          </div>
+        </div>
+
+        <div class="file-actions">
+          <button mat-icon-button
+                  matTooltip="Download file"
+                  (click)="downloadFile(file)">
+            <mat-icon>download</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Copy path"
+                  (click)="copyPath(file)">
+            <mat-icon>content_copy</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Delete file"
+                  color="warn"
+                  (click)="deleteFile(file)">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info Message -->
+    <div class="info-message" *ngIf="files.length > 0">
+      <mat-icon>info</mat-icon>
+      <span>
+        These files are available for agent reference. When this folder is selected,
+        file paths will be injected into the agent's context.
+      </span>
+    </div>
+
+    </div><!-- End FILES TAB -->
+
+    <!-- CHATS TAB -->
+    <div class="tab-content" *ngIf="activeTab === 'chats'">
+
+      <!-- Add Chat Button -->
+      <div class="add-chat-section">
+        <button
+          mat-raised-button
+          color="primary"
+          (click)="toggleAddChatDialog()">
+          <mat-icon>{{ showAddChatDialog ? 'close' : 'add' }}</mat-icon>
+          {{ showAddChatDialog ? 'Cancel' : 'Add Existing Chat' }}
+        </button>
+      </div>
+
+      <!-- Add Chat Panel -->
+      <div class="add-chat-panel" *ngIf="showAddChatDialog">
+        <div class="search-input-container">
+          <mat-icon>search</mat-icon>
+          <input
+            type="text"
+            class="chat-search-input"
+            placeholder="Search chats..."
+            [(ngModel)]="sessionSearchQuery">
+        </div>
+
+        <div class="available-sessions-list">
+          <div
+            class="available-session-item"
+            *ngFor="let session of getFilteredAvailableSessions(); trackBy: trackBySessionId"
+            (click)="addSessionToFolder(session)">
+            <mat-icon>chat_bubble_outline</mat-icon>
+            <div class="session-info">
+              <span class="session-title">{{ session.title || 'Untitled Session' }}</span>
+              <span class="session-meta">
+                {{ session.messageCount ?? 0 }} messages · {{ formatSessionDate(session.updatedAt) }}
+              </span>
+            </div>
+            <mat-icon class="add-icon">add_circle</mat-icon>
+          </div>
+
+          <div class="empty-state small" *ngIf="getFilteredAvailableSessions().length === 0">
+            <mat-icon>chat_bubble_outline</mat-icon>
+            <p *ngIf="allSessions.length === 0">No chats available to add</p>
+            <p *ngIf="allSessions.length > 0 && sessionSearchQuery">No chats match "{{ sessionSearchQuery }}"</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div class="loading-state" *ngIf="isLoadingSessions">
+        <mat-spinner diameter="30"></mat-spinner>
+        <span>Loading chats...</span>
+      </div>
+
+      <!-- Empty State -->
+      <div class="empty-state" *ngIf="!isLoadingSessions && folderSessions.length === 0 && !showAddChatDialog">
+        <mat-icon>chat_bubble_outline</mat-icon>
+        <p>No chats in this folder</p>
+        <p class="hint">Add chats to organize them and access them quickly</p>
+      </div>
+
+      <!-- Folder Sessions List -->
+      <div class="session-list" *ngIf="!isLoadingSessions && folderSessions.length > 0">
+        <div class="session-count">{{ folderSessions.length }} chat{{ folderSessions.length !== 1 ? 's' : '' }}</div>
+
+        <div class="session-item" *ngFor="let session of folderSessions; trackBy: trackBySessionId">
+          <div class="session-icon">
+            <mat-icon>chat</mat-icon>
+          </div>
+
+          <div class="session-info">
+            <div class="session-title">{{ session.title || 'Untitled Session' }}</div>
+            <div class="session-meta">
+              <span class="message-count">{{ session.messageCount ?? 0 }} messages</span>
+              <span class="session-date">{{ formatSessionDate(session.updatedAt) }}</span>
+            </div>
+          </div>
+
+          <div class="session-actions">
+            <button mat-icon-button
+                    matTooltip="Remove from folder"
+                    color="warn"
+                    (click)="removeSessionFromFolder(session)">
+              <mat-icon>remove_circle_outline</mat-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Info Message -->
+      <div class="info-message" *ngIf="folderSessions.length > 0">
+        <mat-icon>info</mat-icon>
+        <span>
+          Chats in this folder share the same file context. Files uploaded to this folder
+          will be available as reference for all associated chats.
+        </span>
+      </div>
+
+    </div><!-- End CHATS TAB -->
+
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end">
+    <button mat-button (click)="close()">Close</button>
+  </mat-dialog-actions>
+</div>

@@ -1,0 +1,103 @@
+<!--
+    Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+
+<div class="subprocess-logs-container">
+  <!-- Toolbar -->
+  <div class="logs-toolbar">
+    <div class="toolbar-left">
+      <span class="log-stats">
+        <span class="stat-total">{{ totalLogs }} logs</span>
+        <span class="stat-error" *ngIf="errorCount > 0">
+          <mat-icon class="stat-icon error">error</mat-icon>{{ errorCount }}
+        </span>
+        <span class="stat-warn" *ngIf="warnCount > 0">
+          <mat-icon class="stat-icon warn">warning</mat-icon>{{ warnCount }}
+        </span>
+      </span>
+    </div>
+
+    <div class="toolbar-center">
+      <mat-button-toggle-group multiple class="level-filters">
+        <mat-button-toggle
+          [checked]="showDebug"
+          (change)="showDebug = !showDebug; applyFilter()"
+          matTooltip="Show DEBUG logs">
+          <mat-icon class="filter-icon debug">bug_report</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle
+          [checked]="showInfo"
+          (change)="showInfo = !showInfo; applyFilter()"
+          matTooltip="Show INFO logs">
+          <mat-icon class="filter-icon info">info</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle
+          [checked]="showWarn"
+          (change)="showWarn = !showWarn; applyFilter()"
+          matTooltip="Show WARN logs">
+          <mat-icon class="filter-icon warn">warning</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle
+          [checked]="showError"
+          (change)="showError = !showError; applyFilter()"
+          matTooltip="Show ERROR logs">
+          <mat-icon class="filter-icon error">error</mat-icon>
+        </mat-button-toggle>
+      </mat-button-toggle-group>
+
+      <input
+        type="text"
+        class="search-input"
+        placeholder="Filter logs..."
+        [(ngModel)]="searchTerm"
+        (input)="applyFilter()">
+    </div>
+
+    <div class="toolbar-right">
+      <button mat-icon-button
+              [class.active]="autoScroll"
+              (click)="toggleAutoScroll()"
+              matTooltip="Auto-scroll">
+        <mat-icon>{{ autoScroll ? 'vertical_align_bottom' : 'pause' }}</mat-icon>
+      </button>
+      <button mat-icon-button (click)="copyLogs()" matTooltip="Copy logs">
+        <mat-icon>content_copy</mat-icon>
+      </button>
+      <button mat-icon-button (click)="downloadLogs()" matTooltip="Download logs">
+        <mat-icon>download</mat-icon>
+      </button>
+      <button mat-icon-button (click)="clearLogs()" matTooltip="Clear logs">
+        <mat-icon>delete_sweep</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Log Content -->
+  <div class="logs-content" #logContainer [style.height]="height">
+    <div *ngIf="filteredLogs.length === 0" class="no-logs">
+      <mat-icon>receipt_long</mat-icon>
+      <span>{{ logs.length === 0 ? 'Waiting for logs...' : 'No logs match filter' }}</span>
+    </div>
+
+    <div *ngFor="let log of filteredLogs; trackBy: trackBySeq"
+         class="log-entry"
+         [ngClass]="getLogClass(log.level)">
+      <span class="log-time">{{ formatTime(log.timestamp) }}</span>
+      <mat-icon class="log-level-icon">{{ getLogIcon(log.level) }}</mat-icon>
+      <span class="log-source">[{{ log.source }}]</span>
+      <span class="log-message">{{ log.message }}</span>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,305 @@
+<!--
+    Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+-->
+
+<mat-card class="pipeline-settings-card">
+  <mat-card-header>
+    <mat-card-title>
+      <mat-icon>tune</mat-icon>
+      Pipeline Configuration
+    </mat-card-title>
+    <button mat-icon-button (click)="toggleExpanded()" [matTooltip]="isExpanded ? 'Collapse' : 'Expand'">
+      <mat-icon>{{ isExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </button>
+  </mat-card-header>
+
+  <mat-card-content>
+    <!-- Loading State -->
+    <div *ngIf="isLoading" class="loading-container">
+      <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+      <span>Loading pipeline configuration...</span>
+    </div>
+
+    <!-- Error State -->
+    <div *ngIf="errorMessage" class="error-container">
+      <mat-icon color="warn">error</mat-icon>
+      <span>{{ errorMessage }}</span>
+    </div>
+
+    <!-- Pipeline Presets -->
+    <div *ngIf="!isLoading && presets" class="presets-section">
+      <h4>Pipeline Presets</h4>
+      <mat-chip-listbox [value]="selectedPreset" (change)="onPresetChange($event)">
+        <mat-chip-option value="adaptive" [selected]="selectedPreset === 'adaptive'">
+          <mat-icon matChipLeading>auto_awesome</mat-icon>
+          Adaptive
+        </mat-chip-option>
+        <mat-chip-option value="memoryOptimized" [selected]="selectedPreset === 'memoryOptimized'">
+          <mat-icon matChipLeading>memory</mat-icon>
+          Memory Optimized
+        </mat-chip-option>
+        <mat-chip-option value="highThroughput" [selected]="selectedPreset === 'highThroughput'">
+          <mat-icon matChipLeading>speed</mat-icon>
+          High Throughput
+        </mat-chip-option>
+      </mat-chip-listbox>
+      <p class="preset-description">{{ getPresetDescription(selectedPreset) }}</p>
+    </div>
+
+    <!-- System Resources Summary -->
+    <ng-container *ngIf="!isLoading && config?.system as system">
+      <div class="system-summary">
+        <div class="resource-item">
+          <mat-icon>developer_board</mat-icon>
+          <span>{{ system.availableCores }} CPU Cores</span>
+        </div>
+        <div class="resource-item" [ngClass]="getMemoryStatusClass()">
+          <mat-icon>memory</mat-icon>
+          <span>{{ formatMemory(system.usedMemoryMB) }} / {{ formatMemory(system.maxMemoryMB) }}</span>
+          <mat-progress-bar
+            mode="determinate"
+            [value]="getMemoryUsagePercent()"
+            [color]="getMemoryUsagePercent() > 70 ? 'warn' : 'primary'">
+          </mat-progress-bar>
+        </div>
+      </div>
+    </ng-container>
+
+    <!-- Expanded Details -->
+    <mat-expansion-panel *ngIf="!isLoading && config" [expanded]="isExpanded" (opened)="toggleExpanded()" hideToggle>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>settings</mat-icon>
+          Stage Configuration
+        </mat-panel-title>
+        <mat-panel-description>
+          View and customize pipeline stages
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <!-- Extraction Stage -->
+      <div class="stage-section">
+        <div class="stage-header">
+          <mat-icon>{{ getStageIcon('extraction') }}</mat-icon>
+          <h4>Extraction</h4>
+          <span class="thread-count">{{ config.extraction?.threads || 1 }} thread(s)</span>
+        </div>
+        <div class="stage-options">
+          <mat-form-field appearance="outline" *ngIf="availableLoaders.length > 0">
+            <mat-label>Preferred Loader</mat-label>
+            <mat-select [(value)]="config.extraction.preferredLoader" (selectionChange)="onSettingChange()">
+              <mat-option [value]="null">Auto-detect</mat-option>
+              <mat-option *ngFor="let loader of availableLoaders" [value]="loader.name">
+                {{ loader.name }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-slide-toggle
+            [(ngModel)]="config.extraction.autoDetectLoader"
+            (change)="onSettingChange()">
+            Auto-detect loader
+          </mat-slide-toggle>
+        </div>
+      </div>
+
+      <!-- Tokenization Stage -->
+      <div class="stage-section">
+        <div class="stage-header">
+          <mat-icon>{{ getStageIcon('tokenization') }}</mat-icon>
+          <h4>Tokenization</h4>
+          <span class="thread-count">{{ config.tokenization?.threads || 2 }} thread(s)</span>
+        </div>
+        <div class="stage-options">
+          <mat-slide-toggle
+            [(ngModel)]="config.tokenization.enabled"
+            (change)="onSettingChange()">
+            Enable pre-tokenization
+          </mat-slide-toggle>
+          <mat-form-field appearance="outline" *ngIf="config.tokenization?.enabled">
+            <mat-label>Tokenizer Model</mat-label>
+            <mat-select [(value)]="config.tokenization.model" (selectionChange)="onSettingChange()">
+              <mat-option *ngFor="let tokenizer of tokenizers" [value]="tokenizer.id">
+                {{ tokenizer.name }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline" *ngIf="config.tokenization?.enabled">
+            <mat-label>Max Token Length</mat-label>
+            <input matInput type="number" [(ngModel)]="config.tokenization.maxTokenLength"
+                   (change)="onSettingChange()" min="64" max="2048">
+          </mat-form-field>
+        </div>
+      </div>
+
+      <!-- Chunking Stage -->
+      <div class="stage-section">
+        <div class="stage-header">
+          <mat-icon>{{ getStageIcon('chunking') }}</mat-icon>
+          <h4>Chunking</h4>
+          <span class="thread-count">{{ config.chunking?.threads || 4 }} thread(s)</span>
+        </div>
+        <div class="stage-options">
+          <mat-form-field appearance="outline">
+            <mat-label>Chunk Size</mat-label>
+            <input matInput type="number" [(ngModel)]="config.chunking.chunkSize"
+                   (change)="onSettingChange()" min="100" max="5000">
+            <mat-hint>Characters per chunk</mat-hint>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Chunk Overlap</mat-label>
+            <input matInput type="number" [(ngModel)]="config.chunking.chunkOverlap"
+                   (change)="onSettingChange()" min="0" max="500">
+            <mat-hint>Overlap between chunks</mat-hint>
+          </mat-form-field>
+          <mat-slide-toggle
+            [(ngModel)]="config.chunking.preserveParagraphs"
+            (change)="onSettingChange()">
+            Preserve paragraph boundaries
+          </mat-slide-toggle>
+        </div>
+      </div>
+
+      <!-- Embedding Stage -->
+      <div class="stage-section">
+        <div class="stage-header">
+          <mat-icon>{{ getStageIcon('embedding') }}</mat-icon>
+          <h4>Embedding (Neural Network Inference)</h4>
+          <span class="thread-count">{{ config.embedding?.threads || 2 }} thread(s)</span>
+        </div>
+        <div class="stage-options">
+          <mat-form-field appearance="outline">
+            <mat-label>Inference Batch Size (NDArray)</mat-label>
+            <input matInput type="number" [(ngModel)]="config.embedding.batchSize"
+                   (change)="onSettingChange()" min="1" max="128">
+            <mat-hint>Text chunks per forward pass through embedding model</mat-hint>
+          </mat-form-field>
+          <div class="batch-info-tooltip" matTooltip="Inference Batch Size controls how many text chunks are processed together in a single neural network forward pass. Larger batches increase GPU/CPU throughput but use more memory. Recommended: 8-32 based on available RAM. Use the Batch Size Benchmark tool for optimal settings.">
+            <mat-icon>info_outline</mat-icon>
+            <span>What is inference batch size?</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Indexing Stage -->
+      <div class="stage-section">
+        <div class="stage-header">
+          <mat-icon>{{ getStageIcon('indexing') }}</mat-icon>
+          <h4>Indexing (Lucene Storage)</h4>
+          <span class="thread-count">1 thread (Lucene constraint)</span>
+        </div>
+        <div class="stage-options">
+          <mat-form-field appearance="outline">
+            <mat-label>Index Batch Size (Chunks)</mat-label>
+            <input matInput type="number" [(ngModel)]="config.indexing.batchSize"
+                   (change)="onSettingChange()" min="10" max="500">
+            <mat-hint>Chunks per Lucene index write operation</mat-hint>
+          </mat-form-field>
+          <div class="batch-info-tooltip" matTooltip="Index Batch Size controls how many document chunks are batched together when writing to the Lucene vector index. Larger batches speed up indexing but require more memory for buffering. Recommended: 50-200 based on chunk size and available RAM.">
+            <mat-icon>info_outline</mat-icon>
+            <span>What is index batch size?</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Batch Size Reference Card -->
+      <div class="batch-reference-card">
+        <div class="reference-header">
+          <mat-icon>lightbulb_outline</mat-icon>
+          <span>Batch Size Quick Reference</span>
+        </div>
+        <div class="reference-content">
+          <div class="reference-item">
+            <strong>Inference Batch (NDArray):</strong>
+            <span>Model processing - affects GPU/CPU throughput</span>
+          </div>
+          <div class="reference-item">
+            <strong>Index Batch (Chunks):</strong>
+            <span>Storage operations - affects indexing speed</span>
+          </div>
+          <div class="reference-recommendations">
+            <span class="rec-label">Memory-based recommendations:</span>
+            <span class="ram-tier" [class.active]="isCurrentRamTier('lt4')">&lt;4GB: 4/50</span>
+            <span class="ram-tier-divider">|</span>
+            <span class="ram-tier" [class.active]="isCurrentRamTier('4to8')">4-8GB: 8/100</span>
+            <span class="ram-tier-divider">|</span>
+            <span class="ram-tier" [class.active]="isCurrentRamTier('8to16')">8-16GB: 16/150</span>
+            <span class="ram-tier-divider">|</span>
+            <span class="ram-tier" [class.active]="isCurrentRamTier('gt16')">&gt;16GB: 32/200</span>
+            <span class="current-ram" *ngIf="config?.system?.maxMemoryMB">
+              <mat-icon>memory</mat-icon>
+              Your system: {{ getSystemRamGb() }}GB
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Queue Settings -->
+      <div class="stage-section" *ngIf="showAdvanced">
+        <div class="stage-header">
+          <mat-icon>queue</mat-icon>
+          <h4>Queue Settings</h4>
+        </div>
+        <div class="stage-options">
+          <mat-form-field appearance="outline">
+            <mat-label>Queue Capacity</mat-label>
+            <input matInput type="number" [(ngModel)]="config.queues.capacity"
+                   (change)="onSettingChange()" min="10" max="1000">
+          </mat-form-field>
+          <mat-slide-toggle
+            [(ngModel)]="config.queues.backpressureEnabled"
+            (change)="onSettingChange()">
+            Enable backpressure
+          </mat-slide-toggle>
+        </div>
+      </div>
+
+      <!-- Stage Metrics (Real-time) -->
+      <div class="stage-metrics" *ngIf="stageMetrics && stageMetrics.status !== 'idle'">
+        <h4>Pipeline Metrics</h4>
+        <div class="metrics-grid">
+          <ng-container *ngFor="let stageName of stageNames">
+            <div class="metric-card"
+                 *ngIf="getStageMetricsByName(stageName) as metrics"
+                 [ngClass]="getStageStatusClass(metrics)">
+              <div class="metric-header">
+                <mat-icon>{{ getStageIcon(stageName) }}</mat-icon>
+                <span>{{ stageName | titlecase }}</span>
+              </div>
+              <div class="metric-values">
+                <div class="metric-value">
+                  <span class="label">Processed</span>
+                  <span class="value">{{ metrics.itemsProcessed }}</span>
+                </div>
+                <div class="metric-value">
+                  <span class="label">Failed</span>
+                  <span class="value error">{{ metrics.itemsFailed }}</span>
+                </div>
+                <div class="metric-value">
+                  <span class="label">Throughput</span>
+                  <span class="value">{{ formatThroughput(metrics.throughput) }}</span>
+                </div>
+                <div class="metric-value">
+                  <span class="label">Queue</span>
+                  <span class="value">{{ metrics.queueSize }}</span>
+                </div>
+              </div>
+            </div>
+          </ng-container>
+        </div>
+      </div>
+
+    </mat-expansion-panel>
+  </mat-card-content>
+</mat-card>

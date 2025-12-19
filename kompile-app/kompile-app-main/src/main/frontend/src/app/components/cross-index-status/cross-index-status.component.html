@@ -1,0 +1,355 @@
+<!-- Cross-Index Status Component -->
+<div class="cross-index-container">
+  <!-- Loading State -->
+  <div *ngIf="loading" class="loading-overlay">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading cross-index status...</span>
+  </div>
+
+  <!-- Error State -->
+  <div *ngIf="error" class="error-banner">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button (click)="refresh()">Retry</button>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" *ngIf="summary">
+    <mat-card class="summary-card total">
+      <mat-card-content>
+        <div class="card-value">{{ summary.totalDocuments }}</div>
+        <div class="card-label">Total Documents</div>
+        <div class="card-sublabel">{{ summary.totalPassages }} passages</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card synced">
+      <mat-card-content>
+        <div class="card-icon">
+          <mat-icon>check_circle</mat-icon>
+        </div>
+        <div class="card-value">{{ summary.fullyIndexedDocuments }}</div>
+        <div class="card-label">Fully Synced</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card partial">
+      <mat-card-content>
+        <div class="card-icon">
+          <mat-icon>warning</mat-icon>
+        </div>
+        <div class="card-value">{{ summary.partiallyIndexedDocuments }}</div>
+        <div class="card-label">Partially Synced</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card not-indexed">
+      <mat-card-content>
+        <div class="card-icon">
+          <mat-icon>cancel</mat-icon>
+        </div>
+        <div class="card-value">{{ summary.notIndexedDocuments }}</div>
+        <div class="card-label">Not Indexed</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card out-of-sync">
+      <mat-card-content>
+        <div class="card-icon">
+          <mat-icon>sync_problem</mat-icon>
+        </div>
+        <div class="card-value">{{ summary.outOfSyncDocuments }}</div>
+        <div class="card-label">Out of Sync</div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Sync Progress -->
+  <div class="sync-progress" *ngIf="activeSyncJob">
+    <mat-card>
+      <mat-card-content>
+        <div class="sync-header">
+          <mat-icon [class]="activeSyncJob.status === 'COMPLETED' ? 'success' : activeSyncJob.status === 'FAILED' ? 'error' : ''">
+            {{ activeSyncJob.status === 'COMPLETED' ? 'check_circle' : activeSyncJob.status === 'FAILED' ? 'error' : 'sync' }}
+          </mat-icon>
+          <span class="sync-message">{{ activeSyncJob.message }}</span>
+          <button mat-icon-button *ngIf="syncInProgress && activeSyncJob.status !== 'COMPLETED'" (click)="cancelSync()">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <mat-progress-bar
+          [mode]="activeSyncJob.progress > 0 ? 'determinate' : 'indeterminate'"
+          [value]="activeSyncJob.progress">
+        </mat-progress-bar>
+        <div class="sync-status">{{ activeSyncJob.status }} - {{ activeSyncJob.progress }}%</div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="filters">
+      <mat-form-field appearance="outline" class="search-field">
+        <mat-label>Search files</mat-label>
+        <input matInput [(ngModel)]="searchQuery" (keyup.enter)="onSearch()" placeholder="Search by filename...">
+        <button mat-icon-button matSuffix (click)="onSearch()">
+          <mat-icon>search</mat-icon>
+        </button>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="status-filter">
+        <mat-label>Status</mat-label>
+        <mat-select [(value)]="statusFilter" (selectionChange)="onStatusFilterChange()">
+          <mat-option value="">All</mat-option>
+          <mat-option value="NOT_INDEXED">Not Indexed</mat-option>
+          <mat-option value="PARTIAL">Partially Synced</mat-option>
+          <mat-option value="FULLY_INDEXED">Fully Synced</mat-option>
+          <mat-option value="OUT_OF_SYNC">Out of Sync</mat-option>
+          <mat-option value="FAILED">Failed</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <button mat-button (click)="clearFilters()" *ngIf="statusFilter || searchQuery">
+        <mat-icon>clear</mat-icon>
+        Clear
+      </button>
+    </div>
+
+    <div class="actions">
+      <button mat-button [matMenuTriggerFor]="syncSelectedMenu" [disabled]="!hasSelection || syncInProgress">
+        <mat-icon>sync</mat-icon>
+        Sync Selected ({{ selectedDocumentIds.size }})
+      </button>
+      <mat-menu #syncSelectedMenu="matMenu">
+        <button mat-menu-item (click)="syncSelectedToVector()">
+          <mat-icon>storage</mat-icon>
+          <span>To Vector Store</span>
+        </button>
+        <button mat-menu-item (click)="syncSelectedToGraph()">
+          <mat-icon>account_tree</mat-icon>
+          <span>To Knowledge Graph</span>
+        </button>
+        <mat-divider></mat-divider>
+        <button mat-menu-item (click)="syncSelectedToAll()">
+          <mat-icon>sync</mat-icon>
+          <span>To All Indexes</span>
+        </button>
+      </mat-menu>
+
+      <button mat-button [matMenuTriggerFor]="syncAllMenu" [disabled]="syncInProgress">
+        <mat-icon>cloud_sync</mat-icon>
+        Sync All Missing
+      </button>
+      <mat-menu #syncAllMenu="matMenu">
+        <button mat-menu-item (click)="syncToVectorStore()">
+          <mat-icon>storage</mat-icon>
+          <span>To Vector Store</span>
+        </button>
+        <button mat-menu-item (click)="syncToKnowledgeGraph()">
+          <mat-icon>account_tree</mat-icon>
+          <span>To Knowledge Graph</span>
+        </button>
+        <mat-divider></mat-divider>
+        <button mat-menu-item (click)="syncAll()">
+          <mat-icon>sync</mat-icon>
+          <span>Full Sync</span>
+        </button>
+      </mat-menu>
+
+      <button mat-icon-button (click)="refresh()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Documents Table -->
+  <div class="documents-table">
+    <table mat-table [dataSource]="documents" class="mat-elevation-z1">
+      <!-- Checkbox Column -->
+      <ng-container matColumnDef="select">
+        <th mat-header-cell *matHeaderCellDef>
+          <mat-checkbox
+            [checked]="allSelected"
+            [indeterminate]="hasSelection && !allSelected"
+            (change)="toggleSelectAll()">
+          </mat-checkbox>
+        </th>
+        <td mat-cell *matCellDef="let doc">
+          <mat-checkbox
+            [checked]="isSelected(doc)"
+            (change)="toggleSelectDocument(doc)"
+            (click)="$event.stopPropagation()">
+          </mat-checkbox>
+        </td>
+      </ng-container>
+
+      <!-- Expand Column -->
+      <ng-container matColumnDef="expand">
+        <th mat-header-cell *matHeaderCellDef></th>
+        <td mat-cell *matCellDef="let doc">
+          <button mat-icon-button (click)="toggleExpand(doc); $event.stopPropagation()">
+            <mat-icon>{{ doc.expanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+
+      <!-- File Name Column -->
+      <ng-container matColumnDef="fileName">
+        <th mat-header-cell *matHeaderCellDef>Document</th>
+        <td mat-cell *matCellDef="let doc">
+          <div class="file-info">
+            <div class="file-name">{{ doc.fileName || 'Unnamed' }}</div>
+            <div class="source-id" [title]="doc.sourceId">{{ truncateSourceId(doc.sourceId) }}</div>
+          </div>
+        </td>
+      </ng-container>
+
+      <!-- Overall Status Column -->
+      <ng-container matColumnDef="overallStatus">
+        <th mat-header-cell *matHeaderCellDef>Status</th>
+        <td mat-cell *matCellDef="let doc">
+          <mat-chip [ngClass]="getCrossIndexStatusColor(doc.overallStatus)">
+            <mat-icon class="status-icon">{{ getCrossIndexStatusIcon(doc.overallStatus) }}</mat-icon>
+            {{ getCrossIndexStatusLabel(doc.overallStatus) }}
+          </mat-chip>
+        </td>
+      </ng-container>
+
+      <!-- Keyword Index Column -->
+      <ng-container matColumnDef="keywordIndex">
+        <th mat-header-cell *matHeaderCellDef>
+          <div class="index-header">
+            <mat-icon>search</mat-icon>
+            Keyword
+          </div>
+        </th>
+        <td mat-cell *matCellDef="let doc">
+          <div class="index-status">
+            <mat-icon [ngClass]="getIndexStatusColor(doc.keywordIndexStatus)">
+              {{ getIndexStatusIcon(doc.keywordIndexStatus) }}
+            </mat-icon>
+            <span class="passage-count">{{ doc.keywordPassageCount || 0 }}</span>
+          </div>
+        </td>
+      </ng-container>
+
+      <!-- Vector Store Column -->
+      <ng-container matColumnDef="vectorStore">
+        <th mat-header-cell *matHeaderCellDef>
+          <div class="index-header">
+            <mat-icon>storage</mat-icon>
+            Vector
+          </div>
+        </th>
+        <td mat-cell *matCellDef="let doc">
+          <div class="index-status">
+            <mat-icon [ngClass]="getIndexStatusColor(doc.vectorStoreStatus)">
+              {{ getIndexStatusIcon(doc.vectorStoreStatus) }}
+            </mat-icon>
+            <span class="passage-count">{{ doc.vectorPassageCount || 0 }}</span>
+          </div>
+        </td>
+      </ng-container>
+
+      <!-- Graph Column -->
+      <ng-container matColumnDef="graph">
+        <th mat-header-cell *matHeaderCellDef>
+          <div class="index-header">
+            <mat-icon>account_tree</mat-icon>
+            Graph
+          </div>
+        </th>
+        <td mat-cell *matCellDef="let doc">
+          <div class="index-status">
+            <mat-icon [ngClass]="getIndexStatusColor(doc.graphStatus)">
+              {{ getIndexStatusIcon(doc.graphStatus) }}
+            </mat-icon>
+            <span class="passage-count">{{ doc.graphNodeCount || 0 }}</span>
+          </div>
+        </td>
+      </ng-container>
+
+      <!-- Updated Column -->
+      <ng-container matColumnDef="updated">
+        <th mat-header-cell *matHeaderCellDef>Updated</th>
+        <td mat-cell *matCellDef="let doc">{{ formatDate(doc.updatedAt) }}</td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="['select', 'expand', 'fileName', 'overallStatus', 'keywordIndex', 'vectorStore', 'graph', 'updated']"></tr>
+      <tr mat-row *matRowDef="let doc; columns: ['select', 'expand', 'fileName', 'overallStatus', 'keywordIndex', 'vectorStore', 'graph', 'updated']"
+          [class.expanded-row]="doc.expanded"
+          (click)="toggleExpand(doc)"></tr>
+
+      <!-- Expanded Detail Row -->
+      <ng-container matColumnDef="expandedDetail">
+        <td mat-cell *matCellDef="let doc" [attr.colspan]="8">
+          <div class="expanded-content" [@detailExpand]="doc.expanded ? 'expanded' : 'collapsed'">
+            <div *ngIf="doc.loadingPassages" class="passages-loading">
+              <mat-spinner diameter="24"></mat-spinner>
+              <span>Loading passages...</span>
+            </div>
+
+            <div *ngIf="doc.passages && !doc.loadingPassages" class="passages-list">
+              <h4>Passages ({{ doc.passages.total }})</h4>
+              <table class="passages-table">
+                <thead>
+                  <tr>
+                    <th>Chunk</th>
+                    <th>Preview</th>
+                    <th>Keyword</th>
+                    <th>Vector</th>
+                    <th>Graph</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let passage of doc.passages.passages">
+                    <td>{{ passage.chunkIndex }}</td>
+                    <td class="preview-cell">{{ passage.contentPreview }}</td>
+                    <td>
+                      <mat-icon [ngClass]="getIndexStatusColor(passage.keywordIndexStatus)">
+                        {{ getIndexStatusIcon(passage.keywordIndexStatus) }}
+                      </mat-icon>
+                    </td>
+                    <td>
+                      <mat-icon [ngClass]="getIndexStatusColor(passage.vectorStoreStatus)">
+                        {{ getIndexStatusIcon(passage.vectorStoreStatus) }}
+                      </mat-icon>
+                    </td>
+                    <td>
+                      <mat-icon [ngClass]="getIndexStatusColor(passage.graphStatus)">
+                        {{ getIndexStatusIcon(passage.graphStatus) }}
+                      </mat-icon>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </td>
+      </ng-container>
+
+      <tr mat-row *matRowDef="let doc; columns: ['expandedDetail']" class="detail-row"></tr>
+    </table>
+
+    <!-- Pagination -->
+    <div class="pagination">
+      <span class="pagination-info">
+        Showing {{ pageStart }} - {{ pageEnd }} of {{ totalDocuments }}
+      </span>
+      <button mat-icon-button [disabled]="currentPage === 0" (click)="prevPage()">
+        <mat-icon>chevron_left</mat-icon>
+      </button>
+      <button mat-icon-button [disabled]="pageEnd >= totalDocuments" (click)="nextPage()">
+        <mat-icon>chevron_right</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Empty State -->
+  <div *ngIf="!loading && documents.length === 0" class="empty-state">
+    <mat-icon>folder_open</mat-icon>
+    <h3>No documents found</h3>
+    <p *ngIf="statusFilter || searchQuery">Try adjusting your filters</p>
+    <p *ngIf="!statusFilter && !searchQuery">Index some documents to see their cross-index status</p>
+  </div>
+</div>

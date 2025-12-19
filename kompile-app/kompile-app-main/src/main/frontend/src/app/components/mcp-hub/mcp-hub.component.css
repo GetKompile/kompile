@@ -1,0 +1,104 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.mcp-hub {
+  padding: 20px;
+  max-width: 100%;
+}
+
+.hub-header {
+  margin-bottom: 24px;
+}
+
+.hub-header h2 {
+  margin: 0 0 8px 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.hub-header .subtitle {
+  margin: 0;
+  color: #666;
+  font-size: 0.95rem;
+}
+
+.sub-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding: 8px;
+  background: #f5f5f7;
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+
+.sub-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #666;
+  transition: all 0.2s ease;
+}
+
+.sub-tab:hover {
+  background: rgba(255, 255, 255, 0.8);
+  color: #333;
+}
+
+.sub-tab.active {
+  background: #fff;
+  color: #4f46e5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.tab-icon {
+  font-size: 1.1rem;
+}
+
+.tab-label {
+  white-space: nowrap;
+}
+
+.sub-tab-content {
+  background: #fff;
+  border-radius: 12px;
+  min-height: 400px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .sub-tabs {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .sub-tab {
+    justify-content: flex-start;
+    padding: 10px 16px;
+  }
+
+  .hub-header h2 {
+    font-size: 1.5rem;
+  }
+}
