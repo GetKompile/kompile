@@ -1,0 +1,278 @@
+<div class="subprocess-config-container">
+  <!-- Header -->
+  <mat-toolbar color="primary" class="header-toolbar">
+    <mat-icon>memory</mat-icon>
+    <span class="title">Subprocess Ingest Configuration</span>
+    <span class="subtitle">(Crash Isolation)</span>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="loadConfiguration()" matTooltip="Refresh configuration">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <!-- Mode Banner -->
+  <div class="mode-banner" [class.enabled]="editEnabled" [class.disabled]="!editEnabled">
+    <div class="banner-content">
+      <mat-icon>{{ editEnabled ? 'verified_user' : 'warning' }}</mat-icon>
+      <div class="banner-text">
+        <strong>{{ editEnabled ? 'Subprocess Mode (Recommended)' : 'In-Process Mode' }}</strong>
+        <span class="banner-note">
+          {{ editEnabled
+            ? 'Document ingestion runs in isolated JVM processes, protecting the main application from crashes and memory issues.'
+            : 'Document ingestion runs in the main process. Crashes or OOM errors may affect the application.' }}
+        </span>
+      </div>
+    </div>
+    <mat-slide-toggle [(ngModel)]="editEnabled" (change)="toggleEnabled()" class="mode-toggle">
+      {{ editEnabled ? 'Enabled' : 'Disabled' }}
+    </mat-slide-toggle>
+  </div>
+
+  <div class="content-area">
+    <!-- Loading Spinner -->
+    <div *ngIf="isLoading" class="loading-container">
+      <mat-spinner diameter="40"></mat-spinner>
+      <span>Loading configuration...</span>
+    </div>
+
+    <!-- Configuration Card -->
+    <mat-card class="config-card" *ngIf="!isLoading && config">
+      <mat-card-header>
+        <mat-card-title>Subprocess Settings</mat-card-title>
+        <mat-card-subtitle>
+          Server Port: {{ config.actualServerPort }}
+          <span class="callback-url">Callback URL: {{ config.callbackBaseUrl }}</span>
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="config-grid">
+          <!-- Java Path -->
+          <div class="config-item full-width">
+            <label>Java Executable Path</label>
+            <div class="java-path-row">
+              <mat-form-field appearance="outline" class="java-path-input">
+                <mat-label>Java Path</mat-label>
+                <input matInput [(ngModel)]="editJavaPath" placeholder="java or /path/to/java">
+                <mat-hint>Path to Java executable (java, /usr/lib/jvm/java-17/bin/java)</mat-hint>
+              </mat-form-field>
+              <button mat-stroked-button (click)="validateJavaPath()" [disabled]="isValidating">
+                <mat-icon>{{ isValidating ? 'sync' : 'check_circle' }}</mat-icon>
+                {{ isValidating ? 'Validating...' : 'Validate' }}
+              </button>
+            </div>
+            <div *ngIf="javaPathValid !== null" class="validation-result" [class.valid]="javaPathValid" [class.invalid]="!javaPathValid">
+              <mat-icon>{{ javaPathValid ? 'check_circle' : 'error' }}</mat-icon>
+              <span>{{ javaVersionInfo }}</span>
+            </div>
+          </div>
+
+          <!-- Heap Size -->
+          <div class="config-item">
+            <label>Subprocess Heap Size</label>
+            <mat-form-field appearance="outline">
+              <mat-label>Heap Size</mat-label>
+              <mat-select [(ngModel)]="editHeapSize">
+                <mat-option *ngFor="let size of heapSizeOptions" [value]="size">
+                  {{ size }}
+                  <span *ngIf="size === getRecommendedHeapSize()" class="recommended-tag">(Recommended)</span>
+                </mat-option>
+              </mat-select>
+              <mat-hint>Memory allocated to subprocess JVM</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Off-Heap Size -->
+          <div class="config-item">
+            <label>Off-Heap Max Bytes (JavaCPP)</label>
+            <mat-form-field appearance="outline">
+              <mat-label>Off-Heap Limit</mat-label>
+              <input matInput [(ngModel)]="editOffHeapMaxBytes" placeholder="e.g. 8g, 8192m, or bytes">
+              <mat-hint>Leave blank to auto-calculate (2x heap); sets JavaCPP maxbytes/maxphysicalbytes</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Timeout -->
+          <div class="config-item">
+            <label>Job Timeout (minutes)</label>
+            <mat-form-field appearance="outline">
+              <mat-label>Timeout</mat-label>
+              <input matInput type="number" [(ngModel)]="editTimeoutMinutes" min="1" max="1440">
+              <mat-hint>Max time before job is terminated</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Heartbeat Interval -->
+          <div class="config-item">
+            <label>Heartbeat Interval (seconds)</label>
+            <mat-form-field appearance="outline">
+              <mat-label>Heartbeat</mat-label>
+              <input matInput type="number" [(ngModel)]="editHeartbeatIntervalSeconds" min="5" max="60">
+              <mat-hint>How often subprocess reports liveness</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Stale Threshold -->
+          <div class="config-item">
+            <label>Stale Threshold (seconds)</label>
+            <mat-form-field appearance="outline">
+              <mat-label>Stale Threshold</mat-label>
+              <input matInput type="number" [(ngModel)]="editStaleThresholdSeconds" min="30" max="600">
+              <mat-hint>Time without heartbeat before force kill</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- System Info -->
+          <div class="system-info">
+            <div class="info-item">
+              <mat-icon>memory</mat-icon>
+              <span>System RAM: {{ getMemoryGb() }}GB</span>
+            </div>
+            <div class="info-item">
+              <mat-icon>developer_board</mat-icon>
+              <span>CPUs: {{ config.availableProcessors }}</span>
+            </div>
+            <div class="info-item">
+              <mat-icon>computer</mat-icon>
+              <span>{{ config.osName }}</span>
+            </div>
+            <div class="info-item">
+              <mat-icon>code</mat-icon>
+              <span>Java {{ config.javaVersion }}</span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-button (click)="resetConfiguration()" [disabled]="isSaving" matTooltip="Reset to system defaults">
+          <mat-icon>restore</mat-icon>
+          Reset to Defaults
+        </button>
+        <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving"
+                matTooltip="Save configuration (persists across restarts)">
+          <mat-icon>{{ isSaving ? 'sync' : 'save' }}</mat-icon>
+          {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+        </button>
+      </mat-card-actions>
+      <div class="config-note">
+        <mat-icon>info</mat-icon>
+        <span>Configuration is saved to disk and persists across application restarts.</span>
+      </div>
+    </mat-card>
+
+    <!-- Active Processes Card -->
+    <mat-card class="processes-card" *ngIf="!isLoading">
+      <mat-card-header>
+        <mat-card-title>Active Subprocess Jobs</mat-card-title>
+        <mat-card-subtitle>
+          {{ activeProcesses.length }} active process(es)
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div *ngIf="activeProcesses.length === 0" class="no-processes">
+          <mat-icon>hourglass_empty</mat-icon>
+          <span>No active subprocess jobs</span>
+        </div>
+
+        <table mat-table [dataSource]="activeProcesses" class="processes-table" *ngIf="activeProcesses.length > 0">
+          <!-- Task ID Column -->
+          <ng-container matColumnDef="taskId">
+            <th mat-header-cell *matHeaderCellDef>Task ID</th>
+            <td mat-cell *matCellDef="let row">
+              <span class="task-id">{{ row.taskId.substring(0, 8) }}...</span>
+              <span class="pid-badge" matTooltip="Process ID">PID: {{ row.pid }}</span>
+            </td>
+          </ng-container>
+
+          <!-- File Name Column -->
+          <ng-container matColumnDef="fileName">
+            <th mat-header-cell *matHeaderCellDef>File</th>
+            <td mat-cell *matCellDef="let row">{{ row.fileName }}</td>
+          </ng-container>
+
+          <!-- Phase Column -->
+          <ng-container matColumnDef="phase">
+            <th mat-header-cell *matHeaderCellDef>Phase</th>
+            <td mat-cell *matCellDef="let row">
+              <span class="phase-badge" [class]="'phase-' + row.currentPhase.toLowerCase()">
+                {{ row.currentPhase }}
+              </span>
+            </td>
+          </ng-container>
+
+          <!-- Progress Column -->
+          <ng-container matColumnDef="progress">
+            <th mat-header-cell *matHeaderCellDef>Progress</th>
+            <td mat-cell *matCellDef="let row">
+              <div class="progress-cell">
+                <mat-progress-bar mode="determinate" [value]="row.progressPercent"></mat-progress-bar>
+                <span class="progress-text">{{ row.progressPercent }}%</span>
+              </div>
+            </td>
+          </ng-container>
+
+          <!-- Elapsed Column -->
+          <ng-container matColumnDef="elapsed">
+            <th mat-header-cell *matHeaderCellDef>Elapsed</th>
+            <td mat-cell *matCellDef="let row">{{ getElapsedTime(row) }}</td>
+          </ng-container>
+
+          <!-- Actions Column -->
+          <ng-container matColumnDef="actions">
+            <th mat-header-cell *matHeaderCellDef>Actions</th>
+            <td mat-cell *matCellDef="let row">
+              <button mat-icon-button color="warn" (click)="cancelProcess(row.taskId)"
+                      matTooltip="Cancel this job" [disabled]="row.cancelled">
+                <mat-icon>cancel</mat-icon>
+              </button>
+            </td>
+          </ng-container>
+
+          <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+          <tr mat-row *matRowDef="let row; columns: displayedColumns;"
+              [class.cancelled-row]="row.cancelled"
+              [class.oom-row]="row.oomDetected"></tr>
+        </table>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- System Info Expansion Panel -->
+    <mat-expansion-panel *ngIf="systemInfo" class="system-panel">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>info_outline</mat-icon>
+          System Information
+        </mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="system-details">
+        <div class="detail-row">
+          <span class="label">OS:</span>
+          <span class="value">{{ systemInfo.osName }} {{ systemInfo.osVersion }} ({{ systemInfo.osArch }})</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Java:</span>
+          <span class="value">{{ systemInfo.javaVersion }} ({{ systemInfo.javaVendor }})</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Java Home:</span>
+          <span class="value">{{ systemInfo.javaHome }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Processors:</span>
+          <span class="value">{{ systemInfo.availableProcessors }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Max Memory:</span>
+          <span class="value">{{ systemInfo.maxMemoryMb }} MB</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Used Memory:</span>
+          <span class="value">{{ systemInfo.usedMemoryMb }} MB / {{ systemInfo.totalMemoryMb }} MB</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Working Directory:</span>
+          <span class="value">{{ systemInfo.userDir }}</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+  </div>
+</div>

@@ -1,0 +1,515 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="mcp-config-manager">
+  <div class="header">
+    <h2>External MCP Servers</h2>
+    <p class="subtitle">Manage external MCP servers using Claude Desktop configuration format</p>
+  </div>
+
+  <!-- View Mode Toggle -->
+  <div class="view-toggle">
+    <button mat-button [class.active]="viewMode === 'list'" (click)="switchToListView()">
+      <mat-icon>view_list</mat-icon> Server List
+    </button>
+    <button mat-button [class.active]="viewMode === 'json'" (click)="switchToJsonView()">
+      <mat-icon>code</mat-icon> JSON Config
+    </button>
+  </div>
+
+  <!-- List View -->
+  <div class="list-view" *ngIf="viewMode === 'list'">
+    <div class="toolbar">
+      <button mat-raised-button color="primary" [matMenuTriggerFor]="addServerMenu">
+        <mat-icon>add</mat-icon> Add Server
+      </button>
+      <mat-menu #addServerMenu="matMenu">
+        <button mat-menu-item (click)="createServer('STDIO')">
+          <mat-icon>terminal</mat-icon> STDIO Server (Local Process)
+        </button>
+        <button mat-menu-item (click)="createServer('REST')">
+          <mat-icon>http</mat-icon> REST Server (HTTP Endpoint)
+        </button>
+        <button mat-menu-item (click)="createServer('SSE')">
+          <mat-icon>stream</mat-icon> SSE Server (Server-Sent Events)
+        </button>
+      </mat-menu>
+      <button mat-button (click)="openImportDialog()">
+        <mat-icon>upload</mat-icon> Import
+      </button>
+      <button mat-button (click)="exportConfig()">
+        <mat-icon>download</mat-icon> Export
+      </button>
+      <button mat-button (click)="loadServers()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+
+    <div class="server-list" *ngIf="!isLoading">
+      <mat-card *ngFor="let server of servers" class="server-card" [class.running]="server.status === 'RUNNING'" [class.error]="server.status === 'ERROR'">
+        <mat-card-header>
+          <mat-icon mat-card-avatar [style.color]="getStatusColor(server.status)">
+            {{ getStatusIcon(server.status) }}
+          </mat-icon>
+          <mat-card-title>{{ server.id }}</mat-card-title>
+          <mat-card-subtitle>
+            <span class="transport-badge" [class]="getTransportLabel(server).toLowerCase()">
+              {{ getTransportLabel(server) }}
+            </span>
+            <span class="status-badge" [class]="server.status?.toLowerCase() || 'stopped'">
+              {{ server.status || 'STOPPED' }}
+            </span>
+          </mat-card-subtitle>
+        </mat-card-header>
+
+        <mat-card-content>
+          <p *ngIf="server.description" class="description">{{ server.description }}</p>
+
+          <div class="server-details">
+            <!-- STDIO Server Details -->
+            <ng-container *ngIf="isStdioServer(server)">
+              <!-- Command -->
+              <div class="detail-row">
+                <span class="label">Command:</span>
+                <code class="value command-value">{{ server.command }}</code>
+              </div>
+
+              <!-- Arguments -->
+              <div class="detail-row" *ngIf="server.args && server.args.length > 0">
+                <span class="label">Arguments:</span>
+                <div class="args-list">
+                  <code *ngFor="let arg of server.args" class="arg-item">{{ arg }}</code>
+                </div>
+              </div>
+
+              <!-- Environment Variables -->
+              <div class="detail-row" *ngIf="server.env && objectKeys(server.env).length > 0">
+                <span class="label">Environment:</span>
+                <div class="env-list">
+                  <span *ngFor="let key of objectKeys(server.env)" class="env-item">
+                    <code class="env-key">{{ key }}</code>
+                  </span>
+                </div>
+              </div>
+
+              <!-- PID when running -->
+              <div class="detail-row" *ngIf="server.pid">
+                <span class="label">PID:</span>
+                <span class="value pid-value">{{ server.pid }}</span>
+              </div>
+            </ng-container>
+
+            <!-- REST/SSE Server Details -->
+            <ng-container *ngIf="!isStdioServer(server)">
+              <!-- URL -->
+              <div class="detail-row">
+                <span class="label">URL:</span>
+                <code class="value url-value">{{ server.url }}</code>
+              </div>
+
+              <!-- SSE Endpoint (for SSE servers) -->
+              <div class="detail-row" *ngIf="isSseServer(server) && server.sseEndpoint">
+                <span class="label">SSE Endpoint:</span>
+                <code class="value">{{ server.sseEndpoint }}</code>
+              </div>
+
+              <!-- Messages Endpoint -->
+              <div class="detail-row" *ngIf="server.messagesEndpoint">
+                <span class="label">Messages:</span>
+                <code class="value">{{ server.messagesEndpoint }}</code>
+              </div>
+
+              <!-- HTTP Headers -->
+              <div class="detail-row" *ngIf="server.headers && objectKeys(server.headers).length > 0">
+                <span class="label">Headers:</span>
+                <div class="env-list">
+                  <span *ngFor="let key of objectKeys(server.headers)" class="env-item">
+                    <code class="header-key">{{ key }}</code>
+                  </span>
+                </div>
+              </div>
+
+              <!-- Timeouts -->
+              <div class="detail-row" *ngIf="server.connectionTimeout || server.requestTimeout">
+                <span class="label">Timeouts:</span>
+                <span class="value">
+                  <span *ngIf="server.connectionTimeout">Connect: {{ server.connectionTimeout }}ms</span>
+                  <span *ngIf="server.requestTimeout"> | Request: {{ server.requestTimeout }}ms</span>
+                </span>
+              </div>
+
+              <!-- SSL Verification -->
+              <div class="detail-row" *ngIf="server.verifySsl === false">
+                <span class="label">SSL:</span>
+                <span class="value warning-value">Verification Disabled</span>
+              </div>
+            </ng-container>
+
+            <!-- Error message (common) -->
+            <div class="detail-row error-row" *ngIf="server.errorMessage">
+              <span class="label">Error:</span>
+              <span class="value error-value">{{ server.errorMessage }}</span>
+            </div>
+          </div>
+        </mat-card-content>
+
+        <mat-card-actions>
+          <button mat-button (click)="viewServerDetails(server)">
+            <mat-icon>visibility</mat-icon> View
+          </button>
+          <button mat-button (click)="editServer(server)">
+            <mat-icon>edit</mat-icon> Edit
+          </button>
+          <button mat-button *ngIf="server.status === 'STOPPED' || !server.status" (click)="startServer(server)" color="primary">
+            <mat-icon>play_arrow</mat-icon> Start
+          </button>
+          <button mat-button *ngIf="server.status === 'RUNNING'" (click)="stopServer(server)" color="warn">
+            <mat-icon>stop</mat-icon> Stop
+          </button>
+          <button mat-button *ngIf="server.status === 'RUNNING'" (click)="restartServer(server)">
+            <mat-icon>refresh</mat-icon> Restart
+          </button>
+          <button mat-button *ngIf="server.status === 'ERROR'" (click)="startServer(server)" color="primary">
+            <mat-icon>play_arrow</mat-icon> Retry
+          </button>
+          <button mat-icon-button [matMenuTriggerFor]="serverMenu" color="default">
+            <mat-icon>more_vert</mat-icon>
+          </button>
+          <mat-menu #serverMenu="matMenu">
+            <button mat-menu-item (click)="viewServerDetails(server)">
+              <mat-icon>code</mat-icon> View JSON
+            </button>
+            <button mat-menu-item (click)="deleteServer(server)" class="delete-action">
+              <mat-icon>delete</mat-icon> Delete
+            </button>
+          </mat-menu>
+        </mat-card-actions>
+      </mat-card>
+
+      <div *ngIf="servers.length === 0" class="empty-state">
+        <mat-icon>dns</mat-icon>
+        <p>No external MCP servers configured.</p>
+        <p class="hint">Add servers manually or paste a Claude Desktop configuration.</p>
+        <div class="empty-actions">
+          <button mat-raised-button color="primary" (click)="createServer()">Add Server</button>
+          <button mat-button (click)="openImportDialog()">Import Config</button>
+        </div>
+
+        <!-- Example Configuration -->
+        <div class="example-config">
+          <h4>Example Configuration (Claude Desktop format):</h4>
+          <pre class="example-json">{{'{'}}
+  "mcpServers": {{'{'}}
+    "filesystem": {{'{'}}
+      "command": "npx",
+      "args": ["-y", "&#64;modelcontextprotocol/server-filesystem", "/home/user/documents"],
+      "env": {{'{}'}}
+    {{'}'}},
+    "github": {{'{'}}
+      "command": "npx",
+      "args": ["-y", "&#64;modelcontextprotocol/server-github"],
+      "env": {{'{'}}
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxxxxxxxxxxx"
+      {{'}'}}
+    {{'}'}}
+  {{'}'}}
+{{'}'}}</pre>
+        </div>
+      </div>
+    </div>
+
+    <mat-spinner *ngIf="isLoading" diameter="40"></mat-spinner>
+  </div>
+
+  <!-- JSON View -->
+  <div class="json-view" *ngIf="viewMode === 'json'">
+    <div class="toolbar">
+      <button mat-button (click)="copyToClipboard()">
+        <mat-icon>content_copy</mat-icon> Copy
+      </button>
+      <button mat-button (click)="pasteFromClipboard()">
+        <mat-icon>content_paste</mat-icon> Paste
+      </button>
+      <button mat-button (click)="validateJson()">
+        <mat-icon>check_circle</mat-icon> Validate
+      </button>
+      <button mat-raised-button color="primary" (click)="applyJsonConfig()" [disabled]="!jsonValid">
+        <mat-icon>save</mat-icon> Apply Changes
+      </button>
+    </div>
+
+    <div class="json-editor-container">
+      <mat-form-field appearance="outline" class="json-editor">
+        <mat-label>Configuration (Claude Desktop format)</mat-label>
+        <textarea matInput [(ngModel)]="jsonConfig" rows="20" class="json-textarea" spellcheck="false"></textarea>
+        <mat-hint>Edit the JSON configuration and click Apply to save changes</mat-hint>
+      </mat-form-field>
+
+      <div class="validation-result" *ngIf="jsonError" [class.error]="!jsonValid">
+        <mat-icon>{{ jsonValid ? 'check_circle' : 'error' }}</mat-icon>
+        <pre>{{ jsonError }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add/Edit Server Dialog -->
+  <div class="dialog-overlay" *ngIf="showServerDialog" (click)="cancelServerDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ isEditing ? 'Edit' : 'Add' }} External MCP Server ({{ editingServer?.transportType || 'STDIO' }})</h3>
+
+      <div class="form-content" *ngIf="editingServer">
+        <!-- Common Fields -->
+        <mat-form-field appearance="outline">
+          <mat-label>Server ID</mat-label>
+          <input matInput [(ngModel)]="editingServer.id" placeholder="my-server" [disabled]="isEditing">
+          <mat-hint>Unique identifier for this server (e.g., filesystem, github)</mat-hint>
+        </mat-form-field>
+
+        <!-- Transport Type (read-only badge) -->
+        <div class="transport-info">
+          <span class="transport-badge large" [class]="editingServer.transportType?.toLowerCase() || 'stdio'">
+            {{ editingServer.transportType || 'STDIO' }}
+          </span>
+          <span class="transport-description">
+            <ng-container *ngIf="isStdioServer(editingServer)">Spawns a local process and communicates via stdin/stdout</ng-container>
+            <ng-container *ngIf="isRestServer(editingServer)">Connects to a remote HTTP endpoint</ng-container>
+            <ng-container *ngIf="isSseServer(editingServer)">Connects via Server-Sent Events for streaming</ng-container>
+          </span>
+        </div>
+
+        <!-- STDIO Configuration -->
+        <ng-container *ngIf="isStdioServer(editingServer)">
+          <mat-form-field appearance="outline">
+            <mat-label>Command</mat-label>
+            <input matInput [(ngModel)]="editingServer.command" placeholder="npx">
+            <mat-hint>The command to execute (e.g., npx, node, python, uvx)</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Arguments (one per line)</mat-label>
+            <textarea matInput [ngModel]="getArgsString()" (ngModelChange)="setArgsFromString($event)" rows="4" placeholder="-y
+&#64;modelcontextprotocol/server-filesystem
+/path/to/files"></textarea>
+            <mat-hint>Command arguments, one per line</mat-hint>
+          </mat-form-field>
+
+          <!-- Environment Variables -->
+          <div class="env-section">
+            <h4>Environment Variables <button mat-icon-button (click)="addEnvVar()"><mat-icon>add</mat-icon></button></h4>
+            <div class="env-row" *ngFor="let key of envKeys; let i = index">
+              <mat-form-field appearance="outline">
+                <mat-label>Key</mat-label>
+                <input matInput [(ngModel)]="envKeys[i]" placeholder="API_KEY">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Value</mat-label>
+                <input matInput [(ngModel)]="envValues[i]" placeholder="your-api-key" type="password">
+              </mat-form-field>
+              <button mat-icon-button color="warn" (click)="removeEnvVar(i)">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+            <p class="hint" *ngIf="envKeys.length === 0">No environment variables configured</p>
+          </div>
+        </ng-container>
+
+        <!-- REST/SSE Configuration -->
+        <ng-container *ngIf="!isStdioServer(editingServer)">
+          <mat-form-field appearance="outline">
+            <mat-label>Server URL</mat-label>
+            <input matInput [(ngModel)]="editingServer.url" placeholder="http://localhost:3000/mcp">
+            <mat-hint>Base URL for the MCP server</mat-hint>
+          </mat-form-field>
+
+          <!-- SSE-specific fields -->
+          <ng-container *ngIf="isSseServer(editingServer)">
+            <mat-form-field appearance="outline">
+              <mat-label>SSE Endpoint Path</mat-label>
+              <input matInput [(ngModel)]="editingServer.sseEndpoint" placeholder="/sse">
+              <mat-hint>Path for Server-Sent Events stream (default: /sse)</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Messages Endpoint Path</mat-label>
+              <input matInput [(ngModel)]="editingServer.messagesEndpoint" placeholder="/message">
+              <mat-hint>Path for sending messages (default: /message)</mat-hint>
+            </mat-form-field>
+          </ng-container>
+
+          <!-- Timeout settings -->
+          <div class="timeout-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Connection Timeout (ms)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingServer.connectionTimeout" placeholder="30000">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Request Timeout (ms)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingServer.requestTimeout" placeholder="60000">
+            </mat-form-field>
+          </div>
+
+          <mat-slide-toggle [(ngModel)]="editingServer.verifySsl">Verify SSL Certificates</mat-slide-toggle>
+
+          <!-- HTTP Headers -->
+          <div class="env-section">
+            <h4>HTTP Headers <button mat-icon-button (click)="addHeader()"><mat-icon>add</mat-icon></button></h4>
+            <div class="env-row" *ngFor="let key of headerKeys; let i = index">
+              <mat-form-field appearance="outline">
+                <mat-label>Header Name</mat-label>
+                <input matInput [(ngModel)]="headerKeys[i]" placeholder="Authorization">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Header Value</mat-label>
+                <input matInput [(ngModel)]="headerValues[i]" placeholder="Bearer token..." type="password">
+              </mat-form-field>
+              <button mat-icon-button color="warn" (click)="removeHeader(i)">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+            <p class="hint" *ngIf="headerKeys.length === 0">No HTTP headers configured</p>
+          </div>
+        </ng-container>
+
+        <!-- Common fields -->
+        <mat-form-field appearance="outline">
+          <mat-label>Description (optional)</mat-label>
+          <input matInput [(ngModel)]="editingServer.description" placeholder="Provides filesystem access">
+        </mat-form-field>
+
+        <mat-slide-toggle [(ngModel)]="editingServer.enabled">Enabled</mat-slide-toggle>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelServerDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveServer()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Dialog -->
+  <div class="dialog-overlay" *ngIf="showImportDialog" (click)="cancelImportDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>Import MCP Configuration</h3>
+
+      <div class="form-content">
+        <p class="hint">Paste a Claude Desktop configuration JSON. Servers will be merged with existing configurations.</p>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>JSON Configuration</mat-label>
+          <textarea matInput [(ngModel)]="importJson" rows="15" placeholder='{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "&#64;modelcontextprotocol/server-filesystem", "."],
+      "env": {}
+    }
+  }
+}'></textarea>
+        </mat-form-field>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelImportDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="importConfig()" [disabled]="!importJson.trim()">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- View Details Dialog -->
+  <div class="dialog-overlay" *ngIf="showDetailsDialog" (click)="cancelDetailsDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>Server Details: {{ viewingServer?.id }}</h3>
+
+      <div class="details-content" *ngIf="viewingServer">
+        <!-- UI View -->
+        <div class="details-section">
+          <h4>Configuration</h4>
+          <div class="details-grid">
+            <div class="detail-item">
+              <span class="detail-label">Server ID</span>
+              <code class="detail-value">{{ viewingServer.id }}</code>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Status</span>
+              <span class="status-badge" [class]="viewingServer.status?.toLowerCase() || 'stopped'">
+                {{ viewingServer.status || 'STOPPED' }}
+              </span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Command</span>
+              <code class="detail-value">{{ viewingServer.command }}</code>
+            </div>
+            <div class="detail-item" *ngIf="viewingServer.pid">
+              <span class="detail-label">Process ID</span>
+              <code class="detail-value">{{ viewingServer.pid }}</code>
+            </div>
+            <div class="detail-item full-width" *ngIf="viewingServer.description">
+              <span class="detail-label">Description</span>
+              <span class="detail-value">{{ viewingServer.description }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Arguments Section -->
+        <div class="details-section" *ngIf="viewingServer.args && viewingServer.args.length > 0">
+          <h4>Arguments</h4>
+          <div class="args-display">
+            <code *ngFor="let arg of viewingServer.args; let i = index" class="arg-display-item">
+              <span class="arg-index">{{ i }}</span>{{ arg }}
+            </code>
+          </div>
+        </div>
+
+        <!-- Environment Variables Section -->
+        <div class="details-section" *ngIf="viewingServer.env && objectKeys(viewingServer.env).length > 0">
+          <h4>Environment Variables</h4>
+          <div class="env-display">
+            <div *ngFor="let key of objectKeys(viewingServer.env)" class="env-display-item">
+              <code class="env-display-key">{{ key }}</code>
+              <code class="env-display-value">{{ viewingServer.env[key] }}</code>
+            </div>
+          </div>
+        </div>
+
+        <!-- JSON View -->
+        <div class="details-section">
+          <h4>
+            JSON Configuration
+            <button mat-icon-button (click)="copyServerJson()" matTooltip="Copy to clipboard">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </h4>
+          <pre class="json-display">{{ viewingServerJson }}</pre>
+        </div>
+
+        <!-- Error Section -->
+        <div class="details-section error-section" *ngIf="viewingServer.errorMessage">
+          <h4>Error</h4>
+          <p class="error-message">{{ viewingServer.errorMessage }}</p>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="copyServerJson()">
+          <mat-icon>content_copy</mat-icon> Copy JSON
+        </button>
+        <button mat-button (click)="editServer(viewingServer!); cancelDetailsDialog()">
+          <mat-icon>edit</mat-icon> Edit
+        </button>
+        <button mat-raised-button color="primary" (click)="cancelDetailsDialog()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,521 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="rag-tester-container">
+  <!-- Status Section -->
+  <mat-card class="status-card">
+    <mat-card-header>
+      <mat-card-title>RAG Components Status</mat-card-title>
+      <button mat-icon-button (click)="loadStatus()" [disabled]="statusLoading" matTooltip="Refresh status">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-progress-bar *ngIf="statusLoading" mode="indeterminate"></mat-progress-bar>
+      <div *ngIf="status" class="status-grid">
+        <div class="status-item" [class.available]="status.keywordRetriever.available" [class.unavailable]="!status.keywordRetriever.available">
+          <mat-icon>{{ status.keywordRetriever.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Keyword Retriever</span>
+            <span class="status-class">{{ status.keywordRetriever.class }}</span>
+          </div>
+        </div>
+        <div class="status-item" [class.available]="status.vectorStore.available" [class.unavailable]="!status.vectorStore.available">
+          <mat-icon>{{ status.vectorStore.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Vector Store</span>
+            <span class="status-class">{{ status.vectorStore.class }}</span>
+          </div>
+        </div>
+        <div class="status-item" [class.available]="status.embeddingModel.available" [class.unavailable]="!status.embeddingModel.available">
+          <mat-icon>{{ status.embeddingModel.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Embedding Model</span>
+            <span class="status-class">{{ status.embeddingModel.class }}</span>
+          </div>
+        </div>
+        <div class="status-item" [class.available]="status.reranker?.available" [class.unavailable]="!status.reranker?.available">
+          <mat-icon>{{ status.reranker?.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Reranker</span>
+            <span class="status-class">{{ status.reranker?.class || 'N/A' }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Query Section -->
+  <mat-card class="query-card">
+    <mat-card-header>
+      <mat-card-title>Test RAG Query</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="query-form">
+        <mat-form-field appearance="outline" class="query-input">
+          <mat-label>Query</mat-label>
+          <input matInput [(ngModel)]="query" placeholder="Enter your search query..." (keyup.enter)="runQuery()">
+        </mat-form-field>
+
+        <div class="query-options">
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Max Results</mat-label>
+            <input matInput type="number" [(ngModel)]="maxResults" min="1" max="50">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Similarity Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="threshold" min="0" max="1" step="0.1">
+          </mat-form-field>
+
+          <mat-slide-toggle [(ngModel)]="includeKeyword" [disabled]="useHybrid">Keyword Search</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="includeSemantic" [disabled]="useHybrid">Semantic Search</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="useHybrid" color="accent">Hybrid Mode</mat-slide-toggle>
+        </div>
+
+        <button mat-raised-button color="primary" (click)="runQuery()" [disabled]="isSearching || !query.trim()">
+          <mat-icon>search</mat-icon>
+          {{ isSearching ? 'Searching...' : 'Run Query' }}
+        </button>
+      </div>
+
+      <mat-progress-bar *ngIf="isSearching" mode="indeterminate"></mat-progress-bar>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Standard Query Results - Side by Side Layout -->
+  <mat-card *ngIf="queryResponse" class="results-card">
+    <mat-card-header>
+      <mat-card-title>Query Results</mat-card-title>
+      <mat-card-subtitle>{{ queryResponse.totalHits }} hits for "{{ queryResponse.query }}"</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="results-split-container">
+        <!-- Keyword Search Results -->
+        <div class="results-column" *ngIf="getKeywordResults()">
+          <div class="results-column-header chip-keyword">
+            <mat-icon>text_fields</mat-icon>
+            <span class="column-title">Keyword Search</span>
+            <span class="column-stats">{{ getKeywordResults()?.count || 0 }} hits in {{ getKeywordResults()?.durationMs || 0 }}ms</span>
+          </div>
+          <div *ngIf="getKeywordResults()?.error" class="error-banner">
+            Error: {{ getKeywordResults()?.error }}
+          </div>
+          <div class="results-column-content">
+            <div *ngIf="getKeywordResults()?.hits?.length === 0" class="no-hits">
+              No keyword results found
+            </div>
+            <div *ngFor="let hit of getKeywordResults()?.hits; let i = index" class="hit-item">
+              <div class="hit-header" (click)="toggleHitExpansion('keyword-' + i)">
+                <div class="hit-meta">
+                  <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
+                  <span class="hit-length">{{ hit.contentLength }} chars</span>
+                </div>
+                <mat-icon>{{ isHitExpanded('keyword-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
+              </div>
+
+              <div class="hit-preview" *ngIf="!isHitExpanded('keyword-' + i)">
+                {{ hit.preview }}
+              </div>
+
+              <div class="hit-content" *ngIf="isHitExpanded('keyword-' + i)">
+                <pre>{{ hit.content }}</pre>
+                <div class="hit-actions">
+                  <button mat-icon-button (click)="copyContent(hit.content)" matTooltip="Copy content">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div *ngIf="hit.metadata" class="hit-metadata">
+                  <strong>Metadata:</strong>
+                  <pre>{{ hit.metadata | json }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Semantic Search Results -->
+        <div class="results-column" *ngIf="getSemanticResults()">
+          <div class="results-column-header chip-semantic">
+            <mat-icon>psychology</mat-icon>
+            <span class="column-title">Semantic Search</span>
+            <span class="column-stats">{{ getSemanticResults()?.count || 0 }} hits in {{ getSemanticResults()?.durationMs || 0 }}ms</span>
+          </div>
+          <div *ngIf="getSemanticResults()?.error" class="error-banner">
+            Error: {{ getSemanticResults()?.error }}
+          </div>
+          <div class="results-column-content">
+            <div *ngIf="getSemanticResults()?.hits?.length === 0" class="no-hits">
+              No semantic results found
+            </div>
+            <div *ngFor="let hit of getSemanticResults()?.hits; let i = index" class="hit-item">
+              <div class="hit-header" (click)="toggleHitExpansion('semantic-' + i)">
+                <div class="hit-meta">
+                  <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
+                  <span class="hit-length">{{ hit.contentLength }} chars</span>
+                </div>
+                <mat-icon>{{ isHitExpanded('semantic-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
+              </div>
+
+              <div class="hit-preview" *ngIf="!isHitExpanded('semantic-' + i)">
+                {{ hit.preview }}
+              </div>
+
+              <div class="hit-content" *ngIf="isHitExpanded('semantic-' + i)">
+                <pre>{{ hit.content }}</pre>
+                <div class="hit-actions">
+                  <button mat-icon-button (click)="copyContent(hit.content)" matTooltip="Copy content">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div *ngIf="hit.metadata" class="hit-metadata">
+                  <strong>Metadata:</strong>
+                  <pre>{{ hit.metadata | json }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Show message when no results at all -->
+        <div *ngIf="!getKeywordResults() && !getSemanticResults()" class="no-hits full-width">
+          No results available. Try enabling keyword or semantic search.
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Hybrid Query Results -->
+  <mat-card *ngIf="hybridResponse" class="results-card">
+    <mat-card-header>
+      <mat-card-title>Hybrid Search Results</mat-card-title>
+      <mat-card-subtitle>{{ hybridResponse.totalHits }} merged hits for "{{ hybridResponse.query }}"</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="hybridResponse.keywordError" class="error-banner">
+        Keyword search error: {{ hybridResponse.keywordError }}
+      </div>
+      <div *ngIf="hybridResponse.semanticError" class="error-banner">
+        Semantic search error: {{ hybridResponse.semanticError }}
+      </div>
+
+      <div class="hits-list">
+        <div *ngFor="let hit of hybridResponse.hits; let i = index" class="hit-item">
+          <div class="hit-header" (click)="toggleHitExpansion('hybrid-' + i)">
+            <div class="hit-meta">
+              <span class="hit-index">#{{ i + 1 }}</span>
+              <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
+              <span class="hit-length">{{ hit.contentLength }} chars</span>
+              <mat-chip-set class="source-badges">
+                <mat-chip *ngFor="let source of hit.sources" [class]="getSourceBadgeClass(source)">
+                  {{ source }}
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+            <mat-icon>{{ isHitExpanded('hybrid-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </div>
+
+          <div class="hit-preview" *ngIf="!isHitExpanded('hybrid-' + i)">
+            {{ hit.preview }}
+          </div>
+
+          <div class="hit-content" *ngIf="isHitExpanded('hybrid-' + i)">
+            <pre>{{ hit.content }}</pre>
+            <div class="hit-actions">
+              <button mat-icon-button (click)="copyContent(hit.content)" matTooltip="Copy content">
+                <mat-icon>content_copy</mat-icon>
+              </button>
+            </div>
+            <div *ngIf="hit.metadata" class="hit-metadata">
+              <strong>Metadata:</strong>
+              <pre>{{ hit.metadata | json }}</pre>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="hybridResponse.hits.length === 0" class="no-hits">
+          No results found
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Reranking Query Section -->
+  <mat-card class="reranking-card">
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon>sort</mat-icon>
+        Test Semantic Search with Reranking
+      </mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="reranking-form">
+        <mat-form-field appearance="outline" class="query-input">
+          <mat-label>Query</mat-label>
+          <input matInput [(ngModel)]="query" placeholder="Enter your search query..." (keyup.enter)="runRerankingQuery()">
+        </mat-form-field>
+
+        <div class="reranking-options">
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Max Results</mat-label>
+            <input matInput type="number" [(ngModel)]="maxResults" min="1" max="50">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="threshold" min="0" max="1" step="0.1">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="option-field reranker-select">
+            <mat-label>Reranker Type</mat-label>
+            <mat-select [(ngModel)]="selectedRerankerType" (selectionChange)="onRerankerTypeChange()">
+              <mat-option value="none">None (no reranking)</mat-option>
+              <mat-option *ngFor="let type of rerankerInfo?.types" [value]="type.id" [disabled]="!type.supported">
+                {{ type.name }} {{ !type.supported ? '(not available)' : '' }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <!-- Reranker Parameters -->
+        <div *ngIf="getSelectedRerankerType()" class="reranker-params">
+          <div class="reranker-header">
+            <mat-icon class="reranker-type-icon">{{ getRerankerIcon(selectedRerankerType) }}</mat-icon>
+            <div class="reranker-info">
+              <span class="reranker-name">{{ getSelectedRerankerType()?.name }}</span>
+              <span class="reranker-description-text">{{ getSelectedRerankerType()?.description }}</span>
+            </div>
+          </div>
+
+          <!-- Select Parameters (Cross-encoder model selection, etc.) -->
+          <div *ngIf="getSelectParams().length > 0" class="params-section">
+            <h4 class="params-section-title">
+              <mat-icon>psychology</mat-icon>
+              Model Selection
+            </h4>
+            <div class="params-grid select-params">
+              <mat-form-field *ngFor="let param of getSelectParams()" appearance="outline" class="param-field model-select-field">
+                <mat-label>{{ param.label }}</mat-label>
+                <mat-select [value]="getParamStringValue(param.id)" (selectionChange)="setParamStringValue(param.id, $event.value)">
+                  <mat-option *ngFor="let option of param.options" [value]="option">
+                    {{ option }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+          </div>
+
+          <!-- Number Parameters -->
+          <div *ngIf="getNumberParams().length > 0" class="params-section">
+            <h4 class="params-section-title">
+              <mat-icon>tune</mat-icon>
+              Numeric Parameters
+            </h4>
+            <div class="params-grid">
+              <mat-form-field *ngFor="let param of getNumberParams()" appearance="outline" class="param-field">
+                <mat-label>{{ param.label }}</mat-label>
+                <input matInput type="number"
+                       [value]="getParamNumberValue(param.id)"
+                       (input)="setParamNumberValue(param.id, $any($event.target).valueAsNumber)"
+                       [min]="param.min"
+                       [max]="param.max"
+                       [step]="getParamStep(param)">
+                <mat-hint *ngIf="param.min !== undefined && param.max !== undefined">
+                  Range: {{ param.min }} - {{ param.max }}
+                </mat-hint>
+              </mat-form-field>
+            </div>
+          </div>
+
+          <!-- Boolean Parameters -->
+          <div *ngIf="getBooleanParams().length > 0" class="params-section">
+            <h4 class="params-section-title">
+              <mat-icon>toggle_on</mat-icon>
+              Options
+            </h4>
+            <div class="boolean-params-grid">
+              <div *ngFor="let param of getBooleanParams()" class="boolean-param-item">
+                <mat-slide-toggle
+                  [checked]="getParamBoolValue(param.id)"
+                  (change)="setParamBoolValue(param.id, $event.checked)"
+                  color="primary">
+                  {{ param.label }}
+                </mat-slide-toggle>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button mat-raised-button color="primary" (click)="runRerankingQuery()" [disabled]="isRerankingSearch || !query.trim()">
+          <mat-icon>search</mat-icon>
+          {{ isRerankingSearch ? 'Searching...' : 'Run Reranking Query' }}
+        </button>
+      </div>
+
+      <mat-progress-bar *ngIf="isRerankingSearch" mode="indeterminate"></mat-progress-bar>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Reranking Results -->
+  <mat-card *ngIf="rerankingResponse" class="results-card reranking-results-card">
+    <mat-card-header>
+      <mat-card-title>Reranking Results</mat-card-title>
+      <mat-card-subtitle>
+        {{ rerankingResponse.totalHits }} hits for "{{ rerankingResponse.query }}"
+        <span *ngIf="rerankingResponse.reranked" class="rerank-badge">
+          Reranked with {{ rerankingResponse.rerankerType | uppercase }}
+        </span>
+      </mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="rerankingResponse.error" class="error-banner">
+        Error: {{ rerankingResponse.error }}
+      </div>
+
+      <div class="timing-info">
+        <span>Initial search: {{ rerankingResponse.initialDurationMs }}ms</span>
+        <span *ngIf="rerankingResponse.reranked">Reranking: {{ rerankingResponse.rerankDurationMs }}ms</span>
+      </div>
+
+      <div class="results-split-container">
+        <!-- Initial Results -->
+        <div class="results-column">
+          <div class="results-column-header chip-initial">
+            <mat-icon>list</mat-icon>
+            <span class="column-title">Initial Results</span>
+            <span class="column-stats">{{ rerankingResponse.initialCount }} hits</span>
+          </div>
+          <div class="results-column-content">
+            <div *ngIf="rerankingResponse.initialHits?.length === 0" class="no-hits">
+              No results found
+            </div>
+            <div *ngFor="let hit of rerankingResponse.initialHits; let i = index" class="hit-item">
+              <div class="hit-header" (click)="toggleHitExpansion('initial-' + i)">
+                <div class="hit-meta">
+                  <span class="hit-index">#{{ i + 1 }}</span>
+                  <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
+                  <span class="hit-length">{{ hit.contentLength }} chars</span>
+                </div>
+                <mat-icon>{{ isHitExpanded('initial-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
+              </div>
+
+              <div class="hit-preview" *ngIf="!isHitExpanded('initial-' + i)">
+                {{ hit.preview }}
+              </div>
+
+              <div class="hit-content" *ngIf="isHitExpanded('initial-' + i)">
+                <pre>{{ hit.content }}</pre>
+                <div class="hit-actions">
+                  <button mat-icon-button (click)="copyContent(hit.content)" matTooltip="Copy content">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div *ngIf="hit.metadata" class="hit-metadata">
+                  <strong>Metadata:</strong>
+                  <pre>{{ hit.metadata | json }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reranked Results -->
+        <div class="results-column" *ngIf="rerankingResponse.reranked">
+          <div class="results-column-header chip-reranked">
+            <mat-icon>trending_up</mat-icon>
+            <span class="column-title">Reranked Results</span>
+            <span class="column-stats">{{ rerankingResponse.rerankedCount }} hits</span>
+          </div>
+          <div class="results-column-content">
+            <div *ngIf="rerankingResponse.rerankedHits?.length === 0" class="no-hits">
+              No reranked results
+            </div>
+            <div *ngFor="let hit of rerankingResponse.rerankedHits; let i = index" class="hit-item">
+              <div class="hit-header" (click)="toggleHitExpansion('reranked-' + i)">
+                <div class="hit-meta">
+                  <span class="hit-index">#{{ hit.newRank }}</span>
+                  <span class="hit-score">Score: {{ formatScore(hit.score) }}</span>
+                  <span class="rank-change" [ngClass]="getRankChangeClass(hit.rankChange)">
+                    <mat-icon class="rank-icon">{{ getRankChangeIcon(hit.rankChange) }}</mat-icon>
+                    {{ formatRankChange(hit.rankChange) }}
+                  </span>
+                  <span class="hit-length">{{ hit.contentLength }} chars</span>
+                </div>
+                <mat-icon>{{ isHitExpanded('reranked-' + i) ? 'expand_less' : 'expand_more' }}</mat-icon>
+              </div>
+
+              <div class="hit-preview" *ngIf="!isHitExpanded('reranked-' + i)">
+                {{ hit.preview }}
+              </div>
+
+              <div class="hit-content" *ngIf="isHitExpanded('reranked-' + i)">
+                <pre>{{ hit.content }}</pre>
+                <div class="hit-actions">
+                  <button mat-icon-button (click)="copyContent(hit.content)" matTooltip="Copy content">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div *ngIf="hit.metadata" class="hit-metadata">
+                  <strong>Metadata:</strong>
+                  <pre>{{ hit.metadata | json }}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Embedding Test Section -->
+  <mat-card class="embed-card">
+    <mat-card-header>
+      <mat-card-title>Test Embedding</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="embed-form">
+        <mat-form-field appearance="outline" class="embed-input">
+          <mat-label>Text to Embed</mat-label>
+          <textarea matInput [(ngModel)]="embedText" placeholder="Enter text to generate embedding..." rows="3"></textarea>
+        </mat-form-field>
+
+        <button mat-raised-button color="accent" (click)="testEmbedding()" [disabled]="isEmbedding || !embedText.trim()">
+          <mat-icon>memory</mat-icon>
+          {{ isEmbedding ? 'Embedding...' : 'Generate Embedding' }}
+        </button>
+      </div>
+
+      <mat-progress-bar *ngIf="isEmbedding" mode="indeterminate"></mat-progress-bar>
+
+      <div *ngIf="embedResponse" class="embed-result">
+        <div class="embed-info">
+          <span><strong>Model:</strong> {{ embedResponse.embeddingModel }}</span>
+          <span *ngIf="embedResponse.dimensions"><strong>Dimensions:</strong> {{ embedResponse.dimensions }}</span>
+          <span *ngIf="embedResponse.durationMs"><strong>Time:</strong> {{ embedResponse.durationMs }}ms</span>
+        </div>
+        <div *ngIf="embedResponse.preview" class="embed-preview">
+          <strong>First 10 values:</strong>
+          <code>{{ embedResponse.preview | json }}</code>
+        </div>
+        <div *ngIf="embedResponse.error" class="error-text">
+          Error: {{ embedResponse.error }}
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

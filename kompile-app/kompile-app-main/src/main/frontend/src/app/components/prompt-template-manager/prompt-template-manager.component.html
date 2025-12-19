@@ -1,0 +1,419 @@
+<div class="template-manager">
+  <!-- Header -->
+  <div class="header">
+    <div class="title-section">
+      <h2>Prompt Templates</h2>
+      <p class="subtitle">Create and manage reusable prompt templates with variables</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" (click)="refreshTemplates()">
+        <span class="icon">&#128260;</span> Refresh
+      </button>
+      <button class="btn btn-primary" (click)="startCreate()">
+        <span class="icon">&#43;</span> Create Template
+      </button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" *ngIf="summary">
+    <div class="card">
+      <div class="card-value">{{ summary.totalTemplates }}</div>
+      <div class="card-label">Total Templates</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.enabledTemplates }}</div>
+      <div class="card-label">Enabled</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.builtInTemplates }}</div>
+      <div class="card-label">Built-in</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.customTemplates }}</div>
+      <div class="card-label">Custom</div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="alert alert-error" *ngIf="errorMessage">
+    {{ errorMessage }}
+    <button class="close-btn" (click)="errorMessage = null">&times;</button>
+  </div>
+  <div class="alert alert-success" *ngIf="successMessage">
+    {{ successMessage }}
+  </div>
+
+  <!-- Search and Filters -->
+  <div class="search-bar">
+    <div class="search-input-wrapper">
+      <input
+        type="text"
+        class="search-input"
+        [(ngModel)]="searchQuery"
+        (keyup.enter)="searchTemplates()"
+        placeholder="Search templates by name, description, or tags..."
+      />
+      <button class="search-btn" (click)="searchTemplates()">Search</button>
+      <button class="clear-btn" *ngIf="searchQuery" (click)="clearSearch()">Clear</button>
+    </div>
+    <div class="view-toggle">
+      <button
+        [class.active]="viewMode === 'categories'"
+        (click)="viewMode = 'categories'"
+      >Categories</button>
+      <button
+        [class.active]="viewMode === 'grid'"
+        (click)="viewMode = 'grid'"
+      >Grid</button>
+      <button
+        [class.active]="viewMode === 'list'"
+        (click)="viewMode = 'list'"
+      >List</button>
+    </div>
+  </div>
+
+  <!-- Category Filters -->
+  <div class="category-filters">
+    <button
+      class="filter-btn"
+      [class.active]="selectedCategory === null"
+      (click)="filterByCategory(null)"
+    >All</button>
+    <button
+      *ngFor="let cat of categoryKeys; trackBy: trackByCategory"
+      class="filter-btn"
+      [class.active]="selectedCategory === cat"
+      (click)="filterByCategory(cat)"
+    >{{ getCategoryDisplayName(cat) }}</button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" *ngIf="isLoading">
+    <div class="spinner"></div>
+    <p>Loading templates...</p>
+  </div>
+
+  <!-- Content -->
+  <div class="content" *ngIf="!isLoading">
+    <!-- Categories View -->
+    <div class="categories-view" *ngIf="viewMode === 'categories'">
+      <div class="category-section" *ngFor="let cat of categoryKeys; trackBy: trackByCategory">
+        <div class="category-header">
+          <h3>{{ getCategoryDisplayName(cat) }}</h3>
+          <p class="category-desc">{{ getCategoryDescription(cat) }}</p>
+          <span class="template-count">{{ templatesByCategory[cat]?.length || 0 }} templates</span>
+        </div>
+        <div class="template-grid">
+          <div
+            class="template-card"
+            *ngFor="let template of templatesByCategory[cat]; trackBy: trackByTemplateName"
+            [class.disabled]="!template.enabled"
+            (click)="selectTemplate(template)"
+          >
+            <div class="template-card-header">
+              <span class="template-name">{{ template.displayName || template.name }}</span>
+              <span class="badge" [ngClass]="getSourceBadgeClass(template.builtIn)">
+                {{ template.builtIn ? 'Built-in' : 'Custom' }}
+              </span>
+            </div>
+            <p class="template-description">{{ template.description }}</p>
+            <div class="template-tags" *ngIf="template.tags?.length">
+              <span class="tag" *ngFor="let tag of template.tags?.slice(0, 3)">{{ tag }}</span>
+            </div>
+            <div class="template-meta">
+              <span *ngIf="template.variables?.length" class="meta-item">
+                {{ template.variables?.length }} variables
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grid View -->
+    <div class="template-grid" *ngIf="viewMode === 'grid'">
+      <div
+        class="template-card"
+        *ngFor="let template of templates; trackBy: trackByTemplateName"
+        [class.disabled]="!template.enabled"
+        (click)="selectTemplate(template)"
+      >
+        <div class="template-card-header">
+          <span class="template-name">{{ template.displayName || template.name }}</span>
+          <span class="badge" [ngClass]="getSourceBadgeClass(template.builtIn)">
+            {{ template.builtIn ? 'Built-in' : 'Custom' }}
+          </span>
+        </div>
+        <p class="template-description">{{ template.description }}</p>
+        <div class="template-meta">
+          <span class="category-badge">{{ getCategoryDisplayName(template.category || 'custom') }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- List View -->
+    <div class="template-list" *ngIf="viewMode === 'list'">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th>Type</th>
+            <th>Variables</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let template of templates; trackBy: trackByTemplateName" [class.disabled]="!template.enabled">
+            <td>
+              <span class="status-dot" [class.enabled]="template.enabled"></span>
+            </td>
+            <td class="template-name-cell" (click)="selectTemplate(template)">
+              {{ template.displayName || template.name }}
+            </td>
+            <td class="description-cell">{{ template.description }}</td>
+            <td>{{ getCategoryDisplayName(template.category || 'custom') }}</td>
+            <td>
+              <span class="badge" [ngClass]="getSourceBadgeClass(template.builtIn)">
+                {{ template.builtIn ? 'Built-in' : 'Custom' }}
+              </span>
+            </td>
+            <td>{{ template.variables?.length || 0 }}</td>
+            <td>
+              <button class="action-btn" (click)="toggleTemplateEnabled(template); $event.stopPropagation()">
+                {{ template.enabled ? 'Disable' : 'Enable' }}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Template Detail Panel -->
+  <div class="detail-panel" *ngIf="selectedTemplate || isCreating">
+    <div class="panel-overlay" (click)="closeTemplate()"></div>
+    <div class="panel-content">
+      <div class="panel-header">
+        <h3 *ngIf="!isCreating && !isEditMode">{{ selectedTemplate?.displayName || selectedTemplate?.name }}</h3>
+        <h3 *ngIf="isCreating">Create New Template</h3>
+        <h3 *ngIf="isEditMode && !isCreating">Edit Template</h3>
+        <button class="close-btn" (click)="closeTemplate()">&times;</button>
+      </div>
+
+      <!-- View Mode -->
+      <div class="panel-body" *ngIf="!isEditMode && !isCreating && selectedTemplate">
+        <div class="detail-section">
+          <label>Name</label>
+          <p>{{ selectedTemplate.name }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Description</label>
+          <p>{{ selectedTemplate.description }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Category</label>
+          <p>{{ getCategoryDisplayName(selectedTemplate.category || 'custom') }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Template Content</label>
+          <pre class="template-content">{{ selectedTemplate.content }}</pre>
+          <button class="btn btn-sm" (click)="copyTemplateContent()">Copy</button>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTemplate.systemPrompt">
+          <label>System Prompt</label>
+          <pre class="template-content">{{ selectedTemplate.systemPrompt }}</pre>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTemplate.variables?.length">
+          <label>Variables</label>
+          <div class="variable-list">
+            <div class="variable-item" *ngFor="let v of selectedTemplate.variables">
+              <span class="var-name">{{ '{' + '{' + v.name + '}' + '}' }}</span>
+              <span class="var-type">({{ v.type || 'string' }})</span>
+              <span class="var-required" *ngIf="v.required">[required]</span>
+              <p class="var-desc" *ngIf="v.description">{{ v.description }}</p>
+              <p class="var-default" *ngIf="v.defaultValue">Default: {{ v.defaultValue }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTemplate.tags?.length">
+          <label>Tags</label>
+          <div class="tags-list">
+            <span class="tag" *ngFor="let tag of selectedTemplate.tags">{{ tag }}</span>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTemplate.outputFormat || selectedTemplate.recommendedModel">
+          <label>Settings</label>
+          <div class="settings-list">
+            <p *ngIf="selectedTemplate.outputFormat">Output Format: {{ selectedTemplate.outputFormat }}</p>
+            <p *ngIf="selectedTemplate.recommendedModel">Recommended Model: {{ selectedTemplate.recommendedModel }}</p>
+            <p *ngIf="selectedTemplate.maxTokens">Max Tokens: {{ selectedTemplate.maxTokens }}</p>
+            <p *ngIf="selectedTemplate.temperature">Temperature: {{ selectedTemplate.temperature }}</p>
+          </div>
+        </div>
+
+        <!-- Preview Section -->
+        <div class="detail-section preview-section" *ngIf="showPreview">
+          <label>Preview Template</label>
+          <div class="preview-inputs">
+            <div class="preview-input" *ngFor="let v of selectedTemplate.variables">
+              <label>{{ v.displayName || v.name }}</label>
+              <input
+                type="text"
+                [(ngModel)]="previewVariables[v.name]"
+                [placeholder]="v.exampleValue || v.defaultValue || ''"
+              />
+            </div>
+          </div>
+          <div class="preview-actions">
+            <button class="btn btn-primary" (click)="runPreview()">Render</button>
+            <button class="btn btn-secondary" (click)="resetPreview()">Close Preview</button>
+          </div>
+          <div class="preview-result" *ngIf="previewResult">
+            <label>Rendered Output</label>
+            <pre>{{ previewResult }}</pre>
+            <button class="btn btn-sm" (click)="copyPreviewResult()">Copy</button>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn btn-secondary" (click)="initPreview()" *ngIf="!showPreview">Preview</button>
+          <button class="btn btn-secondary" (click)="startEdit()">Edit</button>
+          <button class="btn btn-secondary" (click)="duplicateTemplate(selectedTemplate)">Duplicate</button>
+          <button
+            class="btn btn-toggle"
+            (click)="toggleTemplateEnabled(selectedTemplate)"
+          >{{ selectedTemplate.enabled ? 'Disable' : 'Enable' }}</button>
+          <button
+            class="btn btn-danger"
+            *ngIf="!selectedTemplate.builtIn"
+            (click)="deleteTemplate(selectedTemplate)"
+          >Delete</button>
+        </div>
+      </div>
+
+      <!-- Edit/Create Mode -->
+      <div class="panel-body edit-mode" *ngIf="isEditMode || isCreating">
+        <div class="form-group">
+          <label>Name *</label>
+          <input type="text" [(ngModel)]="editForm.name" [disabled]="isEditMode && !!selectedTemplate?.builtIn" />
+          <small>Use lowercase letters, numbers, underscores, hyphens</small>
+        </div>
+
+        <div class="form-group">
+          <label>Display Name</label>
+          <input type="text" [(ngModel)]="editForm.displayName" />
+        </div>
+
+        <div class="form-group">
+          <label>Description</label>
+          <textarea [(ngModel)]="editForm.description" rows="2"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Category</label>
+          <select [(ngModel)]="editForm.category">
+            <option *ngFor="let cat of categoryKeys" [value]="cat">{{ getCategoryDisplayName(cat) }}</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Template Content *</label>
+          <textarea [(ngModel)]="editForm.content" rows="10" [placeholder]="'Use {{variableName}} for variables...'"></textarea>
+          <small>Variables use double curly braces: {{ '{{variableName}}' }}</small>
+        </div>
+
+        <div class="form-group">
+          <label>System Prompt (Optional)</label>
+          <textarea [(ngModel)]="editForm.systemPrompt" rows="4" placeholder="System prompt for the model..."></textarea>
+        </div>
+
+        <!-- Variables -->
+        <div class="form-group">
+          <label>Variables</label>
+          <div class="editable-list">
+            <div class="variable-editor" *ngFor="let v of editForm.variables; let i = index">
+              <div class="variable-row">
+                <input type="text" [(ngModel)]="v.name" placeholder="Variable name" />
+                <input type="text" [(ngModel)]="v.displayName" placeholder="Display name" />
+                <select [(ngModel)]="v.type">
+                  <option value="string">String</option>
+                  <option value="number">Number</option>
+                  <option value="boolean">Boolean</option>
+                  <option value="array">Array</option>
+                  <option value="object">Object</option>
+                </select>
+                <label class="checkbox-label">
+                  <input type="checkbox" [(ngModel)]="v.required" /> Required
+                </label>
+                <button class="remove-btn" (click)="removeVariable(i)">&times;</button>
+              </div>
+              <div class="variable-details">
+                <input type="text" [(ngModel)]="v.description" placeholder="Description" />
+                <input type="text" [(ngModel)]="v.defaultValue" placeholder="Default value" />
+              </div>
+            </div>
+            <button class="add-btn" (click)="addVariable()">+ Add Variable</button>
+          </div>
+        </div>
+
+        <!-- Tags -->
+        <div class="form-group">
+          <label>Tags</label>
+          <div class="editable-list">
+            <div class="list-item" *ngFor="let tag of editForm.tags; let i = index">
+              <input type="text" [(ngModel)]="editForm.tags![i]" />
+              <button class="remove-btn" (click)="removeTag(i)">&times;</button>
+            </div>
+            <button class="add-btn" (click)="addTag()">+ Add Tag</button>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="form-group">
+          <label>Output Format</label>
+          <select [(ngModel)]="editForm.outputFormat">
+            <option value="">None</option>
+            <option value="text">Text</option>
+            <option value="json">JSON</option>
+            <option value="markdown">Markdown</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group half">
+            <label>Max Tokens</label>
+            <input type="number" [(ngModel)]="editForm.maxTokens" />
+          </div>
+          <div class="form-group half">
+            <label>Temperature</label>
+            <input type="number" [(ngModel)]="editForm.temperature" step="0.1" min="0" max="2" />
+          </div>
+        </div>
+
+        <div class="form-group checkbox">
+          <label>
+            <input type="checkbox" [(ngModel)]="editForm.enabled" />
+            Enabled
+          </label>
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn btn-secondary" (click)="cancelEdit()">Cancel</button>
+          <button class="btn btn-primary" *ngIf="isCreating" (click)="createTemplate()">Create</button>
+          <button class="btn btn-primary" *ngIf="isEditMode" (click)="saveEdit()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

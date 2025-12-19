@@ -1,0 +1,70 @@
+<div class="settings-container">
+    <div class="settings-header">
+        <h2>Application Settings</h2>
+        <p class="subtitle">Configure global application behavior</p>
+    </div>
+
+    <div class="settings-content">
+        <mat-tab-group animationDuration="0ms">
+            <!-- General Settings Tab -->
+            <mat-tab label="General">
+                <div class="settings-section">
+                    <div class="section-header">
+                        <h3>Vector Store Configuration</h3>
+                        <p>Manage where your data is stored and indexed.</p>
+                    </div>
+
+                    <div class="loading-shade" *ngIf="isLoading">
+                        <mat-spinner diameter="40"></mat-spinner>
+                    </div>
+
+                    <div class="config-form" *ngIf="!isLoading">
+
+
+                        <mat-form-field appearance="outline" class="full-width">
+                            <mat-label>Vector (Dense) Store Path</mat-label>
+                            <input matInput [(ngModel)]="config.vectorStorePath"
+                                placeholder="e.g. ~/.kompile/anserini-vector-index">
+                            <mat-hint>Location for embedding vectors. Absolute path or ~ for user home.</mat-hint>
+                        </mat-form-field>
+
+                        <mat-form-field appearance="outline" class="full-width" style="margin-top: 16px;">
+                            <mat-label>Keyword (Sparse) Index Path</mat-label>
+                            <input matInput [(ngModel)]="config.keywordIndexPath"
+                                placeholder="e.g. ~/.kompile/anserini-keyword-index">
+                            <mat-hint>Location for Lucene keyword index. Absolute path or ~ for user home.</mat-hint>
+                        </mat-form-field>
+
+                        <div class="form-actions">
+                            <button mat-raised-button color="primary" (click)="saveSettings()" [disabled]="isLoading">
+                                <mat-icon>save</mat-icon>
+                                Save Settings
+                            </button>
+                            <mat-progress-spinner *ngIf="isLoading" diameter="24"
+                                mode="indeterminate"></mat-progress-spinner>
+
+                            <div *ngIf="saveMessage" class="success-message" [class.restart-required]="restartRequired">
+                                <mat-icon>{{ restartRequired ? 'warning' : 'check_circle' }}</mat-icon>
+                                <span>{{ saveMessage }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </mat-tab>
+
+            <!-- Subprocess Config Tab -->
+            <mat-tab label="Ingestion Subprocess">
+                <div class="tab-padding">
+                    <app-subprocess-config></app-subprocess-config>
+                </div>
+            </mat-tab>
+
+            <!-- Batch Config Tab -->
+            <mat-tab label="Batch Tuning">
+                <div class="tab-padding">
+                    <app-batch-size-config></app-batch-size-config>
+                </div>
+            </mat-tab>
+        </mat-tab-group>
+    </div>
+</div>

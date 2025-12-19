@@ -1,0 +1,511 @@
+<!--
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ -->
+
+<div class="mcp-server-builder">
+  <div class="header">
+    <h2>MCP Server Builder</h2>
+    <p class="subtitle">Create and manage custom Model Context Protocol servers</p>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="activeTab" class="main-tabs">
+    <!-- Servers Tab -->
+    <mat-tab label="Servers">
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="createServer()">
+            <mat-icon>add</mat-icon> New Server
+          </button>
+          <button mat-button (click)="openImportDialog()">
+            <mat-icon>upload</mat-icon> Import
+          </button>
+          <button mat-button (click)="loadServers()">
+            <mat-icon>refresh</mat-icon> Refresh
+          </button>
+        </div>
+
+        <div class="server-list" *ngIf="!isLoading">
+          <mat-card *ngFor="let server of servers" class="server-card" [class.selected]="selectedServer?.id === server.id">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [style.color]="getStatusColor(server.status)">{{ getStatusIcon(server.status) }}</mat-icon>
+              <mat-card-title>{{ server.name }}</mat-card-title>
+              <mat-card-subtitle>
+                {{ server.transportType }} | Port {{ server.port }} | v{{ server.version }}
+              </mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p *ngIf="server.description">{{ server.description }}</p>
+              <div class="stats">
+                <span class="stat"><mat-icon>build</mat-icon> {{ server.tools?.length || 0 }} tools</span>
+                <span class="stat"><mat-icon>storage</mat-icon> {{ server.resources?.length || 0 }} resources</span>
+                <span class="stat"><mat-icon>chat</mat-icon> {{ server.prompts?.length || 0 }} prompts</span>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button (click)="selectServer(server)">
+                <mat-icon>settings</mat-icon> Configure
+              </button>
+              <button mat-button (click)="editServer(server)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button *ngIf="server.status === 'STOPPED'" (click)="startServer(server)" color="primary">
+                <mat-icon>play_arrow</mat-icon> Start
+              </button>
+              <button mat-button *ngIf="server.status === 'RUNNING'" (click)="stopServer(server)" color="warn">
+                <mat-icon>stop</mat-icon> Stop
+              </button>
+              <button mat-button *ngIf="server.status === 'RUNNING'" (click)="restartServer(server)">
+                <mat-icon>refresh</mat-icon> Restart
+              </button>
+              <button mat-icon-button [matMenuTriggerFor]="serverMenu">
+                <mat-icon>more_vert</mat-icon>
+              </button>
+              <mat-menu #serverMenu="matMenu">
+                <button mat-menu-item (click)="exportServer(server)">
+                  <mat-icon>download</mat-icon> Export
+                </button>
+                <button mat-menu-item (click)="deleteServer(server)" class="delete-action">
+                  <mat-icon>delete</mat-icon> Delete
+                </button>
+              </mat-menu>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="servers.length === 0" class="empty-state">
+            <mat-icon>dns</mat-icon>
+            <p>No MCP servers configured yet.</p>
+            <button mat-raised-button color="primary" (click)="createServer()">Create Your First Server</button>
+          </div>
+        </div>
+
+        <mat-spinner *ngIf="isLoading" diameter="40"></mat-spinner>
+      </div>
+    </mat-tab>
+
+    <!-- Tools Tab -->
+    <mat-tab label="Tools" [disabled]="!selectedServer">
+      <div class="tab-content" *ngIf="selectedServer">
+        <div class="toolbar">
+          <span class="context-info">Server: <strong>{{ selectedServer.name }}</strong></span>
+          <button mat-raised-button color="primary" (click)="createTool()">
+            <mat-icon>add</mat-icon> New Tool
+          </button>
+        </div>
+
+        <div class="item-list">
+          <mat-card *ngFor="let tool of selectedServer.tools" class="item-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>build</mat-icon>
+              <mat-card-title>{{ tool.name }}</mat-card-title>
+              <mat-card-subtitle>{{ tool.implementationType }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p>{{ tool.description }}</p>
+              <div class="params" *ngIf="tool.parameters?.length">
+                <span class="label">Parameters:</span>
+                <mat-chip-listbox>
+                  <mat-chip *ngFor="let param of tool.parameters">
+                    {{ param.name }}: {{ param.type }}
+                    <span *ngIf="param.required" class="required">*</span>
+                  </mat-chip>
+                </mat-chip-listbox>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <mat-slide-toggle [(ngModel)]="tool.enabled" (change)="saveTool()">Enabled</mat-slide-toggle>
+              <button mat-button (click)="editTool(tool)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button color="warn" (click)="deleteTool(tool)">
+                <mat-icon>delete</mat-icon> Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="selectedServer.tools?.length === 0" class="empty-state">
+            <mat-icon>build</mat-icon>
+            <p>No tools configured for this server.</p>
+            <button mat-raised-button color="primary" (click)="createTool()">Add Tool</button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Resources Tab -->
+    <mat-tab label="Resources" [disabled]="!selectedServer">
+      <div class="tab-content" *ngIf="selectedServer">
+        <div class="toolbar">
+          <span class="context-info">Server: <strong>{{ selectedServer.name }}</strong></span>
+          <button mat-raised-button color="primary" (click)="createResource()">
+            <mat-icon>add</mat-icon> New Resource
+          </button>
+        </div>
+
+        <div class="item-list">
+          <mat-card *ngFor="let resource of selectedServer.resources" class="item-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>storage</mat-icon>
+              <mat-card-title>{{ resource.name }}</mat-card-title>
+              <mat-card-subtitle>{{ resource.resourceType }} | {{ resource.mimeType }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p class="uri"><strong>URI:</strong> {{ resource.uri }}</p>
+              <p *ngIf="resource.description">{{ resource.description }}</p>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <mat-slide-toggle [(ngModel)]="resource.enabled" (change)="saveResource()">Enabled</mat-slide-toggle>
+              <button mat-button (click)="editResource(resource)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button color="warn" (click)="deleteResource(resource)">
+                <mat-icon>delete</mat-icon> Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="selectedServer.resources?.length === 0" class="empty-state">
+            <mat-icon>storage</mat-icon>
+            <p>No resources configured for this server.</p>
+            <button mat-raised-button color="primary" (click)="createResource()">Add Resource</button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Prompts Tab -->
+    <mat-tab label="Prompts" [disabled]="!selectedServer">
+      <div class="tab-content" *ngIf="selectedServer">
+        <div class="toolbar">
+          <span class="context-info">Server: <strong>{{ selectedServer.name }}</strong></span>
+          <button mat-raised-button color="primary" (click)="createPrompt()">
+            <mat-icon>add</mat-icon> New Prompt
+          </button>
+        </div>
+
+        <div class="item-list">
+          <mat-card *ngFor="let prompt of selectedServer.prompts" class="item-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>chat</mat-icon>
+              <mat-card-title>{{ prompt.name }}</mat-card-title>
+              <mat-card-subtitle>{{ prompt.messages?.length || 0 }} messages, {{ prompt.arguments?.length || 0 }} arguments</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p *ngIf="prompt.description">{{ prompt.description }}</p>
+              <div class="args" *ngIf="prompt.arguments?.length">
+                <span class="label">Arguments:</span>
+                <mat-chip-listbox>
+                  <mat-chip *ngFor="let arg of prompt.arguments">
+                    {{ arg.name }}
+                    <span *ngIf="arg.required" class="required">*</span>
+                  </mat-chip>
+                </mat-chip-listbox>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <mat-slide-toggle [(ngModel)]="prompt.enabled" (change)="savePrompt()">Enabled</mat-slide-toggle>
+              <button mat-button (click)="editPrompt(prompt)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button color="warn" (click)="deletePrompt(prompt)">
+                <mat-icon>delete</mat-icon> Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="selectedServer.prompts?.length === 0" class="empty-state">
+            <mat-icon>chat</mat-icon>
+            <p>No prompts configured for this server.</p>
+            <button mat-raised-button color="primary" (click)="createPrompt()">Add Prompt</button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Server Dialog -->
+  <div class="dialog-overlay" *ngIf="showServerDialog" (click)="cancelServerDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>{{ isEditing ? 'Edit' : 'Create' }} MCP Server</h3>
+
+      <div class="form-content" *ngIf="editingServer">
+        <mat-form-field appearance="outline">
+          <mat-label>Server Name</mat-label>
+          <input matInput [(ngModel)]="editingServer.name" placeholder="My MCP Server">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Version</mat-label>
+          <input matInput [(ngModel)]="editingServer.version" placeholder="1.0.0">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Description</mat-label>
+          <textarea matInput [(ngModel)]="editingServer.description" rows="3"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Transport Type</mat-label>
+          <mat-select [(ngModel)]="editingServer.transportType">
+            <mat-option *ngFor="let type of transportTypes" [value]="type">{{ type }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="editingServer.transportType !== 'STDIO'">
+          <mat-label>Port</mat-label>
+          <input matInput type="number" [(ngModel)]="editingServer.port" min="1" max="65535">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Base Path</mat-label>
+          <input matInput [(ngModel)]="editingServer.basePath" placeholder="/mcp">
+        </mat-form-field>
+
+        <div class="toggles">
+          <mat-slide-toggle [(ngModel)]="editingServer.loggingEnabled">Enable Logging</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingServer.completionsEnabled">Enable Completions</mat-slide-toggle>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelServerDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveServer()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tool Dialog -->
+  <div class="dialog-overlay" *ngIf="showToolDialog" (click)="cancelToolDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ editingTool?.name ? 'Edit' : 'Create' }} Tool</h3>
+
+      <div class="form-content" *ngIf="editingTool">
+        <mat-form-field appearance="outline">
+          <mat-label>Tool Name</mat-label>
+          <input matInput [(ngModel)]="editingTool.name" placeholder="my_tool">
+          <mat-hint>Use snake_case for tool names</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Description</mat-label>
+          <textarea matInput [(ngModel)]="editingTool.description" rows="2"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Implementation Type</mat-label>
+          <mat-select [(ngModel)]="editingTool.implementationType">
+            <mat-option *ngFor="let type of toolTypes" [value]="type">{{ type }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <!-- HTTP Endpoint Config -->
+        <div class="config-section" *ngIf="editingTool.implementationType === 'HTTP_ENDPOINT'">
+          <h4>HTTP Configuration</h4>
+          <mat-form-field appearance="outline">
+            <mat-label>URL</mat-label>
+            <input matInput [(ngModel)]="editingTool.httpConfig!.url" placeholder="http://localhost:8080/api/endpoint">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Method</mat-label>
+            <mat-select [(ngModel)]="editingTool.httpConfig!.method">
+              <mat-option value="GET">GET</mat-option>
+              <mat-option value="POST">POST</mat-option>
+              <mat-option value="PUT">PUT</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Timeout (ms)</mat-label>
+            <input matInput type="number" [(ngModel)]="editingTool.httpConfig!.timeoutMs">
+          </mat-form-field>
+        </div>
+
+        <!-- Parameters Section -->
+        <div class="params-section">
+          <h4>Parameters <button mat-icon-button (click)="addParameter()"><mat-icon>add</mat-icon></button></h4>
+          <div class="param-row" *ngFor="let param of editingTool.parameters; let i = index">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="param.name">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Type</mat-label>
+              <mat-select [(ngModel)]="param.type">
+                <mat-option *ngFor="let t of parameterTypes" [value]="t">{{ t }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Description</mat-label>
+              <input matInput [(ngModel)]="param.description">
+            </mat-form-field>
+            <mat-checkbox [(ngModel)]="param.required">Required</mat-checkbox>
+            <button mat-icon-button color="warn" (click)="removeParameter(i)">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="editingTool.enabled">Enabled</mat-slide-toggle>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelToolDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveTool()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resource Dialog -->
+  <div class="dialog-overlay" *ngIf="showResourceDialog" (click)="cancelResourceDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ editingResource?.name ? 'Edit' : 'Create' }} Resource</h3>
+
+      <div class="form-content" *ngIf="editingResource">
+        <mat-form-field appearance="outline">
+          <mat-label>URI</mat-label>
+          <input matInput [(ngModel)]="editingResource.uri" placeholder="custom://my-resource">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Name</mat-label>
+          <input matInput [(ngModel)]="editingResource.name">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Description</mat-label>
+          <textarea matInput [(ngModel)]="editingResource.description" rows="2"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>MIME Type</mat-label>
+          <input matInput [(ngModel)]="editingResource.mimeType" placeholder="text/plain">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Resource Type</mat-label>
+          <mat-select [(ngModel)]="editingResource.resourceType">
+            <mat-option *ngFor="let type of resourceTypes" [value]="type">{{ type }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <!-- Static Content -->
+        <mat-form-field appearance="outline" *ngIf="editingResource.resourceType === 'STATIC'">
+          <mat-label>Static Content</mat-label>
+          <textarea matInput [(ngModel)]="editingResource.staticContent" rows="5"></textarea>
+        </mat-form-field>
+
+        <div class="toggles">
+          <mat-slide-toggle [(ngModel)]="editingResource.supportsSubscription">Supports Subscription</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingResource.enabled">Enabled</mat-slide-toggle>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelResourceDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveResource()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Dialog -->
+  <div class="dialog-overlay" *ngIf="showPromptDialog" (click)="cancelPromptDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ editingPrompt?.name ? 'Edit' : 'Create' }} Prompt</h3>
+
+      <div class="form-content" *ngIf="editingPrompt">
+        <mat-form-field appearance="outline">
+          <mat-label>Prompt Name</mat-label>
+          <input matInput [(ngModel)]="editingPrompt.name" placeholder="my_prompt">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Description</mat-label>
+          <textarea matInput [(ngModel)]="editingPrompt.description" rows="2"></textarea>
+        </mat-form-field>
+
+        <!-- Arguments Section -->
+        <div class="args-section">
+          <h4>Arguments <button mat-icon-button (click)="addPromptArgument()"><mat-icon>add</mat-icon></button></h4>
+          <div class="arg-row" *ngFor="let arg of editingPrompt.arguments; let i = index">
+            <mat-form-field appearance="outline">
+              <mat-label>Name</mat-label>
+              <input matInput [(ngModel)]="arg.name">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Description</mat-label>
+              <input matInput [(ngModel)]="arg.description">
+            </mat-form-field>
+            <mat-checkbox [(ngModel)]="arg.required">Required</mat-checkbox>
+            <button mat-icon-button color="warn" (click)="removePromptArgument(i)">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Messages Section -->
+        <div class="messages-section">
+          <h4>Messages <button mat-icon-button (click)="addPromptMessage()"><mat-icon>add</mat-icon></button></h4>
+          <div class="message-row" *ngFor="let msg of editingPrompt.messages; let i = index">
+            <mat-form-field appearance="outline">
+              <mat-label>Role</mat-label>
+              <mat-select [(ngModel)]="msg.role">
+                <mat-option *ngFor="let role of messageRoles" [value]="role">{{ role }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="message-content">
+              <mat-label>Content</mat-label>
+              <textarea matInput [(ngModel)]="msg.content" rows="3" placeholder="Use {argument} for placeholders"></textarea>
+            </mat-form-field>
+            <button mat-icon-button color="warn" (click)="removePromptMessage(i)">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="editingPrompt.enabled">Enabled</mat-slide-toggle>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelPromptDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="savePrompt()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Dialog -->
+  <div class="dialog-overlay" *ngIf="showImportDialog" (click)="cancelImportDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>Import MCP Server Configuration</h3>
+
+      <div class="form-content">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>JSON Configuration</mat-label>
+          <textarea matInput [(ngModel)]="importJson" rows="10" placeholder="Paste JSON configuration here..."></textarea>
+        </mat-form-field>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelImportDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="importServer()" [disabled]="!importJson.trim()">Import</button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,918 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.processing-settings-container {
+  padding: 16px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.settings-header mat-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  color: #1976d2;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 24px;
+  color: #333;
+}
+
+.settings-header p {
+  margin: 0;
+  font-size: 14px;
+  color: #666;
+  width: 100%;
+}
+
+.processing-settings-card {
+  background: linear-gradient(135deg, #e8f5e9 0%, #e3f2fd 100%);
+}
+
+.processing-settings-card .settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.processing-settings-card .section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.processing-settings-card .section-header mat-icon {
+  font-size: 20px;
+  color: #1976d2;
+}
+
+.processing-settings-card .settings-section {
+  padding: 8px 0;
+}
+
+/* Memory Status Styles */
+.memory-status-section {
+  padding: 8px 0;
+}
+
+.memory-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.memory-bar {
+  flex: 1;
+  height: 8px !important;
+  border-radius: 4px;
+}
+
+.memory-percent {
+  font-weight: 600;
+  min-width: 50px;
+  text-align: right;
+}
+
+.memory-percent.memory-ok {
+  color: #4caf50;
+}
+
+.memory-percent.memory-warning {
+  color: #ff9800;
+}
+
+.memory-percent.memory-critical {
+  color: #f44336;
+}
+
+.memory-details {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85em;
+  color: #666;
+}
+
+.memory-status-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75em;
+  font-weight: 600;
+}
+
+.memory-status-badge.status-ok {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.memory-status-badge.status-warning {
+  background-color: #fff3e0;
+  color: #e65100;
+}
+
+.memory-status-badge.status-critical {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+/* Job Status Styles */
+.job-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.job-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.job-count {
+  font-size: 1.5em;
+  font-weight: 600;
+  color: #1976d2;
+}
+
+.job-count.queued {
+  color: #ff9800;
+}
+
+.job-label {
+  font-size: 0.75em;
+  color: #666;
+}
+
+.job-separator {
+  font-size: 1.5em;
+  color: #ccc;
+}
+
+/* Settings Form Fields */
+.setting-field {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.adaptive-toggle {
+  margin-top: 8px;
+}
+
+.toggle-hint {
+  display: block;
+  margin-top: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+/* Thread Pool Info */
+.thread-pool-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+.thread-pool-info mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #666;
+}
+
+.thread-pool-info small {
+  color: #666;
+}
+
+/* Apply Settings Button */
+.apply-settings-btn {
+  margin-top: 12px;
+  width: 100%;
+}
+
+/* Settings Loading State */
+.settings-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
+  color: #666;
+}
+
+/* Batch Type Badge */
+.batch-type-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.batch-type-badge.storage {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.batch-type-badge.inference {
+  background-color: #fce4ec;
+  color: #c2185b;
+}
+
+.batch-explanation {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+  margin: 4px 0 8px 0;
+  line-height: 1.4;
+}
+
+.batch-explanation em {
+  color: #f57c00;
+  font-weight: 500;
+}
+
+/* Embedding Batch Reference Section */
+.embedding-batch-reference {
+  margin-top: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, #fce4ec 0%, #fff3e0 100%);
+  border-radius: 8px;
+  border-left: 3px solid #e91e63;
+}
+
+.embedding-batch-reference .reference-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.8);
+}
+
+.embedding-batch-reference .reference-header mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #c2185b;
+}
+
+/* Current Batch Config Display */
+.current-batch-config {
+  margin: 12px 0;
+  padding: 12px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+  border-radius: 8px;
+  border-left: 4px solid #1976d2;
+}
+
+.current-batch-config .config-display {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.current-batch-config .config-value-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.current-batch-config .config-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.current-batch-config .config-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1976d2;
+  font-family: 'Roboto Mono', monospace;
+}
+
+.current-batch-config .config-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: #4caf50;
+  color: white;
+}
+
+.current-batch-config .config-source mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.current-batch-config .config-source.default {
+  background-color: #9e9e9e;
+}
+
+.current-batch-config .config-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.current-batch-config .detail-item {
+  font-family: 'Roboto Mono', monospace;
+}
+
+.current-batch-config .detail-item.model-name {
+  color: #7b1fa2;
+  font-weight: 500;
+}
+
+.current-batch-config .detail-divider {
+  color: rgba(0, 0, 0, 0.2);
+}
+
+/* No Benchmark Config State */
+.no-benchmark-config {
+  margin: 12px 0;
+  padding: 16px;
+  background: linear-gradient(135deg, #fff3e0 0%, #ffecb3 100%);
+  border-radius: 8px;
+  border-left: 4px solid #ff9800;
+}
+
+.no-benchmark-config .no-config-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.no-benchmark-config .no-config-message mat-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: #ff9800;
+  flex-shrink: 0;
+}
+
+.no-benchmark-config .message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.no-benchmark-config .message-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e65100;
+}
+
+.no-benchmark-config .message-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+  line-height: 1.4;
+}
+
+.no-benchmark-config .message-hint strong {
+  color: #1976d2;
+}
+
+/* Adaptive Metrics Section */
+.adaptive-metrics-section {
+  margin-top: 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.adaptive-header {
+  cursor: pointer;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background 0.2s ease;
+}
+
+.adaptive-header:hover {
+  background: linear-gradient(135deg, #e8ecf1 0%, #dde2e8 100%);
+}
+
+.adaptive-header mat-icon {
+  color: #6c757d;
+  transition: color 0.3s ease;
+}
+
+.adaptive-header mat-icon.active-icon {
+  color: #1976d2;
+}
+
+.adaptive-header span {
+  font-weight: 500;
+  font-size: 14px;
+  color: #333;
+}
+
+.adaptive-status-badge {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.adaptive-status-badge.active {
+  background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+  color: white;
+}
+
+.adaptive-status-badge.inactive {
+  background: #e9ecef;
+  color: #6c757d;
+}
+
+.expand-icon {
+  color: #999;
+}
+
+.adaptive-metrics-content {
+  padding: 16px;
+  background: #fafbfc;
+}
+
+/* Current Batch Sizes Display */
+.adaptive-current-batches {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.batch-metric-card {
+  padding: 12px;
+  border-radius: 8px;
+  text-align: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.batch-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.batch-metric-card.embedding {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  border: 1px solid #a5d6a7;
+}
+
+.batch-metric-card.indexing {
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  border: 1px solid #90caf9;
+}
+
+.batch-metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.batch-metric-card.embedding .batch-metric-header mat-icon {
+  color: #2e7d32;
+}
+
+.batch-metric-card.indexing .batch-metric-header mat-icon {
+  color: #1565c0;
+}
+
+.batch-metric-header span {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #555;
+}
+
+.batch-metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #333;
+  line-height: 1.2;
+}
+
+.batch-metric-label {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
+
+/* Performance Metrics Row */
+.adaptive-performance-row {
+  display: flex;
+  justify-content: space-around;
+  gap: 12px;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 12px;
+}
+
+.perf-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.perf-metric mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #6c757d;
+}
+
+.perf-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #333;
+}
+
+.perf-label {
+  font-size: 9px;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.perf-metric.memory-ok mat-icon,
+.perf-metric.memory-ok .perf-value {
+  color: #28a745;
+}
+
+.perf-metric.memory-warning mat-icon,
+.perf-metric.memory-warning .perf-value {
+  color: #ffc107;
+}
+
+.perf-metric.memory-critical mat-icon,
+.perf-metric.memory-critical .perf-value {
+  color: #dc3545;
+}
+
+/* Adjustments Summary */
+.adaptive-adjustments-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  background: #fff3cd;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.adjustment-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #856404;
+}
+
+.adjustment-count mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.last-adjustment-reason {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.reason-label {
+  color: #666;
+}
+
+.reason-text {
+  color: #333;
+  font-weight: 500;
+}
+
+/* Recent Adjustments List */
+.recent-adjustments {
+  margin-top: 12px;
+  border-top: 1px solid #e0e0e0;
+  padding-top: 12px;
+}
+
+.adjustments-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+}
+
+.adjustments-header mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #6c757d;
+}
+
+.adjustment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adjustment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.adjustment-item.adjustment-increase {
+  background: #d4edda;
+  border-left: 3px solid #28a745;
+}
+
+.adjustment-item.adjustment-decrease {
+  background: #f8d7da;
+  border-left: 3px solid #dc3545;
+}
+
+.adjustment-item mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.adjustment-item.adjustment-increase mat-icon {
+  color: #28a745;
+}
+
+.adjustment-item.adjustment-decrease mat-icon {
+  color: #dc3545;
+}
+
+.adj-time {
+  color: #666;
+  min-width: 60px;
+}
+
+.adj-change {
+  font-weight: 600;
+  color: #333;
+  min-width: 60px;
+}
+
+.adj-reason {
+  color: #555;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Last Updated */
+.adaptive-last-updated {
+  margin-top: 12px;
+  text-align: right;
+  color: #999;
+}
+
+.adaptive-last-updated small {
+  font-size: 10px;
+}
+
+/* Inactive Message */
+.adaptive-inactive-message {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: #f8f9fa;
+  color: #6c757d;
+  font-size: 12px;
+}
+
+.adaptive-inactive-message mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #adb5bd;
+}
+
+/* ==================== Subprocess Configuration Section ==================== */
+
+.subprocess-section {
+  margin-top: 16px;
+}
+
+.subprocess-section .section-header {
+  margin-bottom: 4px;
+}
+
+.subprocess-section .section-description {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+  margin: 0 0 16px 0;
+  line-height: 1.4;
+}
+
+.subprocess-status-badge {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.subprocess-status-badge.enabled {
+  background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+  color: white;
+}
+
+.subprocess-status-badge.disabled {
+  background: #e9ecef;
+  color: #6c757d;
+}
+
+.subprocess-config-content {
+  padding: 16px;
+  background: linear-gradient(135deg, #f0f4f8 0%, #e6eef6 100%);
+  border-radius: 8px;
+  border: 1px solid #d0d8e0;
+}
+
+.subprocess-toggle-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.quick-toggle-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.quick-toggle-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-weight: 500;
+}
+
+.quick-toggle-btn mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.subprocess-toggle {
+  font-weight: 500;
+}
+
+.subprocess-advanced-settings {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.advanced-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.advanced-settings-header mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #666;
+}
+
+.subprocess-advanced-settings .settings-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.apply-subprocess-btn {
+  margin-top: 16px;
+  width: 100%;
+}
+
+.subprocess-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: #666;
+}
+
+.subprocess-debug-row {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.debug-btn {
+  width: fit-content;
+}
+
+.debug-hint {
+  color: #999;
+  font-size: 11px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .adaptive-current-batches {
+    grid-template-columns: 1fr;
+  }
+
+  .adaptive-performance-row {
+    flex-wrap: wrap;
+  }
+
+  .adaptive-adjustments-summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .adjustment-item {
+    flex-wrap: wrap;
+  }
+
+  .adj-reason {
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .subprocess-advanced-settings .settings-row {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,378 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="mcp-debugger-container">
+  <div class="debugger-header">
+    <h2>
+      <mat-icon>bug_report</mat-icon>
+      MCP Tool Debugger
+    </h2>
+    <div class="header-actions">
+      <button mat-raised-button color="primary" (click)="loadTools()" [disabled]="isLoading">
+        <mat-icon>refresh</mat-icon>
+        Refresh Tools
+      </button>
+      <button mat-raised-button [color]="showActionLog ? 'accent' : 'basic'" (click)="toggleActionLog()">
+        <mat-icon>history</mat-icon>
+        {{ showActionLog ? 'Hide' : 'Show' }} Action Log
+      </button>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div class="messages" *ngIf="errorMessage || successMessage">
+    <div class="error-message" *ngIf="errorMessage">
+      <mat-icon>error</mat-icon>
+      {{ errorMessage }}
+      <button mat-icon-button (click)="clearMessages()"><mat-icon>close</mat-icon></button>
+    </div>
+    <div class="success-message" *ngIf="successMessage">
+      <mat-icon>check_circle</mat-icon>
+      {{ successMessage }}
+      <button mat-icon-button (click)="clearMessages()"><mat-icon>close</mat-icon></button>
+    </div>
+  </div>
+
+  <!-- Loading indicator -->
+  <mat-progress-bar *ngIf="isLoading" mode="indeterminate"></mat-progress-bar>
+
+  <div class="debugger-content">
+    <!-- Tool Selection Panel -->
+    <div class="tool-selection-panel">
+      <h3>Available Tools ({{ tools.length }})</h3>
+
+      <mat-form-field appearance="outline" class="search-field">
+        <mat-label>Search tools...</mat-label>
+        <input matInput #searchInput placeholder="Type to filter">
+        <mat-icon matSuffix>search</mat-icon>
+      </mat-form-field>
+
+      <div class="tool-categories">
+        <mat-accordion>
+          <mat-expansion-panel *ngFor="let category of getToolsByCategory() | keyvalue" [expanded]="true">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>{{ getCategoryIcon(category.key) }}</mat-icon>
+                {{ category.key }} ({{ category.value.length }})
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            <mat-list>
+              <mat-list-item *ngFor="let tool of category.value"
+                             [class.selected]="selectedTool?.name === tool.name"
+                             (click)="selectTool(tool)"
+                             [hidden]="searchInput.value && !tool.name.toLowerCase().includes(searchInput.value.toLowerCase())">
+                <mat-icon matListItemIcon>build</mat-icon>
+                <div matListItemTitle>{{ tool.name }}</div>
+                <div matListItemLine class="tool-description">{{ tool.description | slice:0:60 }}{{ tool.description.length > 60 ? '...' : '' }}</div>
+              </mat-list-item>
+            </mat-list>
+          </mat-expansion-panel>
+        </mat-accordion>
+      </div>
+    </div>
+
+    <!-- Tool Execution Panel -->
+    <div class="tool-execution-panel">
+      <div *ngIf="!selectedTool" class="no-tool-selected">
+        <mat-icon>touch_app</mat-icon>
+        <p>Select a tool from the list to test it</p>
+      </div>
+
+      <div *ngIf="selectedTool" class="tool-details">
+        <div class="tool-header">
+          <h3>
+            <mat-icon>build</mat-icon>
+            {{ selectedTool.name }}
+          </h3>
+          <mat-chip-listbox>
+            <mat-chip [style.background-color]="getSourceColor(selectedTool)">
+              <mat-icon>{{ getSourceIcon(selectedTool) }}</mat-icon>
+              {{ getSourceLabel(selectedTool) }}
+            </mat-chip>
+            <mat-chip>{{ getCategoryFromTool(selectedTool) }}</mat-chip>
+          </mat-chip-listbox>
+        </div>
+
+        <!-- Source-specific info -->
+        <div class="tool-source-info" *ngIf="selectedTool">
+          <ng-container *ngIf="$any(selectedTool).source === 'mcp_server'">
+            <div class="source-detail">
+              <mat-icon>dns</mat-icon>
+              <span>Server: {{ $any(selectedTool).serverName }}</span>
+              <mat-chip [class]="$any(selectedTool).serverStatus === 'RUNNING' ? 'status-running' : 'status-stopped'">
+                {{ $any(selectedTool).serverStatus }}
+              </mat-chip>
+            </div>
+          </ng-container>
+          <ng-container *ngIf="$any(selectedTool).source === 'rest_bridge'">
+            <div class="source-detail">
+              <mat-icon>http</mat-icon>
+              <span>Bridge: {{ $any(selectedTool).bridgeName }}</span>
+              <mat-chip [class]="$any(selectedTool).bridgeStatus === 'RUNNING' ? 'status-running' : 'status-stopped'">
+                {{ $any(selectedTool).bridgeStatus }}
+              </mat-chip>
+            </div>
+            <div class="source-detail" *ngIf="$any(selectedTool).restEndpoint">
+              <mat-icon>api</mat-icon>
+              <span>{{ $any(selectedTool).restEndpoint.method }} {{ $any(selectedTool).restEndpoint.path }}</span>
+            </div>
+          </ng-container>
+        </div>
+
+        <p class="tool-description-full">{{ selectedTool.description }}</p>
+
+        <!-- Arguments Form -->
+        <div class="arguments-section" *ngIf="toolArguments.length > 0">
+          <h4>Arguments</h4>
+          <div class="arguments-form">
+            <div *ngFor="let arg of toolArguments" class="argument-field">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>
+                  {{ arg.name }}
+                  <span *ngIf="arg.required" class="required">*</span>
+                  <span class="type-hint">({{ arg.type }})</span>
+                </mat-label>
+
+                <!-- String input -->
+                <input matInput *ngIf="arg.type === 'string'" [(ngModel)]="arg.value"
+                       [placeholder]="arg.required ? 'Required' : 'Optional'">
+
+                <!-- Number input -->
+                <input matInput *ngIf="arg.type === 'integer' || arg.type === 'number'"
+                       type="number" [(ngModel)]="arg.value"
+                       [placeholder]="arg.required ? 'Required' : 'Optional'">
+
+                <!-- Boolean input -->
+                <mat-select *ngIf="arg.type === 'boolean'" [(ngModel)]="arg.value">
+                  <mat-option [value]="null">Not set</mat-option>
+                  <mat-option [value]="true">true</mat-option>
+                  <mat-option [value]="false">false</mat-option>
+                </mat-select>
+
+                <!-- Object/Array input as JSON -->
+                <textarea matInput *ngIf="arg.type === 'object' || arg.type === 'array'"
+                          [(ngModel)]="arg.value" rows="3"
+                          [placeholder]="arg.type === 'array' ? '[]' : '{}'"></textarea>
+              </mat-form-field>
+            </div>
+          </div>
+        </div>
+
+        <div class="arguments-section" *ngIf="toolArguments.length === 0">
+          <p class="no-args">This tool has no arguments</p>
+        </div>
+
+        <!-- Execute Button -->
+        <div class="execute-section">
+          <button mat-raised-button color="primary" (click)="executeTool()"
+                  [disabled]="isExecuting" class="execute-button">
+            <mat-icon *ngIf="!isExecuting">play_arrow</mat-icon>
+            <mat-spinner *ngIf="isExecuting" diameter="20"></mat-spinner>
+            {{ isExecuting ? 'Executing...' : 'Execute Tool' }}
+          </button>
+        </div>
+
+        <!-- Current Result -->
+        <div class="result-section" *ngIf="currentResult">
+          <div class="result-header">
+            <h4>
+              <mat-icon [class.error]="currentResult.error">
+                {{ currentResult.error ? 'error' : 'check_circle' }}
+              </mat-icon>
+              Result
+            </h4>
+            <div class="result-meta">
+              <span class="duration">{{ currentResult.durationMs }}ms</span>
+              <button mat-icon-button matTooltip="Copy result"
+                      (click)="copyToClipboard(formatJson(currentResult.result || currentResult.error))">
+                <mat-icon>content_copy</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <div class="result-content" [class.error]="currentResult.error">
+            <pre>{{ formatJson(currentResult.error || currentResult.result) }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Execution History Panel -->
+    <div class="history-panel">
+      <div class="history-header">
+        <h3>
+          <mat-icon>history</mat-icon>
+          Execution History ({{ executionResults.length }})
+        </h3>
+        <button mat-icon-button (click)="clearHistory()" matTooltip="Clear history"
+                *ngIf="executionResults.length > 0">
+          <mat-icon>delete_sweep</mat-icon>
+        </button>
+      </div>
+
+      <div class="history-list" *ngIf="executionResults.length > 0">
+        <div *ngFor="let result of executionResults" class="history-item"
+             [class.error]="result.error" (click)="currentResult = result">
+          <div class="history-item-header">
+            <mat-icon [class.error]="result.error">
+              {{ result.error ? 'error' : 'check_circle' }}
+            </mat-icon>
+            <span class="tool-name">{{ result.toolName }}</span>
+            <span class="duration">{{ result.durationMs }}ms</span>
+          </div>
+          <div class="history-item-time">
+            {{ result.timestamp | date:'HH:mm:ss' }}
+          </div>
+        </div>
+      </div>
+
+      <div class="no-history" *ngIf="executionResults.length === 0">
+        <mat-icon>hourglass_empty</mat-icon>
+        <p>No executions yet</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Action Log Panel -->
+  <div class="action-log-panel" *ngIf="showActionLog">
+    <div class="action-log-header">
+      <h3>
+        <mat-icon>history</mat-icon>
+        MCP Action Log
+      </h3>
+
+      <div class="action-log-stats" *ngIf="actionLogStats">
+        <mat-chip-listbox>
+          <mat-chip>Total: {{ actionLogStats.totalActions }}</mat-chip>
+          <mat-chip>Undoable: {{ actionLogStats.undoablePending }}</mat-chip>
+          <mat-chip>Undone: {{ actionLogStats.undone }}</mat-chip>
+        </mat-chip-listbox>
+      </div>
+
+      <div class="action-log-actions">
+        <button mat-button (click)="undoLastAction()" color="warn">
+          <mat-icon>undo</mat-icon>
+          Undo Last
+        </button>
+        <button mat-button (click)="clearActionLog()" color="warn">
+          <mat-icon>delete_forever</mat-icon>
+          Clear Log
+        </button>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="action-log-filters">
+      <mat-form-field appearance="outline">
+        <mat-label>Limit</mat-label>
+        <mat-select [(ngModel)]="actionLogFilter.limit" (selectionChange)="loadActionLog()">
+          <mat-option [value]="10">10</mat-option>
+          <mat-option [value]="25">25</mat-option>
+          <mat-option [value]="50">50</mat-option>
+          <mat-option [value]="100">100</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Action Type</mat-label>
+        <mat-select [(ngModel)]="actionLogFilter.actionType" (selectionChange)="loadActionLog()">
+          <mat-option *ngFor="let type of actionTypes" [value]="type">
+            {{ type || 'All' }}
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-slide-toggle [(ngModel)]="actionLogFilter.undoableOnly" (change)="loadActionLog()">
+        Undoable only
+      </mat-slide-toggle>
+
+      <button mat-icon-button (click)="loadActionLog()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+
+    <!-- Action Log Table -->
+    <div class="action-log-table">
+      <table mat-table [dataSource]="actionLog" class="full-width">
+        <!-- ID Column -->
+        <ng-container matColumnDef="id">
+          <th mat-header-cell *matHeaderCellDef>ID</th>
+          <td mat-cell *matCellDef="let action">{{ action.id }}</td>
+        </ng-container>
+
+        <!-- Tool Column -->
+        <ng-container matColumnDef="toolName">
+          <th mat-header-cell *matHeaderCellDef>Tool</th>
+          <td mat-cell *matCellDef="let action">
+            <span class="tool-chip">{{ action.toolName }}</span>
+          </td>
+        </ng-container>
+
+        <!-- Type Column -->
+        <ng-container matColumnDef="actionType">
+          <th mat-header-cell *matHeaderCellDef>Type</th>
+          <td mat-cell *matCellDef="let action">
+            <mat-icon [style.color]="getActionTypeColor(action.actionType)">
+              {{ getActionTypeIcon(action.actionType) }}
+            </mat-icon>
+            {{ action.actionType }}
+          </td>
+        </ng-container>
+
+        <!-- Time Column -->
+        <ng-container matColumnDef="timestamp">
+          <th mat-header-cell *matHeaderCellDef>Time</th>
+          <td mat-cell *matCellDef="let action">{{ formatTimestamp(action.timestamp) }}</td>
+        </ng-container>
+
+        <!-- Status Column -->
+        <ng-container matColumnDef="status">
+          <th mat-header-cell *matHeaderCellDef>Status</th>
+          <td mat-cell *matCellDef="let action">
+            <mat-chip *ngIf="action.undone" color="accent">Undone</mat-chip>
+            <mat-chip *ngIf="action.undoable && !action.undone" color="primary">Undoable</mat-chip>
+            <mat-chip *ngIf="!action.undoable" disabled>Read-only</mat-chip>
+          </td>
+        </ng-container>
+
+        <!-- Actions Column -->
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>Actions</th>
+          <td mat-cell *matCellDef="let action">
+            <button mat-icon-button matTooltip="Undo this action"
+                    *ngIf="action.undoable && !action.undone"
+                    (click)="undoAction(action.id)" color="warn">
+              <mat-icon>undo</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="View details"
+                    (click)="copyToClipboard(formatJson(action.arguments))">
+              <mat-icon>visibility</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="['id', 'toolName', 'actionType', 'timestamp', 'status', 'actions']"></tr>
+        <tr mat-row *matRowDef="let row; columns: ['id', 'toolName', 'actionType', 'timestamp', 'status', 'actions'];"></tr>
+      </table>
+
+      <div class="no-actions" *ngIf="actionLog.length === 0">
+        <mat-icon>inbox</mat-icon>
+        <p>No actions in log</p>
+      </div>
+    </div>
+  </div>
+</div>

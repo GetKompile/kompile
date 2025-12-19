@@ -1,0 +1,243 @@
+<div class="connections-container">
+  <header class="page-header">
+    <div class="header-content">
+      <h1>Connected Services</h1>
+      <p class="subtitle">Manage OAuth connections for document sources</p>
+    </div>
+    <button mat-icon-button (click)="refresh()" [disabled]="loading" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </header>
+
+  <div class="loading-overlay" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading connections...</span>
+  </div>
+
+  <div class="connections-grid" *ngIf="!loading">
+    <mat-card *ngFor="let provider of providers" class="connection-card"
+              [class.connected]="isConnected(provider.providerId)"
+              [class.not-configured]="!provider.configured">
+
+      <mat-card-header>
+        <div mat-card-avatar class="provider-avatar"
+             [style.background-color]="getProviderColor(provider.providerId)">
+          <mat-icon>{{ provider.icon }}</mat-icon>
+        </div>
+        <mat-card-title>{{ provider.displayName }}</mat-card-title>
+        <mat-card-subtitle>{{ provider.description }}</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <!-- Not Configured State -->
+        <div *ngIf="!provider.configured" class="not-configured-message">
+          <mat-icon color="warn">warning</mat-icon>
+          <span>{{ provider.notConfiguredMessage || 'Not configured' }}</span>
+        </div>
+
+        <!-- Connection Status -->
+        <ng-container *ngIf="provider.configured">
+          <div class="connection-status" *ngIf="getConnection(provider.providerId) as connection">
+            <div class="status-row">
+              <mat-icon [color]="getStatusColor(connection.status)">
+                {{ getStatusIcon(connection.status) }}
+              </mat-icon>
+              <span class="status-text" [class]="connection.status">
+                {{ connection.status | titlecase }}
+              </span>
+            </div>
+
+            <!-- User Info -->
+            <div class="user-info" *ngIf="connection.status === 'connected'">
+              <img *ngIf="connection.userPicture" [src]="connection.userPicture"
+                   class="user-avatar" alt="User avatar">
+              <div class="user-details">
+                <span class="user-name" *ngIf="connection.userName">{{ connection.userName }}</span>
+                <span class="user-email" *ngIf="connection.userEmail">{{ connection.userEmail }}</span>
+              </div>
+            </div>
+
+            <!-- Token Expiry Warning -->
+            <div class="expiry-warning" *ngIf="connection.needsRefresh && connection.status === 'connected'">
+              <mat-icon color="warn">schedule</mat-icon>
+              <span>Token expires soon - consider refreshing</span>
+            </div>
+
+            <!-- Error Message -->
+            <div class="error-message" *ngIf="connection.status === 'error' && connection.errorMessage">
+              <mat-icon color="warn">error_outline</mat-icon>
+              <span>{{ connection.errorMessage }}</span>
+            </div>
+
+            <!-- Timestamps -->
+            <div class="timestamps" *ngIf="connection.status === 'connected'">
+              <span *ngIf="connection.connectedAt">
+                Connected: {{ formatDate(connection.connectedAt) }}
+              </span>
+              <span *ngIf="connection.lastUsedAt">
+                Last used: {{ formatDate(connection.lastUsedAt) }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Disconnected State -->
+          <div class="disconnected-state" *ngIf="!getConnection(provider.providerId) || getConnection(provider.providerId)?.status === 'disconnected'">
+            <mat-icon>link_off</mat-icon>
+            <span>Not connected</span>
+          </div>
+        </ng-container>
+
+        <!-- Scopes -->
+        <div class="scopes-section" *ngIf="provider.requiredScopes?.length">
+          <span class="scopes-label">Permissions:</span>
+          <div class="scopes-list">
+            <mat-chip-set>
+              <mat-chip *ngFor="let scope of provider.requiredScopes?.slice(0, 3)">
+                {{ scope | slice:0:30 }}{{ scope.length > 30 ? '...' : '' }}
+              </mat-chip>
+              <mat-chip *ngIf="(provider.requiredScopes?.length ?? 0) > 3">
+                +{{ provider.requiredScopes.length - 3 }} more
+              </mat-chip>
+            </mat-chip-set>
+          </div>
+        </div>
+
+        <!-- Related Sources -->
+        <div class="related-sources" *ngIf="provider.relatedSources?.length">
+          <span class="related-label">Used by:</span>
+          <span class="source-tags">
+            <span class="source-tag" *ngFor="let source of provider.relatedSources">
+              {{ source }}
+            </span>
+          </span>
+        </div>
+      </mat-card-content>
+
+      <mat-divider></mat-divider>
+
+      <mat-card-actions>
+        <ng-container *ngIf="provider.configured">
+          <!-- Connect Button -->
+          <button mat-raised-button color="primary"
+                  *ngIf="!isConnected(provider.providerId)"
+                  [disabled]="connectingProvider === provider.providerId"
+                  (click)="connect(provider.providerId)">
+            <mat-icon *ngIf="connectingProvider !== provider.providerId">link</mat-icon>
+            <mat-spinner *ngIf="connectingProvider === provider.providerId"
+                         diameter="20" color="accent"></mat-spinner>
+            {{ connectingProvider === provider.providerId ? 'Connecting...' : 'Connect' }}
+          </button>
+
+          <!-- Connected Actions -->
+          <ng-container *ngIf="isConnected(provider.providerId)">
+            <button mat-button color="primary" (click)="checkHealth(provider.providerId)"
+                    matTooltip="Check connection health">
+              <mat-icon>health_and_safety</mat-icon>
+              Check
+            </button>
+            <button mat-button (click)="refreshToken(provider.providerId)"
+                    *ngIf="getConnection(provider.providerId)?.needsRefresh"
+                    matTooltip="Refresh access token">
+              <mat-icon>refresh</mat-icon>
+              Refresh Token
+            </button>
+            <button mat-button color="warn" (click)="disconnect(provider.providerId)"
+                    matTooltip="Disconnect from this service">
+              <mat-icon>link_off</mat-icon>
+              Disconnect
+            </button>
+          </ng-container>
+
+          <!-- Error State: Reconnect -->
+          <button mat-raised-button color="warn"
+                  *ngIf="getConnection(provider.providerId)?.status === 'error'"
+                  [disabled]="connectingProvider === provider.providerId"
+                  (click)="connect(provider.providerId)">
+            <mat-icon>refresh</mat-icon>
+            Reconnect
+          </button>
+        </ng-container>
+
+        <!-- Not Configured -->
+        <button mat-button disabled *ngIf="!provider.configured">
+          <mat-icon>settings</mat-icon>
+          Configuration Required
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+
+  <!-- Empty State -->
+  <div class="empty-state" *ngIf="!loading && providers.length === 0">
+    <mat-icon>cloud_off</mat-icon>
+    <h3>No OAuth Providers Available</h3>
+    <p>Configure OAuth providers in your application settings to enable external service connections.</p>
+  </div>
+
+  <mat-divider class="section-divider"></mat-divider>
+
+  <!-- Setup Instructions -->
+  <section class="setup-instructions">
+    <h2>Setup Instructions</h2>
+    <p>To enable OAuth connections, you need to configure the client credentials for each provider:</p>
+
+    <div class="instruction-grid">
+      <div class="instruction-card">
+        <h3><mat-icon>google</mat-icon> Google</h3>
+        <ol>
+          <li>Go to <a href="https://console.cloud.google.com" target="_blank">Google Cloud Console</a></li>
+          <li>Create a new project or select existing</li>
+          <li>Enable Drive API</li>
+          <li>Create OAuth 2.0 credentials</li>
+          <li>Add redirect URI: <code>/api/oauth/google/callback</code></li>
+          <li>Set <code>kompile.oauth.google.client-id</code> and <code>kompile.oauth.google.client-secret</code></li>
+        </ol>
+      </div>
+
+      <div class="instruction-card">
+        <h3><mat-icon>microsoft</mat-icon> Microsoft</h3>
+        <ol>
+          <li>Go to <a href="https://portal.azure.com" target="_blank">Azure Portal</a></li>
+          <li>Register a new application</li>
+          <li>Add API permissions (Files.Read, User.Read)</li>
+          <li>Create client secret</li>
+          <li>Add redirect URI: <code>/api/oauth/microsoft/callback</code></li>
+          <li>Set <code>kompile.oauth.microsoft.client-id</code> and <code>kompile.oauth.microsoft.client-secret</code></li>
+        </ol>
+      </div>
+
+      <div class="instruction-card">
+        <h3><mat-icon>link</mat-icon> Atlassian</h3>
+        <ol>
+          <li>Go to <a href="https://developer.atlassian.com/console/myapps/" target="_blank">Atlassian Developer Console</a></li>
+          <li>Create a new OAuth 2.0 app</li>
+          <li>Add Confluence and Jira scopes</li>
+          <li>Add redirect URI: <code>/api/oauth/atlassian/callback</code></li>
+          <li>Set <code>kompile.oauth.atlassian.client-id</code> and <code>kompile.oauth.atlassian.client-secret</code></li>
+        </ol>
+      </div>
+
+      <div class="instruction-card">
+        <h3><mat-icon>auto_stories</mat-icon> Notion</h3>
+        <ol>
+          <li>Go to <a href="https://www.notion.so/my-integrations" target="_blank">Notion Integrations</a></li>
+          <li>Create a new integration</li>
+          <li>Select OAuth type</li>
+          <li>Add redirect URI: <code>/api/oauth/notion/callback</code></li>
+          <li>Set <code>kompile.oauth.notion.client-id</code> and <code>kompile.oauth.notion.client-secret</code></li>
+        </ol>
+      </div>
+
+      <div class="instruction-card">
+        <h3><mat-icon>tag</mat-icon> Slack</h3>
+        <ol>
+          <li>Go to <a href="https://api.slack.com/apps" target="_blank">Slack App Directory</a></li>
+          <li>Create a new app</li>
+          <li>Add OAuth scopes (channels:history, channels:read)</li>
+          <li>Add redirect URI: <code>/api/oauth/slack/callback</code></li>
+          <li>Set <code>kompile.oauth.slack.client-id</code> and <code>kompile.oauth.slack.client-secret</code></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,356 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.download-model-container {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 28px;
+  font-weight: 500;
+  margin: 0 0 8px 0;
+  color: #1a237e;
+}
+
+.page-header .subtitle {
+  color: #666;
+  margin: 0;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  gap: 24px;
+}
+
+/* Download Form Card */
+.download-form-card {
+  border-radius: 8px;
+}
+
+.download-form-card mat-card-avatar {
+  color: #1a237e;
+}
+
+.download-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row mat-form-field {
+  flex: 1;
+}
+
+/* Source Selector */
+.source-selector {
+  margin-bottom: 8px;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.source-toggles {
+  width: 100%;
+  display: flex;
+}
+
+.source-toggles mat-button-toggle {
+  flex: 1;
+}
+
+.source-toggles mat-button-toggle mat-icon {
+  margin-right: 4px;
+}
+
+/* Options Panel */
+.options-panel {
+  margin-top: 8px;
+  box-shadow: none;
+  border: 1px solid #e0e0e0;
+}
+
+.options-panel mat-panel-title mat-icon {
+  margin-right: 8px;
+}
+
+/* Checkbox Row */
+.checkbox-row {
+  margin-top: 8px;
+}
+
+/* Progress Card */
+.progress-card {
+  border-radius: 8px;
+  height: fit-content;
+}
+
+.progress-card mat-card-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.progress-card mat-card-avatar.status-completed {
+  color: #4caf50;
+}
+
+.progress-card mat-card-avatar.status-failed {
+  color: #f44336;
+}
+
+.progress-card mat-card-avatar.status-downloading,
+.progress-card mat-card-avatar.status-converting,
+.progress-card mat-card-avatar.status-validating {
+  color: #2196f3;
+}
+
+.progress-section {
+  margin: 16px 0;
+}
+
+.progress-details {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.progress-percent {
+  font-weight: 500;
+  color: #1a237e;
+}
+
+.progress-status {
+  color: #666;
+}
+
+/* Stage Timeline */
+.stage-timeline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24px;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.stage-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: #9e9e9e;
+  font-size: 12px;
+}
+
+.stage-item mat-icon {
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+}
+
+.stage-item.active {
+  color: #2196f3;
+}
+
+.stage-item.active mat-icon {
+  animation: pulse 1s infinite;
+}
+
+.stage-item.completed {
+  color: #4caf50;
+}
+
+.stage-connector {
+  flex: 1;
+  height: 2px;
+  background: #e0e0e0;
+  margin: 0 8px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Error Message */
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px;
+  background: #ffebee;
+  border-radius: 4px;
+  color: #c62828;
+}
+
+.error-message mat-icon {
+  flex-shrink: 0;
+}
+
+/* Recent Card */
+.recent-card {
+  border-radius: 8px;
+  height: fit-content;
+}
+
+.recent-card mat-card-avatar {
+  color: #666;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.status-badge.status-completed {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-badge.status-failed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.status-badge.status-pending,
+.status-badge.status-downloading,
+.status-badge.status-converting {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.time-ago {
+  margin-left: 8px;
+  color: #999;
+  font-size: 12px;
+}
+
+/* Status icons */
+.status-completed {
+  color: #4caf50;
+}
+
+.status-failed {
+  color: #f44336;
+}
+
+.status-pending,
+.status-downloading,
+.status-converting,
+.status-validating {
+  color: #2196f3;
+}
+
+/* Help Panel */
+.help-panel {
+  margin-top: 24px;
+  box-shadow: none;
+  border: 1px solid #e0e0e0;
+}
+
+.help-panel mat-panel-title mat-icon {
+  margin-right: 8px;
+}
+
+.help-content {
+  padding: 8px 0;
+}
+
+.help-content h4 {
+  margin: 16px 0 8px 0;
+  color: #1a237e;
+}
+
+.help-content h4:first-child {
+  margin-top: 0;
+}
+
+.help-content ul {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.help-content li {
+  margin-bottom: 4px;
+}
+
+.help-content code {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row {
+    flex-direction: column;
+  }
+
+  .source-toggles {
+    flex-wrap: wrap;
+  }
+
+  .source-toggles mat-button-toggle {
+    flex: 1 1 45%;
+  }
+}
+
+/* Snackbar styles */
+:host ::ng-deep .snackbar-success {
+  background-color: #4caf50;
+  color: white;
+}
+
+:host ::ng-deep .snackbar-error {
+  background-color: #f44336;
+  color: white;
+}

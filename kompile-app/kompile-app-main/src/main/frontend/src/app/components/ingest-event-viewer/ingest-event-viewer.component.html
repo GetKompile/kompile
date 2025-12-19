@@ -1,0 +1,777 @@
+<!--
+  Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="event-viewer-container">
+  <!-- Header -->
+  <div class="event-viewer-header">
+    <div class="header-title">
+      <mat-icon>history</mat-icon>
+      <h2>Ingest Event Log</h2>
+      <span class="status-badge" [ngClass]="status?.enabled ? 'enabled' : 'disabled'">
+        {{ status?.enabled ? 'Enabled' : 'Disabled' }}
+      </span>
+      <span class="ws-badge" [ngClass]="wsConnected ? 'ws-connected' : 'ws-disconnected'" matTooltip="WebSocket status for real-time updates">
+        <mat-icon>{{ wsConnected ? 'wifi' : 'wifi_off' }}</mat-icon>
+        {{ wsConnected ? 'Live' : 'Polling' }}
+      </span>
+    </div>
+
+    <div class="header-actions">
+      <!-- Refresh controls -->
+      <div class="refresh-controls">
+        <button mat-icon-button (click)="manualRefresh()" [disabled]="loading" matTooltip="Refresh">
+          <mat-icon [class.spinning]="loading">refresh</mat-icon>
+        </button>
+
+        <mat-slide-toggle
+          [(ngModel)]="autoRefresh"
+          (change)="toggleAutoRefresh()"
+          matTooltip="Auto-refresh">
+        </mat-slide-toggle>
+
+        <mat-form-field appearance="outline" class="interval-field" *ngIf="autoRefresh">
+          <mat-select [(value)]="refreshInterval" (selectionChange)="onRefreshIntervalChange()">
+            <mat-option [value]="5">5s</mat-option>
+            <mat-option [value]="10">10s</mat-option>
+            <mat-option [value]="30">30s</mat-option>
+            <mat-option [value]="60">60s</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <!-- View mode toggle -->
+      <mat-button-toggle-group [(value)]="viewMode" (change)="onViewModeChange($event.value)">
+        <mat-button-toggle value="live" matTooltip="Live monitor (build orchestrator style)">
+          <mat-icon>monitor</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle value="grouped" matTooltip="Grouped by task">
+          <mat-icon>folder</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle value="timeline" matTooltip="Timeline view">
+          <mat-icon>timeline</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle value="table" matTooltip="Table view">
+          <mat-icon>table_rows</mat-icon>
+        </mat-button-toggle>
+      </mat-button-toggle-group>
+
+      <!-- Cleanup button -->
+      <button mat-stroked-button color="warn" (click)="openCleanupDialog()" matTooltip="Cleanup old events">
+        <mat-icon>delete_sweep</mat-icon>
+        Cleanup
+      </button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" *ngIf="summary">
+    <mat-card class="summary-card">
+      <mat-card-content>
+        <div class="summary-value">{{ summary.totalTasks }}</div>
+        <div class="summary-label">Total Tasks</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card success">
+      <mat-card-content>
+        <div class="summary-value">{{ summary.completed }}</div>
+        <div class="summary-label">Completed</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card error">
+      <mat-card-content>
+        <div class="summary-value">{{ summary.failed }}</div>
+        <div class="summary-label">Failed</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card warning">
+      <mat-card-content>
+        <div class="summary-value">{{ summary.errorCount }}</div>
+        <div class="summary-label">Errors</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card info">
+      <mat-card-content>
+        <div class="summary-value">{{ formatDuration(summary.averageDurationMs) }}</div>
+        <div class="summary-label">Avg Duration</div>
+      </mat-card-content>
+    </mat-card>
+
+    <mat-card class="summary-card">
+      <mat-card-content>
+        <div class="summary-value">{{ summary.totalEventsInDb | number }}</div>
+        <div class="summary-label">Total Events</div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Filters -->
+  <mat-expansion-panel class="filters-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon>filter_list</mat-icon>
+        Filters
+        <span class="filter-count" *ngIf="filterEventTypes.length || filterPhases.length || searchTerm">
+          ({{ filterEventTypes.length + filterPhases.length + (searchTerm ? 1 : 0) }} active)
+        </span>
+      </mat-panel-title>
+    </mat-expansion-panel-header>
+
+    <div class="filters-content">
+      <!-- Search -->
+      <mat-form-field appearance="outline" class="search-field">
+        <mat-label>Search</mat-label>
+        <input matInput [(ngModel)]="searchTerm" (ngModelChange)="onFilterChange()" placeholder="Search by file, task ID, or message">
+        <mat-icon matSuffix>search</mat-icon>
+      </mat-form-field>
+
+      <!-- Lookback time -->
+      <mat-form-field appearance="outline" class="lookback-field">
+        <mat-label>Lookback</mat-label>
+        <mat-select [(value)]="lookbackHours" (selectionChange)="onLookbackChange()">
+          <mat-option [value]="1">1 hour</mat-option>
+          <mat-option [value]="6">6 hours</mat-option>
+          <mat-option [value]="24">24 hours</mat-option>
+          <mat-option [value]="48">48 hours</mat-option>
+          <mat-option [value]="168">7 days</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <!-- Errors only toggle -->
+      <mat-slide-toggle [(ngModel)]="showErrorsOnly" (change)="loadEvents()">
+        Errors only
+      </mat-slide-toggle>
+
+      <!-- Event type chips -->
+      <div class="filter-section">
+        <label>Event Types:</label>
+        <mat-chip-listbox multiple>
+          <mat-chip-option
+            *ngFor="let type of eventTypeOptions"
+            [selected]="isEventTypeSelected(type)"
+            (click)="toggleEventTypeFilter(type)"
+            [ngClass]="getSeverityClass(type)">
+            <mat-icon>{{ getEventTypeIcon(type) }}</mat-icon>
+            {{ getEventTypeDisplayName(type) }}
+          </mat-chip-option>
+        </mat-chip-listbox>
+      </div>
+
+      <!-- Phase chips -->
+      <div class="filter-section">
+        <label>Phases:</label>
+        <mat-chip-listbox multiple>
+          <mat-chip-option
+            *ngFor="let phase of phaseOptions"
+            [selected]="isPhaseSelected(phase)"
+            (click)="togglePhaseFilter(phase)">
+            <mat-icon>{{ getPhaseIcon(phase) }}</mat-icon>
+            {{ getPhaseDisplayName(phase) }}
+          </mat-chip-option>
+        </mat-chip-listbox>
+      </div>
+
+      <button mat-button color="primary" (click)="clearFilters()">
+        <mat-icon>clear_all</mat-icon>
+        Clear Filters
+      </button>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- Error message -->
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    {{ error }}
+    <button mat-icon-button (click)="error = null">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading indicator -->
+  <mat-progress-bar mode="indeterminate" *ngIf="loading"></mat-progress-bar>
+
+  <!-- Main content -->
+  <div class="event-content" #eventLogContainer>
+
+    <!-- Live Log View (Build Orchestrator Style) -->
+    <div class="live-log-view" *ngIf="viewMode === 'live'">
+      <!-- Current State Banner -->
+      <div class="state-display full-width" [ngClass]="getCurrentStateClass()">
+        <div class="connection-indicator" [ngClass]="{'disconnected': !wsConnected}"></div>
+        <mat-icon>{{ getCurrentStateIcon() }}</mat-icon>
+        <span>{{ getCurrentStateText() }}</span>
+        <span class="task-count" *ngIf="getActiveTaskCount() > 0">({{ getActiveTaskCount() }} active)</span>
+      </div>
+
+      <!-- All Events Log Panel -->
+      <div class="log-panel full-width">
+        <div class="log-panel-header">
+          <mat-icon>article</mat-icon>
+          Live Event Stream
+          <span class="event-count-badge" *ngIf="liveEvents.length > 0">({{ liveEvents.length }} events)</span>
+        </div>
+        <div class="log-content" #liveLogContent>
+          <div *ngIf="liveEvents.length === 0" class="empty-log-message">
+            Waiting for events... Upload a document to see live progress updates.
+          </div>
+          <div
+            *ngFor="let event of liveEvents; trackBy: trackByEventId"
+            class="log-line"
+            [ngClass]="getLogLineClass(event)">
+            <span class="log-timestamp">{{ formatLogTimestamp(event.timestamp) }}</span>
+            <span class="log-message">
+              <strong>[{{ event.phase ? getPhaseDisplayName(event.phase) : 'SYSTEM' }}]</strong>
+              {{ event.fileName }} - {{ event.message }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Side by Side: Active Tasks and Errors -->
+      <div class="log-panel">
+        <div class="log-panel-header">
+          <mat-icon>pending_actions</mat-icon>
+          Active Tasks
+        </div>
+        <div class="log-content">
+          <div *ngIf="getActiveTasks().length === 0" class="empty-log-message">
+            No active tasks.
+          </div>
+          <div *ngFor="let task of getActiveTasks()" class="log-line log-info">
+            <span class="log-timestamp">{{ formatLogTimestamp(task.latestEvent.timestamp) }}</span>
+            <span class="log-message">
+              <strong>{{ task.fileName }}</strong>
+              - {{ task.latestEvent.phase ? getPhaseDisplayName(task.latestEvent.phase) : 'PROCESSING' }}: {{ task.latestEvent.message }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-panel">
+        <div class="log-panel-header">
+          <mat-icon>error_outline</mat-icon>
+          Errors & Warnings
+        </div>
+        <div class="log-content">
+          <div *ngIf="getErrorEvents().length === 0" class="empty-log-message">
+            No errors or warnings.
+          </div>
+          <div
+            *ngFor="let event of getErrorEvents(); trackBy: trackByEventId"
+            class="log-line"
+            [ngClass]="getLogLineClass(event)">
+            <span class="log-timestamp">{{ formatLogTimestamp(event.timestamp) }}</span>
+            <span class="log-message">
+              <strong>{{ event.fileName }}</strong> - {{ event.errorMessage || event.message }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grouped View -->
+    <div class="grouped-view" *ngIf="viewMode === 'grouped'">
+      <div class="task-group"
+           *ngFor="let group of taskGroups; trackBy: trackByTaskId"
+           [ngClass]="getStatusClass(group.status)">
+
+        <div class="task-header" (click)="onTaskClick(group)">
+          <mat-icon class="expand-icon">
+            {{ group.expanded ? 'expand_more' : 'chevron_right' }}
+          </mat-icon>
+
+          <mat-icon class="status-icon" [ngClass]="getStatusClass(group.status)">
+            {{ getEventTypeIcon(group.latestEvent.eventType) }}
+          </mat-icon>
+
+          <div class="task-info">
+            <div class="task-filename">{{ group.fileName }}</div>
+            <div class="task-meta">
+              <span class="task-id">{{ group.taskId }}</span>
+              <span class="task-time">{{ getRelativeTime(group.latestEvent.timestamp) }}</span>
+            </div>
+          </div>
+
+          <div class="task-status">
+            <span class="status-label">{{ getEventTypeDisplayName(group.latestEvent.eventType) }}</span>
+            <span class="event-count">{{ group.events.length }} events</span>
+          </div>
+
+          <button mat-icon-button
+                  (click)="deleteTaskEvents(group.taskId, $event)"
+                  matTooltip="Delete task events"
+                  class="delete-btn">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </div>
+
+        <div class="task-events" *ngIf="group.expanded" [@expandCollapse]>
+          <!-- ND4J Environment Panel -->
+          <mat-expansion-panel class="environment-panel" *ngIf="group.environment?.environmentCaptured || group.loadingEnvironment">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>settings</mat-icon>
+                ND4J Environment at Job Start
+              </mat-panel-title>
+              <mat-panel-description>
+                <span *ngIf="group.loadingEnvironment">Loading...</span>
+                <span *ngIf="group.environment?.environmentCaptured">Configuration snapshot captured</span>
+                <span *ngIf="group.environment && !group.environment.environmentCaptured && !group.loadingEnvironment">Not captured</span>
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <ng-container *ngIf="group.environment?.nd4jEnvironment as env">
+              <div class="environment-content">
+                <div class="env-section">
+                  <h4>Thread Configuration</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Max Threads</span>
+                      <span class="env-value">{{ env.maxThreads ?? 'N/A' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Max Master Threads</span>
+                      <span class="env-value">{{ env.maxMasterThreads ?? 'N/A' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Debug Settings</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Debug Mode</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.debug}">
+                        {{ env.debug ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Verbose</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.verbose}">
+                        {{ env.verbose ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Profiling</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.profiling}">
+                        {{ env.profiling ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Leak Detector</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.leaksDetector}">
+                        {{ env.leaksDetector ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Core Settings</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">BLAS</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.enableBlas}">
+                        {{ env.enableBlas ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Helpers Allowed</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.helpersAllowed}">
+                        {{ env.helpersAllowed ? 'Yes' : 'No' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">TAD Threshold</span>
+                      <span class="env-value">{{ env.tadThreshold ?? 'N/A' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Elementwise Threshold</span>
+                      <span class="env-value">{{ env.elementwiseThreshold ?? 'N/A' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Lifecycle Tracking</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Lifecycle Tracking</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.lifecycleTracking}">
+                        {{ env.lifecycleTracking ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Track Views</span>
+                      <span class="env-value">{{ env.trackViews ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Track Deletions</span>
+                      <span class="env-value">{{ env.trackDeletions ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Snapshot Files</span>
+                      <span class="env-value">{{ env.snapshotFiles ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Track Operations</span>
+                      <span class="env-value">{{ env.trackOperations ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Stack Depth</span>
+                      <span class="env-value">{{ env.stackDepth ?? 'N/A' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Report Interval</span>
+                      <span class="env-value">{{ env.reportInterval ?? 'N/A' }}s</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Individual Trackers</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">NDArray Tracking</span>
+                      <span class="env-value">{{ env.ndArrayTracking ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">DataBuffer Tracking</span>
+                      <span class="env-value">{{ env.dataBufferTracking ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">TAD Cache Tracking</span>
+                      <span class="env-value">{{ env.tadCacheTracking ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Shape Cache Tracking</span>
+                      <span class="env-value">{{ env.shapeCacheTracking ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">OpContext Tracking</span>
+                      <span class="env-value">{{ env.opContextTracking ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Max Deletion History</span>
+                      <span class="env-value">{{ env.maxDeletionHistory ?? 'N/A' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Memory Limits</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Max Primary Memory</span>
+                      <span class="env-value">{{ env.maxPrimaryMemory ? (env.maxPrimaryMemory / 1048576 | number:'1.0-0') + ' MB' : 'Unlimited' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Max Special Memory</span>
+                      <span class="env-value">{{ env.maxSpecialMemory ? (env.maxSpecialMemory / 1048576 | number:'1.0-0') + ' MB' : 'Unlimited' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Max Device Memory</span>
+                      <span class="env-value">{{ env.maxDeviceMemory ? (env.maxDeviceMemory / 1048576 | number:'1.0-0') + ' MB' : 'Unlimited' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Function Tracing</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Trace Allocate</span>
+                      <span class="env-value">{{ env.funcTracePrintAllocate ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Trace Deallocate</span>
+                      <span class="env-value">{{ env.funcTracePrintDeallocate ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Java Only Traces</span>
+                      <span class="env-value">{{ env.funcTracePrintJavaOnly ? 'Yes' : 'No' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Advanced Debugging</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Log Native NDArray Creation</span>
+                      <span class="env-value">{{ env.logNativeNDArrayCreation ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Log NDArray Events</span>
+                      <span class="env-value">{{ env.logNDArrayEvents ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Check Input Change</span>
+                      <span class="env-value">{{ env.checkInputChange ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Check Output Change</span>
+                      <span class="env-value">{{ env.checkOutputChange ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Track Workspace Open/Close</span>
+                      <span class="env-value">{{ env.trackWorkspaceOpenClose ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Variable Tracing</span>
+                      <span class="env-value">{{ env.variableTracingEnabled ? 'Yes' : 'No' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>Memory Deletion Settings</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Delete Shape Info</span>
+                      <span class="env-value">{{ env.deleteShapeInfo ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Delete Primary</span>
+                      <span class="env-value">{{ env.deletePrimary ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Delete Special</span>
+                      <span class="env-value">{{ env.deleteSpecial ? 'Yes' : 'No' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>JavaCPP Settings</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">Logger Debug</span>
+                      <span class="env-value">{{ env.javacppLoggerDebug ? 'Yes' : 'No' }}</span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">Paths First</span>
+                      <span class="env-value">{{ env.javacppPathsFirst ? 'Yes' : 'No' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section">
+                  <h4>BLAS Configuration</h4>
+                  <div class="env-grid">
+                    <div class="env-item">
+                      <span class="env-label">BLAS Serialization</span>
+                      <span class="env-value" [ngClass]="{'enabled': env.blasSerializationEnabled}">
+                        {{ env.blasSerializationEnabled ? 'Enabled' : 'Disabled' }}
+                      </span>
+                    </div>
+                    <div class="env-item">
+                      <span class="env-label">OpenBLAS Threads</span>
+                      <span class="env-value">{{ env.openBlasThreads ?? 'N/A' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="env-section" *ngIf="group.environment?.timestamp as ts">
+                  <h4>Captured At</h4>
+                  <div class="env-timestamp">{{ ts }}</div>
+                </div>
+              </div>
+            </ng-container>
+
+            <div class="environment-not-captured" *ngIf="group.environment && !group.environment.environmentCaptured">
+              <mat-icon>info</mat-icon>
+              <span>{{ group.environment.message || 'No ND4J environment snapshot was captured for this job.' }}</span>
+            </div>
+          </mat-expansion-panel>
+
+          <div class="event-timeline">
+            <div class="event-item"
+                 *ngFor="let event of group.events; trackBy: trackByEventId"
+                 [ngClass]="getSeverityClass(event.eventType)">
+
+              <div class="event-marker">
+                <mat-icon>{{ getEventTypeIcon(event.eventType) }}</mat-icon>
+              </div>
+
+              <div class="event-content">
+                <div class="event-header">
+                  <span class="event-type">{{ getEventTypeDisplayName(event.eventType) }}</span>
+                  <span class="event-phase" *ngIf="event.phase">
+                    <mat-icon>{{ getPhaseIcon(event.phase) }}</mat-icon>
+                    {{ getPhaseDisplayName(event.phase) }}
+                  </span>
+                  <span class="event-time">{{ formatTimestamp(event.timestamp) }}</span>
+                </div>
+
+                <div class="event-message">{{ event.message }}</div>
+
+                <div class="event-details" *ngIf="event.durationMs || event.progressPercent || event.itemsProcessed">
+                  <span *ngIf="event.durationMs" class="detail-item">
+                    <mat-icon>timer</mat-icon>
+                    {{ formatDuration(event.durationMs) }}
+                  </span>
+                  <span *ngIf="event.progressPercent !== undefined" class="detail-item">
+                    <mat-icon>trending_up</mat-icon>
+                    {{ event.progressPercent }}%
+                  </span>
+                  <span *ngIf="event.itemsProcessed" class="detail-item">
+                    <mat-icon>checklist</mat-icon>
+                    {{ event.itemsProcessed }} / {{ event.totalItems || '?' }}
+                  </span>
+                  <span *ngIf="event.memoryUsagePercent" class="detail-item">
+                    <mat-icon>memory</mat-icon>
+                    {{ event.memoryUsagePercent }}% memory
+                  </span>
+                </div>
+
+                <div class="event-error" *ngIf="event.errorMessage">
+                  <mat-icon>error</mat-icon>
+                  {{ event.errorMessage }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="taskGroups.length === 0 && !loading">
+        <mat-icon>inbox</mat-icon>
+        <p>No events found for the selected time range</p>
+      </div>
+    </div>
+
+    <!-- Timeline View -->
+    <div class="timeline-view" *ngIf="viewMode === 'timeline'">
+      <div class="timeline">
+        <div class="timeline-item"
+             *ngFor="let event of getPaginatedEvents(); trackBy: trackByEventId"
+             [ngClass]="getSeverityClass(event.eventType)">
+
+          <div class="timeline-marker">
+            <mat-icon>{{ getEventTypeIcon(event.eventType) }}</mat-icon>
+          </div>
+
+          <div class="timeline-content">
+            <div class="timeline-header">
+              <span class="event-type">{{ getEventTypeDisplayName(event.eventType) }}</span>
+              <span class="event-file">{{ event.fileName }}</span>
+              <span class="event-time">{{ getRelativeTime(event.timestamp) }}</span>
+            </div>
+
+            <div class="timeline-body">
+              <div class="event-message">{{ event.message }}</div>
+              <div class="event-task-id">Task: {{ event.taskId }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <mat-paginator
+        *ngIf="getFilteredEvents().length > pageSize"
+        [length]="getFilteredEvents().length"
+        [pageSize]="pageSize"
+        [pageIndex]="currentPage"
+        (page)="currentPage = $event.pageIndex">
+      </mat-paginator>
+    </div>
+
+    <!-- Table View -->
+    <div class="table-view" *ngIf="viewMode === 'table'">
+      <table mat-table [dataSource]="getPaginatedEvents()" class="events-table">
+        <ng-container matColumnDef="timestamp">
+          <th mat-header-cell *matHeaderCellDef>Time</th>
+          <td mat-cell *matCellDef="let event">{{ formatTimestamp(event.timestamp) }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="type">
+          <th mat-header-cell *matHeaderCellDef>Type</th>
+          <td mat-cell *matCellDef="let event" [ngClass]="getSeverityClass(event.eventType)">
+            <mat-icon>{{ getEventTypeIcon(event.eventType) }}</mat-icon>
+            {{ getEventTypeDisplayName(event.eventType) }}
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="phase">
+          <th mat-header-cell *matHeaderCellDef>Phase</th>
+          <td mat-cell *matCellDef="let event">
+            <span *ngIf="event.phase">
+              <mat-icon>{{ getPhaseIcon(event.phase) }}</mat-icon>
+              {{ getPhaseDisplayName(event.phase) }}
+            </span>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="fileName">
+          <th mat-header-cell *matHeaderCellDef>File</th>
+          <td mat-cell *matCellDef="let event">{{ event.fileName }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="message">
+          <th mat-header-cell *matHeaderCellDef>Message</th>
+          <td mat-cell *matCellDef="let event">{{ event.message }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="duration">
+          <th mat-header-cell *matHeaderCellDef>Duration</th>
+          <td mat-cell *matCellDef="let event">{{ formatDuration(event.durationMs) }}</td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="['timestamp', 'type', 'phase', 'fileName', 'message', 'duration']"></tr>
+        <tr mat-row *matRowDef="let row; columns: ['timestamp', 'type', 'phase', 'fileName', 'message', 'duration'];"
+            [ngClass]="getSeverityClass(row.eventType)"></tr>
+      </table>
+
+      <mat-paginator
+        *ngIf="getFilteredEvents().length > pageSize"
+        [length]="getFilteredEvents().length"
+        [pageSize]="pageSize"
+        [pageIndex]="currentPage"
+        (page)="currentPage = $event.pageIndex">
+      </mat-paginator>
+    </div>
+  </div>
+
+  <!-- Cleanup Dialog -->
+  <div class="dialog-overlay" *ngIf="showCleanupDialog" (click)="closeCleanupDialog()">
+    <div class="dialog-content" (click)="$event.stopPropagation()">
+      <h3>Cleanup Old Events</h3>
+      <p>Delete events older than:</p>
+
+      <mat-form-field appearance="outline">
+        <mat-label>Days</mat-label>
+        <mat-select [(value)]="cleanupDays">
+          <mat-option [value]="1">1 day</mat-option>
+          <mat-option [value]="3">3 days</mat-option>
+          <mat-option [value]="7">7 days</mat-option>
+          <mat-option [value]="14">14 days</mat-option>
+          <mat-option [value]="30">30 days</mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="closeCleanupDialog()">Cancel</button>
+        <button mat-flat-button color="warn" (click)="performCleanup()" [disabled]="loading">
+          <mat-icon>delete_sweep</mat-icon>
+          Delete Events
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

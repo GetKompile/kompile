@@ -1,0 +1,607 @@
+<div class="job-history-container">
+  <!-- Header -->
+  <div class="header">
+    <h2>
+      <span class="material-icons">history</span>
+      Indexing Job History
+    </h2>
+    <div class="header-actions">
+      <button class="btn btn-icon" [class.active]="autoRefresh" (click)="toggleAutoRefresh()" title="Toggle auto-refresh">
+        <span class="material-icons">{{ autoRefresh ? 'sync' : 'sync_disabled' }}</span>
+      </button>
+      <button class="btn btn-icon" (click)="manualRefresh()" title="Refresh now">
+        <span class="material-icons">refresh</span>
+      </button>
+      <button class="btn btn-icon" (click)="openCleanupDialog()" title="Cleanup old jobs">
+        <span class="material-icons">delete_sweep</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-banner">
+    <span class="material-icons">error</span>
+    {{ error }}
+    <button class="btn-close" (click)="error = null">&times;</button>
+  </div>
+
+  <!-- View Mode Tabs -->
+  <div class="view-tabs">
+    <button class="tab" [class.active]="viewMode === 'list'" (click)="showList()">
+      <span class="material-icons">list</span> Jobs
+    </button>
+    <button class="tab" [class.active]="viewMode === 'stats'" (click)="showStats()">
+      <span class="material-icons">analytics</span> Statistics
+    </button>
+    <button *ngIf="selectedJob" class="tab active">
+      <span class="material-icons">description</span> Job Details
+    </button>
+  </div>
+
+  <!-- Stats Summary (always visible in list view) -->
+  <div class="stats-summary" *ngIf="viewMode === 'list' && statistics">
+    <div class="stat-card">
+      <span class="stat-value">{{ statistics.totalJobs }}</span>
+      <span class="stat-label">Total</span>
+    </div>
+    <div class="stat-card success">
+      <span class="stat-value">{{ statistics.completedJobs }}</span>
+      <span class="stat-label">Completed</span>
+    </div>
+    <div class="stat-card error">
+      <span class="stat-value">{{ statistics.failedJobs }}</span>
+      <span class="stat-label">Failed</span>
+    </div>
+    <div class="stat-card info">
+      <span class="stat-value">{{ statistics.activeJobs }}</span>
+      <span class="stat-label">Active</span>
+    </div>
+  </div>
+
+  <!-- List View -->
+  <div class="list-view" *ngIf="viewMode === 'list'">
+    <!-- Filters -->
+    <div class="filters">
+      <div class="filter-group">
+        <label>Status:</label>
+        <select [(ngModel)]="statusFilter" (change)="onStatusFilterChange()">
+          <option *ngFor="let status of statusOptions" [value]="status">{{ status }}</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Type:</label>
+        <select [(ngModel)]="jobTypeFilter" (change)="onJobTypeFilterChange()">
+          <option value="ALL">All Jobs</option>
+          <option value="ingest">Document Ingest</option>
+          <option value="vector-population">Vector Population</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Last:</label>
+        <select [(ngModel)]="lookbackHours" (change)="onLookbackChange()">
+          <option [value]="1">1 hour</option>
+          <option [value]="6">6 hours</option>
+          <option [value]="24">24 hours</option>
+          <option [value]="48">2 days</option>
+          <option [value]="168">1 week</option>
+        </select>
+      </div>
+      <div class="filter-group search">
+        <input type="text" placeholder="Search by file, task ID, model..." [(ngModel)]="searchTerm" (input)="onSearchChange()">
+        <span class="material-icons search-icon">search</span>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div *ngIf="loading" class="loading">
+      <span class="material-icons spinning">sync</span>
+      Loading jobs...
+    </div>
+
+    <!-- Jobs Table -->
+    <div class="jobs-table" *ngIf="!loading">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Type</th>
+            <th>File</th>
+            <th>Phase</th>
+            <th>Progress</th>
+            <th>Duration</th>
+            <th>Model</th>
+            <th>Started</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let job of paginatedJobs; trackBy: trackByTaskId" (click)="showDetail(job)" class="clickable">
+            <td>
+              <span class="status-badge" [ngClass]="getStatusClass(job.status)">
+                <span class="material-icons">{{ getStatusIcon(job.status) }}</span>
+                {{ job.status }}
+              </span>
+            </td>
+            <td>
+              <span class="type-badge" [class.vector-pop]="job.contentType === 'vector-population'">
+                <span class="material-icons small">{{ getJobTypeIcon(job.contentType) }}</span>
+                {{ getJobTypeDisplay(job.contentType) }}
+              </span>
+            </td>
+            <td class="file-name" [title]="job.fileName">{{ job.fileName }}</td>
+            <td>
+              <span class="phase-badge">
+                <span class="material-icons small">{{ getPhaseIcon(job.lastPhase) }}</span>
+                {{ job.lastPhase || '-' }}
+              </span>
+            </td>
+            <td>
+              <div class="progress-bar-container" *ngIf="job.progressPercent !== undefined">
+                <div class="progress-bar" [ngClass]="getProgressBarClass(job)" [style.width.%]="job.progressPercent"></div>
+                <span class="progress-text">{{ job.progressPercent }}%</span>
+              </div>
+              <span *ngIf="job.progressPercent === undefined">-</span>
+            </td>
+            <td>{{ formatDuration(job.totalDurationMs) }}</td>
+            <td class="model-name">{{ job.embeddingModelUsed || '-' }}</td>
+            <td>{{ formatTimestamp(job.startTime) }}</td>
+            <td>
+              <button class="btn btn-icon small" (click)="deleteJob(job.taskId, $event)" title="Delete">
+                <span class="material-icons">delete</span>
+              </button>
+            </td>
+          </tr>
+          <tr *ngIf="jobs.length === 0">
+            <td colspan="9" class="no-data">No jobs found</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination" *ngIf="totalPages > 1">
+      <button class="btn btn-small" [disabled]="currentPage === 0" (click)="prevPage()">
+        <span class="material-icons">chevron_left</span>
+      </button>
+      <span class="page-info">Page {{ currentPage + 1 }} of {{ totalPages }}</span>
+      <button class="btn btn-small" [disabled]="currentPage >= totalPages - 1" (click)="nextPage()">
+        <span class="material-icons">chevron_right</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Statistics View -->
+  <div class="stats-view" *ngIf="viewMode === 'stats' && statistics">
+    <div class="stats-grid">
+      <!-- Overview -->
+      <div class="stats-card">
+        <h3>Overview (Last {{ lookbackHours }} hours)</h3>
+        <div class="stats-list">
+          <div class="stat-row">
+            <span class="label">Total Jobs:</span>
+            <span class="value">{{ statistics.totalJobs }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Completed:</span>
+            <span class="value success">{{ statistics.completedJobs }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Failed:</span>
+            <span class="value error">{{ statistics.failedJobs }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Cancelled:</span>
+            <span class="value warning">{{ statistics.cancelledJobs }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Memory Killed:</span>
+            <span class="value error">{{ statistics.memoryKilledJobs }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Active:</span>
+            <span class="value info">{{ statistics.activeJobs }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Throughput -->
+      <div class="stats-card">
+        <h3>Throughput</h3>
+        <div class="stats-list">
+          <div class="stat-row">
+            <span class="label">Documents Indexed:</span>
+            <span class="value">{{ statistics.totalDocumentsIndexed || 0 }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Chunks Created:</span>
+            <span class="value">{{ statistics.totalChunksCreated || 0 }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Total Processing Time:</span>
+            <span class="value">{{ formatDuration(statistics.totalProcessingTimeMs) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Average Phase Timings -->
+      <div class="stats-card" *ngIf="statistics.averagePhaseTimings">
+        <h3>Average Phase Timings</h3>
+        <div class="stats-list">
+          <div class="stat-row">
+            <span class="label">Loading:</span>
+            <span class="value">{{ formatDuration(statistics.averagePhaseTimings.loadingMs) }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Conversion:</span>
+            <span class="value">{{ formatDuration(statistics.averagePhaseTimings.conversionMs) }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Chunking:</span>
+            <span class="value">{{ formatDuration(statistics.averagePhaseTimings.chunkingMs) }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Embedding:</span>
+            <span class="value">{{ formatDuration(statistics.averagePhaseTimings.embeddingMs) }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="label">Indexing:</span>
+            <span class="value">{{ formatDuration(statistics.averagePhaseTimings.indexingMs) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Failure Breakdown -->
+      <div class="stats-card" *ngIf="statistics.failureBreakdown && statistics.failureBreakdown.length > 0">
+        <h3>Failure Breakdown</h3>
+        <div class="stats-list">
+          <div class="stat-row" *ngFor="let failure of statistics.failureBreakdown">
+            <span class="label">{{ getFailureReasonDisplay(failure.reason) }}:</span>
+            <span class="value error">{{ failure.count }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Models & Loaders Used -->
+      <div class="stats-card">
+        <h3>Configuration</h3>
+        <div class="config-section">
+          <h4>Embedding Models</h4>
+          <div class="tag-list">
+            <span class="tag" *ngFor="let model of statistics.embeddingModels">{{ model }}</span>
+            <span *ngIf="statistics.embeddingModels.length === 0">-</span>
+          </div>
+        </div>
+        <div class="config-section">
+          <h4>Loaders</h4>
+          <div class="tag-list">
+            <span class="tag" *ngFor="let loader of statistics.loaders">{{ loader }}</span>
+            <span *ngIf="statistics.loaders.length === 0">-</span>
+          </div>
+        </div>
+        <div class="config-section">
+          <h4>Chunkers</h4>
+          <div class="tag-list">
+            <span class="tag" *ngFor="let chunker of statistics.chunkers">{{ chunker }}</span>
+            <span *ngIf="statistics.chunkers.length === 0">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail View -->
+  <div class="detail-view" *ngIf="viewMode === 'detail' && selectedJob">
+    <button class="btn btn-back" (click)="showList()">
+      <span class="material-icons">arrow_back</span> Back to List
+    </button>
+
+    <div class="detail-header">
+      <h3>{{ selectedJob.fileName }}</h3>
+      <span class="status-badge large" [ngClass]="getStatusClass(selectedJob.status)">
+        <span class="material-icons">{{ getStatusIcon(selectedJob.status) }}</span>
+        {{ selectedJob.status }}
+      </span>
+    </div>
+
+    <div class="detail-grid">
+      <!-- Basic Info -->
+      <div class="detail-card">
+        <h4>Basic Information</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Task ID:</span>
+            <span class="value code">{{ selectedJob.taskId }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Started:</span>
+            <span class="value">{{ formatTimestamp(selectedJob.startTime) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.endTime">
+            <span class="label">Ended:</span>
+            <span class="value">{{ formatTimestamp(selectedJob.endTime) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Duration:</span>
+            <span class="value">{{ formatDuration(selectedJob.totalDurationMs) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Last Phase:</span>
+            <span class="value">
+              <span class="material-icons small">{{ getPhaseIcon(selectedJob.lastPhase) }}</span>
+              {{ selectedJob.lastPhase }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Error Info (if failed) -->
+      <div class="detail-card error-card" *ngIf="selectedJob.failedPhase || selectedJob.errorMessage">
+        <h4>Error Information</h4>
+        <div class="detail-list">
+          <div class="detail-row" *ngIf="selectedJob.failedPhase">
+            <span class="label">Failed Phase:</span>
+            <span class="value error">{{ selectedJob.failedPhase }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.failureReason">
+            <span class="label">Failure Reason:</span>
+            <span class="value error">{{ getFailureReasonDisplay(selectedJob.failureReason) }}</span>
+          </div>
+          <div class="detail-row error-message" *ngIf="selectedJob.errorMessage">
+            <span class="label">Error Message:</span>
+            <span class="value error">{{ selectedJob.errorMessage }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Processing Parameters -->
+      <div class="detail-card">
+        <h4>Processing Parameters</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Loader:</span>
+            <span class="value">{{ selectedJob.parameters.loaderUsed || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Chunker:</span>
+            <span class="value">{{ selectedJob.parameters.chunkerUsed || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Embedding Model:</span>
+            <span class="value">{{ selectedJob.parameters.embeddingModelUsed || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Chunk Size:</span>
+            <span class="value">{{ selectedJob.parameters.chunkSize || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Chunk Overlap:</span>
+            <span class="value">{{ selectedJob.parameters.chunkOverlap || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Batch Size:</span>
+            <span class="value">{{ selectedJob.parameters.embeddingBatchSize || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Worker Threads:</span>
+            <span class="value">{{ selectedJob.parameters.workerThreads || '-' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="detail-card">
+        <h4>Results</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Documents Loaded:</span>
+            <span class="value">{{ selectedJob.results.documentsLoaded || 0 }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Chunks Created:</span>
+            <span class="value">{{ selectedJob.results.chunksCreated || 0 }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Chunks Embedded:</span>
+            <span class="value">{{ selectedJob.results.chunksEmbedded || 0 }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Documents Indexed:</span>
+            <span class="value">{{ selectedJob.results.documentsIndexed || 0 }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Phase Timings -->
+      <div class="detail-card" *ngIf="selectedJob.phaseTimings">
+        <h4>Phase Timings</h4>
+        <div class="detail-list">
+          <div class="detail-row" *ngIf="selectedJob.phaseTimings.loadingMs">
+            <span class="label">Loading:</span>
+            <span class="value">{{ formatDuration(selectedJob.phaseTimings.loadingMs) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.phaseTimings.conversionMs">
+            <span class="label">Conversion:</span>
+            <span class="value">{{ formatDuration(selectedJob.phaseTimings.conversionMs) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.phaseTimings.chunkingMs">
+            <span class="label">Chunking:</span>
+            <span class="value">{{ formatDuration(selectedJob.phaseTimings.chunkingMs) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.phaseTimings.embeddingMs">
+            <span class="label">Embedding:</span>
+            <span class="value">{{ formatDuration(selectedJob.phaseTimings.embeddingMs) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedJob.phaseTimings.indexingMs">
+            <span class="label">Indexing:</span>
+            <span class="value">{{ formatDuration(selectedJob.phaseTimings.indexingMs) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Environment -->
+      <div class="detail-card">
+        <h4>Environment</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Java Version:</span>
+            <span class="value">{{ selectedJob.environment.javaVersion || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">OS:</span>
+            <span class="value">{{ selectedJob.environment.osInfo || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">CPUs:</span>
+            <span class="value">{{ selectedJob.environment.availableProcessors || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Max Heap:</span>
+            <span class="value">{{ selectedJob.environment.maxHeapMB ? selectedJob.environment.maxHeapMB + ' MB' : '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">ND4J Backend:</span>
+            <span class="value">{{ selectedJob.environment.nd4jBackend || '-' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ND4J Environment Details -->
+      <div class="detail-card nd4j-card" *ngIf="parsedNd4jEnvironment">
+        <div class="nd4j-header" (click)="toggleNd4jDetails()">
+          <h4>
+            <span class="material-icons">psychology</span>
+            ND4J Environment Snapshot
+          </h4>
+          <span class="material-icons expand-icon">{{ showNd4jDetails ? 'expand_less' : 'expand_more' }}</span>
+        </div>
+        <div class="nd4j-content" *ngIf="showNd4jDetails">
+          <div class="nd4j-categories">
+            <div class="nd4j-category" *ngFor="let category of getNd4jConfigCategories()">
+              <div class="category-header">
+                <span class="material-icons">{{ category.icon }}</span>
+                <span class="category-name">{{ category.name }}</span>
+              </div>
+              <div class="category-fields">
+                <div class="detail-row" *ngFor="let field of category.fields">
+                  <span class="label">{{ field.key }}:</span>
+                  <span class="value" [class.boolean-true]="field.value === true" [class.boolean-false]="field.value === false">
+                    {{ field.value }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="nd4j-raw">
+            <button class="btn btn-small btn-secondary" (click)="$event.stopPropagation()">
+              <span class="material-icons small">code</span>
+              Raw JSON
+            </button>
+            <pre class="json-preview" *ngIf="parsedNd4jEnvironment">{{ parsedNd4jEnvironment | json }}</pre>
+          </div>
+        </div>
+        <div class="nd4j-summary" *ngIf="!showNd4jDetails">
+          <span class="summary-item" *ngIf="parsedNd4jEnvironment.debug">
+            <span class="material-icons small warning">bug_report</span> Debug ON
+          </span>
+          <span class="summary-item" *ngIf="parsedNd4jEnvironment.verbose">
+            <span class="material-icons small warning">chat</span> Verbose ON
+          </span>
+          <span class="summary-item" *ngIf="parsedNd4jEnvironment.profiling">
+            <span class="material-icons small info">timeline</span> Profiling ON
+          </span>
+          <span class="summary-item" *ngIf="parsedNd4jEnvironment.ompNumThreads">
+            <span class="material-icons small">memory</span> {{ parsedNd4jEnvironment.ompNumThreads }} threads
+          </span>
+          <span class="summary-hint">(click to expand)</span>
+        </div>
+      </div>
+
+      <!-- No ND4J Environment captured -->
+      <div class="detail-card nd4j-card empty" *ngIf="!parsedNd4jEnvironment && selectedJob.environment.nd4jBackend">
+        <h4>
+          <span class="material-icons">psychology</span>
+          ND4J Environment Snapshot
+        </h4>
+        <p class="no-data-message">No detailed ND4J environment was captured for this job.</p>
+      </div>
+
+      <!-- Memory Usage -->
+      <div class="detail-card">
+        <h4>Memory Usage</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">At Start:</span>
+            <span class="value">{{ selectedJob.memoryPercent.usageAtStart ? selectedJob.memoryPercent.usageAtStart.toFixed(1) + '%' : '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">At End:</span>
+            <span class="value">{{ selectedJob.memoryPercent.usageAtEnd ? selectedJob.memoryPercent.usageAtEnd.toFixed(1) + '%' : '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Peak:</span>
+            <span class="value" [class.warning]="selectedJob.memoryPercent.peakUsage && selectedJob.memoryPercent.peakUsage > 80">
+              {{ selectedJob.memoryPercent.peakUsage ? selectedJob.memoryPercent.peakUsage.toFixed(1) + '%' : '-' }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Events Log -->
+    <div class="detail-card full-width events-card">
+      <div class="card-header">
+        <h4>Events Log</h4>
+        <span class="badge">{{ events.length }} events</span>
+      </div>
+      <div class="events-table-container">
+        <table class="events-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Phase</th>
+              <th>Type</th>
+              <th>Message</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let event of events">
+              <td class="timestamp">{{ formatTimestamp(event.timestamp) }}</td>
+              <td>
+                <span class="phase-badge small" *ngIf="event.phase">
+                  {{ event.phase }}
+                </span>
+              </td>
+              <td>
+                <span class="event-type-badge" [ngClass]="event.eventType.toLowerCase()">
+                  {{ event.eventType }}
+                </span>
+              </td>
+              <td class="message">{{ event.message }}</td>
+              <td class="details" [title]="event.details || ''">{{ event.details || '-' }}</td>
+            </tr>
+            <tr *ngIf="events.length === 0">
+              <td colspan="5" class="no-data">No events recorded for this job.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cleanup Dialog -->
+  <div class="dialog-overlay" *ngIf="showCleanupDialog" (click)="closeCleanupDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>Cleanup Job History</h3>
+      <p>Delete job history records older than:</p>
+      <div class="dialog-input">
+        <input type="number" [(ngModel)]="cleanupDays" min="1" max="365">
+        <span>days</span>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" (click)="closeCleanupDialog()">Cancel</button>
+        <button class="btn btn-danger" (click)="performCleanup()">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>

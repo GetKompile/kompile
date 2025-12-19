@@ -1,0 +1,432 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="converter-container">
+  <div class="page-header">
+    <h1>
+      <mat-icon>transform</mat-icon>
+      Model Converter
+    </h1>
+    <p class="subtitle">Convert models from ONNX, TensorFlow, or Keras to SameDiff format</p>
+  </div>
+
+  <div class="converter-content">
+    <!-- Conversion Form -->
+    <mat-card class="conversion-form-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>settings</mat-icon>
+        <mat-card-title>Convert Model</mat-card-title>
+        <mat-card-subtitle>Select source and configure conversion options</mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <form [formGroup]="conversionForm" class="conversion-form">
+
+          <!-- Source Selection -->
+          <div class="form-section">
+            <h3>
+              <mat-icon>source</mat-icon>
+              Model Source
+            </h3>
+
+            <div class="source-grid">
+              <div *ngFor="let source of sources"
+                   class="source-card"
+                   [class.selected]="selectedSource === source.value"
+                   (click)="selectSource(source.value)">
+                <mat-icon>{{ source.icon }}</mat-icon>
+                <div class="source-info">
+                  <strong>{{ source.label }}</strong>
+                  <span>{{ source.description }}</span>
+                </div>
+                <mat-icon class="check-icon" *ngIf="selectedSource === source.value">check_circle</mat-icon>
+              </div>
+            </div>
+          </div>
+
+          <!-- Local Path Input -->
+          <div class="form-section" *ngIf="selectedSource === 'local'">
+            <h3>
+              <mat-icon>folder</mat-icon>
+              Input File
+            </h3>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>File Path</mat-label>
+              <input matInput formControlName="inputPath"
+                     placeholder="/path/to/model.onnx">
+              <mat-icon matSuffix>folder_open</mat-icon>
+              <mat-hint>Absolute path to the model file on the server</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- File Upload -->
+          <div class="form-section" *ngIf="selectedSource === 'upload'">
+            <h3>
+              <mat-icon>cloud_upload</mat-icon>
+              Upload Model File
+            </h3>
+
+            <div class="upload-zone"
+                 [class.drag-over]="dragOver"
+                 [class.has-file]="selectedFile"
+                 (dragover)="onDragOver($event)"
+                 (dragleave)="onDragLeave($event)"
+                 (drop)="onDrop($event)"
+                 (click)="fileInput.click()">
+
+              <input #fileInput type="file" hidden
+                     accept=".onnx,.pb,.h5,.keras"
+                     (change)="onFileSelected($event)">
+
+              <div class="upload-content" *ngIf="!selectedFile">
+                <mat-icon>cloud_upload</mat-icon>
+                <p>Drag & drop a model file here</p>
+                <span>or click to browse</span>
+                <small>Supported: .onnx, .pb, .h5, .keras</small>
+              </div>
+
+              <div class="file-selected" *ngIf="selectedFile">
+                <mat-icon class="file-icon">insert_drive_file</mat-icon>
+                <div class="file-info">
+                  <strong>{{ selectedFile.name }}</strong>
+                  <span>{{ formatFileSize(selectedFile.size) }}</span>
+                </div>
+                <button mat-icon-button (click)="clearFile(); $event.stopPropagation()"
+                        matTooltip="Remove file">
+                  <mat-icon>close</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <mat-progress-bar *ngIf="isUploading"
+                              mode="determinate"
+                              [value]="uploadProgress"
+                              class="upload-progress">
+            </mat-progress-bar>
+          </div>
+
+          <!-- Staged Models -->
+          <div class="form-section" *ngIf="selectedSource === 'staged'">
+            <h3>
+              <mat-icon>pending_actions</mat-icon>
+              Select Staged Model
+            </h3>
+
+            <div class="staged-models-list" *ngIf="!loadingStagedModels">
+              <div class="empty-state small" *ngIf="stagedModels.length === 0">
+                <mat-icon>inbox</mat-icon>
+                <p>No models in staging</p>
+                <span>Download or upload a model first</span>
+              </div>
+
+              <div class="staged-model-card"
+                   *ngFor="let model of stagedModels"
+                   [class.selected]="selectedStagedModel === model"
+                   (click)="selectStagedModel(model)">
+                <mat-icon class="model-icon">{{ getStatusIcon(model.status) }}</mat-icon>
+                <div class="model-info">
+                  <strong>{{ model.model_id }}</strong>
+                  <span>{{ model.status | titlecase }} - {{ model.progress }}%</span>
+                </div>
+                <mat-icon class="check-icon" *ngIf="selectedStagedModel === model">check_circle</mat-icon>
+              </div>
+            </div>
+
+            <div class="loading-inline" *ngIf="loadingStagedModels">
+              <mat-spinner diameter="24"></mat-spinner>
+              <span>Loading staged models...</span>
+            </div>
+          </div>
+
+          <!-- Models Directory Browser -->
+          <div class="form-section" *ngIf="selectedSource === 'models'">
+            <h3>
+              <mat-icon>inventory_2</mat-icon>
+              Browse Models Directory
+            </h3>
+
+            <div class="directory-browser">
+              <div class="directory-header">
+                <button mat-icon-button (click)="navigateUp()"
+                        [disabled]="!currentDirectory"
+                        matTooltip="Go up">
+                  <mat-icon>arrow_upward</mat-icon>
+                </button>
+                <span class="directory-path">{{ currentDirectory || '/' }}</span>
+                <button mat-icon-button (click)="loadModelsDirectory(currentDirectory)"
+                        matTooltip="Refresh">
+                  <mat-icon>refresh</mat-icon>
+                </button>
+              </div>
+
+              <div class="directory-contents" *ngIf="!loadingDirectory">
+                <div class="empty-state small" *ngIf="directoryEntries.length === 0">
+                  <mat-icon>folder_open</mat-icon>
+                  <p>Directory is empty</p>
+                </div>
+
+                <div class="directory-entry"
+                     *ngFor="let entry of directoryEntries"
+                     [class.selected]="selectedDirectoryFile === entry"
+                     [class.is-directory]="entry.isDirectory"
+                     [class.is-convertible]="isConvertibleFile(entry)"
+                     (click)="entry.isDirectory ? navigateToDirectory(entry) : selectDirectoryFile(entry)"
+                     (dblclick)="navigateToDirectory(entry)">
+                  <mat-icon [class]="entry.isDirectory ? 'folder-icon' : 'file-icon'">
+                    {{ getFileIcon(entry) }}
+                  </mat-icon>
+                  <div class="entry-info">
+                    <span class="entry-name">{{ entry.name }}</span>
+                    <span class="entry-meta" *ngIf="!entry.isDirectory && entry.size">
+                      {{ formatFileSize(entry.size) }}
+                    </span>
+                  </div>
+                  <mat-icon class="check-icon" *ngIf="selectedDirectoryFile === entry">check_circle</mat-icon>
+                </div>
+              </div>
+
+              <div class="loading-inline" *ngIf="loadingDirectory">
+                <mat-spinner diameter="24"></mat-spinner>
+                <span>Loading directory...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Format Selection -->
+          <div class="form-section">
+            <h3>
+              <mat-icon>category</mat-icon>
+              Input Format
+            </h3>
+
+            <div class="format-header">
+              <mat-checkbox formControlName="autoDetectFormat" color="primary">
+                Auto-detect from file extension
+              </mat-checkbox>
+            </div>
+
+            <mat-button-toggle-group formControlName="format" class="format-toggles">
+              <mat-button-toggle *ngFor="let format of formats" [value]="format.value">
+                <mat-icon>{{ format.icon }}</mat-icon>
+                <span>{{ format.label }}</span>
+                <small>{{ format.extensions }}</small>
+              </mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+
+          <!-- Output Configuration -->
+          <div class="form-section">
+            <h3>
+              <mat-icon>output</mat-icon>
+              Output Configuration
+            </h3>
+
+            <div class="form-row">
+              <mat-form-field appearance="outline" class="model-id-field">
+                <mat-label>Model ID</mat-label>
+                <input matInput formControlName="modelId"
+                       placeholder="my-model-v1">
+                <mat-hint>Unique identifier for the registry</mat-hint>
+                <mat-error *ngIf="conversionForm.get('modelId')?.hasError('required')">
+                  Model ID is required
+                </mat-error>
+                <mat-error *ngIf="conversionForm.get('modelId')?.hasError('pattern')">
+                  Only letters, numbers, hyphens, and underscores
+                </mat-error>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="model-type-field">
+                <mat-label>Model Type</mat-label>
+                <mat-select formControlName="modelType">
+                  <mat-option *ngFor="let type of modelTypes" [value]="type.value">
+                    {{ type.label }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+          </div>
+
+          <!-- Metadata (Expandable) -->
+          <mat-expansion-panel class="metadata-panel">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>info</mat-icon>
+                Model Metadata
+              </mat-panel-title>
+              <mat-panel-description>
+                Optional model information
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="metadata-form">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <textarea matInput formControlName="description" rows="2"
+                          placeholder="Brief description of the model"></textarea>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Embedding Dimension</mat-label>
+                  <input matInput type="number" formControlName="embeddingDim"
+                         placeholder="e.g., 768">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Sequence Length</mat-label>
+                  <input matInput type="number" formControlName="maxSequenceLength"
+                         min="1" max="8192">
+                </mat-form-field>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Options -->
+          <div class="form-section options-section">
+            <h3>
+              <mat-icon>tune</mat-icon>
+              Options
+            </h3>
+
+            <div class="options-grid">
+              <mat-checkbox formControlName="autoStage" color="primary">
+                <div class="option-content">
+                  <strong>Auto-stage after conversion</strong>
+                  <span>Add converted model to staging area</span>
+                </div>
+              </mat-checkbox>
+
+              <mat-checkbox formControlName="autoPromote" color="primary"
+                            [disabled]="!conversionForm.get('autoStage')?.value">
+                <div class="option-content">
+                  <strong>Auto-promote to registry</strong>
+                  <span>Automatically promote after validation</span>
+                </div>
+              </mat-checkbox>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="form-actions">
+            <button mat-button type="button" (click)="resetForm()">
+              <mat-icon>refresh</mat-icon>
+              Reset
+            </button>
+            <button mat-raised-button color="primary" type="submit"
+                    (click)="startConversion()"
+                    [disabled]="!canStartConversion()">
+              <mat-icon>{{ isConverting ? 'sync' : 'transform' }}</mat-icon>
+              {{ isConverting ? (isUploading ? 'Uploading...' : 'Converting...') : 'Start Conversion' }}
+            </button>
+          </div>
+        </form>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Conversion Jobs -->
+    <mat-card class="jobs-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>history</mat-icon>
+        <mat-card-title>Conversion History</mat-card-title>
+        <mat-card-subtitle>Recent conversion jobs</mat-card-subtitle>
+        <button mat-icon-button class="clear-history-btn"
+                *ngIf="conversionJobs.length > 0"
+                (click)="clearHistory()"
+                matTooltip="Clear history">
+          <mat-icon>delete_sweep</mat-icon>
+        </button>
+      </mat-card-header>
+
+      <mat-card-content>
+        <div class="empty-state" *ngIf="conversionJobs.length === 0">
+          <mat-icon>transform</mat-icon>
+          <p>No conversion jobs yet</p>
+          <span>Converted models will appear here</span>
+        </div>
+
+        <div class="jobs-list" *ngIf="conversionJobs.length > 0">
+          <div *ngFor="let job of conversionJobs" class="job-item" [class]="'status-' + job.status">
+            <div class="job-header">
+              <mat-icon [class]="'status-icon status-' + job.status">
+                {{ getStatusIcon(job.status) }}
+              </mat-icon>
+              <div class="job-title">
+                <strong>{{ job.modelId }}</strong>
+                <mat-chip size="small">{{ job.format | uppercase }}</mat-chip>
+              </div>
+              <button mat-icon-button (click)="removeJob(job)"
+                      *ngIf="job.status === 'completed' || job.status === 'failed'"
+                      matTooltip="Remove">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+
+            <div class="job-path">{{ job.inputPath }}</div>
+
+            <mat-progress-bar *ngIf="job.status === 'uploading' || job.status === 'converting' || job.status === 'validating'"
+                              mode="determinate" [value]="job.progress">
+            </mat-progress-bar>
+
+            <div class="job-footer">
+              <span class="job-message">{{ job.message }}</span>
+              <span class="job-time" *ngIf="job.completedAt">
+                {{ formatDuration(job.completedAt.getTime() - job.startedAt.getTime()) }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Info Panel -->
+  <mat-card class="info-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>help_outline</mat-icon>
+      <mat-card-title>Conversion Information</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="info-grid">
+        <div class="info-item">
+          <h4>Supported Input Formats</h4>
+          <div class="format-list">
+            <div class="format-badge" *ngFor="let format of formats">
+              <mat-icon>{{ format.icon }}</mat-icon>
+              <span>{{ format.label }} ({{ format.extensions }})</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-item">
+          <h4>Output Format</h4>
+          <p>All models are converted to <strong>SameDiff format (.sdz)</strong>, optimized for inference with ND4J.</p>
+        </div>
+
+        <div class="info-item">
+          <h4>Conversion Process</h4>
+          <ol>
+            <li>Upload or select input model</li>
+            <li>Detect format and parse model graph</li>
+            <li>Convert operations to SameDiff equivalents</li>
+            <li>Validate converted model</li>
+            <li>Stage and optionally promote to registry</li>
+          </ol>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

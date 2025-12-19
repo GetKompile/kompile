@@ -1,0 +1,666 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.kompile.app.ingest.service;
+
+import ai.kompile.app.ingest.domain.IndexingJobHistory;
+import ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason;
+import ai.kompile.app.ingest.domain.IndexingJobHistory.JobStatus;
+import ai.kompile.app.ingest.domain.IngestEvent.IngestPhase;
+import ai.kompile.app.ingest.repository.IndexingJobHistoryRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import jakarta.annotation.PostConstruct;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Stream;
+
+/**
+ * Service for managing indexing job history.
+ * Provides methods for creating, updating, and querying job history records.
+ */
+@Slf4j
+@Service
+@ConditionalOnProperty(name = "kompile.ingest.eventlog.enabled", havingValue = "true", matchIfMissing = true)
+public class IndexingJobHistoryService {
+
+    private final IndexingJobHistoryRepository repository;
+
+    @Value("${kompile.ingest.job-history.retention-days:30}")
+    private int retentionDays;
+
+    @Value("${kompile.ingest.job-history.max-records:10000}")
+    private int maxRecords;
+
+    @Value("${kompile.ingest.state-directory:${user.home}/.kompile/state}")
+    private String stateDirectory;
+
+    @Autowired
+    public IndexingJobHistoryService(IndexingJobHistoryRepository repository) {
+        this.repository = repository;
+    }
+
+    /**
+     * On startup, mark any orphaned jobs (RUNNING/QUEUED) as FAILED.
+     * These are jobs that were interrupted by a server restart or crash.
+     */
+    @PostConstruct
+    @Transactional("ingestEventTransactionManager")
+    public void cleanupOrphanedJobsOnStartup() {
+        try {
+            List<IndexingJobHistory> orphanedJobs = repository.findActiveJobs();
+            if (orphanedJobs.isEmpty()) {
+                log.debug("No orphaned jobs found on startup");
+                return;
+            }
+
+            log.info("Found {} orphaned jobs from previous run, marking as FAILED", orphanedJobs.size());
+            Instant now = Instant.now();
+
+            for (IndexingJobHistory job : orphanedJobs) {
+                // Determine the phase where it was interrupted
+                IngestPhase lastPhase = job.getLastPhase() != null ? job.getLastPhase() : IngestPhase.QUEUED;
+
+                // Mark as failed with appropriate reason
+                job.setStatus(JobStatus.FAILED);
+                job.setFailedPhase(lastPhase);
+                job.setFailureReason(FailureReason.UNKNOWN);
+                job.setErrorMessage("Job interrupted by server restart or crash");
+                job.setEndTime(now);
+
+                // Calculate duration if start time is available
+                if (job.getStartTime() != null) {
+                    long durationMs = Duration.between(job.getStartTime(), now).toMillis();
+                    job.setTotalDurationMs(durationMs);
+                }
+
+                repository.save(job);
+                log.info("Marked orphaned job {} ({}) as FAILED - was in phase {}",
+                        job.getTaskId(), job.getFileName(), lastPhase);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to cleanup orphaned jobs on startup: {}", e.getMessage());
+            // Don't fail startup if cleanup fails
+        }
+    }
+
+    // ===================== JOB LIFECYCLE METHODS =====================
+
+    /**
+     * Create a new job history entry when a job is queued.
+     * Uses optimistic approach: try to save and handle unique constraint violation.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public IndexingJobHistory createJob(String taskId, String fileName) {
+        // First, try to find existing job to avoid unnecessary save attempts
+        Optional<IndexingJobHistory> existing = repository.findByTaskId(taskId);
+        if (existing.isPresent()) {
+            log.warn("Job history already exists for taskId: {}", taskId);
+            return existing.get();
+        }
+
+        try {
+            IndexingJobHistory job = IndexingJobHistory.createQueued(taskId, fileName);
+            IndexingJobHistory saved = repository.save(job);
+            repository.flush(); // Force immediate DB write to detect unique constraint violations
+            log.debug("Created job history for taskId: {}", taskId);
+            return saved;
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Race condition: another thread created the job between check and save
+            log.debug("Concurrent job creation detected for taskId: {}, returning existing", taskId);
+            return repository.findByTaskId(taskId).orElse(null);
+        }
+    }
+
+    /**
+     * Create a job with additional environment info.
+     * Uses optimistic approach: try to save and handle unique constraint violation.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public IndexingJobHistory createJobWithEnvironment(String taskId, String fileName,
+            String nd4jEnvironmentJson,
+            Long fileSizeBytes,
+            String contentType) {
+        // First, try to find existing job to avoid unnecessary save attempts
+        Optional<IndexingJobHistory> existing = repository.findByTaskId(taskId);
+        if (existing.isPresent()) {
+            log.warn("Job history already exists for taskId: {}", taskId);
+            return existing.get();
+        }
+
+        try {
+            IndexingJobHistory job = IndexingJobHistory.createQueued(taskId, fileName);
+            job.setNd4jEnvironmentJson(nd4jEnvironmentJson);
+            job.setFileSizeBytes(fileSizeBytes);
+            job.setContentType(contentType);
+
+            // Capture additional environment info
+            try {
+                String nd4jBackend = System.getProperty("org.nd4j.backend.priority", "unknown");
+                job.setNd4jBackend(nd4jBackend);
+            } catch (Exception e) {
+                log.debug("Could not determine ND4J backend: {}", e.getMessage());
+            }
+
+            IndexingJobHistory saved = repository.save(job);
+            repository.flush(); // Force immediate DB write to detect unique constraint violations
+            log.debug("Created job history with environment for taskId: {}", taskId);
+            return saved;
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Race condition: another thread created the job between check and save
+            log.debug("Concurrent job creation detected for taskId: {}, returning existing", taskId);
+            return repository.findByTaskId(taskId).orElse(null);
+        }
+    }
+
+    /**
+     * Mark a job as running.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markJobRunning(String taskId) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markRunning();
+            repository.save(job);
+            log.debug("Marked job {} as RUNNING", taskId);
+        });
+    }
+
+    /**
+     * Update job phase and progress.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updateJobProgress(String taskId, IngestPhase phase, int progressPercent) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.updatePhase(phase, progressPercent);
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Update job phase timing.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updatePhaseTiming(String taskId, IngestPhase phase, long durationMs) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            switch (phase) {
+                case LOADING -> job.setLoadingDurationMs(durationMs);
+                case CONVERTING -> job.setConversionDurationMs(durationMs);
+                case CHUNKING -> job.setChunkingDurationMs(durationMs);
+                case EMBEDDING -> job.setEmbeddingDurationMs(durationMs);
+                case INDEXING -> job.setIndexingDurationMs(durationMs);
+            }
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Update job statistics.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updateJobStats(String taskId, Integer documentsLoaded, Integer chunksCreated,
+            Integer chunksEmbedded, Integer documentsIndexed) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.updateStats(documentsLoaded, chunksCreated, chunksEmbedded, documentsIndexed);
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Update processing parameters used.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updateJobParameters(String taskId, String loaderUsed, String chunkerUsed,
+            String embeddingModelUsed, String indexerUsed,
+            Integer chunkSize, Integer chunkOverlap,
+            Integer embeddingBatchSize, Integer workerThreads,
+            Boolean parallelProcessing, Boolean adaptiveBatching) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setLoaderUsed(loaderUsed);
+            job.setChunkerUsed(chunkerUsed);
+            job.setEmbeddingModelUsed(embeddingModelUsed);
+            job.setIndexerUsed(indexerUsed);
+            job.setChunkSize(chunkSize);
+            job.setChunkOverlap(chunkOverlap);
+            job.setEmbeddingBatchSize(embeddingBatchSize);
+            job.setWorkerThreads(workerThreads);
+            job.setParallelProcessingEnabled(parallelProcessing);
+            job.setAdaptiveBatchingEnabled(adaptiveBatching);
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Update memory usage.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updateMemoryUsage(String taskId, double currentUsagePercent) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.updatePeakMemory(currentUsagePercent);
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Mark a job as completed.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markJobCompleted(String taskId) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markCompleted();
+            repository.save(job);
+            log.info("Marked job {} as COMPLETED (duration: {}ms)", taskId, job.getTotalDurationMs());
+        });
+    }
+
+    /**
+     * Mark a job as failed.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markJobFailed(String taskId, IngestPhase failedPhase, String errorMessage,
+            Throwable exception, FailureReason reason) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markFailed(failedPhase, errorMessage, exception, reason);
+            repository.save(job);
+            log.warn("Marked job {} as FAILED in phase {} (reason: {})", taskId, failedPhase, reason);
+        });
+    }
+
+    /**
+     * Mark a job as cancelled.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markJobCancelled(String taskId, IngestPhase currentPhase, String reason) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markCancelled(currentPhase, reason);
+            repository.save(job);
+            log.info("Marked job {} as CANCELLED in phase {}", taskId, currentPhase);
+        });
+    }
+
+    /**
+     * Mark a job as killed due to memory pressure.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markJobMemoryKilled(String taskId, IngestPhase currentPhase, double memoryPercent) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markMemoryKilled(currentPhase, memoryPercent);
+            repository.save(job);
+            log.warn("Marked job {} as MEMORY_KILLED at {}% memory", taskId, memoryPercent);
+        });
+    }
+
+    /**
+     * Set index path for a job.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void setIndexPath(String taskId, String indexPath) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setIndexPath(indexPath);
+            repository.save(job);
+        });
+    }
+
+    /**
+     * Set embedding dimension.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void setEmbeddingDimension(String taskId, int dimension) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.setEmbeddingDimension(dimension);
+            repository.save(job);
+        });
+    }
+
+    // ===================== QUERY METHODS =====================
+
+    /**
+     * Get a job by task ID.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public Optional<IndexingJobHistory> getJob(String taskId) {
+        return repository.findByTaskId(taskId);
+    }
+
+    /**
+     * Get all jobs with pagination.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public Page<IndexingJobHistory> getAllJobs(int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
+        return repository.findAll(pageable);
+    }
+
+    /**
+     * Get jobs by status.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsByStatus(JobStatus status) {
+        return repository.findByStatusOrderByStartTimeDesc(status);
+    }
+
+    /**
+     * Get jobs by status with pagination.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public Page<IndexingJobHistory> getJobsByStatus(JobStatus status, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
+        return repository.findByStatus(status, pageable);
+    }
+
+    /**
+     * Get recent jobs (last N hours).
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getRecentJobs(int hours) {
+        Instant since = Instant.now().minus(Duration.ofHours(hours));
+        return repository.findRecentJobs(since);
+    }
+
+    /**
+     * Get recent jobs with pagination.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public Page<IndexingJobHistory> getRecentJobs(int hours, int page, int size) {
+        Instant since = Instant.now().minus(Duration.ofHours(hours));
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "startTime"));
+        return repository.findRecentJobs(since, pageable);
+    }
+
+    /**
+     * Get jobs in a time range.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsBetween(Instant start, Instant end) {
+        return repository.findByStartTimeBetweenOrderByStartTimeDesc(start, end);
+    }
+
+    /**
+     * Get failed jobs.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getFailedJobs() {
+        List<IndexingJobHistory> failed = new ArrayList<>();
+        failed.addAll(repository.findByStatusOrderByStartTimeDesc(JobStatus.FAILED));
+        failed.addAll(repository.findByStatusOrderByStartTimeDesc(JobStatus.MEMORY_KILLED));
+        failed.sort((a, b) -> b.getStartTime().compareTo(a.getStartTime()));
+        return failed;
+    }
+
+    /**
+     * Get jobs by failure reason.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsByFailureReason(FailureReason reason) {
+        return repository.findByFailureReasonOrderByStartTimeDesc(reason);
+    }
+
+    /**
+     * Get currently active jobs.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getActiveJobs() {
+        return repository.findActiveJobs();
+    }
+
+    /**
+     * Get the most recent N jobs.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getMostRecentJobs(int limit) {
+        return repository.findTop100ByOrderByStartTimeDesc().stream()
+                .limit(limit)
+                .toList();
+    }
+
+    /**
+     * Search jobs by file name pattern.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> searchByFileName(String pattern) {
+        return repository.findByFileNamePattern("%" + pattern + "%");
+    }
+
+    /**
+     * Get jobs with high memory usage.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getHighMemoryJobs(double threshold) {
+        return repository.findJobsWithHighMemoryUsage(threshold);
+    }
+
+    /**
+     * Get long-running jobs.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getLongRunningJobs(long thresholdMs) {
+        return repository.findLongRunningJobs(thresholdMs);
+    }
+
+    // ===================== STATISTICS METHODS =====================
+
+    /**
+     * Get job statistics summary.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public Map<String, Object> getJobStatistics(int lastHours) {
+        Instant start = Instant.now().minus(Duration.ofHours(lastHours));
+        Instant end = Instant.now();
+
+        Map<String, Object> stats = new HashMap<>();
+
+        // Status counts
+        stats.put("totalJobs", repository.count());
+        stats.put("completedJobs", repository.countByStatus(JobStatus.COMPLETED));
+        stats.put("failedJobs", repository.countByStatus(JobStatus.FAILED));
+        stats.put("cancelledJobs", repository.countByStatus(JobStatus.CANCELLED));
+        stats.put("memoryKilledJobs", repository.countByStatus(JobStatus.MEMORY_KILLED));
+        stats.put("activeJobs", repository.findActiveJobs().size());
+
+        // Status breakdown
+        List<Object[]> statusStats = repository.getJobStatisticsByStatus(start, end);
+        List<Map<String, Object>> statusBreakdown = new ArrayList<>();
+        for (Object[] row : statusStats) {
+            Map<String, Object> statusItem = new HashMap<>();
+            statusItem.put("status", row[0]);
+            statusItem.put("count", row[1]);
+            statusItem.put("avgDurationMs", row[2]);
+            statusItem.put("totalDocumentsIndexed", row[3]);
+            statusBreakdown.add(statusItem);
+        }
+        stats.put("statusBreakdown", statusBreakdown);
+
+        // Throughput
+        List<Object[]> throughput = repository.getThroughputStatistics(start, end);
+        if (!throughput.isEmpty() && throughput.get(0) != null) {
+            Object[] row = throughput.get(0);
+            stats.put("totalDocumentsIndexed", row[0]);
+            stats.put("totalChunksCreated", row[1]);
+            stats.put("totalProcessingTimeMs", row[2]);
+            stats.put("completedJobsInPeriod", row[3]);
+        }
+
+        // Average phase timings
+        List<Object[]> timings = repository.getAveragePhaseTimings(start, end);
+        if (!timings.isEmpty() && timings.get(0) != null) {
+            Object[] row = timings.get(0);
+            Map<String, Object> avgTimings = new HashMap<>();
+            avgTimings.put("loadingMs", row[0]);
+            avgTimings.put("conversionMs", row[1]);
+            avgTimings.put("chunkingMs", row[2]);
+            avgTimings.put("embeddingMs", row[3]);
+            avgTimings.put("indexingMs", row[4]);
+            stats.put("averagePhaseTimings", avgTimings);
+        }
+
+        // Failure analysis
+        List<Object[]> failures = repository.getFailureStatistics(start, end);
+        List<Map<String, Object>> failureBreakdown = new ArrayList<>();
+        for (Object[] row : failures) {
+            Map<String, Object> failureItem = new HashMap<>();
+            failureItem.put("reason", row[0]);
+            failureItem.put("count", row[1]);
+            failureItem.put("avgDurationMs", row[2]);
+            failureBreakdown.add(failureItem);
+        }
+        stats.put("failureBreakdown", failureBreakdown);
+
+        // Distinct configurations
+        stats.put("embeddingModels", repository.findDistinctEmbeddingModels());
+        stats.put("loaders", repository.findDistinctLoaders());
+        stats.put("chunkers", repository.findDistinctChunkers());
+
+        return stats;
+    }
+
+    /**
+     * Get failure rate for a time period.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public double getFailureRate(int lastHours) {
+        long completed = repository.countByStatus(JobStatus.COMPLETED);
+        long failed = repository.countByStatus(JobStatus.FAILED);
+        long memoryKilled = repository.countByStatus(JobStatus.MEMORY_KILLED);
+        long total = completed + failed + memoryKilled;
+        if (total == 0)
+            return 0.0;
+        return (double) (failed + memoryKilled) / total * 100.0;
+    }
+
+    // ===================== CLEANUP METHODS =====================
+
+    /**
+     * Cleanup old job history records.
+     * Runs daily at 3 AM.
+     */
+    @Scheduled(cron = "0 0 3 * * ?")
+    @Transactional("ingestEventTransactionManager")
+    public void cleanupOldJobs() {
+        // 1. Time-based retention
+        Instant cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
+        List<IndexingJobHistory> oldJobs = repository.findByStartTimeBefore(cutoff);
+
+        int timeDeleted = 0;
+        for (IndexingJobHistory job : oldJobs) {
+            // Delete associated checkpoints
+            cleanupJobArtifacts(job.getTaskId());
+            repository.delete(job);
+            timeDeleted++;
+        }
+
+        if (timeDeleted > 0) {
+            log.info("Cleaned up {} old job history records (older than {} days)", timeDeleted, retentionDays);
+        }
+
+        // 2. Max records retention
+        try {
+            long totalCount = repository.count();
+            if (totalCount > maxRecords) {
+                long toDelete = totalCount - maxRecords;
+                log.info("Total job records ({}) exceeds limit ({}), deleting {} oldest records",
+                        totalCount, maxRecords, toDelete);
+
+                // Delete in batches
+                int batchSize = 100;
+                long deletedCount = 0;
+
+                while (deletedCount < toDelete) {
+                    int limit = (int) Math.min(batchSize, toDelete - deletedCount);
+                    // Always fetch page 0 as we are deleting them
+                    Page<IndexingJobHistory> oldestJobs = repository.findAll(
+                            PageRequest.of(0, limit, Sort.by(Sort.Direction.ASC, "startTime")));
+
+                    if (oldestJobs.isEmpty())
+                        break;
+
+                    for (IndexingJobHistory job : oldestJobs) {
+                        cleanupJobArtifacts(job.getTaskId());
+                        repository.delete(job);
+                        deletedCount++;
+                    }
+                }
+                log.info("Cleaned up {} excess job history records due to max-records limit", deletedCount);
+            }
+        } catch (Exception e) {
+            log.error("Failed to enforce max job history records: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Delete associated job artifacts (checkpoints) from disk.
+     */
+    private void cleanupJobArtifacts(String taskId) {
+        if (taskId == null || taskId.isEmpty())
+            return;
+
+        try {
+            // Checkpoints are stored in {stateDirectory}/checkpoints/{taskId}
+            Path checkpointPath = Paths.get(stateDirectory, "checkpoints", taskId);
+            if (Files.exists(checkpointPath)) {
+                try (Stream<Path> walk = Files.walk(checkpointPath)) {
+                    walk.sorted(Comparator.reverseOrder())
+                            .map(Path::toFile)
+                            .forEach(File::delete);
+                }
+                log.debug("Deleted checkpoint directory for taskId: {}", taskId);
+            }
+        } catch (IOException e) {
+            log.warn("Failed to clean up artifacts for job {}: {}", taskId, e.getMessage());
+        }
+    }
+
+    /**
+     * Force cleanup of all jobs older than specified days.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public int forceCleanup(int days) {
+        Instant cutoff = Instant.now().minus(Duration.ofDays(days));
+        int deleted = repository.deleteJobsOlderThan(cutoff);
+        log.info("Force cleanup removed {} job history records older than {} days", deleted, days);
+        return deleted;
+    }
+
+    /**
+     * Delete a specific job history.
+     */
+    @Transactional("ingestEventTransactionManager")
+    public boolean deleteJob(String taskId) {
+        Optional<IndexingJobHistory> job = repository.findByTaskId(taskId);
+        if (job.isPresent()) {
+            cleanupJobArtifacts(taskId);
+            repository.delete(job.get());
+            log.info("Deleted job history and artifacts for taskId: {}", taskId);
+            return true;
+        }
+        return false;
+    }
+}
