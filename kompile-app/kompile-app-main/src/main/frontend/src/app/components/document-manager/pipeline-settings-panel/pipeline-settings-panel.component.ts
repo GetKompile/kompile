@@ -28,6 +28,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { Subscription, interval } from 'rxjs';
 import { startWith, switchMap } from 'rxjs/operators';
@@ -44,6 +45,7 @@ import {
   TokenizerOption
 } from '../../../models/api-models';
 import { ProcessingSettingsService } from '../../../services/processing-settings.service';
+import { GraphExtractionService, GraphExtractionConfig, SchemaMode, ModelProvider, ModelInfo } from '../../../services/graph-extraction.service';
 
 @Component({
   selector: 'app-pipeline-settings-panel',
@@ -65,6 +67,7 @@ import { ProcessingSettingsService } from '../../../services/processing-settings
     MatTooltipModule,
     MatChipsModule,
     MatProgressBarModule,
+    MatProgressSpinnerModule,
     MatExpansionModule
   ]
 })
@@ -78,6 +81,13 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
   presets: PipelinePresets | null = null;
   selectedPreset: PipelinePreset = 'adaptive';
 
+  // Graph extraction configuration (loaded from separate API)
+  graphConfig: GraphExtractionConfig | null = null;
+  schemaModes: SchemaMode[] = [];
+  suggestedEntityTypes: string[] = [];
+  suggestedRelationshipTypes: string[] = [];
+  modelProviders: ModelProvider[] = [];
+
   // Stage metrics (for real-time monitoring)
   stageMetrics: StageMetricsResponse | null = null;
 
@@ -88,18 +98,21 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
   isLoading = true;
   isExpanded = true; // Show stage configuration expanded by default
   errorMessage: string | null = null;
+  graphConfigSaving = false;
 
   private subscriptions = new Subscription();
   private pollInterval = 5000; // 5 seconds
 
   constructor(
     private processingSettingsService: ProcessingSettingsService,
+    private graphExtractionService: GraphExtractionService,
     private cdr: ChangeDetectorRef
   ) {}
 
   ngOnInit(): void {
     this.loadConfiguration();
     this.loadPresets();
+    this.loadGraphConfig();
   }
 
   ngOnDestroy(): void {
@@ -134,6 +147,167 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
         },
         error: (err: Error) => {
           console.error('Failed to load pipeline presets:', err);
+        }
+      })
+    );
+  }
+
+  private loadGraphConfig(): void {
+    // Load graph extraction config, schema modes, and suggested types in parallel
+    this.subscriptions.add(
+      this.graphExtractionService.getConfig().subscribe({
+        next: (config: GraphExtractionConfig) => {
+          this.graphConfig = config;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to load graph extraction config:', err);
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.graphExtractionService.getSchemaModes().subscribe({
+        next: (modes: SchemaMode[]) => {
+          this.schemaModes = modes;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to load schema modes:', err);
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.graphExtractionService.getSuggestedEntityTypes().subscribe({
+        next: (types: string[]) => {
+          this.suggestedEntityTypes = types;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to load suggested entity types:', err);
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.graphExtractionService.getSuggestedRelationshipTypes().subscribe({
+        next: (types: string[]) => {
+          this.suggestedRelationshipTypes = types;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to load suggested relationship types:', err);
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.graphExtractionService.getModelProviders().subscribe({
+        next: (providers: ModelProvider[]) => {
+          this.modelProviders = providers;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to load model providers:', err);
+        }
+      })
+    );
+  }
+
+  /**
+   * Handle model provider change.
+   */
+  onModelProviderChange(providerId: string): void {
+    this.onGraphConfigChange('extractionModelProvider', providerId);
+    // Clear the model name when provider changes
+    if (this.graphConfig) {
+      this.graphConfig.extractionModelProvider = providerId;
+      this.graphConfig.extractionModelName = undefined;
+    }
+  }
+
+  /**
+   * Get the currently selected provider.
+   */
+  getSelectedProvider(): ModelProvider | null {
+    if (!this.graphConfig?.extractionModelProvider) return null;
+    return this.modelProviders.find(p => p.id === this.graphConfig?.extractionModelProvider) || null;
+  }
+
+  /**
+   * Get available models for the selected provider.
+   */
+  getAvailableModels(): ModelInfo[] {
+    const provider = this.getSelectedProvider();
+    return provider?.models || [];
+  }
+
+  /**
+   * Check if the selected provider has models available.
+   */
+  hasModelsAvailable(): boolean {
+    return this.getAvailableModels().length > 0;
+  }
+
+  onGraphConfigChange(field: string, value: unknown): void {
+    if (!this.graphConfig) return;
+
+    const update: Partial<GraphExtractionConfig> = { [field]: value };
+    this.graphConfigSaving = true;
+    this.cdr.markForCheck();
+
+    this.subscriptions.add(
+      this.graphExtractionService.patchConfig(update).subscribe({
+        next: (config: GraphExtractionConfig) => {
+          this.graphConfig = config;
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to update graph config:', err);
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
+        }
+      })
+    );
+  }
+
+  toggleGraphExtraction(): void {
+    this.graphConfigSaving = true;
+    this.cdr.markForCheck();
+
+    this.subscriptions.add(
+      this.graphExtractionService.toggleEnabled().subscribe({
+        next: (config: GraphExtractionConfig) => {
+          this.graphConfig = config;
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to toggle graph extraction:', err);
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
+        }
+      })
+    );
+  }
+
+  resetGraphConfig(): void {
+    this.graphConfigSaving = true;
+    this.cdr.markForCheck();
+
+    this.subscriptions.add(
+      this.graphExtractionService.resetConfig().subscribe({
+        next: (config: GraphExtractionConfig) => {
+          this.graphConfig = config;
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
+        },
+        error: (err: Error) => {
+          console.error('Failed to reset graph config:', err);
+          this.graphConfigSaving = false;
+          this.cdr.markForCheck();
         }
       })
     );
@@ -234,7 +408,8 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
       'tokenization': 'text_fields',
       'chunking': 'content_cut',
       'embedding': 'memory',
-      'indexing': 'storage'
+      'indexing': 'storage',
+      'graph-building': 'hub'
     };
     return icons[stageName] || 'settings';
   }
@@ -255,12 +430,13 @@ export class PipelineSettingsPanelComponent implements OnInit, OnDestroy {
       case 'chunking': return this.stageMetrics.chunking;
       case 'embedding': return this.stageMetrics.embedding;
       case 'indexing': return this.stageMetrics.indexing;
+      case 'graph-building': return this.stageMetrics.graphBuilding || null;
       default: return null;
     }
   }
 
   // Stage names for iteration
-  readonly stageNames = ['extraction', 'tokenization', 'chunking', 'embedding', 'indexing'];
+  readonly stageNames = ['extraction', 'tokenization', 'chunking', 'embedding', 'indexing', 'graph-building'];
 
   /**
    * Check if a specific RAM tier is the current system's tier.

@@ -438,7 +438,7 @@ public class DefaultLlmIntegrationService implements LlmIntegrationService {
 
     @Override
     public List<LlmSession> getSessionHistory(String orchestratorInstanceId, int limit) {
-        return sessionRepository.findTopByOrchestratorInstanceIdOrderByStartedAtDesc(
+        return sessionRepository.findTopByOrchestratorInstanceIdOrderByStartTimeDesc(
                 orchestratorInstanceId, org.springframework.data.domain.PageRequest.of(0, limit));
     }
 

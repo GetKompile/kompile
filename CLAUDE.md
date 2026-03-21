@@ -310,6 +310,15 @@ Query → Embed Query → Vector Search → Retrieved Context → LLM → Respon
 
 ## Common Development Tasks
 
+### Adding a New Kompile Module (important!)
+
+When adding a new `kompile-app` sub-module that is referenced by `kompile-app-main` (e.g. imported in controllers), you **must** update these files to avoid `NoClassDefFoundError` at runtime:
+
+1. **Parent POM** (`kompile-app/pom.xml`): Add `<module>` and `<dependency>` in `<dependencyManagement>`
+2. **Main app POM** (`kompile-app/kompile-app-main/pom.xml`): Add dependency
+3. **Sample project POM** (`kompile-rag-builds/kompile-sample/project/pom.xml`): Add dependency - this is a pre-generated project used during development to avoid regenerating every time
+4. **RagPomGenerator** (`kompile-cli/src/main/java/ai/kompile/cli/main/build/RagPomGenerator.java`): Add `@CommandLine.Option` field and `addDependency()` call in `addApplicationDependencies()` method
+
 ### Adding a New Embedding Model
 
 1. Register model in `kompile-model-manager/src/main/java/ai/kompile/modelmanager/ModelConstants.java`:
@@ -731,3 +740,53 @@ Before considering frontend changes complete:
 - [ ] Verify browser console shows no errors
 - [ ] Test with Angular dev server + Spring Boot backend separately
 - [ ] Build and run from JAR to verify packaging
+
+### Native Image Subprocess Configuration
+
+When running kompile applications as GraalVM native images, subprocess launching requires special handling since `java -cp <classpath> <MainClass>` won't work.
+
+**Key Classes:**
+- `NativeImageInfo` (`kompile-app-core`): Detects if running in native image mode
+- `SubprocessExecutableConfig` (`kompile-app-main`): Configures subprocess execution paths
+
+**Configuration Properties:**
+```properties
+# Launch mode: auto, jvm, or native
+kompile.subprocess.executable.mode=auto
+
+# Path to unified native executable (used with --subprocess=TYPE flag)
+kompile.subprocess.executable.native-path=/opt/kompile/kompile-app
+
+# Optional: Separate executables for each subprocess type
+kompile.subprocess.executable.ingest-path=/opt/kompile/kompile-ingest
+kompile.subprocess.executable.vector-population-path=/opt/kompile/kompile-vector
+kompile.subprocess.executable.embedding-path=/opt/kompile/kompile-embedding
+kompile.subprocess.executable.model-init-path=/opt/kompile/kompile-model-init
+
+# Subprocess type flag prefix (default: --subprocess=)
+kompile.subprocess.executable.type-flag=--subprocess=
+```
+
+**How It Works:**
+1. **Auto Mode (default)**: Automatically detects if running in native image
+   - If native image: Uses native executable with `--subprocess=TYPE` flag
+   - If JVM: Uses traditional classpath-based launching
+2. **JVM Mode**: Always uses `java -cp <classpath> <MainClass>`
+3. **Native Mode**: Always uses native executable
+
+**Native Executable Requirements:**
+When building native images, each subprocess type needs to be handled:
+1. **Unified executable**: Single native image handles all subprocess types via `--subprocess=TYPE` argument
+2. **Separate executables**: Individual native images for each subprocess type
+
+**Example Native Image Build:**
+```bash
+# Build with subprocess entry point support
+cd kompile-app/kompile-app-main
+mvn clean package -Pnative -Dsubprocess.type=ingest
+```
+
+**Detection Logic:**
+- `NativeImageInfo.isRunningInNativeImage()`: Uses reflection to detect GraalVM's `ImageInfo.inImageCode()`
+- `NativeImageInfo.hasClasspath()`: Checks if `java.class.path` contains actual JAR files
+- Falls back gracefully if native mode unavailable but classpath exists

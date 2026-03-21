@@ -31,19 +31,25 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.util.Bits;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockObtainFailedException;
 import org.apache.lucene.store.NoLockFactory;
 import org.apache.lucene.util.BytesRef;
-import org.springframework.ai.embedding.EmbeddingModel;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import org.springframework.beans.factory.DisposableBean;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -92,31 +98,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     private static final String JVM_UNIQUE_SUFFIX = "-jvm" + ProcessHandle.current().pid()
             + "-" + System.currentTimeMillis();
 
-    // Static initializer to set default lock factory - defense in depth
-    static {
-        // Set Lucene default lock factory to NoLockFactory globally as fallback
-        // This ensures even if FSDirectory.open() is called without explicit lock
-        // factory,
-        // we won't have lock contention issues
-        System.setProperty("org.apache.lucene.store.FSLockFactory.default", "org.apache.lucene.store.NoLockFactory");
-
-        // Force cleanup of any stale lock file on class load (before any constructor
-        // runs)
-        // This handles the case where a previous JVM crashed without cleanup
-        try {
-            String defaultIndexPath = System.getProperty("kompile.vectorstore.anserini.index-path",
-                    System.getProperty("user.home") + "/.kompile/anserini-vector-index");
-            java.nio.file.Path lockFile = java.nio.file.Paths.get(defaultIndexPath, "write.lock");
-            if (java.nio.file.Files.exists(lockFile)) {
-                java.nio.file.Files.deleteIfExists(lockFile);
-            }
-        } catch (Exception ignored) {
-            // Silently ignore - constructor will handle lock issues with proper fallback
-        }
-    }
-
     private String indexPath;
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingModel embeddingModel; // Kompile's interface, not Spring AI's
     private final AnseriniVectorStoreProperties properties;
     private final RerankerService rerankerService;
     private Directory directory;
@@ -137,7 +120,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     private volatile boolean searcherNeedsRefresh = false;
 
     // PERFORMANCE: Batch commit tracking for bulk indexing
-    // Instead of committing after every batch (expensive), we commit every N batches
+    // Instead of committing after every batch (expensive), we commit every N
+    // batches
     // This reduces commit overhead by 10x or more during bulk indexing operations
     private volatile int batchesSinceCommit = 0;
     private volatile int documentsAddedSinceCommit = 0;
@@ -168,26 +152,24 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // This guarantees uniqueness using PID + timestamp, preventing lock conflicts
         String configuredPath = properties.getIndexPath();
         if (configuredPath == null || configuredPath.isEmpty()) {
-            configuredPath = System.getProperty("java.io.tmpdir") + "/anserini-vector-index";
+            log.info(
+                    "AnseriniVectorStoreImpl created without an initial index path. Initialization will be deferred until switchIndexPath is called.");
+            this.indexPath = null;
+            return;
         }
-        if (properties.isPersistenceEnabled()) {
-            // SHARED MODE: Use path exactly as configured
-            // This allows subprocesses and main app to share the same index
-            this.indexPath = configuredPath;
-            log.info("Using SHARED index path (persistence enabled): {}", this.indexPath);
-        } else {
-            // ISOLATED MODE: Append JVM-unique suffix
-            // This guarantees uniqueness using PID + timestamp, preventing lock conflicts
-            this.indexPath = configuredPath + JVM_UNIQUE_SUFFIX;
-            log.info("Using JVM-unique index path (persistence disabled): {} (base path was: {})",
-                    this.indexPath, configuredPath);
-        }
+        this.indexPath = properties.isPersistenceEnabled() ? configuredPath : configuredPath + JVM_UNIQUE_SUFFIX;
+        log.info("Initialized with index path: {} (persistence: {})", this.indexPath,
+                properties.isPersistenceEnabled());
 
         try {
-            initializeWithFallback();
-            registerShutdownHook();
-            log.info("AnseriniVectorStoreImpl initialized with index path: {}, HNSW: {}, fallback: {}, reranker: {}",
-                    indexPath, properties.getHnsw().isEnabled(), usingFallbackIndex,
+            if (this.indexPath != null) {
+                cleanupStaleLock(indexPath);
+                initializeWithFallback();
+                registerShutdownHook();
+            }
+            log.info("AnseriniVectorStoreImpl created with index path: {}, HNSW: {}, fallback: {}, reranker: {}",
+                    indexPath != null ? indexPath : "UNCONFIGURED", properties.getHnsw().isEnabled(),
+                    usingFallbackIndex,
                     rerankerService != null ? "enabled" : "disabled");
         } catch (IOException e) {
             log.error("Failed to initialize Anserini vector store at path: {}", indexPath, e);
@@ -213,7 +195,30 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         log.debug("Registered JVM shutdown hook for Lucene index cleanup");
     }
 
+    private void cleanupStaleLock(String indexPath) {
+        // Force cleanup of any stale lock file on initialization
+        // This handles the case where a previous JVM crashed without cleanup
+        try {
+            // Set Lucene default lock factory to NoLockFactory locally as well
+            System.setProperty("org.apache.lucene.store.FSLockFactory.default",
+                    "org.apache.lucene.store.NoLockFactory");
+
+            java.nio.file.Path lockFile = java.nio.file.Paths.get(indexPath, "write.lock");
+            if (java.nio.file.Files.exists(lockFile)) {
+                log.warn("Found stale write.lock at {}, deleting it to prevent lock contention.", lockFile);
+                java.nio.file.Files.deleteIfExists(lockFile);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to cleanup stale lock file at {}: {}", indexPath, e.getMessage());
+            // Continue - maybe it wasn't there or we don't have permission
+        }
+    }
+
     private void initializeWithFallback() throws IOException {
+        if (indexPath == null) {
+            log.debug("Skipping initialization: index path is null");
+            return;
+        }
         Path path = Paths.get(indexPath);
         if (!Files.exists(path)) {
             Files.createDirectories(path);
@@ -597,7 +602,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     // 3. Generate individually (fallback)
                     else {
                         try {
-                            embedding = embeddingModel.embed(springAiDoc);
+                            embedding = embeddingModel.embed(springAiDoc.getText()).toFloatVector();
                         } catch (NullPointerException e) {
                             log.warn("Native pointer error during embedding generation for document {}, skipping: {}",
                                     springAiDoc.getId(), e.getMessage());
@@ -680,10 +685,12 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      * This method avoids the boxing overhead of List&lt;List&lt;Float&gt;&gt;
      * that was previously required, providing significant memory and CPU savings:
      * <ul>
-     *   <li>Before: N docs × D dims = N×D Float objects + N ArrayList allocations</li>
-     *   <li>After: Zero boxing - float[][] used directly</li>
+     * <li>Before: N docs × D dims = N×D Float objects + N ArrayList
+     * allocations</li>
+     * <li>After: Zero boxing - float[][] used directly</li>
      * </ul>
-     * For a batch of 1000 docs with 768-dim embeddings, this saves ~768,000 object allocations.
+     * For a batch of 1000 docs with 768-dim embeddings, this saves ~768,000 object
+     * allocations.
      * </p>
      * <p>
      * This method also implements batch commit optimization - commits are performed
@@ -692,12 +699,17 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      * </p>
      *
      * @param documents  List of Spring AI Documents
-     * @param embeddings float[numDocs][embeddingDim] array of pre-computed embeddings
+     * @param embeddings float[numDocs][embeddingDim] array of pre-computed
+     *                   embeddings
      * @return The actual number of documents successfully persisted to the store
      */
     @Override
     public int addWithFloatArrayEmbeddings(List<org.springframework.ai.document.Document> documents,
-                                           float[][] embeddings) {
+            float[][] embeddings) {
+        log.info("addWithFloatArrayEmbeddings called: documents={}, embeddings={}, indexPath={}, indexWriter={}",
+                documents != null ? documents.size() : "NULL",
+                embeddings != null ? embeddings.length : "NULL",
+                indexPath, indexWriter != null ? "non-null" : "NULL");
         if (documents == null || documents.isEmpty()) {
             log.debug("No documents provided to addWithFloatArrayEmbeddings.");
             return 0;
@@ -740,11 +752,22 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                         if (embeddingMatrix != null && !embeddingMatrix.isEmpty()) {
                             int numRows = (int) embeddingMatrix.rows();
                             int numCols = (int) embeddingMatrix.columns();
-                            bulkEmbeddings = new float[numRows][];
-                            float[] flatData = embeddingMatrix.data().asFloat();
-                            for (int i = 0; i < numRows; i++) {
-                                bulkEmbeddings[i] = new float[numCols];
-                                System.arraycopy(flatData, i * numCols, bulkEmbeddings[i], 0, numCols);
+                            bulkEmbeddings = new float[numRows][numCols];
+
+                            // Fast path: contiguous row-major data - single bulk read + arraycopy
+                            if (embeddingMatrix.ordering() == 'c' && !embeddingMatrix.isView()
+                                    && embeddingMatrix.stride(0) == numCols && embeddingMatrix.stride(1) == 1) {
+                                float[] flat = embeddingMatrix.data().getFloatsAt(embeddingMatrix.offset(), numRows * numCols);
+                                for (int i = 0; i < numRows; i++) {
+                                    System.arraycopy(flat, i * numCols, bulkEmbeddings[i], 0, numCols);
+                                }
+                            } else {
+                                // General path: direct element access for views/non-contiguous
+                                for (int i = 0; i < numRows; i++) {
+                                    for (int j = 0; j < numCols; j++) {
+                                        bulkEmbeddings[i][j] = embeddingMatrix.getFloat(i, j);
+                                    }
+                                }
                             }
                             log.debug("Generated {} bulk embeddings (optimized extraction)", bulkEmbeddings.length);
                         }
@@ -779,7 +802,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     } else {
                         // Fallback to per-document embedding
                         try {
-                            embedding = embeddingModel.embed(springAiDoc);
+                            embedding = embeddingModel.embed(springAiDoc.getText()).toFloatVector();
                         } catch (NullPointerException e) {
                             log.warn("Native pointer error during embedding generation for document {}, skipping: {}",
                                     springAiDoc.getId(), e.getMessage());
@@ -791,6 +814,19 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
                     if (embedding == null || embedding.length == 0) {
                         log.debug("Skipping document {} with empty embedding", springAiDoc.getId());
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // VALIDATION: Check embedding dimension is within Lucene limits
+                    // Lucene's default limit is 4096, but configurable via properties
+                    int maxDim = properties.getMaxDimensions();
+                    if (embedding.length > maxDim) {
+                        log.error("DIMENSION ERROR: Embedding for document {} has {} dimensions, " +
+                                "but max allowed is {}. This likely indicates a batch extraction bug " +
+                                "where multiple embeddings were concatenated.",
+                                springAiDoc.getId(), embedding.length, maxDim);
+                        // Skip this document rather than crashing the entire batch
                         skippedCount++;
                         continue;
                     }
@@ -843,12 +879,15 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 }
             }
 
+            log.info("addWithFloatArrayEmbeddings COMPLETE: addedCount={}, skippedCount={}, indexPath={}",
+                    addedCount, skippedCount, indexPath);
             return addedCount;
         }
     }
 
     /**
-     * Determines if a commit should be performed now based on batch and document counts.
+     * Determines if a commit should be performed now based on batch and document
+     * counts.
      *
      * @param forceCommit If true, always returns true (for final batch)
      * @return true if commit should be performed
@@ -880,13 +919,17 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     }
 
     /**
-     * Forces a commit of any pending documents. Call this at the end of bulk indexing.
+     * Forces a commit of any pending documents. Call this at the end of bulk
+     * indexing.
      *
      * @return true if commit was successful
      */
     public boolean flushAndCommit() {
+        log.info("flushAndCommit called: documentsAddedSinceCommit={}, batchesSinceCommit={}, indexPath={}, indexWriter={}",
+                documentsAddedSinceCommit, batchesSinceCommit, indexPath, indexWriter != null ? "non-null" : "NULL");
         synchronized (writerLock) {
             if (shuttingDown) {
+                log.info("flushAndCommit: shuttingDown=true, returning false");
                 return false;
             }
             if (documentsAddedSinceCommit > 0) {
@@ -901,6 +944,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     log.error("Error during forced commit", e);
                     return false;
                 }
+            } else {
+                log.info("flushAndCommit: No documents to commit (documentsAddedSinceCommit=0)");
             }
             return true;
         }
@@ -921,12 +966,14 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
             try {
                 for (String id : ids) {
-                    indexWriter.deleteDocuments(new org.apache.lucene.index.Term("id", id));
+                    indexWriter.deleteDocuments(new Term("id", id));
                 }
                 indexWriter.commit();
                 log.info("Successfully deleted {} documents from Anserini VectorStore", ids.size());
 
-                // PERFORMANCE: Mark searcher as needing refresh (lazy refresh pattern)
+                // CRITICAL: Invalidate cached reader to force fresh reader on next access
+                // This ensures deleted documents are not returned in subsequent queries
+                invalidateCachedReader();
                 searcherNeedsRefresh = true;
                 return true;
 
@@ -969,7 +1016,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // Wrap in try-catch to handle native pointer errors from ND4J
         float[] queryVector;
         try {
-            queryVector = embeddingModel.embed(query);
+            queryVector = embeddingModel.embed(query).toFloatVector();
         } catch (NullPointerException e) {
             // This catches JavaCPP "Pointer address of argument X is NULL" errors
             log.warn("Native pointer error during query embedding generation: {}", e.getMessage());
@@ -999,13 +1046,16 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         try {
             ScoredDoc[] hits = null;
 
-            // Validate query vector - check for zero magnitude which causes NaN in cosine similarity
+            // Validate query vector - check for zero magnitude which causes NaN in cosine
+            // similarity
             double magnitude = 0.0;
             float minVal = Float.MAX_VALUE, maxVal = Float.MIN_VALUE;
             for (float v : queryVector) {
                 magnitude += v * v;
-                if (v < minVal) minVal = v;
-                if (v > maxVal) maxVal = v;
+                if (v < minVal)
+                    minVal = v;
+                if (v > maxVal)
+                    maxVal = v;
             }
             magnitude = Math.sqrt(magnitude);
             log.info("Query vector stats: dim={}, magnitude={}, min={}, max={}",
@@ -1013,8 +1063,10 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     String.format("%.6f", minVal), String.format("%.6f", maxVal));
 
             if (magnitude < 1e-9) {
-                log.error("Query vector has near-zero magnitude ({}). This will cause NaN scores in cosine similarity. " +
-                        "Check that the embedding model is producing valid embeddings.", magnitude);
+                log.error(
+                        "Query vector has near-zero magnitude ({}). This will cause NaN scores in cosine similarity. " +
+                                "Check that the embedding model is producing valid embeddings.",
+                        magnitude);
                 return Collections.emptyList();
             }
 
@@ -1058,11 +1110,15 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             // Count NaN scores for debugging
             long nanCount = Arrays.stream(hits).filter(h -> Float.isNaN(h.score)).count();
             if (nanCount > 0) {
-                log.warn("WARNING: {} out of {} hits have NaN scores! This indicates zero-magnitude vectors in the index. " +
-                        "Re-index your documents to fix this issue.", nanCount, hits.length);
+                log.warn(
+                        "WARNING: {} out of {} hits have NaN scores! This indicates zero-magnitude vectors in the index. "
+                                +
+                                "Re-index your documents to fix this issue.",
+                        nanCount, hits.length);
             }
 
-            // Filter by threshold, but include NaN scores with a warning (they indicate index issues)
+            // Filter by threshold, but include NaN scores with a warning (they indicate
+            // index issues)
             List<org.springframework.ai.document.Document> results = Arrays.stream(hits)
                     .filter(hit -> {
                         if (Float.isNaN(hit.score)) {
@@ -1074,7 +1130,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     .map(this::convertToSpringAiDocument)
                     .collect(Collectors.toList());
 
-            log.info("After threshold filtering: {} results (threshold={}, nanCount={})", results.size(), threshold, nanCount);
+            log.info("After threshold filtering: {} results (threshold={}, nanCount={})", results.size(), threshold,
+                    nanCount);
             return results;
         } catch (Exception e) {
             log.error("Error during similarity search with vector", e);
@@ -1197,7 +1254,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         doc.add(new StringField("id", springDoc.getId(), Field.Store.YES));
         doc.add(new BinaryDocValuesField("id", new BytesRef(springDoc.getId())));
 
-        // Validate embedding magnitude - zero vectors are garbage and will cause NaN in cosine similarity
+        // Validate embedding magnitude - zero vectors are garbage and will cause NaN in
+        // cosine similarity
         double magnitude = 0.0;
         for (float v : embedding) {
             magnitude += v * v;
@@ -1206,7 +1264,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         if (magnitude < 1e-9) {
             throw new IllegalArgumentException(String.format(
                     "Document '%s' has zero-magnitude embedding (magnitude=%.2e). " +
-                    "This is garbage output from the embedding model. Check model configuration.",
+                            "This is garbage output from the embedding model. Check model configuration.",
                     springDoc.getId(), magnitude));
         }
 
@@ -1214,8 +1272,15 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         VectorSimilarityFunction similarityFunction = parseSimilarityFunction(properties.getSimilarityFunction());
         doc.add(new KnnFloatVectorField("vector", embedding, similarityFunction));
 
-        // Store document content
-        doc.add(new StoredField("contents", springDoc.getText())); // Use "contents" for Anserini compatibility
+        // Store document content - must match AnseriniIndexerServiceImpl field settings
+        // to prevent "cannot change field from index
+        // options=DOCS_AND_FREQS_AND_POSITIONS to NONE" errors
+        FieldType contentsFieldType = new FieldType();
+        contentsFieldType.setStored(true);
+        contentsFieldType.setStoreTermVectors(true);
+        contentsFieldType.setStoreTermVectorPositions(true);
+        contentsFieldType.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS);
+        doc.add(new Field(Constants.CONTENTS, springDoc.getText(), contentsFieldType));
 
         // Store metadata as JSON
         if (springDoc.getMetadata() != null && !springDoc.getMetadata().isEmpty()) {
@@ -1690,51 +1755,77 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     }
                 }
 
-                int maxDoc = reader.maxDoc();
-                int start = Math.min(offset, maxDoc);
-                int end = Math.min(offset + limit, maxDoc);
+                // Iterate through leaf readers to properly handle deleted documents
+                // This is necessary because storedFields().document(i) can still return
+                // deleted documents - we must check liveDocs to skip them
+                int liveDocsSeen = 0;
+                int docsCollected = 0;
 
-                for (int i = start; i < end; i++) {
-                    try {
-                        Document luceneDoc = reader.storedFields().document(i);
-                        Map<String, Object> docInfo = new HashMap<>();
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    if (docsCollected >= limit) {
+                        break;
+                    }
 
-                        // Get document ID
-                        String id = luceneDoc.get("id");
-                        if (id == null) {
-                            id = "doc_" + i;
-                        }
-                        docInfo.put("id", id);
-                        docInfo.put("lucene_internal_id", i);
+                    LeafReader leafReader = ctx.reader();
+                    Bits liveDocs = leafReader.getLiveDocs();
+                    int leafMaxDoc = leafReader.maxDoc();
 
-                        // Get content preview
-                        String content = luceneDoc.get("contents");
-                        if (content == null) {
-                            content = luceneDoc.get("text");
-                        }
-                        if (content != null) {
-                            docInfo.put("content", content);
-                            String preview = content.length() > 200 ? content.substring(0, 200) + "..." : content;
-                            docInfo.put("preview", preview);
-                        } else {
-                            docInfo.put("preview", "[No content]");
+                    for (int localDocId = 0; localDocId < leafMaxDoc && docsCollected < limit; localDocId++) {
+                        // Skip deleted documents
+                        if (liveDocs != null && !liveDocs.get(localDocId)) {
+                            continue;
                         }
 
-                        // Get metadata if available
-                        String metadataJson = luceneDoc.get("metadata");
-                        if (metadataJson != null) {
-                            try {
-                                @SuppressWarnings("unchecked")
-                                Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
-                                docInfo.put("metadata", metadata);
-                            } catch (Exception e) {
-                                log.trace("Could not parse metadata JSON: {}", e.getMessage());
+                        // This is a live document - check if we've passed the offset
+                        if (liveDocsSeen < offset) {
+                            liveDocsSeen++;
+                            continue;
+                        }
+
+                        try {
+                            Document luceneDoc = leafReader.storedFields().document(localDocId);
+                            Map<String, Object> docInfo = new HashMap<>();
+
+                            // Get document ID
+                            String id = luceneDoc.get("id");
+                            int globalDocId = ctx.docBase + localDocId;
+                            if (id == null) {
+                                id = "doc_" + globalDocId;
                             }
-                        }
+                            docInfo.put("id", id);
+                            docInfo.put("lucene_internal_id", globalDocId);
 
-                        results.add(docInfo);
-                    } catch (Exception e) {
-                        log.trace("Error reading document at index {}: {}", i, e.getMessage());
+                            // Get content preview
+                            String content = luceneDoc.get("contents");
+                            if (content == null) {
+                                content = luceneDoc.get("text");
+                            }
+                            if (content != null) {
+                                docInfo.put("content", content);
+                                String preview = content.length() > 200 ? content.substring(0, 200) + "..." : content;
+                                docInfo.put("preview", preview);
+                            } else {
+                                docInfo.put("preview", "[No content]");
+                            }
+
+                            // Get metadata if available
+                            String metadataJson = luceneDoc.get("metadata");
+                            if (metadataJson != null) {
+                                try {
+                                    @SuppressWarnings("unchecked")
+                                    Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
+                                    docInfo.put("metadata", metadata);
+                                } catch (Exception e) {
+                                    log.trace("Could not parse metadata JSON: {}", e.getMessage());
+                                }
+                            }
+
+                            results.add(docInfo);
+                            docsCollected++;
+                            liveDocsSeen++;
+                        } catch (Exception e) {
+                            log.trace("Error reading document at local index {}: {}", localDocId, e.getMessage());
+                        }
                     }
                 }
 
@@ -1815,7 +1906,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         // Generate embedding for the query string
         float[] queryVector;
         try {
-            queryVector = embeddingModel.embed(query);
+            queryVector = embeddingModel.embed(query).toFloatVector();
         } catch (NullPointerException e) {
             log.warn("Native pointer error during query embedding: {}", e.getMessage());
             return Collections.emptyList();
@@ -1836,7 +1927,8 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      * Internal method to perform search and return scored documents.
      */
     private List<ScoredDocument> performSearchWithScores(float[] queryVector, int k, double threshold) {
-        // Check for external changes (e.g., from subprocess) - efficient no-op if no changes
+        // Check for external changes (e.g., from subprocess) - efficient no-op if no
+        // changes
         refreshReader();
 
         ensureSearcherInitialized();
@@ -2079,14 +2171,17 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     }
 
     /**
-     * Validates that the current encoder model matches the model used for the index.
+     * Validates that the current encoder model matches the model used for the
+     * index.
      * <p>
      * This method should be called before performing operations that require model
      * consistency, such as adding new documents to an existing index.
      * </p>
      *
-     * @param currentModelId The model ID currently configured in the embedding model
-     * @return true if the models match or index is empty, false if there's a mismatch
+     * @param currentModelId The model ID currently configured in the embedding
+     *                       model
+     * @return true if the models match or index is empty, false if there's a
+     *         mismatch
      */
     public boolean validateEncoderModel(String currentModelId) {
         if (this.encoderModelId == null) {
@@ -2121,5 +2216,257 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
         config.put("rerankerModel", rerankerModelId != null ? rerankerModelId : "not set");
         config.put("rerankerAvailable", String.valueOf(rerankerService != null));
         return config;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CHUNK MANAGEMENT METHODS (for Chunk Manager)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Retrieves a single document/chunk from the vector store by its ID.
+     *
+     * @param id The document ID
+     * @return Map containing document info (id, content, metadata), or null if not found
+     */
+    @Override
+    public Map<String, Object> getVectorDocument(String id) {
+        if (id == null || id.isEmpty() || !isVectorStoreAvailable()) {
+            return null;
+        }
+
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+
+                // Iterate through leaf readers to properly skip deleted documents
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    LeafReader leafReader = ctx.reader();
+                    Bits liveDocs = leafReader.getLiveDocs();
+                    int leafMaxDoc = leafReader.maxDoc();
+
+                    for (int localDocId = 0; localDocId < leafMaxDoc; localDocId++) {
+                        // Skip deleted documents
+                        if (liveDocs != null && !liveDocs.get(localDocId)) {
+                            continue;
+                        }
+
+                        try {
+                            Document luceneDoc = leafReader.storedFields().document(localDocId);
+                            String docId = luceneDoc.get("id");
+
+                            if (id.equals(docId)) {
+                                Map<String, Object> docInfo = new HashMap<>();
+                                docInfo.put("id", id);
+                                docInfo.put("lucene_internal_id", ctx.docBase + localDocId);
+
+                                // Get content
+                                String content = luceneDoc.get("contents");
+                                if (content == null) {
+                                    content = luceneDoc.get("text");
+                                }
+                                docInfo.put("content", content != null ? content : "");
+
+                                // Get metadata
+                                String metadataJson = luceneDoc.get("metadata");
+                                if (metadataJson != null) {
+                                    try {
+                                        @SuppressWarnings("unchecked")
+                                        Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
+                                        docInfo.put("metadata", metadata);
+                                    } catch (Exception e) {
+                                        log.trace("Could not parse metadata JSON: {}", e.getMessage());
+                                        docInfo.put("metadata", Map.of());
+                                    }
+                                } else {
+                                    docInfo.put("metadata", Map.of());
+                                }
+
+                                return docInfo;
+                            }
+                        } catch (Exception e) {
+                            log.trace("Error reading document at local index {}: {}", localDocId, e.getMessage());
+                        }
+                    }
+                }
+
+                log.debug("Document with ID '{}' not found in vector store", id);
+                return null;
+
+            } catch (Exception e) {
+                log.warn("Error retrieving document '{}': {}", id, e.getMessage());
+                return null;
+            }
+        }
+    }
+
+    /**
+     * Deletes all documents from the vector store.
+     * <p>
+     * This is a destructive operation that removes all vectors and documents
+     * from the index. The index remains usable but empty.
+     * </p>
+     *
+     * @return true if deletion was successful, false otherwise
+     */
+    @Override
+    public boolean deleteAll() {
+        if (!isVectorStoreAvailable()) {
+            log.warn("Cannot delete all: vector store is not available");
+            return false;
+        }
+
+        synchronized (writerLock) {
+            if (shuttingDown) {
+                log.info("VectorStore is shutting down, skipping delete all");
+                return false;
+            }
+
+            try {
+                // Get count before deletion for logging
+                long beforeCount = getApproxVectorCount();
+
+                // Delete all documents
+                indexWriter.deleteAll();
+                indexWriter.commit();
+
+                // Invalidate cached reader and mark searcher for refresh
+                invalidateCachedReader();
+                searcherNeedsRefresh = true;
+
+                log.info("Deleted all {} documents from vector store at {}", beforeCount, indexPath);
+                return true;
+
+            } catch (IOException e) {
+                log.error("Error deleting all documents from vector store: {}", e.getMessage(), e);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Retrieves all document IDs that belong to a specific source document.
+     * <p>
+     * This method scans the vector store for documents with matching source_id
+     * metadata. The source ID is typically the original file path or URL.
+     * </p>
+     *
+     * @param sourceId The source document ID (e.g., file path or URL)
+     * @return List of document IDs belonging to this source
+     */
+    @Override
+    public List<String> getDocumentIdsBySourceId(String sourceId) {
+        if (sourceId == null || sourceId.isEmpty() || !isVectorStoreAvailable()) {
+            return Collections.emptyList();
+        }
+
+        List<String> matchingIds = new ArrayList<>();
+
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+
+                // Iterate through leaf readers to properly skip deleted documents
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    LeafReader leafReader = ctx.reader();
+                    Bits liveDocs = leafReader.getLiveDocs();
+                    int leafMaxDoc = leafReader.maxDoc();
+
+                    for (int localDocId = 0; localDocId < leafMaxDoc; localDocId++) {
+                        // Skip deleted documents
+                        if (liveDocs != null && !liveDocs.get(localDocId)) {
+                            continue;
+                        }
+
+                        try {
+                            Document luceneDoc = leafReader.storedFields().document(localDocId);
+                            String metadataJson = luceneDoc.get("metadata");
+
+                            if (metadataJson != null) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
+
+                                // Check for source_id in metadata
+                                Object docSourceId = metadata.get("source_id");
+                                if (sourceId.equals(docSourceId)) {
+                                    String docId = luceneDoc.get("id");
+                                    if (docId != null) {
+                                        matchingIds.add(docId);
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.trace("Error reading document at local index {}: {}", localDocId, e.getMessage());
+                        }
+                    }
+                }
+
+                log.debug("Found {} documents with source_id '{}'", matchingIds.size(), sourceId);
+            } catch (Exception e) {
+                log.warn("Error getting document IDs by source: {}", e.getMessage());
+            }
+        }
+
+        return matchingIds;
+    }
+
+    /**
+     * Returns a list of unique source document IDs present in the vector store.
+     * <p>
+     * This scans all documents and extracts unique values from the source_id
+     * metadata field. Useful for populating UI filter dropdowns.
+     * </p>
+     *
+     * @return List of unique source IDs, sorted alphabetically
+     */
+    @Override
+    public List<String> getUniqueSourceIds() {
+        if (!isVectorStoreAvailable()) {
+            return Collections.emptyList();
+        }
+
+        java.util.Set<String> sourceIds = new java.util.TreeSet<>();
+
+        synchronized (readerLock) {
+            try {
+                IndexReader reader = getCachedReader();
+
+                // Iterate through leaf readers to properly skip deleted documents
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    LeafReader leafReader = ctx.reader();
+                    Bits liveDocs = leafReader.getLiveDocs();
+                    int leafMaxDoc = leafReader.maxDoc();
+
+                    for (int localDocId = 0; localDocId < leafMaxDoc; localDocId++) {
+                        // Skip deleted documents
+                        if (liveDocs != null && !liveDocs.get(localDocId)) {
+                            continue;
+                        }
+
+                        try {
+                            Document luceneDoc = leafReader.storedFields().document(localDocId);
+                            String metadataJson = luceneDoc.get("metadata");
+
+                            if (metadataJson != null) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> metadata = OBJECT_MAPPER.readValue(metadataJson, Map.class);
+
+                                Object sourceId = metadata.get("source_id");
+                                if (sourceId != null) {
+                                    sourceIds.add(sourceId.toString());
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.trace("Error reading document at local index {}: {}", localDocId, e.getMessage());
+                        }
+                    }
+                }
+
+                log.debug("Found {} unique source IDs in vector store", sourceIds.size());
+            } catch (Exception e) {
+                log.warn("Error getting unique source IDs: {}", e.getMessage());
+            }
+        }
+
+        return new ArrayList<>(sourceIds);
     }
 }

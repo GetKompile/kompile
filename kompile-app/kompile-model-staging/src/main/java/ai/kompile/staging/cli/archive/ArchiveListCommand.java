@@ -16,8 +16,8 @@
 
 package ai.kompile.staging.cli.archive;
 
-import ai.kompile.staging.registry.ModelRegistry;
-import ai.kompile.staging.registry.RegistryService;
+import ai.kompile.modelmanager.registry.ModelRegistry;
+import ai.kompile.modelmanager.registry.RegistryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;

@@ -21,6 +21,10 @@ import ai.kompile.core.embeddings.NoOpEmbeddingModelImpl;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.core.graphrag.GraphRagService;
+import ai.kompile.core.graphrag.query.GraphRagQuery;
+import ai.kompile.core.graphrag.query.GraphRagResult;
+import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.core.reranking.RerankerConfig;
 import ai.kompile.core.reranking.RerankerService;
 import ai.kompile.core.reranking.RerankerType;
@@ -64,6 +68,7 @@ public class RagTestController {
     private final EmbeddingModel embeddingModel;
     private final RerankerService rerankerService;
     private final KompileModelManager modelManager;
+    private final GraphRagService graphRagService;
 
     @Autowired
     public RagTestController(
@@ -71,7 +76,8 @@ public class RagTestController {
             List<VectorStore> vectorStores,
             List<EmbeddingModel> embeddingModels,
             @Autowired(required = false) RerankerService rerankerService,
-            @Autowired(required = false) KompileModelManager modelManager) {
+            @Autowired(required = false) KompileModelManager modelManager,
+            @Autowired(required = false) GraphRagService graphRagService) {
 
         // Select non-NoOp implementations
         this.keywordRetriever = documentRetrievers.stream()
@@ -91,12 +97,14 @@ public class RagTestController {
 
         this.rerankerService = rerankerService;
         this.modelManager = modelManager != null ? modelManager : new KompileModelManager();
+        this.graphRagService = graphRagService;
 
-        log.info("RagTestController initialized - KeywordRetriever: {}, VectorStore: {}, EmbeddingModel: {}, RerankerService: {}",
+        log.info("RagTestController initialized - KeywordRetriever: {}, VectorStore: {}, EmbeddingModel: {}, RerankerService: {}, GraphRagService: {}",
                 this.keywordRetriever.getClass().getSimpleName(),
                 this.vectorStore.getClass().getSimpleName(),
                 this.embeddingModel.getClass().getSimpleName(),
-                this.rerankerService != null ? this.rerankerService.getClass().getSimpleName() : "N/A");
+                this.rerankerService != null ? this.rerankerService.getClass().getSimpleName() : "N/A",
+                this.graphRagService != null ? this.graphRagService.getClass().getSimpleName() : "N/A");
     }
 
     /**
@@ -138,11 +146,24 @@ public class RagTestController {
         }
         status.put("reranker", rerankerStatus);
 
+        // Graph RAG service status
+        Map<String, Object> graphRagStatus = new LinkedHashMap<>();
+        graphRagStatus.put("available", graphRagService != null);
+        if (graphRagService != null) {
+            graphRagStatus.put("class", graphRagService.getClass().getSimpleName());
+            graphRagStatus.put("searchTypes", Arrays.asList("LOCAL", "GLOBAL"));
+        } else {
+            graphRagStatus.put("class", "N/A");
+            graphRagStatus.put("searchTypes", Collections.emptyList());
+        }
+        status.put("graphRag", graphRagStatus);
+
         return ResponseEntity.ok(status);
     }
 
     /**
      * Test embedding generation.
+     * Returns detailed timing breakdown including subprocess overhead vs actual inference time.
      */
     @GetMapping("/embed")
     public ResponseEntity<Map<String, Object>> testEmbed(
@@ -158,20 +179,59 @@ public class RagTestController {
         }
 
         try {
-            long startTime = System.currentTimeMillis();
-            INDArray embedding = embeddingModel.embed(text);
-            long duration = System.currentTimeMillis() - startTime;
+            // Check if we can get detailed timing from AnseriniEmbeddingModelImpl
+            if (embeddingModel instanceof ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl anseriniModel) {
+                // Use timing-aware method for detailed breakdown
+                var timingResult = anseriniModel.embedWithTiming(text);
 
-            result.put("dimensions", embedding.length());
-            result.put("shape", Arrays.toString(embedding.shape()));
-            result.put("durationMs", duration);
+                if (!timingResult.success()) {
+                    result.put("error", timingResult.error());
+                    result.put("durationMs", timingResult.totalWallClockMs());
+                    return ResponseEntity.ok(result);
+                }
 
-            // Include first 10 values as preview
-            double[] preview = new double[Math.min(10, (int) embedding.length())];
-            for (int i = 0; i < preview.length; i++) {
-                preview[i] = embedding.getDouble(i);
+                INDArray embedding = timingResult.embedding();
+                result.put("dimensions", embedding.length());
+                result.put("shape", Arrays.toString(embedding.shape()));
+
+                // Total wall-clock time (what the user experiences)
+                result.put("durationMs", timingResult.totalWallClockMs());
+
+                // Detailed timing breakdown
+                Map<String, Object> timing = new LinkedHashMap<>();
+                timing.put("totalWallClockMs", timingResult.totalWallClockMs());
+                timing.put("subprocessInferenceMs", timingResult.subprocessInferenceMs());
+                timing.put("subprocessOverheadMs", timingResult.subprocessOverheadMs());
+                if (timingResult.totalWallClockMs() > 0) {
+                    timing.put("overheadPercent",
+                            Math.round(timingResult.subprocessOverheadMs() * 100.0 / timingResult.totalWallClockMs()));
+                }
+                result.put("timing", timing);
+
+                // Include first 10 values as preview
+                double[] preview = new double[Math.min(10, (int) embedding.length())];
+                for (int i = 0; i < preview.length; i++) {
+                    preview[i] = embedding.getDouble(i);
+                }
+                result.put("preview", preview);
+
+            } else {
+                // Fallback for other embedding models - just wall-clock time
+                long startTime = System.currentTimeMillis();
+                INDArray embedding = embeddingModel.embed(text);
+                long duration = System.currentTimeMillis() - startTime;
+
+                result.put("dimensions", embedding.length());
+                result.put("shape", Arrays.toString(embedding.shape()));
+                result.put("durationMs", duration);
+
+                // Include first 10 values as preview
+                double[] preview = new double[Math.min(10, (int) embedding.length())];
+                for (int i = 0; i < preview.length; i++) {
+                    preview[i] = embedding.getDouble(i);
+                }
+                result.put("preview", preview);
             }
-            result.put("preview", preview);
 
         } catch (Exception e) {
             log.error("Error generating embedding", e);
@@ -975,6 +1035,130 @@ public class RagTestController {
             result.put("success", false);
             result.put("error", e.getMessage());
             return ResponseEntity.status(500).body(result);
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    // ==================== Knowledge Graph RAG Testing ====================
+
+    /**
+     * Run a knowledge graph RAG query.
+     */
+    @GetMapping("/graph/query")
+    public ResponseEntity<Map<String, Object>> testGraphRagQuery(
+            @RequestParam("q") String query,
+            @RequestParam(name = "searchType", defaultValue = "LOCAL") String searchTypeStr,
+            @RequestParam(name = "k", defaultValue = "5") int maxResults,
+            @RequestParam(name = "conversationId", defaultValue = "test") String conversationId) {
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("query", query);
+        result.put("searchType", searchTypeStr);
+        result.put("k", maxResults);
+        result.put("conversationId", conversationId);
+
+        if (graphRagService == null) {
+            result.put("error", "No Graph RAG service available. Configure Neo4j (neo4j.uri) or Matrix graph (kompile.graph.type=matrix).");
+            result.put("available", false);
+            return ResponseEntity.ok(result);
+        }
+
+        result.put("available", true);
+        result.put("serviceClass", graphRagService.getClass().getSimpleName());
+
+        try {
+            // Parse search type
+            SearchType searchType;
+            try {
+                searchType = SearchType.valueOf(searchTypeStr.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                searchType = SearchType.LOCAL;
+                result.put("searchTypeWarning", "Invalid search type '" + searchTypeStr + "', defaulting to LOCAL");
+            }
+
+            // Build query
+            GraphRagQuery graphQuery = GraphRagQuery.builder()
+                    .query(query)
+                    .searchType(searchType)
+                    .k(maxResults)
+                    .conversationId(conversationId)
+                    .build();
+
+            // Execute query
+            long startTime = System.currentTimeMillis();
+            GraphRagResult graphResult = graphRagService.answerQuery(graphQuery);
+            long duration = System.currentTimeMillis() - startTime;
+
+            result.put("durationMs", duration);
+            result.put("answer", graphResult.getAnswer());
+            result.put("context", graphResult.getFormattedContext());
+
+            // Add context preview (first 500 chars)
+            String context = graphResult.getFormattedContext();
+            if (context != null && context.length() > 500) {
+                result.put("contextPreview", context.substring(0, 500) + "...");
+                result.put("contextLength", context.length());
+            } else {
+                result.put("contextPreview", context);
+                result.put("contextLength", context != null ? context.length() : 0);
+            }
+
+        } catch (Exception e) {
+            log.error("Error in graph RAG query", e);
+            result.put("error", e.getMessage());
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Get detailed information about the Graph RAG service.
+     */
+    @GetMapping("/graph/info")
+    public ResponseEntity<Map<String, Object>> getGraphRagInfo() {
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        result.put("available", graphRagService != null);
+
+        if (graphRagService != null) {
+            result.put("class", graphRagService.getClass().getSimpleName());
+            result.put("fullClass", graphRagService.getClass().getName());
+
+            // Determine the type of graph RAG
+            String serviceType;
+            if (graphRagService.getClass().getName().contains("Neo4j")) {
+                serviceType = "neo4j";
+                result.put("description", "Neo4j-based Graph RAG with vector search and Cypher queries");
+            } else if (graphRagService.getClass().getName().contains("Matrix")) {
+                serviceType = "matrix";
+                result.put("description", "Matrix-based Graph RAG with adjacency matrix storage and PageRank");
+            } else {
+                serviceType = "unknown";
+                result.put("description", "Custom Graph RAG implementation");
+            }
+            result.put("type", serviceType);
+
+            // Search types
+            List<Map<String, String>> searchTypes = new ArrayList<>();
+            Map<String, String> localType = new LinkedHashMap<>();
+            localType.put("id", "LOCAL");
+            localType.put("name", "Local Search");
+            localType.put("description", "Vector similarity search for query-relevant nodes, expands with immediate neighbors");
+            searchTypes.add(localType);
+
+            Map<String, String> globalType = new LinkedHashMap<>();
+            globalType.put("id", "GLOBAL");
+            globalType.put("name", "Global Search");
+            globalType.put("description", "PageRank-based importance scoring, provides graph overview with relationship context");
+            searchTypes.add(globalType);
+
+            result.put("searchTypes", searchTypes);
+        } else {
+            result.put("class", "N/A");
+            result.put("type", "none");
+            result.put("description", "Graph RAG service is initializing or not available. Ensure kompile-knowledge-graph module is included.");
+            result.put("searchTypes", Collections.emptyList());
         }
 
         return ResponseEntity.ok(result);

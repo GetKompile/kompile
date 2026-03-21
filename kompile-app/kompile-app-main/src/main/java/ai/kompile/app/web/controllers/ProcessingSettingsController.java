@@ -19,17 +19,22 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.config.IngestConfiguration;
 import ai.kompile.app.services.AdaptiveBatchingService;
 import ai.kompile.app.services.DocumentIngestService;
+import ai.kompile.app.services.PipelineConfigService;
 import ai.kompile.app.services.audit.AdaptiveAuditEvent;
 import ai.kompile.app.services.audit.AdaptiveAuditService;
 import ai.kompile.app.services.pipeline.PipelineSettings;
 import ai.kompile.app.web.dto.AdaptivePerformanceConfigDto;
+import ai.kompile.app.web.dto.PipelineConfigDto;
 import ai.kompile.app.web.dto.ProcessingSettingsRequest;
 import ai.kompile.app.web.dto.ProcessingSettingsResponse;
 import ai.kompile.app.web.dto.ProcessingSettingsResponse.MemoryStatus;
+import ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl;
+import io.anserini.encoder.samediff.SameDiffEncoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -56,6 +61,8 @@ public class ProcessingSettingsController {
     private final ThreadPoolTaskExecutor taskExecutor;
     private final AdaptiveBatchingService adaptiveBatchingService;
     private final AdaptiveAuditService auditService;
+    private final PipelineConfigService pipelineConfigService;
+    private final AnseriniEmbeddingModelImpl embeddingModel;
 
     @Autowired
     public ProcessingSettingsController(
@@ -63,13 +70,17 @@ public class ProcessingSettingsController {
             @Autowired(required = false) DocumentIngestService documentIngestService,
             @Autowired(required = false) @Qualifier("taskExecutor") TaskExecutor taskExecutor,
             @Autowired(required = false) AdaptiveBatchingService adaptiveBatchingService,
-            @Autowired(required = false) AdaptiveAuditService auditService
+            @Autowired(required = false) AdaptiveAuditService auditService,
+            @Autowired(required = false) PipelineConfigService pipelineConfigService,
+            @Lazy @Autowired(required = false) AnseriniEmbeddingModelImpl embeddingModel
     ) {
         this.ingestConfiguration = ingestConfiguration;
         this.documentIngestService = documentIngestService;
         this.taskExecutor = taskExecutor instanceof ThreadPoolTaskExecutor ? (ThreadPoolTaskExecutor) taskExecutor : null;
         this.adaptiveBatchingService = adaptiveBatchingService;
         this.auditService = auditService;
+        this.pipelineConfigService = pipelineConfigService;
+        this.embeddingModel = embeddingModel;
 
         if (ingestConfiguration == null) {
             logger.warn("ProcessingSettingsController: IngestConfiguration is not available");
@@ -407,6 +418,113 @@ public class ProcessingSettingsController {
         return stage;
     }
 
+    // ========== PIPELINE SETTINGS ENDPOINTS (USER-CONFIGURABLE) ==========
+
+    /**
+     * Get current pipeline settings.
+     * These are the user-configurable settings that persist across restarts.
+     */
+    @GetMapping("/pipeline-settings")
+    public ResponseEntity<PipelineConfigDto> getPipelineSettings() {
+        if (pipelineConfigService == null) {
+            return ResponseEntity.status(503).build();
+        }
+        return ResponseEntity.ok(pipelineConfigService.getConfigDto());
+    }
+
+    /**
+     * Update pipeline settings.
+     * Only non-null values in the request are applied.
+     */
+    @PutMapping("/pipeline-settings")
+    public ResponseEntity<PipelineConfigDto> updatePipelineSettings(@RequestBody PipelineConfigDto request) {
+        if (pipelineConfigService == null) {
+            return ResponseEntity.status(503).build();
+        }
+        logger.info("Updating pipeline settings: {}", request);
+        return ResponseEntity.ok(pipelineConfigService.updateConfig(request));
+    }
+
+    /**
+     * Apply a pipeline preset.
+     * Valid presets: defaults, highThroughput, lowMemory, keywordOnly
+     */
+    @PostMapping("/pipeline-settings/preset/{preset}")
+    public ResponseEntity<PipelineConfigDto> applyPipelinePreset(@PathVariable String preset) {
+        if (pipelineConfigService == null) {
+            return ResponseEntity.status(503).build();
+        }
+        logger.info("Applying pipeline preset: {}", preset);
+        return ResponseEntity.ok(pipelineConfigService.applyPreset(preset));
+    }
+
+    /**
+     * Reset pipeline settings to defaults.
+     */
+    @PostMapping("/pipeline-settings/reset")
+    public ResponseEntity<PipelineConfigDto> resetPipelineSettings() {
+        if (pipelineConfigService == null) {
+            return ResponseEntity.status(503).build();
+        }
+        logger.info("Resetting pipeline settings to defaults");
+        return ResponseEntity.ok(pipelineConfigService.resetToDefaults());
+    }
+
+    /**
+     * Get available pipeline presets with their descriptions.
+     */
+    @GetMapping("/pipeline-settings/presets")
+    public ResponseEntity<Map<String, Object>> getAvailablePipelinePresets() {
+        Map<String, Object> presets = new LinkedHashMap<>();
+
+        // Defaults preset
+        presets.put("defaults", Map.of(
+                "name", "Default",
+                "description", "Balanced settings suitable for most use cases",
+                "embeddingTimeoutSeconds", 300,
+                "queueCapacity", 1000,
+                "embeddingThreads", 1,
+                "chunkingThreads", Math.min(Runtime.getRuntime().availableProcessors() / 2, 16),
+                "indexingThreads", 4
+        ));
+
+        // High throughput preset
+        presets.put("highThroughput", Map.of(
+                "name", "High Throughput",
+                "description", "Optimized for maximum processing speed on systems with adequate memory",
+                "embeddingTimeoutSeconds", 300,
+                "queueCapacity", 2000,
+                "embeddingThreads", 1,
+                "chunkingThreads", Math.min(Runtime.getRuntime().availableProcessors(), 16),
+                "indexingThreads", Math.min(Runtime.getRuntime().availableProcessors() / 2, 8)
+        ));
+
+        // Low memory preset
+        presets.put("lowMemory", Map.of(
+                "name", "Low Memory",
+                "description", "Minimal resource usage for memory-constrained systems",
+                "embeddingTimeoutSeconds", 600,
+                "queueCapacity", 250,
+                "embeddingThreads", 1,
+                "chunkingThreads", 2,
+                "indexingThreads", 2
+        ));
+
+        // Keyword only preset
+        presets.put("keywordOnly", Map.of(
+                "name", "Keyword Only",
+                "description", "Skip embedding generation (keyword search only)",
+                "embeddingTimeoutSeconds", 0,
+                "queueCapacity", 5000,
+                "embeddingThreads", 0,
+                "chunkingThreads", Math.min(Runtime.getRuntime().availableProcessors(), 16),
+                "indexingThreads", Math.min(Runtime.getRuntime().availableProcessors() / 2, 8),
+                "skipEmbedding", true
+        ));
+
+        return ResponseEntity.ok(presets);
+    }
+
     // ========== ADAPTIVE PERFORMANCE ENDPOINTS ==========
 
     /**
@@ -722,5 +840,104 @@ public class ProcessingSettingsController {
         }
 
         return map;
+    }
+
+    // ========== GRAPH OPTIMIZATION ENDPOINTS ==========
+
+    /**
+     * Get graph optimization status for the current embedding model.
+     */
+    @GetMapping("/graph-optimization")
+    public ResponseEntity<Map<String, Object>> getGraphOptimizationStatus() {
+        Map<String, Object> response = new LinkedHashMap<>();
+
+        if (embeddingModel == null) {
+            response.put("available", false);
+            response.put("message", "Embedding model not available");
+            return ResponseEntity.ok(response);
+        }
+
+        response.put("available", true);
+        response.put("embeddingModelLoaded", embeddingModel.isInitialized());
+        response.put("currentModel", embeddingModel.getActiveModelId());
+        response.put("description", "Pre-optimize and save the model graph for faster inference. " +
+                "Optimizations include matmul+add fusion, constant folding, and dead code elimination.");
+        response.put("note", "Optimization runs once and saves to a new model file. " +
+                "Register the optimized model in the registry to use it.");
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Optimize the current model graph in-place, backing up the original.
+     *
+     * <p>This performs graph optimizations (matmul+add fusion, constant folding,
+     * dead code elimination) and saves the result in-place, backing up the
+     * original unoptimized model file for later restoration if needed.
+     *
+     * @param request Optional: modelId to optimize (defaults to currently loaded model)
+     */
+    @PostMapping("/graph-optimization/optimize-and-save")
+    public ResponseEntity<Map<String, Object>> optimizeAndSaveModel(@RequestBody(required = false) Map<String, String> request) {
+        Map<String, Object> response = new LinkedHashMap<>();
+
+        if (embeddingModel == null) {
+            response.put("success", false);
+            response.put("error", "Embedding model not available");
+            return ResponseEntity.status(503).body(response);
+        }
+
+        if (!embeddingModel.isInitialized()) {
+            response.put("success", false);
+            response.put("error", "Embedding model not initialized");
+            return ResponseEntity.status(503).body(response);
+        }
+
+        String modelId = embeddingModel.getActiveModelId();
+        logger.info("Starting graph optimization for model: {}", modelId);
+
+        try {
+            // Get the encoder - in subprocess mode this returns null
+            Object encoderObj = embeddingModel.getEncoder();
+            if (encoderObj == null || !(encoderObj instanceof SameDiffEncoder<?>)) {
+                response.put("success", false);
+                response.put("error", "Graph optimization not available - encoder runs in subprocess mode");
+                return ResponseEntity.status(400).body(response);
+            }
+            SameDiffEncoder<?> encoder = (SameDiffEncoder<?>) encoderObj;
+
+            // Save optimized model to separate directory
+            String homeDir = System.getProperty("user.home");
+            java.nio.file.Path modelsDir = java.nio.file.Paths.get(homeDir, ".kompile", "models", "optimized");
+            java.nio.file.Files.createDirectories(modelsDir);
+            java.nio.file.Path optimizedPath = modelsDir.resolve(modelId + "-optimized.fb");
+
+            long startTime = System.currentTimeMillis();
+            encoder.saveOptimized(optimizedPath);
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            response.put("success", true);
+            response.put("originalModel", modelId);
+            response.put("optimizedModelPath", optimizedPath.toString());
+            response.put("optimizationTimeMs", elapsed);
+            response.put("message", String.format("Model optimized and saved in %dms.", elapsed));
+            response.put("nextSteps", new String[]{
+                    "1. Copy vocab.txt to the same directory as the optimized model",
+                    "2. Register the optimized model in the model registry",
+                    "3. Switch to model ID '" + modelId + "-optimized' to use it"
+            });
+
+            logger.info("Graph optimization complete for {}: saved to {} in {}ms",
+                    modelId, optimizedPath, elapsed);
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Failed to optimize model {}", modelId, e);
+            response.put("success", false);
+            response.put("error", e.getMessage());
+            response.put("modelId", modelId);
+            return ResponseEntity.status(500).body(response);
+        }
     }
 }

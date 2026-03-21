@@ -41,7 +41,7 @@ import picocli.CommandLine.IFactory;
  * Run as CLI:
  *   java -jar kompile-model-staging.jar download --source=huggingface --repo=BAAI/bge-base-en-v1.5
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {"ai.kompile.staging", "ai.kompile.modelmanager"})
 public class ModelStagingApplication implements CommandLineRunner, ExitCodeGenerator {
 
     private final IFactory factory;

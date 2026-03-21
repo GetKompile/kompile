@@ -31,7 +31,13 @@ import {
   IndexingStats,
   FactForIndexing,
   MarkIndexedRequest,
-  MarkIndexedResponse
+  MarkIndexedResponse,
+  EmbeddingModelInfo,
+  UpdateEmbeddingModelRequest,
+  EmbeddingModelUpdateResponse,
+  CheckEmbeddingModelChangeRequest,
+  EmbeddingModelChangeCheck,
+  SetIndexedModelRequest
 } from '../models/api-models';
 
 /**
@@ -448,6 +454,79 @@ export class FactSheetService extends BaseService {
         }),
         catchError(this.handleError)
       );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // EMBEDDING MODEL MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get detailed embedding model info for a fact sheet.
+   * Includes model mismatch detection and reindex status.
+   */
+  getEmbeddingModelInfo(sheetId: number): Observable<EmbeddingModelInfo> {
+    return this.http.get<EmbeddingModelInfo>(`${this.backendUrl}/fact-sheets/${sheetId}/embedding-model-info`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Update the embedding model for a fact sheet.
+   * WARNING: If the sheet has indexed documents and the model is changing,
+   * this will mark all facts as unindexed (requiring a full reindex).
+   */
+  updateEmbeddingModel(sheetId: number, request: UpdateEmbeddingModelRequest): Observable<EmbeddingModelUpdateResponse> {
+    return this.http.put<EmbeddingModelUpdateResponse>(
+      `${this.backendUrl}/fact-sheets/${sheetId}/embedding-model`,
+      request
+    ).pipe(
+      tap(() => {
+        this.loadSheets().subscribe();
+        if (this.activeSheetSubject.value?.id === sheetId) {
+          this.loadActiveSheet().subscribe();
+        }
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * Check if switching to a new embedding model would require reindexing.
+   * Use this before updating to warn the user about consequences.
+   */
+  checkEmbeddingModelChange(sheetId: number, newModelId: string): Observable<EmbeddingModelChangeCheck> {
+    const request: CheckEmbeddingModelChangeRequest = { newModelId };
+    return this.http.post<EmbeddingModelChangeCheck>(
+      `${this.backendUrl}/fact-sheets/${sheetId}/embedding-model/check-change`,
+      request
+    ).pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Record that indexing completed with a specific model.
+   * Called after vector population completes successfully.
+   */
+  setIndexedWithModel(sheetId: number, modelId: string): Observable<any> {
+    const request: SetIndexedModelRequest = { modelId };
+    return this.http.post<any>(
+      `${this.backendUrl}/fact-sheets/${sheetId}/set-indexed-model`,
+      request
+    ).pipe(
+      tap(() => {
+        this.loadSheets().subscribe();
+        if (this.activeSheetSubject.value?.id === sheetId) {
+          this.loadActiveSheet().subscribe();
+        }
+      }),
+      catchError(this.handleError)
+    );
+  }
+
+  /**
+   * Check if a fact sheet needs reindexing due to model mismatch.
+   */
+  checkNeedsReindex(sheetId: number): Observable<{ needsReindex: boolean; configuredModel: string; indexedWithModel: string }> {
+    return this.http.get<any>(`${this.backendUrl}/fact-sheets/${sheetId}/needs-reindex`)
+      .pipe(catchError(this.handleError));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

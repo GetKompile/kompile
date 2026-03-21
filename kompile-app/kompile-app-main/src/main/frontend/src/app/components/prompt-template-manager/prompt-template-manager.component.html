@@ -50,7 +50,7 @@
       <input
         type="text"
         class="search-input"
-        [(ngModel)]="searchQuery"
+        [(ngModel)]="searchQuery" [ngModelOptions]="{standalone: true}"
         (keyup.enter)="searchTemplates()"
         placeholder="Search templates by name, description, or tags..."
       />
@@ -102,7 +102,7 @@
         <div class="category-header">
           <h3>{{ getCategoryDisplayName(cat) }}</h3>
           <p class="category-desc">{{ getCategoryDescription(cat) }}</p>
-          <span class="template-count">{{ templatesByCategory[cat]?.length || 0 }} templates</span>
+          <span class="template-count">{{ (templatesByCategory[cat] || []).length }} templates</span>
         </div>
         <div class="template-grid">
           <div
@@ -270,7 +270,7 @@
               <label>{{ v.displayName || v.name }}</label>
               <input
                 type="text"
-                [(ngModel)]="previewVariables[v.name]"
+                [(ngModel)]="previewVariables[v.name]" [ngModelOptions]="{standalone: true}"
                 [placeholder]="v.exampleValue || v.defaultValue || ''"
               />
             </div>
@@ -306,36 +306,36 @@
       <div class="panel-body edit-mode" *ngIf="isEditMode || isCreating">
         <div class="form-group">
           <label>Name *</label>
-          <input type="text" [(ngModel)]="editForm.name" [disabled]="isEditMode && !!selectedTemplate?.builtIn" />
+          <input type="text" [(ngModel)]="editForm.name" [ngModelOptions]="{standalone: true}" [disabled]="isEditMode && !!selectedTemplate?.builtIn" />
           <small>Use lowercase letters, numbers, underscores, hyphens</small>
         </div>
 
         <div class="form-group">
           <label>Display Name</label>
-          <input type="text" [(ngModel)]="editForm.displayName" />
+          <input type="text" [(ngModel)]="editForm.displayName" [ngModelOptions]="{standalone: true}" />
         </div>
 
         <div class="form-group">
           <label>Description</label>
-          <textarea [(ngModel)]="editForm.description" rows="2"></textarea>
+          <textarea [(ngModel)]="editForm.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
         </div>
 
         <div class="form-group">
           <label>Category</label>
-          <select [(ngModel)]="editForm.category">
+          <select [(ngModel)]="editForm.category" [ngModelOptions]="{standalone: true}">
             <option *ngFor="let cat of categoryKeys" [value]="cat">{{ getCategoryDisplayName(cat) }}</option>
           </select>
         </div>
 
         <div class="form-group">
           <label>Template Content *</label>
-          <textarea [(ngModel)]="editForm.content" rows="10" [placeholder]="'Use {{variableName}} for variables...'"></textarea>
+          <textarea [(ngModel)]="editForm.content" [ngModelOptions]="{standalone: true}" rows="10" [placeholder]="'Use {{variableName}} for variables...'"></textarea>
           <small>Variables use double curly braces: {{ '{{variableName}}' }}</small>
         </div>
 
         <div class="form-group">
           <label>System Prompt (Optional)</label>
-          <textarea [(ngModel)]="editForm.systemPrompt" rows="4" placeholder="System prompt for the model..."></textarea>
+          <textarea [(ngModel)]="editForm.systemPrompt" [ngModelOptions]="{standalone: true}" rows="4" placeholder="System prompt for the model..."></textarea>
         </div>
 
         <!-- Variables -->
@@ -344,9 +344,9 @@
           <div class="editable-list">
             <div class="variable-editor" *ngFor="let v of editForm.variables; let i = index">
               <div class="variable-row">
-                <input type="text" [(ngModel)]="v.name" placeholder="Variable name" />
-                <input type="text" [(ngModel)]="v.displayName" placeholder="Display name" />
-                <select [(ngModel)]="v.type">
+                <input type="text" [(ngModel)]="v.name" [ngModelOptions]="{standalone: true}" placeholder="Variable name" />
+                <input type="text" [(ngModel)]="v.displayName" [ngModelOptions]="{standalone: true}" placeholder="Display name" />
+                <select [(ngModel)]="v.type" [ngModelOptions]="{standalone: true}">
                   <option value="string">String</option>
                   <option value="number">Number</option>
                   <option value="boolean">Boolean</option>
@@ -354,13 +354,13 @@
                   <option value="object">Object</option>
                 </select>
                 <label class="checkbox-label">
-                  <input type="checkbox" [(ngModel)]="v.required" /> Required
+                  <input type="checkbox" [(ngModel)]="v.required" [ngModelOptions]="{standalone: true}" /> Required
                 </label>
                 <button class="remove-btn" (click)="removeVariable(i)">&times;</button>
               </div>
               <div class="variable-details">
-                <input type="text" [(ngModel)]="v.description" placeholder="Description" />
-                <input type="text" [(ngModel)]="v.defaultValue" placeholder="Default value" />
+                <input type="text" [(ngModel)]="v.description" [ngModelOptions]="{standalone: true}" placeholder="Description" />
+                <input type="text" [(ngModel)]="v.defaultValue" [ngModelOptions]="{standalone: true}" placeholder="Default value" />
               </div>
             </div>
             <button class="add-btn" (click)="addVariable()">+ Add Variable</button>
@@ -372,7 +372,7 @@
           <label>Tags</label>
           <div class="editable-list">
             <div class="list-item" *ngFor="let tag of editForm.tags; let i = index">
-              <input type="text" [(ngModel)]="editForm.tags![i]" />
+              <input type="text" [(ngModel)]="editForm.tags![i]" [ngModelOptions]="{standalone: true}" />
               <button class="remove-btn" (click)="removeTag(i)">&times;</button>
             </div>
             <button class="add-btn" (click)="addTag()">+ Add Tag</button>
@@ -382,7 +382,7 @@
         <!-- Settings -->
         <div class="form-group">
           <label>Output Format</label>
-          <select [(ngModel)]="editForm.outputFormat">
+          <select [(ngModel)]="editForm.outputFormat" [ngModelOptions]="{standalone: true}">
             <option value="">None</option>
             <option value="text">Text</option>
             <option value="json">JSON</option>
@@ -393,17 +393,17 @@
         <div class="form-row">
           <div class="form-group half">
             <label>Max Tokens</label>
-            <input type="number" [(ngModel)]="editForm.maxTokens" />
+            <input type="number" [(ngModel)]="editForm.maxTokens" [ngModelOptions]="{standalone: true}" />
           </div>
           <div class="form-group half">
             <label>Temperature</label>
-            <input type="number" [(ngModel)]="editForm.temperature" step="0.1" min="0" max="2" />
+            <input type="number" [(ngModel)]="editForm.temperature" [ngModelOptions]="{standalone: true}" step="0.1" min="0" max="2" />
           </div>
         </div>
 
         <div class="form-group checkbox">
           <label>
-            <input type="checkbox" [(ngModel)]="editForm.enabled" />
+            <input type="checkbox" [(ngModel)]="editForm.enabled" [ngModelOptions]="{standalone: true}" />
             Enabled
           </label>
         </div>

@@ -17,8 +17,8 @@
 package ai.kompile.staging.cli;
 
 import ai.kompile.staging.download.DownloadRequest;
-import ai.kompile.staging.registry.ModelMetadata;
-import ai.kompile.staging.registry.ModelType;
+import ai.kompile.modelmanager.registry.ModelMetadata;
+import ai.kompile.modelmanager.registry.ModelType;
 import ai.kompile.staging.staging.StagingModelInfo;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.staging.StagingStatus;

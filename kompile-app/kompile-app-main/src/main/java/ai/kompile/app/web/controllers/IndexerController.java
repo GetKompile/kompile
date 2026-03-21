@@ -16,6 +16,7 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService; // From core-abstractions
 import ai.kompile.core.indexers.NoOpIndexerService;
 import org.slf4j.Logger;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,9 +40,11 @@ public class IndexerController {
 
     private static final Logger logger = LoggerFactory.getLogger(IndexerController.class);
     private IndexerService indexerService;
+    private VectorStore vectorStore;
 
     @Autowired
-    public IndexerController(List<IndexerService> indexerService) {
+    public IndexerController(List<IndexerService> indexerService,
+                             @Autowired(required = false) List<VectorStore> vectorStores) {
         // yes this looks weird. Graalvm doesn't seem to like spring's
         // conditional injection though qualifiers are also very brittle
         if (indexerService.size() > 1) {
@@ -55,7 +59,22 @@ public class IndexerController {
             this.indexerService = indexerService.get(0);
         }
 
-        logger.info("IndexerController initialized with IndexerService: {}", indexerService.getClass().getSimpleName());
+        // Select non-NoOp vector store
+        if (vectorStores != null && !vectorStores.isEmpty()) {
+            for (VectorStore vs : vectorStores) {
+                if (!vs.getClass().getSimpleName().contains("NoOp")) {
+                    this.vectorStore = vs;
+                    break;
+                }
+            }
+            if (this.vectorStore == null) {
+                this.vectorStore = vectorStores.get(0);
+            }
+        }
+
+        logger.info("IndexerController initialized with IndexerService: {}, VectorStore: {}",
+                this.indexerService != null ? this.indexerService.getClass().getSimpleName() : "none",
+                this.vectorStore != null ? this.vectorStore.getClass().getSimpleName() : "none");
     }
 
     @PostMapping("/rebuild-all-sources")
@@ -116,13 +135,58 @@ public class IndexerController {
     @GetMapping("/status")
     public ResponseEntity<?> getIndexStatus() {
         try {
-            boolean isAvailable = indexerService.isIndexAvailable(); // This method should exist
+            Map<String, Object> status = new HashMap<>();
+
+            // Keyword index status
+            boolean isAvailable = indexerService.isIndexAvailable();
             String statusMessage = isAvailable ? "The index is currently available and appears valid."
                     : "The index is NOT available or is currently invalid. Indexing may be needed or might have failed.";
+            status.put("index_status", isAvailable ? "AVAILABLE" : "NOT_AVAILABLE_OR_INVALID");
+            status.put("indexAvailable", isAvailable);
+            status.put("message", statusMessage);
+            status.put("indexerImplementation", indexerService.getClass().getSimpleName());
+            status.put("isNoOpIndexer", indexerService instanceof NoOpIndexerService);
+
+            // Get keyword index path
+            try {
+                status.put("indexPath", indexerService.getIndexPath());
+                status.put("keywordIndexPath", indexerService.getIndexPath());
+            } catch (Exception e) {
+                logger.debug("Could not get keyword index details: {}", e.getMessage());
+            }
+
+            // Vector store status
+            if (vectorStore != null) {
+                String vectorPath = vectorStore.getVectorStorePath();
+                boolean isAvailableVector = vectorStore.isVectorStoreAvailable();
+                status.put("vectorStoreImplementation", vectorStore.getClass().getSimpleName());
+                status.put("vectorStoreAvailable", isAvailableVector);
+                status.put("vectorStorePath", vectorPath);
+                status.put("isNoOpVectorStore", vectorStore.getClass().getSimpleName().contains("NoOp"));
+                status.put("isUsingFallbackIndex", vectorStore.isUsingFallbackIndex());
+
+                // Log diagnostic info
+                logger.info("Vector store status check: path={}, available={}", vectorPath, isAvailableVector);
+
+                try {
+                    long vectorCount = vectorStore.getApproxVectorCount();
+                    status.put("approximateVectorCount", vectorCount);
+                    status.put("vectorDocumentCount", vectorCount);
+                    logger.info("Vector store count: {} at path {}", vectorCount, vectorPath);
+                } catch (Exception e) {
+                    status.put("approximateVectorCount", 0);
+                    status.put("vectorCountError", e.getMessage());
+                    logger.warn("Could not get vector count from path {}: {}", vectorPath, e.getMessage());
+                }
+            } else {
+                status.put("vectorStoreImplementation", "N/A");
+                status.put("vectorStoreAvailable", false);
+                status.put("isNoOpVectorStore", true);
+                status.put("approximateVectorCount", 0);
+            }
+
             logger.info("Reporting index status via REST: {}", statusMessage);
-            return ResponseEntity.ok(Map.of(
-                    "index_status", isAvailable ? "AVAILABLE" : "NOT_AVAILABLE_OR_INVALID",
-                    "message", statusMessage));
+            return ResponseEntity.ok(status);
         } catch (Exception e) {
             logger.error("REST call to check index status failed: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

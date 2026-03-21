@@ -62,6 +62,7 @@ public class CatalogService {
                         .sources(new HashMap<>())
                         .encoders(new ArrayList<>())
                         .crossEncoders(new ArrayList<>())
+                        .vlm(new ArrayList<>())
                         .build();
                 return;
             }
@@ -86,6 +87,7 @@ public class CatalogService {
                 Map<String, Object> modelCatalogMap = (Map<String, Object>) root.get("model_catalog");
                 List<CatalogModel> encoders = new ArrayList<>();
                 List<CatalogModel> crossEncoders = new ArrayList<>();
+                List<CatalogModel> vlm = new ArrayList<>();
 
                 if (modelCatalogMap != null) {
                     // Parse encoders
@@ -103,16 +105,25 @@ public class CatalogService {
                             crossEncoders.add(parseModel(modelData));
                         }
                     }
+
+                    // Parse VLM models
+                    List<Map<String, Object>> vlmList = (List<Map<String, Object>>) modelCatalogMap.get("vlm");
+                    if (vlmList != null) {
+                        for (Map<String, Object> modelData : vlmList) {
+                            vlm.add(parseModel(modelData));
+                        }
+                    }
                 }
 
                 catalog = ModelCatalog.builder()
                         .sources(sources)
                         .encoders(encoders)
                         .crossEncoders(crossEncoders)
+                        .vlm(vlm)
                         .build();
 
-                log.info("Loaded model catalog: {} encoders, {} cross-encoders",
-                        encoders.size(), crossEncoders.size());
+                log.info("Loaded model catalog: {} encoders, {} cross-encoders, {} vlm",
+                        encoders.size(), crossEncoders.size(), vlm.size());
             }
         } catch (IOException e) {
             log.error("Failed to load catalog", e);
@@ -120,6 +131,7 @@ public class CatalogService {
                     .sources(new HashMap<>())
                     .encoders(new ArrayList<>())
                     .crossEncoders(new ArrayList<>())
+                    .vlm(new ArrayList<>())
                     .build();
         }
     }
@@ -179,6 +191,13 @@ public class CatalogService {
     }
 
     /**
+     * Get all VLM models.
+     */
+    public List<CatalogModel> getVlm() {
+        return catalog.getVlm() != null ? catalog.getVlm() : new ArrayList<>();
+    }
+
+    /**
      * Get a model by ID.
      */
     public Optional<CatalogModel> getModel(String modelId) {
@@ -190,6 +209,12 @@ public class CatalogService {
         }
         // Search in cross-encoders
         for (CatalogModel model : catalog.getCrossEncoders()) {
+            if (model.getId().equals(modelId)) {
+                return Optional.of(model);
+            }
+        }
+        // Search in VLM models
+        for (CatalogModel model : getVlm()) {
             if (model.getId().equals(modelId)) {
                 return Optional.of(model);
             }

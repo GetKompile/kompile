@@ -17,10 +17,14 @@
 package ai.kompile.app.services.pipeline;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.app.services.GraphExtractionConfigService;
 import ai.kompile.app.services.pipeline.stages.*;
 import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.graphrag.GraphConstructor;
+import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
+import ai.kompile.core.retrievers.RetrievedDoc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -38,13 +42,13 @@ import java.util.function.Consumer;
  *
  * <h2>Architecture</h2>
  * <pre>
- * ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
- * │ EXTRACT │───▶│  TOKENIZE    │───▶│    CHUNK     │───▶│   EMBED     │───▶│    INDEX    │
- * │ (1-2T)  │    │   (2-4T)     │    │   (4-8T)     │    │  (1-4T)     │    │ (1T+Batch)  │
- * └────┬────┘    └──────┬───────┘    └──────┬───────┘    └──────┬──────┘    └─────────────┘
- *      │                │                    │                   │
- *      ▼                ▼                    ▼                   ▼
- *  [Queue A]        [Queue B]           [Queue C]           [Queue D]
+ * ┌─────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+ * │ EXTRACT │───▶│  TOKENIZE    │───▶│    CHUNK     │───▶│   EMBED     │───▶│    INDEX    │───▶│ GRAPH BUILD │
+ * │ (1-2T)  │    │   (2-4T)     │    │   (4-8T)     │    │  (1-4T)     │    │ (1T+Batch)  │    │ (Optional)  │
+ * └────┬────┘    └──────┬───────┘    └──────┬───────┘    └──────┬──────┘    └──────┬──────┘    └─────────────┘
+ *      │                │                    │                   │                  │
+ *      ▼                ▼                    ▼                   ▼                  ▼
+ *  [Queue A]        [Queue B]           [Queue C]           [Queue D]          [Queue E]
  * </pre>
  *
  * <h2>Features</h2>
@@ -55,6 +59,7 @@ import java.util.function.Consumer;
  *   <li>Memory-aware throttling</li>
  *   <li>Progress reporting per stage</li>
  *   <li>Graceful cancellation support</li>
+ *   <li>Optional entity/relationship extraction and knowledge graph building</li>
  * </ul>
  */
 public class StagedIngestPipeline implements AutoCloseable {
@@ -71,6 +76,7 @@ public class StagedIngestPipeline implements AutoCloseable {
     private final ChunkingStage chunkingStage;
     private final EmbeddingStage embeddingStage;
     private final IndexingStage indexingStage;
+    private final GraphBuildingStage graphBuildingStage;
 
     // Thread pools for each stage
     private final ExecutorService extractionExecutor;
@@ -78,15 +84,22 @@ public class StagedIngestPipeline implements AutoCloseable {
     private final ExecutorService chunkingExecutor;
     private final ExecutorService embeddingExecutor;
     private final ExecutorService indexingExecutor;
+    private final ExecutorService graphBuildingExecutor;
 
     // Inter-stage queues
     private final BlockingQueue<ExtractionStage.ExtractionOutput> extractionQueue;
     private final BlockingQueue<TokenizationStage.TokenizationOutput> tokenizationQueue;
     private final BlockingQueue<ChunkingStage.ChunkingOutput> chunkingQueue;
     private final BlockingQueue<EmbeddingStage.EmbeddingOutput> embeddingQueue;
+    private final BlockingQueue<IndexingStage.IndexingOutput> indexingQueue;
+
+    // Accumulated chunks for graph building (collected during embedding stage)
+    private final List<RetrievedDoc> accumulatedChunks = Collections.synchronizedList(new ArrayList<>());
 
     // Configuration
     private final PipelineSettings settings;
+    private final GraphExtractionConfigService graphExtractionConfigService;
+    private final GraphConstructor graphConstructor;
 
     // State tracking
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -100,6 +113,10 @@ public class StagedIngestPipeline implements AutoCloseable {
     private final AtomicInteger documentsChunked = new AtomicInteger(0);
     private final AtomicInteger chunksEmbedded = new AtomicInteger(0);
     private final AtomicInteger chunksIndexed = new AtomicInteger(0);
+    private final AtomicLong tokensProcessed = new AtomicLong(0);
+    private final AtomicInteger entitiesExtracted = new AtomicInteger(0);
+    private final AtomicInteger relationshipsExtracted = new AtomicInteger(0);
+    private final AtomicBoolean graphBuildingComplete = new AtomicBoolean(false);
 
     // Progress callback
     private Consumer<StagedPipelineProgress> progressCallback;
@@ -113,11 +130,24 @@ public class StagedIngestPipeline implements AutoCloseable {
             EmbeddingModel embeddingModel,
             IndexerService indexerService
     ) {
-        this(loaders, chunker, embeddingModel, indexerService, PipelineSettings.adaptive());
+        this(loaders, chunker, embeddingModel, indexerService, null, null, PipelineSettings.adaptive());
     }
 
     /**
-     * Creates a staged pipeline with custom settings.
+     * Creates a staged pipeline with the given components, graph constructor, and default settings.
+     */
+    public StagedIngestPipeline(
+            List<DocumentLoader> loaders,
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            GraphConstructor graphConstructor
+    ) {
+        this(loaders, chunker, embeddingModel, indexerService, graphConstructor, null, PipelineSettings.adaptive());
+    }
+
+    /**
+     * Creates a staged pipeline with custom settings (no graph constructor).
      */
     public StagedIngestPipeline(
             List<DocumentLoader> loaders,
@@ -126,7 +156,40 @@ public class StagedIngestPipeline implements AutoCloseable {
             IndexerService indexerService,
             PipelineSettings settings
     ) {
+        this(loaders, chunker, embeddingModel, indexerService, null, null, settings);
+    }
+
+    /**
+     * Creates a staged pipeline with custom settings and optional graph constructor.
+     */
+    public StagedIngestPipeline(
+            List<DocumentLoader> loaders,
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            GraphConstructor graphConstructor,
+            PipelineSettings settings
+    ) {
+        this(loaders, chunker, embeddingModel, indexerService, graphConstructor, null, settings);
+    }
+
+    /**
+     * Creates a staged pipeline with UI-configurable graph extraction settings.
+     * This constructor allows the graph extraction configuration to be read from
+     * the GraphExtractionConfigService (persisted UI settings) instead of PipelineSettings.
+     */
+    public StagedIngestPipeline(
+            List<DocumentLoader> loaders,
+            TextChunker chunker,
+            EmbeddingModel embeddingModel,
+            IndexerService indexerService,
+            GraphConstructor graphConstructor,
+            GraphExtractionConfigService graphExtractionConfigService,
+            PipelineSettings settings
+    ) {
         this.settings = settings != null ? settings : PipelineSettings.adaptive();
+        this.graphExtractionConfigService = graphExtractionConfigService;
+        this.graphConstructor = graphConstructor;
 
         // Create stages
         this.extractionStage = new ExtractionStage(loaders);
@@ -134,6 +197,7 @@ public class StagedIngestPipeline implements AutoCloseable {
         this.chunkingStage = new ChunkingStage(chunker);
         this.embeddingStage = new EmbeddingStage(embeddingModel);
         this.indexingStage = new IndexingStage(indexerService);
+        this.graphBuildingStage = new GraphBuildingStage(graphConstructor);
 
         // Configure stages
         configureStages();
@@ -144,6 +208,7 @@ public class StagedIngestPipeline implements AutoCloseable {
         this.chunkingExecutor = createExecutor("chunking", this.settings.chunkingThreads());
         this.embeddingExecutor = createExecutor("embedding", this.settings.embeddingThreads());
         this.indexingExecutor = createExecutor("indexing", 1); // Sequential for Lucene
+        this.graphBuildingExecutor = createExecutor("graph-building", 1); // Sequential for graph operations
 
         // Create inter-stage queues
         int queueCapacity = this.settings.queueCapacity();
@@ -151,10 +216,12 @@ public class StagedIngestPipeline implements AutoCloseable {
         this.tokenizationQueue = new LinkedBlockingQueue<>(queueCapacity);
         this.chunkingQueue = new LinkedBlockingQueue<>(queueCapacity);
         this.embeddingQueue = new LinkedBlockingQueue<>(queueCapacity);
+        this.indexingQueue = new LinkedBlockingQueue<>(queueCapacity);
 
-        logger.info("StagedIngestPipeline initialized: extract={}, tokenize={}, chunk={}, embed={}, queue={}",
+        logger.info("StagedIngestPipeline initialized: extract={}, tokenize={}, chunk={}, embed={}, queue={}, graph={}",
                 this.settings.extractionThreads(), this.settings.tokenizationThreads(),
-                this.settings.chunkingThreads(), this.settings.embeddingThreads(), queueCapacity);
+                this.settings.chunkingThreads(), this.settings.embeddingThreads(), queueCapacity,
+                isGraphBuildingEnabled() ? "enabled" : "disabled");
     }
 
     private void configureStages() {
@@ -184,6 +251,81 @@ public class StagedIngestPipeline implements AutoCloseable {
         indexingOptions.put("batchSize", settings.indexBatchSize());
         indexingOptions.put("adaptiveBatching", true);
         indexingStage.configure(indexingOptions);
+
+        // Configure graph building from the config service (UI settings) if available,
+        // otherwise fall back to pipeline settings
+        configureGraphBuildingStage();
+    }
+
+    /**
+     * Configures the graph building stage from the GraphExtractionConfigService if available,
+     * otherwise uses PipelineSettings. This allows UI-based configuration to override defaults.
+     */
+    private void configureGraphBuildingStage() {
+        Map<String, Object> graphBuildingOptions = new HashMap<>();
+
+        if (graphExtractionConfigService != null) {
+            // Read from UI-configurable service (persisted settings)
+            GraphExtractionConfigService.GraphExtractionConfig config = graphExtractionConfigService.getConfig();
+            graphBuildingOptions.put("enabled", config.enabled != null && config.enabled);
+            graphBuildingOptions.put("batchSize", config.batchSize != null ? config.batchSize : 10);
+
+            // Set schema enforcement mode
+            if (config.schemaEnforcement != null) {
+                try {
+                    graphBuildingOptions.put("schemaEnforcementMode",
+                            SchemaEnforcementMode.valueOf(config.schemaEnforcement));
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Invalid schema enforcement mode: {}, using LENIENT", config.schemaEnforcement);
+                    graphBuildingOptions.put("schemaEnforcementMode", SchemaEnforcementMode.LENIENT);
+                }
+            }
+
+            // Configure the GraphConstructor with model settings
+            if (graphConstructor != null) {
+                GraphConstructor.ExtractionModelConfig modelConfig = new GraphConstructor.ExtractionModelConfig(
+                        config.extractionModelProvider != null ? config.extractionModelProvider : "default",
+                        config.extractionModelName,
+                        config.extractionTemperature != null ? config.extractionTemperature : 0.0,
+                        config.extractionMaxTokens != null ? config.extractionMaxTokens : 4096,
+                        config.customExtractionPrompt
+                );
+                graphConstructor.configure(modelConfig);
+                logger.debug("Configured graph constructor model: provider={}, model={}, temperature={}, maxTokens={}",
+                        modelConfig.provider(), modelConfig.modelName(), modelConfig.temperature(), modelConfig.maxTokens());
+            }
+
+            logger.debug("Graph building configured from UI settings: enabled={}, batchSize={}, schemaEnforcement={}",
+                    config.enabled, config.batchSize, config.schemaEnforcement);
+        } else {
+            // Fall back to pipeline settings
+            graphBuildingOptions.put("enabled", settings.enableGraphBuilding());
+            graphBuildingOptions.put("batchSize", settings.graphBuildingBatchSize());
+            logger.debug("Graph building configured from pipeline settings: enabled={}, batchSize={}",
+                    settings.enableGraphBuilding(), settings.graphBuildingBatchSize());
+        }
+
+        graphBuildingStage.configure(graphBuildingOptions);
+    }
+
+    /**
+     * Check if graph building is enabled (from config service if available, otherwise pipeline settings).
+     */
+    private boolean isGraphBuildingEnabled() {
+        if (graphExtractionConfigService != null) {
+            return graphExtractionConfigService.isEnabled();
+        }
+        return settings.enableGraphBuilding();
+    }
+
+    /**
+     * Get the graph building batch size (from config service if available, otherwise pipeline settings).
+     */
+    private int getGraphBuildingBatchSize() {
+        if (graphExtractionConfigService != null) {
+            return graphExtractionConfigService.getBatchSize();
+        }
+        return settings.graphBuildingBatchSize();
     }
 
     private ExecutorService createExecutor(String stageName, int threadCount) {
@@ -219,7 +361,7 @@ public class StagedIngestPipeline implements AutoCloseable {
      */
     public PipelineResult processFiles(List<Path> filePaths, String taskId) throws Exception {
         if (filePaths == null || filePaths.isEmpty()) {
-            return new PipelineResult(0, 0, 0, 0, List.of(), 0);
+            return new PipelineResult(0, 0, 0, 0, 0, 0, false, 0, List.of(), 0);
         }
 
         if (running.getAndSet(true)) {
@@ -276,6 +418,10 @@ public class StagedIngestPipeline implements AutoCloseable {
                     filesExtracted.get(),
                     documentsChunked.get(),
                     chunksIndexed.get(),
+                    tokensProcessed.get(),
+                    entitiesExtracted.get(),
+                    relationshipsExtracted.get(),
+                    isGraphBuildingEnabled(),
                     totalTimeMs,
                     indexedIds,
                     calculateThroughput(totalTimeMs)
@@ -291,7 +437,7 @@ public class StagedIngestPipeline implements AutoCloseable {
      */
     public PipelineResult processDocuments(List<Document> documents, String taskId) throws Exception {
         if (documents == null || documents.isEmpty()) {
-            return new PipelineResult(0, 0, 0, 0, List.of(), 0);
+            return new PipelineResult(0, 0, 0, 0, 0, 0, false, 0, List.of(), 0);
         }
 
         if (running.getAndSet(true)) {
@@ -331,6 +477,10 @@ public class StagedIngestPipeline implements AutoCloseable {
                     1, // Single "file" (the document batch)
                     documentsChunked.get(),
                     chunksIndexed.get(),
+                    tokensProcessed.get(),
+                    entitiesExtracted.get(),
+                    relationshipsExtracted.get(),
+                    isGraphBuildingEnabled(),
                     totalTimeMs,
                     indexedIds,
                     calculateThroughput(totalTimeMs)
@@ -359,6 +509,11 @@ public class StagedIngestPipeline implements AutoCloseable {
 
         // Indexing worker (single-threaded)
         indexingExecutor.submit(() -> runIndexingWorker());
+
+        // Graph building worker (single-threaded, runs after indexing if enabled)
+        if (isGraphBuildingEnabled() && graphBuildingStage.isEnabled()) {
+            graphBuildingExecutor.submit(() -> runGraphBuildingWorker());
+        }
     }
 
     private void runTokenizationWorker() {
@@ -375,9 +530,10 @@ public class StagedIngestPipeline implements AutoCloseable {
                 TokenizationStage.TokenizationOutput tokenization = tokenizationStage.process(extraction);
                 tokenizationQueue.put(tokenization);
                 documentsTokenized.addAndGet(tokenization.documentCount());
+                tokensProcessed.addAndGet(tokenization.totalTokens());
 
                 reportProgress("tokenization", calculateProgress(),
-                        String.format("Tokenized %d documents", documentsTokenized.get()));
+                        String.format("Tokenized %d documents (%d tokens)", documentsTokenized.get(), tokensProcessed.get()));
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -456,9 +612,26 @@ public class StagedIngestPipeline implements AutoCloseable {
                     continue;
                 }
 
+                // Collect chunks for graph building before indexing
+                if (isGraphBuildingEnabled() && embedding.embeddedChunks() != null) {
+                    for (EmbeddingStage.EmbeddedChunk ec : embedding.embeddedChunks()) {
+                        accumulatedChunks.add(ec.chunk());
+                    }
+                }
+
                 IndexingStage.IndexingOutput indexing = indexingStage.process(embedding);
                 chunksIndexed.addAndGet(indexing.chunksIndexed());
                 allIndexedIds.addAll(indexing.indexedDocumentIds());
+
+                // Queue indexing output for graph building
+                if (isGraphBuildingEnabled()) {
+                    try {
+                        indexingQueue.put(indexing);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
 
                 reportProgress("indexing", calculateProgress(),
                         String.format("Indexed %d chunks", chunksIndexed.get()));
@@ -470,6 +643,82 @@ public class StagedIngestPipeline implements AutoCloseable {
                 logger.error("Indexing worker error: {}", e.getMessage(), e);
             }
         }
+    }
+
+    private void runGraphBuildingWorker() {
+        if (!isGraphBuildingEnabled()) {
+            graphBuildingComplete.set(true);
+            return;
+        }
+
+        // Wait for indexing to complete before starting graph building
+        while (!isIndexingComplete() && !cancelled.get()) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                graphBuildingComplete.set(true);
+                return;
+            }
+        }
+
+        if (cancelled.get()) {
+            graphBuildingComplete.set(true);
+            return;
+        }
+
+        try {
+            // Drain remaining items from indexing queue
+            IndexingStage.IndexingOutput lastIndexingOutput = null;
+            while (!indexingQueue.isEmpty()) {
+                lastIndexingOutput = indexingQueue.poll(100, TimeUnit.MILLISECONDS);
+            }
+
+            if (accumulatedChunks.isEmpty()) {
+                logger.debug("No chunks to process for graph building");
+                graphBuildingComplete.set(true);
+                return;
+            }
+
+            logger.info("Starting graph building for {} accumulated chunks", accumulatedChunks.size());
+            reportProgress("graph-building", calculateProgress(),
+                    String.format("Building knowledge graph from %d chunks", accumulatedChunks.size()));
+
+            // Set the chunks on the graph building stage
+            graphBuildingStage.setChunksToProcess(new ArrayList<>(accumulatedChunks));
+
+            // Create a synthetic indexing output for the graph building stage
+            IndexingStage.IndexingOutput syntheticOutput = lastIndexingOutput != null ? lastIndexingOutput :
+                    new IndexingStage.IndexingOutput(
+                            List.of(), chunksIndexed.get(), 0, 0,
+                            null, null, null, null, Map.of()
+                    );
+
+            // Process graph building
+            GraphBuildingStage.GraphBuildingOutput graphOutput = graphBuildingStage.process(syntheticOutput);
+
+            entitiesExtracted.set(graphOutput.entitiesExtracted());
+            relationshipsExtracted.set(graphOutput.relationshipsExtracted());
+
+            reportProgress("graph-building", calculateProgress(),
+                    String.format("Extracted %d entities, %d relationships",
+                            graphOutput.entitiesExtracted(), graphOutput.relationshipsExtracted()));
+
+            logger.info("Graph building complete: {} entities, {} relationships",
+                    graphOutput.entitiesExtracted(), graphOutput.relationshipsExtracted());
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.warn("Graph building interrupted");
+        } catch (Exception e) {
+            logger.error("Graph building worker error: {}", e.getMessage(), e);
+        } finally {
+            graphBuildingComplete.set(true);
+        }
+    }
+
+    private boolean isIndexingComplete() {
+        return isEmbeddingComplete() && embeddingQueue.isEmpty();
     }
 
     private boolean isExtractionComplete() {
@@ -513,6 +762,15 @@ public class StagedIngestPipeline implements AutoCloseable {
             Thread.sleep(100);
             waited++;
         }
+
+        // Wait for graph building to complete if enabled
+        if (isGraphBuildingEnabled() && graphBuildingStage.isEnabled()) {
+            int graphWaited = 0;
+            while (graphWaited < maxWaitSeconds && !cancelled.get() && !graphBuildingComplete.get()) {
+                Thread.sleep(100);
+                graphWaited++;
+            }
+        }
     }
 
     private List<String> collectIndexedIds() {
@@ -542,8 +800,11 @@ public class StagedIngestPipeline implements AutoCloseable {
             StagedPipelineProgress progress = new StagedPipelineProgress(
                     stage, percent, filesExtracted.get(), documentsTokenized.get(),
                     documentsChunked.get(), chunksEmbedded.get(), chunksIndexed.get(),
+                    tokensProcessed.get(),
+                    entitiesExtracted.get(), relationshipsExtracted.get(),
                     extractionQueue.size(), tokenizationQueue.size(),
-                    chunkingQueue.size(), embeddingQueue.size(),
+                    chunkingQueue.size(), embeddingQueue.size(), indexingQueue.size(),
+                    isGraphBuildingEnabled(), graphBuildingComplete.get(),
                     message, getMemoryUsagePercent()
             );
             progressCallback.accept(progress);
@@ -565,16 +826,23 @@ public class StagedIngestPipeline implements AutoCloseable {
         documentsChunked.set(0);
         chunksEmbedded.set(0);
         chunksIndexed.set(0);
+        tokensProcessed.set(0);
+        entitiesExtracted.set(0);
+        relationshipsExtracted.set(0);
+        graphBuildingComplete.set(false);
         extractionQueue.clear();
         tokenizationQueue.clear();
         chunkingQueue.clear();
         embeddingQueue.clear();
+        indexingQueue.clear();
+        accumulatedChunks.clear();
 
         extractionStage.reset();
         tokenizationStage.reset();
         chunkingStage.reset();
         embeddingStage.reset();
         indexingStage.reset();
+        graphBuildingStage.reset();
     }
 
     /**
@@ -587,6 +855,7 @@ public class StagedIngestPipeline implements AutoCloseable {
         chunkingStage.cancel();
         embeddingStage.cancel();
         indexingStage.cancel();
+        graphBuildingStage.cancel();
     }
 
     /**
@@ -613,6 +882,7 @@ public class StagedIngestPipeline implements AutoCloseable {
         metrics.put("chunking", chunkingStage.getMetrics());
         metrics.put("embedding", embeddingStage.getMetrics());
         metrics.put("indexing", indexingStage.getMetrics());
+        metrics.put("graph-building", graphBuildingStage.getMetrics());
         return metrics;
     }
 
@@ -624,6 +894,7 @@ public class StagedIngestPipeline implements AutoCloseable {
         shutdownExecutor(chunkingExecutor, "chunking");
         shutdownExecutor(embeddingExecutor, "embedding");
         shutdownExecutor(indexingExecutor, "indexing");
+        shutdownExecutor(graphBuildingExecutor, "graph-building");
         logger.debug("StagedIngestPipeline closed");
     }
 
@@ -650,10 +921,16 @@ public class StagedIngestPipeline implements AutoCloseable {
             int documentsChunked,
             int chunksEmbedded,
             int chunksIndexed,
+            long tokensProcessed,
+            int entitiesExtracted,
+            int relationshipsExtracted,
             int extractionQueueSize,
             int tokenizationQueueSize,
             int chunkingQueueSize,
             int embeddingQueueSize,
+            int indexingQueueSize,
+            boolean graphBuildingEnabled,
+            boolean graphBuildingComplete,
             String message,
             double memoryUsagePercent
     ) {}
@@ -665,6 +942,10 @@ public class StagedIngestPipeline implements AutoCloseable {
             int filesProcessed,
             int documentsChunked,
             int chunksIndexed,
+            long tokensProcessed,
+            int entitiesExtracted,
+            int relationshipsExtracted,
+            boolean graphBuildingEnabled,
             long totalTimeMs,
             List<String> indexedDocumentIds,
             double chunksPerSecond

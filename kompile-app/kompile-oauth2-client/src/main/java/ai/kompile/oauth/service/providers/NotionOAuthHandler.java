@@ -18,8 +18,10 @@ package ai.kompile.oauth.service.providers;
 
 import ai.kompile.oauth.dto.OAuthTokenResponse;
 import ai.kompile.oauth.dto.OAuthUserInfo;
+import ai.kompile.oauth.service.OAuthSettingsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
@@ -43,14 +45,41 @@ public class NotionOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String TOKEN_ENDPOINT = "https://api.notion.com/v1/oauth/token";
     private static final String USERS_ME_ENDPOINT = "https://api.notion.com/v1/users/me";
 
+    private OAuthSettingsService settingsService;
+
     @Value("${kompile.oauth.notion.client-id:}")
-    private String clientId;
+    private String defaultClientId;
 
     @Value("${kompile.oauth.notion.client-secret:}")
-    private String clientSecret;
+    private String defaultClientSecret;
 
     public NotionOAuthHandler(RestTemplate restTemplate, ObjectMapper objectMapper) {
         super(restTemplate, objectMapper);
+    }
+
+    @Autowired(required = false)
+    public void setSettingsService(OAuthSettingsService settingsService) {
+        this.settingsService = settingsService;
+    }
+
+    private String getEffectiveClientId() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientId(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientId;
+    }
+
+    private String getEffectiveClientSecret() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientSecret(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientSecret;
     }
 
     @Override
@@ -91,12 +120,12 @@ public class NotionOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     protected String getClientId() {
-        return clientId;
+        return getEffectiveClientId();
     }
 
     @Override
     protected String getClientSecret() {
-        return clientSecret;
+        return getEffectiveClientSecret();
     }
 
     @Override
@@ -112,7 +141,7 @@ public class NotionOAuthHandler extends AbstractOAuthProviderHandler {
     @Override
     public String buildAuthorizationUrl(String redirectUri, String state) {
         Map<String, String> params = new LinkedHashMap<>();
-        params.put("client_id", clientId);
+        params.put("client_id", getEffectiveClientId());
         params.put("redirect_uri", redirectUri);
         params.put("response_type", "code");
         params.put("state", state);
@@ -127,7 +156,7 @@ public class NotionOAuthHandler extends AbstractOAuthProviderHandler {
             // Notion requires Basic Auth with client credentials
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
-            String auth = clientId + ":" + clientSecret;
+            String auth = getEffectiveClientId() + ":" + getEffectiveClientSecret();
             String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes(StandardCharsets.UTF_8));
             headers.set("Authorization", "Basic " + encodedAuth);
 

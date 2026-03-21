@@ -180,7 +180,37 @@ public class IngestEvent {
         /** Task was cancelled */
         CANCELLED,
         /** Task was forcibly killed due to memory pressure exceeding kill threshold */
-        MEMORY_KILLED
+        MEMORY_KILLED,
+
+        // ======== OOM Restart Event Types ========
+        /** Automatic restart scheduled after OOM failure */
+        RESTART_SCHEDULED,
+        /** Restart attempt has started */
+        RESTART_ATTEMPTED,
+        /** Process recovered successfully after restart */
+        RESTART_SUCCEEDED,
+        /** All restart attempts exhausted, process failed to recover */
+        RESTART_FAILED,
+        /** Detailed memory analysis result (system RAM, heap, recommendations) */
+        MEMORY_ANALYSIS,
+        /** Heap size was adjusted (increased or kept same due to RAM limits) */
+        HEAP_ADJUSTED,
+        /** Thread counts were reduced to save memory */
+        THREADS_REDUCED,
+        /** User triggered manual restart */
+        MANUAL_RESTART,
+
+        // ======== Extraction Event Types ========
+        /** Content extraction phase started with details about extractors */
+        EXTRACTION_STARTED,
+        /** Progress update during content extraction */
+        EXTRACTION_PROGRESS,
+        /** Content extraction completed with summary of extracted items */
+        EXTRACTION_COMPLETED,
+        /** Individual extractor completed its work */
+        EXTRACTOR_COMPLETED,
+        /** Individual extractor encountered an error */
+        EXTRACTOR_ERROR
     }
 
     /**
@@ -191,10 +221,16 @@ public class IngestEvent {
         QUEUED,
         /** Loading raw document from source */
         LOADING,
+        /** VLM/OCR processing pages (between LOADING and CONVERTING) */
+        OCR_PROCESSING,
         /** Converting rich format to plain text */
         CONVERTING,
         /** Chunking text into segments */
         CHUNKING,
+        /** Concurrent content extraction (chunking + structured output) */
+        EXTRACTION,
+        /** Concurrent keyword indexing and embedding (keyword index updated immediately) */
+        INDEXING_AND_EMBEDDING,
         /** Generating embeddings for chunks */
         EMBEDDING,
         /** Indexing chunks in vector store */
@@ -416,5 +452,346 @@ public class IngestEvent {
                         memoryPercent, killThreshold))
                 .details(details)
                 .build();
+    }
+
+    // ======== OOM Restart Event Factory Methods ========
+
+    /**
+     * Create a restart scheduled event.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param currentPhase  The phase when restart was scheduled
+     * @param attemptNumber The restart attempt number (1-based)
+     * @param maxAttempts   Maximum allowed restart attempts
+     * @param backoffMs     Time until restart in milliseconds
+     * @param details       Additional details (JSON with memory analysis)
+     */
+    public static IngestEvent restartScheduled(String taskId, String fileName, IngestPhase currentPhase,
+                                                int attemptNumber, int maxAttempts, long backoffMs, String details) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.RESTART_SCHEDULED)
+                .phase(currentPhase)
+                .timestamp(Instant.now())
+                .itemsProcessed(attemptNumber)
+                .totalItems(maxAttempts)
+                .message(String.format("Restart scheduled (attempt %d/%d) in %dms after OOM",
+                        attemptNumber, maxAttempts, backoffMs))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create a restart attempted event.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param attemptNumber The restart attempt number (1-based)
+     * @param maxAttempts   Maximum allowed restart attempts
+     * @param heapSize      The heap size being used for this attempt
+     * @param details       Additional details (JSON with configuration)
+     */
+    public static IngestEvent restartAttempted(String taskId, String fileName,
+                                                int attemptNumber, int maxAttempts, String heapSize, String details) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.RESTART_ATTEMPTED)
+                .phase(IngestPhase.QUEUED)
+                .timestamp(Instant.now())
+                .itemsProcessed(attemptNumber)
+                .totalItems(maxAttempts)
+                .message(String.format("Restart attempt %d/%d starting with heap=%s",
+                        attemptNumber, maxAttempts, heapSize))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create a restart succeeded event.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param attemptNumber The successful restart attempt number
+     * @param recoveryTimeMs Time taken to recover in milliseconds
+     */
+    public static IngestEvent restartSucceeded(String taskId, String fileName,
+                                                int attemptNumber, long recoveryTimeMs) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.RESTART_SUCCEEDED)
+                .phase(IngestPhase.QUEUED)
+                .timestamp(Instant.now())
+                .itemsProcessed(attemptNumber)
+                .durationMs(recoveryTimeMs)
+                .message(String.format("Process recovered after %d restart attempt(s)", attemptNumber))
+                .build();
+    }
+
+    /**
+     * Create a restart failed event (all attempts exhausted).
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param totalAttempts Total number of restart attempts made
+     * @param totalTimeMs   Total time spent on all attempts
+     * @param errorMessage  Final error message
+     */
+    public static IngestEvent restartFailed(String taskId, String fileName,
+                                             int totalAttempts, long totalTimeMs, String errorMessage) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.RESTART_FAILED)
+                .phase(IngestPhase.FAILED)
+                .timestamp(Instant.now())
+                .itemsProcessed(totalAttempts)
+                .durationMs(totalTimeMs)
+                .message(String.format("All %d restart attempts exhausted. Manual action required.", totalAttempts))
+                .errorMessage(errorMessage)
+                .build();
+    }
+
+    /**
+     * Create a memory analysis event.
+     *
+     * @param taskId          The task identifier
+     * @param fileName        The file being processed
+     * @param currentPhase    The current phase
+     * @param canIncreaseHeap Whether heap can be increased
+     * @param reason          Detailed reason explaining the memory analysis
+     * @param details         Additional details (JSON with full analysis)
+     */
+    public static IngestEvent memoryAnalysis(String taskId, String fileName, IngestPhase currentPhase,
+                                              boolean canIncreaseHeap, String reason, String details) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.MEMORY_ANALYSIS)
+                .phase(currentPhase)
+                .timestamp(Instant.now())
+                .message(String.format("Memory analysis: %s heap increase. %s",
+                        canIncreaseHeap ? "CAN" : "CANNOT", reason))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create a heap adjusted event.
+     *
+     * @param taskId      The task identifier
+     * @param fileName    The file being processed
+     * @param oldHeapSize Previous heap size
+     * @param newHeapSize New heap size
+     * @param increased   Whether heap was increased (vs kept same)
+     * @param reason      Reason for the adjustment
+     */
+    public static IngestEvent heapAdjusted(String taskId, String fileName,
+                                            String oldHeapSize, String newHeapSize,
+                                            boolean increased, String reason) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.HEAP_ADJUSTED)
+                .phase(IngestPhase.QUEUED)
+                .timestamp(Instant.now())
+                .message(String.format("Heap %s: %s -> %s. %s",
+                        increased ? "increased" : "unchanged", oldHeapSize, newHeapSize, reason))
+                .build();
+    }
+
+    /**
+     * Create a threads reduced event.
+     *
+     * @param taskId     The task identifier
+     * @param fileName   The file being processed
+     * @param oldThreads Previous thread count
+     * @param newThreads New thread count
+     * @param reason     Reason for the reduction
+     * @param details    Additional details (JSON with all thread settings)
+     */
+    public static IngestEvent threadsReduced(String taskId, String fileName,
+                                              int oldThreads, int newThreads, String reason, String details) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.THREADS_REDUCED)
+                .phase(IngestPhase.QUEUED)
+                .timestamp(Instant.now())
+                .message(String.format("Threads reduced: %d -> %d. %s", oldThreads, newThreads, reason))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create a manual restart event.
+     *
+     * @param taskId   The task identifier
+     * @param fileName The file being processed
+     * @param reason   Reason for manual restart
+     */
+    public static IngestEvent manualRestart(String taskId, String fileName, String reason) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.MANUAL_RESTART)
+                .phase(IngestPhase.QUEUED)
+                .timestamp(Instant.now())
+                .message("Manual restart triggered: " + reason)
+                .build();
+    }
+
+    // ======== Extraction Event Factory Methods ========
+
+    /**
+     * Create an extraction started event.
+     *
+     * @param taskId          The task identifier
+     * @param fileName        The file being processed
+     * @param documentCount   Number of documents to extract from
+     * @param extractors      List of extractor names being used
+     * @param details         Additional details (JSON with extractor configuration)
+     */
+    public static IngestEvent extractionStarted(String taskId, String fileName,
+                                                 int documentCount, String extractors, String details) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.EXTRACTION_STARTED)
+                .phase(IngestPhase.EXTRACTION)
+                .timestamp(Instant.now())
+                .totalItems(documentCount)
+                .message(String.format("Starting extraction with %d documents using extractors: %s",
+                        documentCount, extractors))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create an extraction progress event.
+     *
+     * @param taskId           The task identifier
+     * @param fileName         The file being processed
+     * @param extractorName    Name of the extractor reporting progress
+     * @param itemsProcessed   Number of documents processed
+     * @param totalItems       Total number of documents to process
+     * @param chunksCreated    Number of chunks created so far
+     * @param structuredItems  Number of structured items extracted so far
+     * @param message          Progress message
+     */
+    public static IngestEvent extractionProgress(String taskId, String fileName,
+                                                  String extractorName, int itemsProcessed, int totalItems,
+                                                  int chunksCreated, int structuredItems, String message) {
+        String details = String.format("{\"extractor\":\"%s\",\"chunksCreated\":%d,\"structuredItems\":%d}",
+                extractorName, chunksCreated, structuredItems);
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.EXTRACTION_PROGRESS)
+                .phase(IngestPhase.EXTRACTION)
+                .timestamp(Instant.now())
+                .itemsProcessed(itemsProcessed)
+                .totalItems(totalItems)
+                .message(message)
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create an extraction completed event with detailed summary.
+     *
+     * @param taskId              The task identifier
+     * @param fileName            The file being processed
+     * @param documentsProcessed  Number of documents processed
+     * @param chunksCreated       Number of chunks created
+     * @param entitiesExtracted   Number of entities extracted
+     * @param relationshipsExtracted Number of relationships extracted
+     * @param conceptsExtracted   Number of concepts extracted
+     * @param factsExtracted      Number of facts extracted
+     * @param tablesExtracted     Number of tables extracted
+     * @param durationMs          Time taken in milliseconds
+     * @param extractorsUsed      Comma-separated list of extractors used
+     * @param details             Additional details (JSON with full breakdown)
+     */
+    public static IngestEvent extractionCompleted(String taskId, String fileName,
+                                                   int documentsProcessed, int chunksCreated,
+                                                   int entitiesExtracted, int relationshipsExtracted,
+                                                   int conceptsExtracted, int factsExtracted, int tablesExtracted,
+                                                   long durationMs, String extractorsUsed, String details) {
+        int totalStructured = entitiesExtracted + relationshipsExtracted + conceptsExtracted + factsExtracted + tablesExtracted;
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.EXTRACTION_COMPLETED)
+                .phase(IngestPhase.EXTRACTION)
+                .timestamp(Instant.now())
+                .itemsProcessed(documentsProcessed)
+                .durationMs(durationMs)
+                .message(String.format("Extraction completed: %d chunks, %d structured items (entities=%d, relationships=%d, concepts=%d, facts=%d, tables=%d) from %d documents in %dms",
+                        chunksCreated, totalStructured, entitiesExtracted, relationshipsExtracted,
+                        conceptsExtracted, factsExtracted, tablesExtracted, documentsProcessed, durationMs))
+                .details(details)
+                .build();
+    }
+
+    /**
+     * Create an extractor completed event for tracking individual extractor progress.
+     *
+     * @param taskId          The task identifier
+     * @param fileName        The file being processed
+     * @param extractorName   Name of the extractor
+     * @param extractorType   Type of the extractor (e.g., CHUNKING, ENTITY, CONCEPT)
+     * @param itemsProduced   Number of items produced by this extractor
+     * @param durationMs      Time taken by this extractor
+     */
+    public static IngestEvent extractorCompleted(String taskId, String fileName,
+                                                  String extractorName, String extractorType,
+                                                  int itemsProduced, long durationMs) {
+        return IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.EXTRACTOR_COMPLETED)
+                .phase(IngestPhase.EXTRACTION)
+                .timestamp(Instant.now())
+                .itemsProcessed(itemsProduced)
+                .durationMs(durationMs)
+                .message(String.format("Extractor '%s' (%s) completed: %d items in %dms",
+                        extractorName, extractorType, itemsProduced, durationMs))
+                .build();
+    }
+
+    /**
+     * Create an extractor error event.
+     *
+     * @param taskId          The task identifier
+     * @param fileName        The file being processed
+     * @param extractorName   Name of the extractor that failed
+     * @param errorMessage    Error message
+     * @param exception       The exception that occurred (may be null)
+     */
+    public static IngestEvent extractorError(String taskId, String fileName,
+                                              String extractorName, String errorMessage, Throwable exception) {
+        IngestEventBuilder builder = IngestEvent.builder()
+                .taskId(taskId)
+                .fileName(fileName)
+                .eventType(EventType.EXTRACTOR_ERROR)
+                .phase(IngestPhase.EXTRACTION)
+                .timestamp(Instant.now())
+                .message(String.format("Extractor '%s' error: %s", extractorName, errorMessage))
+                .errorMessage(errorMessage);
+
+        if (exception != null) {
+            StringBuilder sb = new StringBuilder();
+            for (StackTraceElement element : exception.getStackTrace()) {
+                sb.append(element.toString()).append("\n");
+                if (sb.length() > 4000) break;
+            }
+            builder.stackTrace(sb.toString());
+        }
+
+        return builder.build();
     }
 }

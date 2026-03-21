@@ -35,6 +35,8 @@ public class ModelCatalog {
     private Map<String, SourceConfig> sources;
     private List<CatalogModel> encoders;
     private List<CatalogModel> crossEncoders;
+    @Builder.Default
+    private List<CatalogModel> vlm = new java.util.ArrayList<>();
 
     @Data
     @Builder

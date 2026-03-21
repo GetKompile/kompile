@@ -23,6 +23,11 @@ public enum SchemaEnforcementMode {
      */
     NONE,
     /**
+     * Leniently enforce the schema. Unknown types are logged as warnings
+     * but still allowed in the graph.
+     */
+    LENIENT,
+    /**
      * Strictly enforce the schema. Any entities, relationships, or properties
      * not conforming to the schema will be removed or modified before being
      * written to the database.

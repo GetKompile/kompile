@@ -128,7 +128,7 @@
             </mat-card-content>
 
             <mat-card-actions>
-              <mat-slide-toggle [(ngModel)]="tool.enabled" (change)="saveTool()">Enabled</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="tool.enabled" [ngModelOptions]="{standalone: true}" (change)="saveTool()">Enabled</mat-slide-toggle>
               <button mat-button (click)="editTool(tool)">
                 <mat-icon>edit</mat-icon> Edit
               </button>
@@ -171,7 +171,7 @@
             </mat-card-content>
 
             <mat-card-actions>
-              <mat-slide-toggle [(ngModel)]="resource.enabled" (change)="saveResource()">Enabled</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="resource.enabled" [ngModelOptions]="{standalone: true}" (change)="saveResource()">Enabled</mat-slide-toggle>
               <button mat-button (click)="editResource(resource)">
                 <mat-icon>edit</mat-icon> Edit
               </button>
@@ -222,7 +222,7 @@
             </mat-card-content>
 
             <mat-card-actions>
-              <mat-slide-toggle [(ngModel)]="prompt.enabled" (change)="savePrompt()">Enabled</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="prompt.enabled" [ngModelOptions]="{standalone: true}" (change)="savePrompt()">Enabled</mat-slide-toggle>
               <button mat-button (click)="editPrompt(prompt)">
                 <mat-icon>edit</mat-icon> Edit
               </button>
@@ -250,39 +250,39 @@
       <div class="form-content" *ngIf="editingServer">
         <mat-form-field appearance="outline">
           <mat-label>Server Name</mat-label>
-          <input matInput [(ngModel)]="editingServer.name" placeholder="My MCP Server">
+          <input matInput [(ngModel)]="editingServer.name" [ngModelOptions]="{standalone: true}" placeholder="My MCP Server">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Version</mat-label>
-          <input matInput [(ngModel)]="editingServer.version" placeholder="1.0.0">
+          <input matInput [(ngModel)]="editingServer.version" [ngModelOptions]="{standalone: true}" placeholder="1.0.0">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Description</mat-label>
-          <textarea matInput [(ngModel)]="editingServer.description" rows="3"></textarea>
+          <textarea matInput [(ngModel)]="editingServer.description" [ngModelOptions]="{standalone: true}" rows="3"></textarea>
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Transport Type</mat-label>
-          <mat-select [(ngModel)]="editingServer.transportType">
+          <mat-select [(ngModel)]="editingServer.transportType" [ngModelOptions]="{standalone: true}">
             <mat-option *ngFor="let type of transportTypes" [value]="type">{{ type }}</mat-option>
           </mat-select>
         </mat-form-field>
 
         <mat-form-field appearance="outline" *ngIf="editingServer.transportType !== 'STDIO'">
           <mat-label>Port</mat-label>
-          <input matInput type="number" [(ngModel)]="editingServer.port" min="1" max="65535">
+          <input matInput type="number" [(ngModel)]="editingServer.port" [ngModelOptions]="{standalone: true}" min="1" max="65535">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Base Path</mat-label>
-          <input matInput [(ngModel)]="editingServer.basePath" placeholder="/mcp">
+          <input matInput [(ngModel)]="editingServer.basePath" [ngModelOptions]="{standalone: true}" placeholder="/mcp">
         </mat-form-field>
 
         <div class="toggles">
-          <mat-slide-toggle [(ngModel)]="editingServer.loggingEnabled">Enable Logging</mat-slide-toggle>
-          <mat-slide-toggle [(ngModel)]="editingServer.completionsEnabled">Enable Completions</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingServer.loggingEnabled" [ngModelOptions]="{standalone: true}">Enable Logging</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingServer.completionsEnabled" [ngModelOptions]="{standalone: true}">Enable Completions</mat-slide-toggle>
         </div>
       </div>
 
@@ -301,18 +301,18 @@
       <div class="form-content" *ngIf="editingTool">
         <mat-form-field appearance="outline">
           <mat-label>Tool Name</mat-label>
-          <input matInput [(ngModel)]="editingTool.name" placeholder="my_tool">
+          <input matInput [(ngModel)]="editingTool.name" [ngModelOptions]="{standalone: true}" placeholder="my_tool">
           <mat-hint>Use snake_case for tool names</mat-hint>
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Description</mat-label>
-          <textarea matInput [(ngModel)]="editingTool.description" rows="2"></textarea>
+          <textarea matInput [(ngModel)]="editingTool.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Implementation Type</mat-label>
-          <mat-select [(ngModel)]="editingTool.implementationType">
+          <mat-select [(ngModel)]="editingTool.implementationType" [ngModelOptions]="{standalone: true}">
             <mat-option *ngFor="let type of toolTypes" [value]="type">{{ type }}</mat-option>
           </mat-select>
         </mat-form-field>
@@ -322,11 +322,11 @@
           <h4>HTTP Configuration</h4>
           <mat-form-field appearance="outline">
             <mat-label>URL</mat-label>
-            <input matInput [(ngModel)]="editingTool.httpConfig!.url" placeholder="http://localhost:8080/api/endpoint">
+            <input matInput [(ngModel)]="editingTool.httpConfig!.url" [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8080/api/endpoint">
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Method</mat-label>
-            <mat-select [(ngModel)]="editingTool.httpConfig!.method">
+            <mat-select [(ngModel)]="editingTool.httpConfig!.method" [ngModelOptions]="{standalone: true}">
               <mat-option value="GET">GET</mat-option>
               <mat-option value="POST">POST</mat-option>
               <mat-option value="PUT">PUT</mat-option>
@@ -334,7 +334,7 @@
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Timeout (ms)</mat-label>
-            <input matInput type="number" [(ngModel)]="editingTool.httpConfig!.timeoutMs">
+            <input matInput type="number" [(ngModel)]="editingTool.httpConfig!.timeoutMs" [ngModelOptions]="{standalone: true}">
           </mat-form-field>
         </div>
 
@@ -344,26 +344,26 @@
           <div class="param-row" *ngFor="let param of editingTool.parameters; let i = index">
             <mat-form-field appearance="outline">
               <mat-label>Name</mat-label>
-              <input matInput [(ngModel)]="param.name">
+              <input matInput [(ngModel)]="param.name" [ngModelOptions]="{standalone: true}">
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Type</mat-label>
-              <mat-select [(ngModel)]="param.type">
+              <mat-select [(ngModel)]="param.type" [ngModelOptions]="{standalone: true}">
                 <mat-option *ngFor="let t of parameterTypes" [value]="t">{{ t }}</mat-option>
               </mat-select>
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Description</mat-label>
-              <input matInput [(ngModel)]="param.description">
+              <input matInput [(ngModel)]="param.description" [ngModelOptions]="{standalone: true}">
             </mat-form-field>
-            <mat-checkbox [(ngModel)]="param.required">Required</mat-checkbox>
+            <mat-checkbox [(ngModel)]="param.required" [ngModelOptions]="{standalone: true}">Required</mat-checkbox>
             <button mat-icon-button color="warn" (click)="removeParameter(i)">
               <mat-icon>delete</mat-icon>
             </button>
           </div>
         </div>
 
-        <mat-slide-toggle [(ngModel)]="editingTool.enabled">Enabled</mat-slide-toggle>
+        <mat-slide-toggle [(ngModel)]="editingTool.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
       </div>
 
       <div class="dialog-actions">
@@ -381,27 +381,27 @@
       <div class="form-content" *ngIf="editingResource">
         <mat-form-field appearance="outline">
           <mat-label>URI</mat-label>
-          <input matInput [(ngModel)]="editingResource.uri" placeholder="custom://my-resource">
+          <input matInput [(ngModel)]="editingResource.uri" [ngModelOptions]="{standalone: true}" placeholder="custom://my-resource">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Name</mat-label>
-          <input matInput [(ngModel)]="editingResource.name">
+          <input matInput [(ngModel)]="editingResource.name" [ngModelOptions]="{standalone: true}">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Description</mat-label>
-          <textarea matInput [(ngModel)]="editingResource.description" rows="2"></textarea>
+          <textarea matInput [(ngModel)]="editingResource.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>MIME Type</mat-label>
-          <input matInput [(ngModel)]="editingResource.mimeType" placeholder="text/plain">
+          <input matInput [(ngModel)]="editingResource.mimeType" [ngModelOptions]="{standalone: true}" placeholder="text/plain">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Resource Type</mat-label>
-          <mat-select [(ngModel)]="editingResource.resourceType">
+          <mat-select [(ngModel)]="editingResource.resourceType" [ngModelOptions]="{standalone: true}">
             <mat-option *ngFor="let type of resourceTypes" [value]="type">{{ type }}</mat-option>
           </mat-select>
         </mat-form-field>
@@ -409,12 +409,12 @@
         <!-- Static Content -->
         <mat-form-field appearance="outline" *ngIf="editingResource.resourceType === 'STATIC'">
           <mat-label>Static Content</mat-label>
-          <textarea matInput [(ngModel)]="editingResource.staticContent" rows="5"></textarea>
+          <textarea matInput [(ngModel)]="editingResource.staticContent" [ngModelOptions]="{standalone: true}" rows="5"></textarea>
         </mat-form-field>
 
         <div class="toggles">
-          <mat-slide-toggle [(ngModel)]="editingResource.supportsSubscription">Supports Subscription</mat-slide-toggle>
-          <mat-slide-toggle [(ngModel)]="editingResource.enabled">Enabled</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingResource.supportsSubscription" [ngModelOptions]="{standalone: true}">Supports Subscription</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingResource.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
         </div>
       </div>
 
@@ -433,12 +433,12 @@
       <div class="form-content" *ngIf="editingPrompt">
         <mat-form-field appearance="outline">
           <mat-label>Prompt Name</mat-label>
-          <input matInput [(ngModel)]="editingPrompt.name" placeholder="my_prompt">
+          <input matInput [(ngModel)]="editingPrompt.name" [ngModelOptions]="{standalone: true}" placeholder="my_prompt">
         </mat-form-field>
 
         <mat-form-field appearance="outline">
           <mat-label>Description</mat-label>
-          <textarea matInput [(ngModel)]="editingPrompt.description" rows="2"></textarea>
+          <textarea matInput [(ngModel)]="editingPrompt.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
         </mat-form-field>
 
         <!-- Arguments Section -->
@@ -447,13 +447,13 @@
           <div class="arg-row" *ngFor="let arg of editingPrompt.arguments; let i = index">
             <mat-form-field appearance="outline">
               <mat-label>Name</mat-label>
-              <input matInput [(ngModel)]="arg.name">
+              <input matInput [(ngModel)]="arg.name" [ngModelOptions]="{standalone: true}">
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Description</mat-label>
-              <input matInput [(ngModel)]="arg.description">
+              <input matInput [(ngModel)]="arg.description" [ngModelOptions]="{standalone: true}">
             </mat-form-field>
-            <mat-checkbox [(ngModel)]="arg.required">Required</mat-checkbox>
+            <mat-checkbox [(ngModel)]="arg.required" [ngModelOptions]="{standalone: true}">Required</mat-checkbox>
             <button mat-icon-button color="warn" (click)="removePromptArgument(i)">
               <mat-icon>delete</mat-icon>
             </button>
@@ -466,13 +466,13 @@
           <div class="message-row" *ngFor="let msg of editingPrompt.messages; let i = index">
             <mat-form-field appearance="outline">
               <mat-label>Role</mat-label>
-              <mat-select [(ngModel)]="msg.role">
+              <mat-select [(ngModel)]="msg.role" [ngModelOptions]="{standalone: true}">
                 <mat-option *ngFor="let role of messageRoles" [value]="role">{{ role }}</mat-option>
               </mat-select>
             </mat-form-field>
             <mat-form-field appearance="outline" class="message-content">
               <mat-label>Content</mat-label>
-              <textarea matInput [(ngModel)]="msg.content" rows="3" placeholder="Use {argument} for placeholders"></textarea>
+              <textarea matInput [(ngModel)]="msg.content" [ngModelOptions]="{standalone: true}" rows="3" placeholder="Use {argument} for placeholders"></textarea>
             </mat-form-field>
             <button mat-icon-button color="warn" (click)="removePromptMessage(i)">
               <mat-icon>delete</mat-icon>
@@ -480,7 +480,7 @@
           </div>
         </div>
 
-        <mat-slide-toggle [(ngModel)]="editingPrompt.enabled">Enabled</mat-slide-toggle>
+        <mat-slide-toggle [(ngModel)]="editingPrompt.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
       </div>
 
       <div class="dialog-actions">
@@ -498,7 +498,7 @@
       <div class="form-content">
         <mat-form-field appearance="outline" class="full-width">
           <mat-label>JSON Configuration</mat-label>
-          <textarea matInput [(ngModel)]="importJson" rows="10" placeholder="Paste JSON configuration here..."></textarea>
+          <textarea matInput [(ngModel)]="importJson" [ngModelOptions]="{standalone: true}" rows="10" placeholder="Paste JSON configuration here..."></textarea>
         </mat-form-field>
       </div>
 

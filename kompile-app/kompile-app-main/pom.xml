@@ -7,7 +7,7 @@
   ~  You may obtain a copy of the License at
   ~
   ~  http://www.apache.org/licenses/LICENSE-2.0
-  ~
+  ~ff
   ~  Unless required by applicable law or agreed to in writing, software
   ~   distributed under the License is distributed on an "AS IS" BASIS,
   ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -56,7 +56,17 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-embedding-anserini</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.mockito</groupId>
+                    <artifactId>mockito-all</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -90,6 +100,10 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-knowledge-graph</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-react-agent</artifactId>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -154,11 +168,20 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-pdf-tables</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-loader-microsoft</artifactId>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-loader-web</artifactId>
+        </dependency>
+        <!-- Table-aware chunker for structured data -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-chunker-table-aware</artifactId>
         </dependency>
 
         <!-- Orchestrator module for state machine task orchestration -->
@@ -174,6 +197,47 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Query transformation, guardrails, and RAG evaluation -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-query-transformer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-guardrails</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-filter-chain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-evaluation</artifactId>
+        </dependency>
+
+        <!-- OpenClaw Agent Framework -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-openclaw</artifactId>
+        </dependency>
+
+        <!-- OCR Integration -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-ocr-integration</artifactId>
+        </dependency>
+
+        <!-- Pipeline Management -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipeline-management</artifactId>
+        </dependency>
+
+        <!-- KV Cache Management -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-kvcache</artifactId>
+        </dependency>
 
     </dependencies>
 
@@ -230,7 +294,7 @@
             </activation>
             <build>
                 <plugins>
-                    <!-- Clear Angular cache before build to ensure fresh compilation -->
+                    <!-- Clear Angular cache and old static files before build to ensure fresh compilation -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-antrun-plugin</artifactId>
@@ -246,6 +310,10 @@
                                     <target>
                                         <delete dir="${project.basedir}/src/main/frontend/.angular/cache" quiet="true"/>
                                         <delete dir="${project.basedir}/src/main/frontend/dist" quiet="true"/>
+                                        <!-- Also clean accumulated static files to prevent serving stale content -->
+                                        <delete quiet="true">
+                                            <fileset dir="${project.basedir}/src/main/resources/static" includes="**/*" erroronmissingdir="false"/>
+                                        </delete>
                                     </target>
                                 </configuration>
                             </execution>
@@ -329,9 +397,17 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
+                    <fork>true</fork>
                     <compilerArgs>
                         <arg>-parameters</arg>
                     </compilerArgs>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
             </plugin>
 
@@ -362,8 +438,11 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring-boot.version}</version>
                 <configuration>
-                    <skip>true</skip>
+                    <mainClass>${start-class}</mainClass>
                 </configuration>
+                <!-- No repackage execution - this is a library module.
+                     Use 'mvn spring-boot:run' for development.
+                     For production, use the generated RAG app from kompile CLI. -->
             </plugin>
         </plugins>
     </build>

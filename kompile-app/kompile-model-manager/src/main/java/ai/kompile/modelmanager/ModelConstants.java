@@ -642,8 +642,57 @@ public class ModelConstants {
         return TokenizerConfig.defaultConfig();
     }
 
+    // ==================== OCR Model Descriptors ====================
+    // OCR models are primarily managed via the model staging registry,
+    // but these descriptors serve as fallback for built-in models.
+
+    private static final Map<String, ModelDescriptor> OCR_MODEL_DESCRIPTORS = new HashMap<>();
+    private static final Map<String, ModelDescriptor> OCR_VOCAB_DESCRIPTORS = new HashMap<>();
+
+    // OCR models can be added here as fallback when not using staging registry
+    // Example:
+    // static {
+    //     Map<String, Object> dbnetMeta = new HashMap<>();
+    //     dbnetMeta.put("model_type", "ocr_detection");
+    //     dbnetMeta.put("input_height", 960);
+    //     dbnetMeta.put("average_accuracy", 0.92);
+    //     OCR_MODEL_DESCRIPTORS.put("dbnet-v2", ModelDescriptor.builder()
+    //             .modelId("dbnet-v2")
+    //             .downloadUrl("https://github.com/GetKompile/kompile/releases/download/ocr-models-v1.0.0/dbnet-v2.sdz")
+    //             .expectedCacheSubpath("ocr-detection/dbnet-v2/model.sdz")
+    //             .modelType(ModelType.OCR_DETECTION)
+    //             .metadata(dbnetMeta)
+    //             .build());
+    // }
+
     /**
-     * Get all model descriptors including encoders, cross-encoders, and indexes.
+     * Get an OCR model descriptor by model ID.
+     * @param modelId The model identifier (e.g., "dbnet-v2")
+     * @return ModelDescriptor for the OCR model, or null if not found
+     */
+    public static ModelDescriptor getOcrModelDescriptor(String modelId) {
+        return OCR_MODEL_DESCRIPTORS.get(modelId);
+    }
+
+    /**
+     * Get an OCR vocabulary descriptor by model ID.
+     * @param modelId The model identifier
+     * @return ModelDescriptor for the OCR vocabulary, or null if not found
+     */
+    public static ModelDescriptor getOcrVocabDescriptor(String modelId) {
+        return OCR_VOCAB_DESCRIPTORS.get(modelId);
+    }
+
+    /**
+     * Get all OCR model IDs.
+     * @return Set of OCR model identifiers
+     */
+    public static Set<String> getOcrModelIds() {
+        return OCR_MODEL_DESCRIPTORS.keySet();
+    }
+
+    /**
+     * Get all model descriptors including encoders, cross-encoders, indexes, and OCR.
      * Useful for model management UI that needs to display all available models.
      * @return Map of model ID to ModelDescriptor for all model types
      */
@@ -652,6 +701,7 @@ public class ModelConstants {
         allModels.putAll(ANSERINI_ENCODER_MODEL_DESCRIPTORS);
         allModels.putAll(CROSS_ENCODER_MODEL_DESCRIPTORS);
         allModels.putAll(ANSERINI_INDEX_DESCRIPTORS);
+        allModels.putAll(OCR_MODEL_DESCRIPTORS);
         return Collections.unmodifiableMap(allModels);
     }
 
@@ -668,5 +718,216 @@ public class ModelConstants {
             }
         }
         return Collections.unmodifiableMap(filtered);
+    }
+
+    // ==================== VLM Model Descriptors ====================
+    // Vision-Language Models for end-to-end document understanding.
+    // VLM models must be imported/converted to SameDiff (.sdz) format before use.
+    // Use the import tools to convert from HuggingFace ONNX exports.
+
+    private static final Map<String, VlmModelDescriptor> VLM_MODEL_DESCRIPTORS;
+
+    static {
+        Map<String, VlmModelDescriptor> vlmModels = new HashMap<>();
+
+        // SmolDocling-256M - Compact document understanding model
+        // Source: https://huggingface.co/ds4sd/SmolDocling-256M-preview
+        // Must be imported to SDZ format using samediff-import-onnx
+        vlmModels.put("smoldocling-256m", new VlmModelDescriptor(
+                "smoldocling-256m",
+                "SmolDocling 256M Preview",
+                "https://huggingface.co/ds4sd/SmolDocling-256M-preview",
+                "vlm/smoldocling-256m",
+                Map.ofEntries(
+                        Map.entry("description", "SmolDocling 256M - Compact document understanding VLM (SDZ format)"),
+                        Map.entry("huggingface_repo", "ds4sd/SmolDocling-256M-preview"),
+                        Map.entry("architecture", "encoder-decoder"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_file", "smoldocling-256m.sdz"),
+                        Map.entry("vocab_file", "vocab.txt"),
+                        Map.entry("tokenizer_config", "tokenizer_config.json"),
+                        Map.entry("output_formats", "DOCTAGS,MARKDOWN,JSON,TEXT"),
+                        Map.entry("max_image_size", 1024),
+                        Map.entry("hidden_size", 256),
+                        Map.entry("max_new_tokens", 4096)
+                )
+        ));
+
+        // Donut - Document Understanding Transformer
+        // Source: https://huggingface.co/naver-clova-ix/donut-base
+        vlmModels.put("donut-base", new VlmModelDescriptor(
+                "donut-base",
+                "Donut Base",
+                "https://huggingface.co/naver-clova-ix/donut-base",
+                "vlm/donut-base",
+                Map.ofEntries(
+                        Map.entry("description", "Donut - Document Understanding Transformer (SDZ format)"),
+                        Map.entry("huggingface_repo", "naver-clova-ix/donut-base"),
+                        Map.entry("architecture", "encoder-decoder"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_file", "donut-base.sdz"),
+                        Map.entry("vocab_file", "vocab.txt"),
+                        Map.entry("tokenizer_config", "tokenizer_config.json"),
+                        Map.entry("output_formats", "JSON,TEXT"),
+                        Map.entry("max_image_size", 2560),
+                        Map.entry("hidden_size", 1024),
+                        Map.entry("max_new_tokens", 2048)
+                )
+        ));
+
+        // Nougat - Academic Document Parser
+        // Source: https://huggingface.co/facebook/nougat-base
+        vlmModels.put("nougat-base", new VlmModelDescriptor(
+                "nougat-base",
+                "Nougat Base",
+                "https://huggingface.co/facebook/nougat-base",
+                "vlm/nougat-base",
+                Map.ofEntries(
+                        Map.entry("description", "Nougat - Academic PDF to Markdown VLM (SDZ format)"),
+                        Map.entry("huggingface_repo", "facebook/nougat-base"),
+                        Map.entry("architecture", "encoder-decoder"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_file", "nougat-base.sdz"),
+                        Map.entry("vocab_file", "vocab.txt"),
+                        Map.entry("tokenizer_config", "tokenizer_config.json"),
+                        Map.entry("output_formats", "MARKDOWN,TEXT"),
+                        Map.entry("max_image_size", 896),
+                        Map.entry("hidden_size", 1024),
+                        Map.entry("max_new_tokens", 4096)
+                )
+        ));
+
+        VLM_MODEL_DESCRIPTORS = Collections.unmodifiableMap(vlmModels);
+    }
+
+    /**
+     * Get a VLM model descriptor by ID.
+     * @param modelId The VLM model identifier (e.g., "smoldocling-256m")
+     * @return VlmModelDescriptor for the VLM, or null if not found
+     */
+    public static VlmModelDescriptor getVlmModelDescriptor(String modelId) {
+        // Normalize model ID
+        String normalizedId = modelId.toLowerCase().replace("_", "-");
+        return VLM_MODEL_DESCRIPTORS.get(normalizedId);
+    }
+
+    /**
+     * Get all available VLM model IDs.
+     * @return Set of VLM model IDs
+     */
+    public static Set<String> getAvailableVlmModelIds() {
+        return VLM_MODEL_DESCRIPTORS.keySet();
+    }
+
+    /**
+     * Check if a VLM model is available.
+     * @param modelId The VLM model identifier
+     * @return true if the VLM model is available
+     */
+    public static boolean isVlmModelAvailable(String modelId) {
+        String normalizedId = modelId.toLowerCase().replace("_", "-");
+        return VLM_MODEL_DESCRIPTORS.containsKey(normalizedId);
+    }
+
+    /**
+     * Get the default VLM model ID.
+     * @return The recommended default VLM model
+     */
+    public static String getDefaultVlmModelId() {
+        return "smoldocling-256m";
+    }
+
+    /**
+     * Descriptor for Vision-Language Models.
+     * VLMs are imported/converted to SameDiff (.sdz) format.
+     * Use samediff-import-onnx to convert HuggingFace ONNX models to SDZ.
+     */
+    public static class VlmModelDescriptor {
+        private final String modelId;
+        private final String displayName;
+        private final String huggingFaceUrl;
+        private final String cacheSubpath;
+        private final Map<String, Object> metadata;
+
+        public VlmModelDescriptor(String modelId, String displayName, String huggingFaceUrl,
+                                  String cacheSubpath, Map<String, Object> metadata) {
+            this.modelId = modelId;
+            this.displayName = displayName;
+            this.huggingFaceUrl = huggingFaceUrl;
+            this.cacheSubpath = cacheSubpath;
+            this.metadata = metadata != null ? metadata : Collections.emptyMap();
+        }
+
+        public String getModelId() { return modelId; }
+        public String getDisplayName() { return displayName; }
+        public String getHuggingFaceUrl() { return huggingFaceUrl; }
+        public String getCacheSubpath() { return cacheSubpath; }
+        public Map<String, Object> getMetadata() { return metadata; }
+
+        public String getDescription() {
+            return (String) metadata.get("description");
+        }
+
+        public String getHuggingFaceRepo() {
+            return (String) metadata.get("huggingface_repo");
+        }
+
+        /**
+         * Gets the SDZ model file name.
+         */
+        public String getModelFile() {
+            return (String) metadata.getOrDefault("model_file", modelId + ".sdz");
+        }
+
+        /**
+         * Gets the vocabulary file name.
+         */
+        public String getVocabFile() {
+            return (String) metadata.getOrDefault("vocab_file", "vocab.txt");
+        }
+
+        /**
+         * Gets the tokenizer config file name.
+         */
+        public String getTokenizerConfigFile() {
+            return (String) metadata.getOrDefault("tokenizer_config", "tokenizer_config.json");
+        }
+
+        /**
+         * Gets the framework (should be "samediff" for SDZ models).
+         */
+        public String getFramework() {
+            return (String) metadata.getOrDefault("framework", "samediff");
+        }
+
+        public Integer getMaxNewTokens() {
+            Object val = metadata.get("max_new_tokens");
+            return val instanceof Integer ? (Integer) val : 4096;
+        }
+
+        public Integer getMaxImageSize() {
+            Object val = metadata.get("max_image_size");
+            return val instanceof Integer ? (Integer) val : 1024;
+        }
+
+        public Integer getHiddenSize() {
+            Object val = metadata.get("hidden_size");
+            return val instanceof Integer ? (Integer) val : null;
+        }
+
+        public String[] getOutputFormats() {
+            String formats = (String) metadata.get("output_formats");
+            return formats != null ? formats.split(",") : new String[]{"TEXT"};
+        }
+
+        @Override
+        public String toString() {
+            return "VlmModelDescriptor{" +
+                    "modelId='" + modelId + '\'' +
+                    ", displayName='" + displayName + '\'' +
+                    ", framework='" + getFramework() + '\'' +
+                    ", modelFile='" + getModelFile() + '\'' +
+                    '}';
+        }
     }
 }

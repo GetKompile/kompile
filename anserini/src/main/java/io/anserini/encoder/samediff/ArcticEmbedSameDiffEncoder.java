@@ -23,9 +23,11 @@ import org.jetbrains.annotations.NotNull;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.linalg.indexing.NDArrayIndex;
 import org.nd4j.linalg.ops.transforms.Transforms;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -39,6 +41,51 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
     public static final boolean DEFAULT_DO_LOWERCASE_AND_STRIP_ACCENTS = true;
     public static final int DEFAULT_MAX_SEQUENCE_LENGTH = 512;
     public static final boolean DEFAULT_ADD_SPECIAL_TOKENS = true;
+
+    // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
+    // Batch sizes are calculated dynamically based on sequence length.
+    // Shorter sequences allow larger batches (attention is O(n²) in sequence length).
+    // Sorting by sequence length groups similar-length items together to minimize padding waste.
+
+    private static final int BASE_OPTIMAL_BATCH_SIZE = 4;
+    private static final int BASE_MAX_BATCH_SIZE = 8;
+    private static final int REFERENCE_SEQ_LENGTH = 512;
+    private static final int ABSOLUTE_MIN_BATCH_SIZE = 1;
+    private static final int ABSOLUTE_MAX_BATCH_SIZE = 64;
+    private static final double MEMORY_SCALE_FACTOR;
+
+    static {
+        long maxHeapMB = Runtime.getRuntime().maxMemory() / (1024 * 1024);
+        if (maxHeapMB < 4096) {
+            MEMORY_SCALE_FACTOR = 0.5;
+        } else if (maxHeapMB < 8192) {
+            MEMORY_SCALE_FACTOR = 0.75;
+        } else if (maxHeapMB < 16384) {
+            MEMORY_SCALE_FACTOR = 1.0;
+        } else {
+            MEMORY_SCALE_FACTOR = 1.5;
+        }
+    }
+
+    private static int calculateOptimalBatchSize(int maxSeqLength) {
+        if (maxSeqLength <= 0) maxSeqLength = REFERENCE_SEQ_LENGTH;
+        double seqLengthRatio = (double) REFERENCE_SEQ_LENGTH / maxSeqLength;
+        double scaleFactor = seqLengthRatio * seqLengthRatio * MEMORY_SCALE_FACTOR;
+        int optimalBatch = (int) Math.round(BASE_OPTIMAL_BATCH_SIZE * scaleFactor);
+        return Math.max(ABSOLUTE_MIN_BATCH_SIZE, Math.min(optimalBatch, ABSOLUTE_MAX_BATCH_SIZE));
+    }
+
+    /**
+     * Helper record to track original index during sorting.
+     */
+    private record IndexedEncoding(
+            int originalIndex,
+            String text,
+            SamediffBertTokenizerPreProcessor.BertEncoding encoding,
+            int seqLength
+    ) {}
+
+    private volatile boolean batchInferenceSupported = true;
 
     /**
      * Override to provide the instruction prefix for pipelined bulk encoding.
@@ -442,6 +489,397 @@ public class ArcticEmbedSameDiffEncoder extends SameDiffEncoder<float[]> {
             LOG.error("[{}] Unexpected error during toFloatVector: {}",
                     this.modelIdentifier, e.getMessage(), e);
             return null;
+        }
+    }
+
+    // ========== BATCH ENCODING WITH SORTING OPTIMIZATION ==========
+
+    /**
+     * TRUE BATCH ENCODING - Process multiple texts with dynamic sizing and sorting.
+     *
+     * <p>Algorithm:
+     * <ol>
+     *   <li>Tokenize all texts upfront (with instruction prefix)</li>
+     *   <li>Sort by sequence length to minimize padding waste</li>
+     *   <li>Calculate optimal batch size for each sub-batch</li>
+     *   <li>Process sub-batches and reorder results</li>
+     * </ol>
+     *
+     * @param texts List of texts to encode in a single batch
+     * @return List of embeddings, one per input text. Null entries for failed encodings.
+     */
+    @Override
+    public List<float[]> encodeBatch(@NotNull List<String> texts) {
+        if (texts.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        if (!shouldProceedWithEncoding()) {
+            LOG.debug("[{}] encodeBatch rejected - shutdown in progress", modelIdentifier);
+            return null;
+        }
+
+        getEncoderLock().lock();
+        try {
+            if (!batchInferenceSupported) {
+                return encodeSequential(texts);
+            }
+
+            return encodeBatchWithDynamicSizing(texts);
+        } finally {
+            getEncoderLock().unlock();
+        }
+    }
+
+    private List<float[]> encodeSequential(List<String> texts) {
+        List<float[]> results = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
+            results.add(encode(texts.get(i)));
+        }
+        return results;
+    }
+
+    private List<float[]> encodeBatchWithDynamicSizing(List<String> texts) {
+        long totalStartTime = System.currentTimeMillis();
+        int numTexts = texts.size();
+
+        // Step 1: Tokenize all texts (with instruction prefix) and track sequence lengths
+        List<IndexedEncoding> indexedEncodings = new ArrayList<>(numTexts);
+        int maxSeqLength = 0;
+        int totalTokens = 0;
+        int minSeqLength = Integer.MAX_VALUE;
+
+        long tokenizeStart = System.currentTimeMillis();
+        for (int i = 0; i < numTexts; i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
+
+            String text = texts.get(i);
+            // Apply instruction prefix (same as encode() does)
+            SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(INSTRUCTION + text);
+            int seqLen = enc.inputIds.length;
+            indexedEncodings.add(new IndexedEncoding(i, text, enc, seqLen));
+
+            totalTokens += seqLen;
+            if (seqLen > maxSeqLength) maxSeqLength = seqLen;
+            if (seqLen < minSeqLength) minSeqLength = seqLen;
+        }
+        long tokenizeTime = System.currentTimeMillis() - tokenizeStart;
+
+        // Step 2: Sort by sequence length to minimize padding waste
+        indexedEncodings.sort((a, b) -> Integer.compare(a.seqLength, b.seqLength));
+
+        int unsortedPaddingCost = numTexts * maxSeqLength;
+        int sortedPaddingCost = 0;
+
+        // Step 3: Calculate optimal batch size based on average sequence length
+        double avgSeqLength = numTexts > 0 ? (double) totalTokens / numTexts : 0;
+        int avgBasedOptimal = calculateOptimalBatchSize((int) avgSeqLength);
+
+        // Step 4: Check if single batch is sufficient
+        if (numTexts <= avgBasedOptimal) {
+            int actualMaxSeq = indexedEncodings.get(numTexts - 1).seqLength;
+
+            List<String> sortedTexts = new ArrayList<>(numTexts);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> sortedEncodings = new ArrayList<>(numTexts);
+            for (IndexedEncoding ie : indexedEncodings) {
+                sortedTexts.add(ie.text);
+                sortedEncodings.add(ie.encoding);
+            }
+
+            List<float[]> sortedResults = encodeSingleInferenceBatchFromEncodings(sortedTexts, sortedEncodings, actualMaxSeq);
+
+            if (sortedResults == null && batchInferenceSupported) {
+                LOG.warn("[{}] Batch inference failed - falling back to sequential", modelIdentifier);
+                batchInferenceSupported = false;
+                sortedResults = encodeSequentialFromEncodings(sortedTexts, sortedEncodings);
+            }
+
+            if (sortedResults == null) return null;
+
+            // Reorder results back to original order
+            float[][] reorderedResults = new float[numTexts][];
+            for (int i = 0; i < numTexts; i++) {
+                reorderedResults[indexedEncodings.get(i).originalIndex] = sortedResults.get(i);
+            }
+
+            long totalTime = System.currentTimeMillis() - totalStartTime;
+            LOG.debug("[{}] Single batch: {} texts in {}ms ({} ms/text)",
+                    modelIdentifier, numTexts, totalTime, String.format("%.2f", (double)totalTime / numTexts));
+
+            return Arrays.asList(reorderedResults);
+        }
+
+        // Step 5: Adaptive sub-batch processing with length-aware grouping
+        float[][] reorderedResults = new float[numTexts][];
+        long embeddingStartTime = System.currentTimeMillis();
+        int processedCount = 0;
+        int subBatchNum = 0;
+
+        while (processedCount < numTexts) {
+            if (Thread.currentThread().isInterrupted()) return null;
+
+            int remaining = numTexts - processedCount;
+            int sampleEnd = Math.min(processedCount + 32, numTexts);
+            int sampleMaxSeq = indexedEncodings.get(sampleEnd - 1).seqLength;
+            int optimalForSample = calculateOptimalBatchSize(sampleMaxSeq);
+
+            int subBatchSize = Math.min(optimalForSample, remaining);
+            int subBatchMaxSeq = indexedEncodings.get(processedCount + subBatchSize - 1).seqLength;
+            int refinedOptimal = calculateOptimalBatchSize(subBatchMaxSeq);
+
+            while (subBatchSize < remaining && subBatchSize < refinedOptimal) {
+                int nextIdx = processedCount + subBatchSize;
+                int nextSeqLen = indexedEncodings.get(nextIdx).seqLength;
+                int newOptimal = calculateOptimalBatchSize(nextSeqLen);
+                if (subBatchSize + 1 <= newOptimal) {
+                    subBatchSize++;
+                    subBatchMaxSeq = nextSeqLen;
+                    refinedOptimal = newOptimal;
+                } else {
+                    break;
+                }
+            }
+
+            sortedPaddingCost += subBatchSize * subBatchMaxSeq;
+            subBatchNum++;
+
+            List<String> subTexts = new ArrayList<>(subBatchSize);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = new ArrayList<>(subBatchSize);
+            List<Integer> subOriginalIndices = new ArrayList<>(subBatchSize);
+
+            for (int i = 0; i < subBatchSize; i++) {
+                IndexedEncoding ie = indexedEncodings.get(processedCount + i);
+                subTexts.add(ie.text);
+                subEncodings.add(ie.encoding);
+                subOriginalIndices.add(ie.originalIndex);
+            }
+
+            List<float[]> subResults = encodeSingleInferenceBatchFromEncodings(subTexts, subEncodings, subBatchMaxSeq);
+
+            if (subResults == null) {
+                if (Thread.currentThread().isInterrupted()) return null;
+
+                if (SameDiffEncoder.isFailFastOnError()) {
+                    throw new SameDiffEncoder.EncodingException(modelIdentifier, "sub-batch encoding",
+                            "Sub-batch " + subBatchNum + " failed", null);
+                }
+
+                subResults = encodeSequentialFromEncodings(subTexts, subEncodings);
+                if (subResults == null) return null;
+            }
+
+            for (int i = 0; i < subBatchSize; i++) {
+                reorderedResults[subOriginalIndices.get(i)] = subResults.get(i);
+            }
+
+            processedCount += subBatchSize;
+        }
+
+        long totalTime = System.currentTimeMillis() - totalStartTime;
+        long embeddingTime = System.currentTimeMillis() - embeddingStartTime;
+        double paddingSavings = unsortedPaddingCost > 0
+                ? (1.0 - (double) sortedPaddingCost / unsortedPaddingCost) * 100.0 : 0.0;
+
+        LOG.info("[{}] {} sub-batches: {} texts in {}ms (tokenize={}ms, embed={}ms, padding saved: {}%)",
+                modelIdentifier, subBatchNum, numTexts, totalTime, tokenizeTime, embeddingTime, String.format("%.1f", paddingSavings));
+
+        return Arrays.asList(reorderedResults);
+    }
+
+    private List<float[]> encodeSequentialFromEncodings(List<String> texts,
+                                                         List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings) {
+        List<float[]> results = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
+            results.add(encodeFromTokenized(texts.get(i), encodings.get(i)));
+        }
+        return results;
+    }
+
+    private List<float[]> encodeSingleInferenceBatchFromEncodings(
+            List<String> texts,
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings,
+            int maxSeqLength) {
+
+        if (encodings.isEmpty()) return new ArrayList<>();
+
+        int batchSize = encodings.size();
+
+        long[][] batchInputIds = new long[batchSize][maxSeqLength];
+        long[][] batchAttentionMask = new long[batchSize][maxSeqLength];
+        long[][] batchTokenTypeIds = new long[batchSize][maxSeqLength];
+
+        for (int i = 0; i < batchSize; i++) {
+            SamediffBertTokenizerPreProcessor.BertEncoding enc = encodings.get(i);
+            int seqLen = enc.inputIds.length;
+            System.arraycopy(enc.inputIds, 0, batchInputIds[i], 0, seqLen);
+            System.arraycopy(enc.attentionMask, 0, batchAttentionMask[i], 0, seqLen);
+            if (enc.tokenTypeIds != null) {
+                System.arraycopy(enc.tokenTypeIds, 0, batchTokenTypeIds[i], 0, seqLen);
+            }
+        }
+
+        Map<String, INDArray> placeholderMap = new HashMap<>();
+        Map<String, INDArray> outputMap = null;
+        List<float[]> results = new ArrayList<>(batchSize);
+
+        try {
+            for (String inputName : this.inputTensorNamesForModel) {
+                if (isInputIdsInput(inputName)) {
+                    placeholderMap.put(inputName, Nd4j.createFromArray(batchInputIds));
+                } else if (isAttentionMaskInput(inputName)) {
+                    placeholderMap.put(inputName, Nd4j.createFromArray(batchAttentionMask));
+                } else if (isTokenTypeIdsInput(inputName)) {
+                    placeholderMap.put(inputName, Nd4j.createFromArray(batchTokenTypeIds));
+                }
+            }
+
+            if (Thread.currentThread().isInterrupted()) return null;
+
+            String outputTensorName = this.outputTensorNamesFromModel.get(0);
+            outputMap = this.sameDiffModel.output(placeholderMap, outputTensorName);
+
+            if (Thread.currentThread().isInterrupted()) return null;
+
+            INDArray batchOutput = outputMap.get(outputTensorName);
+            if (batchOutput == null) {
+                LOG.error("[{}] Output tensor not found", modelIdentifier);
+                return null;
+            }
+
+            for (int i = 0; i < batchSize; i++) {
+                try {
+                    results.add(extractSingleEmbedding(batchOutput, i, placeholderMap));
+                } catch (Exception e) {
+                    LOG.warn("[{}] Failed to extract embedding {}: {}", modelIdentifier, i, e.getMessage());
+                    results.add(null);
+                }
+            }
+
+            return results;
+
+        } catch (Exception e) {
+            if (Thread.currentThread().isInterrupted()) return null;
+            LOG.error("[{}] Error in batch from encodings: {}", modelIdentifier, e.getMessage(), e);
+            if (SameDiffEncoder.isFailFastOnError()) {
+                throw new SameDiffEncoder.EncodingException(modelIdentifier, "batch from encodings", e.getMessage(), e);
+            }
+            return null;
+        } finally {
+            for (INDArray arr : placeholderMap.values()) {
+                if (arr != null) try { arr.close(); } catch (Exception ignored) {}
+            }
+            if (outputMap != null) {
+                for (INDArray arr : outputMap.values()) {
+                    if (arr != null) try { arr.close(); } catch (Exception ignored) {}
+                }
+            }
+        }
+    }
+
+    private float[] extractSingleEmbedding(INDArray batchOutput, int batchIndex, Map<String, INDArray> inputs) {
+        INDArray singleOutput = null;
+        long[] shape = batchOutput.shape();
+
+        try {
+            if (shape.length == 3) {
+                // [batch, seq_len, hidden] - need mean pooling
+                singleOutput = batchOutput.get(
+                        NDArrayIndex.point(batchIndex),
+                        NDArrayIndex.all(),
+                        NDArrayIndex.all());
+
+                // Get attention mask for this sample to do mean pooling
+                INDArray attentionMask = findAttentionMaskForBatch(inputs, batchIndex, singleOutput.shape()[0]);
+                if (attentionMask != null) {
+                    return meanPoolWithMaskBatch(singleOutput, attentionMask);
+                } else {
+                    return meanPoolWithoutMaskBatch(singleOutput);
+                }
+            } else if (shape.length == 2) {
+                // [batch, hidden] - already pooled
+                singleOutput = batchOutput.getRow(batchIndex);
+                return normalizeAndReturnBatch(singleOutput.reshape(1, -1));
+            } else if (shape.length == 1) {
+                return normalizeAndReturnBatch(batchOutput.reshape(1, -1));
+            } else {
+                LOG.warn("[{}] Unexpected batch output shape: {}", modelIdentifier, Arrays.toString(shape));
+                return null;
+            }
+        } finally {
+            if (singleOutput != null && singleOutput != batchOutput) {
+                closeArraySafely(singleOutput);
+            }
+        }
+    }
+
+    private INDArray findAttentionMaskForBatch(Map<String, INDArray> inputs, int batchIndex, long seqLen) {
+        for (Map.Entry<String, INDArray> entry : inputs.entrySet()) {
+            if (isAttentionMaskInput(entry.getKey())) {
+                INDArray fullMask = entry.getValue();
+                return fullMask.getRow(batchIndex);
+            }
+        }
+        return null;
+    }
+
+    private float[] meanPoolWithMaskBatch(INDArray hiddenStates, INDArray attentionMask) {
+        INDArray expandedMask = null;
+        INDArray maskedStates = null;
+        INDArray sumStates = null;
+        INDArray sumMask = null;
+        INDArray pooled = null;
+
+        try {
+            long seqLen = hiddenStates.shape()[0];
+            long hiddenDim = hiddenStates.shape()[1];
+
+            expandedMask = attentionMask.reshape(seqLen, 1).castTo(hiddenStates.dataType());
+            maskedStates = hiddenStates.mul(expandedMask);
+            sumStates = maskedStates.sum(0);
+            sumMask = expandedMask.sum();
+            double maskSum = Math.max(sumMask.getDouble(0), 1e-9);
+            pooled = sumStates.div(maskSum).reshape(1, -1);
+            return normalizeAndReturnBatch(pooled);
+        } finally {
+            closeArraySafely(expandedMask);
+            closeArraySafely(maskedStates);
+            closeArraySafely(sumStates);
+            closeArraySafely(sumMask);
+            closeArraySafely(pooled);
+        }
+    }
+
+    private float[] meanPoolWithoutMaskBatch(INDArray hiddenStates) {
+        INDArray pooled = null;
+        try {
+            pooled = hiddenStates.mean(0).reshape(1, -1);
+            return normalizeAndReturnBatch(pooled);
+        } finally {
+            closeArraySafely(pooled);
+        }
+    }
+
+    private float[] normalizeAndReturnBatch(INDArray embedding) {
+        if (embedding == null || embedding.isEmpty()) return null;
+
+        INDArray squared = null;
+        INDArray sumOfSquares = null;
+        INDArray normalized = null;
+
+        try {
+            squared = embedding.mul(embedding);
+            sumOfSquares = squared.sum(true, 1);
+            double sumVal = sumOfSquares.getDouble(0);
+            if (Double.isNaN(sumVal) || sumVal < 0) sumVal = 0.0;
+            double normVal = Math.sqrt(Math.max(sumVal, 1e-12));
+            normalized = embedding.div(normVal);
+            return safeToFloatVector(normalized);
+        } finally {
+            closeArraySafely(squared);
+            closeArraySafely(sumOfSquares);
+            closeArraySafely(normalized);
         }
     }
 }

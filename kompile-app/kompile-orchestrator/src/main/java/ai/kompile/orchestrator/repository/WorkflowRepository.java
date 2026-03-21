@@ -42,6 +42,6 @@ public interface WorkflowRepository extends JpaRepository<Workflow, Long> {
 
     List<Workflow> findByOrchestratorInstanceIdAndStatusIn(String orchestratorInstanceId, List<WorkflowStatus> statuses);
 
-    @Query("SELECT w FROM Workflow w WHERE w.orchestratorInstanceId = :orchestratorInstanceId ORDER BY w.createdAt DESC")
-    List<Workflow> findTopByOrchestratorInstanceIdOrderByCreatedAtDesc(String orchestratorInstanceId, Pageable pageable);
+    @Query("SELECT w FROM Workflow w WHERE w.orchestratorInstanceId = :orchestratorInstanceId ORDER BY w.startTime DESC")
+    List<Workflow> findTopByOrchestratorInstanceIdOrderByStartTimeDesc(String orchestratorInstanceId, Pageable pageable);
 }

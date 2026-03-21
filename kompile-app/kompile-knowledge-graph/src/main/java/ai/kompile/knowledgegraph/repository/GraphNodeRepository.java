@@ -203,4 +203,35 @@ public interface GraphNodeRepository extends JpaRepository<GraphNode, Long> {
     @Modifying
     @Query("DELETE FROM GraphNode n WHERE n.factSheetId = :factSheetId")
     int deleteByFactSheetId(@Param("factSheetId") Long factSheetId);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KG EMBEDDING QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find nodes with KG embeddings in a fact sheet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.kgEmbedding IS NOT NULL")
+    List<GraphNode> findByFactSheetIdAndKgEmbeddingNotNull(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find nodes with KG embeddings by version
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.kgEmbeddingVersion = :version")
+    List<GraphNode> findByFactSheetIdAndKgEmbeddingVersion(
+        @Param("factSheetId") Long factSheetId,
+        @Param("version") Long version
+    );
+
+    /**
+     * Count nodes with KG embeddings in a fact sheet
+     */
+    @Query("SELECT COUNT(n) FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.kgEmbedding IS NOT NULL")
+    long countByFactSheetIdAndKgEmbeddingNotNull(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find entity nodes that don't have KG embeddings yet
+     */
+    @Query("SELECT n FROM GraphNode n WHERE n.factSheetId = :factSheetId AND n.nodeType = 'ENTITY' AND n.kgEmbedding IS NULL")
+    List<GraphNode> findEntitiesWithoutKgEmbedding(@Param("factSheetId") Long factSheetId);
 }

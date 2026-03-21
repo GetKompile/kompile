@@ -16,7 +16,7 @@
 
 package ai.kompile.staging.download;
 
-import ai.kompile.staging.registry.ModelType;
+import ai.kompile.modelmanager.registry.ModelType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

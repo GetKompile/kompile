@@ -87,16 +87,35 @@ public interface TextChunker {
     List<String> getSupportedLanguages();
 
     /**
+     * Option key for enabling garbage collection.
+     * When true, garbage content (numbers, short fragments, non-sentences) is collected
+     * into a separate chunk at the end.
+     */
+    String OPTION_COLLECT_GARBAGE = "collectGarbage";
+
+    /**
+     * Option key for including the garbage chunk in results.
+     * Only applies when collectGarbage is true.
+     */
+    String OPTION_INCLUDE_GARBAGE_CHUNK = "includeGarbageChunk";
+
+    /**
      * Returns the default options for this chunker.
      * These options will be used when no options are provided to the chunk method.
-     * 
+     *
      * @return A map of default options. Never null.
      */
     default Map<String, Object> getDefaultOptions() {
+        // IMPORTANT: collectGarbage defaults to false because the SentenceFilter
+        // marks any chunk not ending with . ! ? as "garbage", which is too aggressive
+        // for most content (PDFs, technical docs, code, etc.) and causes all chunks
+        // to be filtered into a single garbage chunk.
         return Map.of(
             "chunkSize", 1000,
             "overlap", 200,
-            "preserveParagraphs", true
+            "preserveParagraphs", true,
+            OPTION_COLLECT_GARBAGE, false,
+            OPTION_INCLUDE_GARBAGE_CHUNK, true
         );
     }
 

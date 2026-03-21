@@ -16,13 +16,14 @@
 
 import { Injectable, OnDestroy } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, BehaviorSubject, Subject, interval, Subscription } from 'rxjs';
-import { catchError, tap, switchMap, filter, takeUntil } from 'rxjs/operators';
+import { Observable, BehaviorSubject, Subject, interval, Subscription, of } from 'rxjs';
+import { catchError, tap, switchMap, filter, takeUntil, map } from 'rxjs/operators';
 import { BaseService, backendUrl } from './base.service';
 import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import {
   IngestEvent,
+  IngestEventType,
   TaskEventsResponse,
   RecentEventsResponse,
   ErrorEventsResponse,
@@ -33,6 +34,49 @@ import {
   DeleteTaskEventsResponse,
   TaskEnvironmentResponse
 } from '../models/api-models';
+
+/**
+ * Restart info for tracking active restarts.
+ */
+export interface RestartInfo {
+  taskId: string;
+  attemptNumber: number;
+  maxAttempts: number;
+  scheduledTime?: Date;
+  heapSize?: string;
+  heapIncreased?: boolean;
+  ompThreads?: number;
+  blasThreads?: number;
+  batchSize?: number;
+  memoryAnalysisReason?: string;
+  systemRamTotal?: string;
+  systemRamFree?: string;
+}
+
+/**
+ * Restart status response from backend.
+ */
+export interface RestartStatus {
+  taskId: string;
+  restartEnabled: boolean;
+  currentAttempt: number;
+  maxAttempts: number;
+  restartScheduled: boolean;
+  nextRestartTime?: string;
+  lastFailureReason?: string;
+}
+
+/**
+ * Restart configuration response.
+ */
+export interface RestartConfig {
+  enabled: boolean;
+  maxAttempts: number;
+  initialBackoffMs: number;
+  backoffMultiplier: number;
+  heapIncreaseFactor: number;
+  systemRamSafetyMargin: number;
+}
 
 /**
  * Service for managing and retrieving ingest event logs.
@@ -65,12 +109,16 @@ export class IngestEventService extends BaseService implements OnDestroy {
   private pollingInterval = 5000; // 5 seconds default
   private isPolling = false;
 
+  // Restart tracking
+  private activeRestartsSubject = new BehaviorSubject<Map<string, RestartInfo>>(new Map());
+
   // Observable streams
   public events$ = this.eventsSubject.asObservable();
   public summary$ = this.summarySubject.asObservable();
   public status$ = this.statusSubject.asObservable();
   public newEvent$ = this.newEventSubject.asObservable();
   public wsConnected$ = this.wsConnected.asObservable();
+  public activeRestarts$ = this.activeRestartsSubject.asObservable();
 
   constructor(private http: HttpClient) {
     super();
@@ -364,6 +412,9 @@ export class IngestEventService extends BaseService implements OnDestroy {
     // Emit new event
     this.newEventSubject.next(event);
 
+    // Track restart events
+    this.updateRestartTracking(event);
+
     // Add to events list
     const currentEvents = this.eventsSubject.getValue();
     // Check if event already exists
@@ -373,6 +424,81 @@ export class IngestEventService extends BaseService implements OnDestroy {
       // Limit to avoid memory issues (keep last MAX_IN_MEMORY_EVENTS events)
       this.eventsSubject.next(updatedEvents.slice(0, IngestEventService.MAX_IN_MEMORY_EVENTS));
     }
+  }
+
+  /**
+   * Update restart tracking based on incoming events.
+   */
+  private updateRestartTracking(event: IngestEvent): void {
+    const restartEventTypes: IngestEventType[] = [
+      'RESTART_SCHEDULED', 'RESTART_ATTEMPTED', 'RESTART_SUCCEEDED',
+      'RESTART_FAILED', 'MEMORY_ANALYSIS', 'HEAP_ADJUSTED',
+      'THREADS_REDUCED', 'MANUAL_RESTART'
+    ];
+
+    if (!restartEventTypes.includes(event.eventType)) {
+      return;
+    }
+
+    const activeRestarts = new Map(this.activeRestartsSubject.getValue());
+
+    switch (event.eventType) {
+      case 'RESTART_SCHEDULED':
+      case 'RESTART_ATTEMPTED':
+      case 'MANUAL_RESTART':
+        // Add or update restart info
+        activeRestarts.set(event.taskId, {
+          taskId: event.taskId,
+          attemptNumber: event.restartAttempt || 1,
+          maxAttempts: event.maxRestartAttempts || 3,
+          scheduledTime: event.nextRestartTime ? new Date(event.nextRestartTime) : undefined,
+          heapSize: event.heapSize,
+          heapIncreased: event.heapIncreased,
+          ompThreads: event.ompThreads,
+          blasThreads: event.blasThreads,
+          batchSize: event.batchSize,
+          memoryAnalysisReason: event.memoryAnalysisReason,
+          systemRamTotal: event.systemRamTotal ? this.formatBytes(event.systemRamTotal) : undefined,
+          systemRamFree: event.systemRamFree ? this.formatBytes(event.systemRamFree) : undefined
+        });
+        break;
+
+      case 'RESTART_SUCCEEDED':
+      case 'RESTART_FAILED':
+        // Remove from active restarts
+        activeRestarts.delete(event.taskId);
+        break;
+
+      case 'MEMORY_ANALYSIS':
+      case 'HEAP_ADJUSTED':
+      case 'THREADS_REDUCED':
+        // Update existing restart info with memory details
+        const existing = activeRestarts.get(event.taskId);
+        if (existing) {
+          activeRestarts.set(event.taskId, {
+            ...existing,
+            heapSize: event.heapSize || existing.heapSize,
+            heapIncreased: event.heapIncreased ?? existing.heapIncreased,
+            ompThreads: event.ompThreads || existing.ompThreads,
+            blasThreads: event.blasThreads || existing.blasThreads,
+            memoryAnalysisReason: event.memoryAnalysisReason || existing.memoryAnalysisReason
+          });
+        }
+        break;
+    }
+
+    this.activeRestartsSubject.next(activeRestarts);
+  }
+
+  /**
+   * Format bytes to human-readable string.
+   */
+  private formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
   private getWebSocketUrl(): string {
@@ -473,6 +599,119 @@ export class IngestEventService extends BaseService implements OnDestroy {
    */
   refreshSummary(hours: number = 24): void {
     this.getSummary(hours).subscribe();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // RESTART CONTROL METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Trigger a manual restart for a task.
+   */
+  manualRestart(taskId: string): Observable<any> {
+    return this.http.post(`${this.backendUrl}/vector-population/subprocess/${encodeURIComponent(taskId)}/restart`, {}).pipe(
+      tap(() => {
+        console.log(`Manual restart initiated for task ${taskId}`);
+      }),
+      catchError(error => {
+        console.error(`Failed to restart task ${taskId}:`, error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Get restart status for a task.
+   */
+  getRestartStatus(taskId: string): Observable<RestartStatus> {
+    return this.http.get<RestartStatus>(`${this.backendUrl}/vector-population/subprocess/${encodeURIComponent(taskId)}/restart-status`).pipe(
+      catchError(error => {
+        console.error(`Failed to get restart status for task ${taskId}:`, error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Disable auto-restart for a task.
+   */
+  disableAutoRestart(taskId: string): Observable<any> {
+    return this.http.post(`${this.backendUrl}/vector-population/subprocess/${encodeURIComponent(taskId)}/disable-restart`, {}).pipe(
+      tap(() => {
+        console.log(`Auto-restart disabled for task ${taskId}`);
+      }),
+      catchError(error => {
+        console.error(`Failed to disable auto-restart for task ${taskId}:`, error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Get global restart configuration.
+   */
+  getRestartConfig(): Observable<RestartConfig> {
+    return this.http.get<RestartConfig>(`${this.backendUrl}/vector-population/restart-config`).pipe(
+      catchError(error => {
+        console.error('Failed to get restart configuration:', error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Enable or disable global restart functionality.
+   */
+  setRestartEnabled(enabled: boolean): Observable<any> {
+    return this.http.post(`${this.backendUrl}/vector-population/restart-config/enabled?enabled=${enabled}`, {}).pipe(
+      tap(() => {
+        console.log(`Restart ${enabled ? 'enabled' : 'disabled'}`);
+      }),
+      catchError(error => {
+        console.error('Failed to set restart enabled:', error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Set maximum restart attempts.
+   */
+  setMaxRestartAttempts(maxAttempts: number): Observable<any> {
+    return this.http.post(`${this.backendUrl}/vector-population/restart-config/max-attempts?maxAttempts=${maxAttempts}`, {}).pipe(
+      tap(() => {
+        console.log(`Max restart attempts set to ${maxAttempts}`);
+      }),
+      catchError(error => {
+        console.error('Failed to set max restart attempts:', error);
+        throw error;
+      })
+    );
+  }
+
+  /**
+   * Get active restarts map.
+   */
+  getActiveRestarts(): Map<string, RestartInfo> {
+    return this.activeRestartsSubject.getValue();
+  }
+
+  /**
+   * Check if a restart event type.
+   */
+  isRestartEvent(eventType: IngestEventType): boolean {
+    return [
+      'RESTART_SCHEDULED', 'RESTART_ATTEMPTED', 'RESTART_SUCCEEDED',
+      'RESTART_FAILED', 'MEMORY_ANALYSIS', 'HEAP_ADJUSTED',
+      'THREADS_REDUCED', 'MANUAL_RESTART'
+    ].includes(eventType);
+  }
+
+  /**
+   * Check if a memory-related event type.
+   */
+  isMemoryEvent(eventType: IngestEventType): boolean {
+    return ['MEMORY_ANALYSIS', 'HEAP_ADJUSTED', 'THREADS_REDUCED'].includes(eventType);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

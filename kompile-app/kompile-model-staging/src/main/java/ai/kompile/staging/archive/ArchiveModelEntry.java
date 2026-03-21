@@ -16,11 +16,11 @@
 
 package ai.kompile.staging.archive;
 
-import ai.kompile.staging.registry.ModelEntry;
-import ai.kompile.staging.registry.ModelMetadata;
-import ai.kompile.staging.registry.ModelStatus;
-import ai.kompile.staging.registry.ModelType;
-import ai.kompile.staging.registry.TokenizerConfig;
+import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.modelmanager.registry.ModelMetadata;
+import ai.kompile.modelmanager.registry.ModelStatus;
+import ai.kompile.modelmanager.registry.ModelType;
+import ai.kompile.modelmanager.registry.TokenizerConfig;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;

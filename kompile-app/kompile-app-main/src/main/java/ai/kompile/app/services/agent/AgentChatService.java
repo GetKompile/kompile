@@ -25,6 +25,10 @@ import ai.kompile.core.agent.ProcessState;
 import ai.kompile.core.agent.ProcessStatus;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.core.graphrag.GraphRagService;
+import ai.kompile.core.graphrag.query.GraphRagQuery;
+import ai.kompile.core.graphrag.query.GraphRagResult;
+import ai.kompile.core.graphrag.query.SearchType;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -67,10 +71,12 @@ public class AgentChatService {
     private final ClaudeStreamParser streamParser;
     private final DocumentRetriever keywordRetriever;
     private final VectorStore vectorStore;
+    private final GraphRagService graphRagService;
     private final ExecutorService executorService;
     private final BuiltInToolDiscoveryService toolDiscoveryService;
     private final ServerPortService serverPortService;
     private final FolderService folderService;
+    private final ApiAgentChatExecutor apiAgentChatExecutor;
 
     // Track running processes by processId for interrupt support
     private final Map<String, Process> runningProcesses = new ConcurrentHashMap<>();
@@ -95,6 +101,15 @@ public class AgentChatService {
             %s
             """;
 
+    // GraphRAG context template
+    private static final String GRAPH_RAG_CONTEXT_TEMPLATE = """
+            ## Knowledge Graph Context
+            The following information was retrieved from the knowledge graph to help answer the question.
+            This includes entities and their relationships.
+
+            %s
+            """;
+
     @Autowired
     public AgentChatService(
             AgentRegistryService agentRegistry,
@@ -102,9 +117,11 @@ public class AgentChatService {
             ClaudeStreamParser streamParser,
             List<DocumentRetriever> keywordRetrievers,
             List<VectorStore> vectorStores,
+            @Autowired(required = false) List<GraphRagService> graphRagServices,
             @Autowired(required = false) BuiltInToolDiscoveryService toolDiscoveryService,
             ServerPortService serverPortService,
-            @Autowired(required = false) FolderService folderService) {
+            @Autowired(required = false) FolderService folderService,
+            @Autowired(required = false) ApiAgentChatExecutor apiAgentChatExecutor) {
 
         this.agentRegistry = agentRegistry;
         this.diagnosticService = diagnosticService;
@@ -113,6 +130,7 @@ public class AgentChatService {
         this.toolDiscoveryService = toolDiscoveryService;
         this.serverPortService = serverPortService;
         this.folderService = folderService;
+        this.apiAgentChatExecutor = apiAgentChatExecutor;
 
         // Select non-NoOp implementations
         this.keywordRetriever = keywordRetrievers.stream()
@@ -125,9 +143,15 @@ public class AgentChatService {
                 .findFirst()
                 .orElse(vectorStores.isEmpty() ? new NoOpVectorStoreImpl() : vectorStores.get(0));
 
-        log.info("AgentChatService initialized with KeywordRetriever: {}, VectorStore: {}, MCP Tools: {}",
+        // Select first available GraphRagService
+        this.graphRagService = graphRagServices != null && !graphRagServices.isEmpty()
+                ? graphRagServices.get(0)
+                : null;
+
+        log.info("AgentChatService initialized with KeywordRetriever: {}, VectorStore: {}, GraphRAG: {}, MCP Tools: {}",
                 this.keywordRetriever.getClass().getSimpleName(),
                 this.vectorStore.getClass().getSimpleName(),
+                this.graphRagService != null ? this.graphRagService.getClass().getSimpleName() : "unavailable",
                 toolDiscoveryService != null ? "available" : "unavailable");
     }
 
@@ -154,7 +178,18 @@ public class AgentChatService {
                     return;
                 }
 
-                // Build command first so we can pass it to diagnostics
+                // Branch on agent type: API agents use HTTP, CLI agents use subprocess
+                if (agent.isApiAgent()) {
+                    if (apiAgentChatExecutor == null) {
+                        sendError(emitter, "API agent executor not available");
+                        return;
+                    }
+                    String augmentedPrompt = buildPromptWithSources(request, retrievedSources);
+                    apiAgentChatExecutor.executeApiChat(agent, request, augmentedPrompt, retrievedSources, emitter);
+                    return;
+                }
+
+                // CLI agent path: build command and execute subprocess
                 List<String> command = buildCommand(agent, request, buildPromptWithSources(request, retrievedSources));
 
                 // Create process status for tracking
@@ -196,7 +231,8 @@ public class AgentChatService {
                 sendEvent(emitter, "start", Map.of(
                         "processId", processId,
                         "agent", agent.getName(),
-                        "ragEnabled", request.isEnableRag()));
+                        "ragEnabled", request.isEnableRag(),
+                        "graphRagEnabled", request.isEnableGraphRag()));
 
                 // Stream output
                 try (BufferedReader reader = new BufferedReader(
@@ -229,12 +265,18 @@ public class AgentChatService {
                                     sendEvent(emitter, "chunk", result.textContent());
                                 }
                                 if (result.isResult()) {
-                                    // Send completion stats
-                                    sendEvent(emitter, "stats", Map.of(
-                                            "durationMs", result.durationMs() != null ? result.durationMs() : 0,
-                                            "costUsd", result.costUsd() != null ? result.costUsd() : 0.0,
-                                            "numTurns", result.numTurns() != null ? result.numTurns() : 0,
-                                            "isError", result.isError()));
+                                    // Build stats map with token metrics if available
+                                    Map<String, Object> stats = new HashMap<>();
+                                    stats.put("durationMs", result.durationMs() != null ? result.durationMs() : 0);
+                                    stats.put("costUsd", result.costUsd() != null ? result.costUsd() : 0.0);
+                                    stats.put("numTurns", result.numTurns() != null ? result.numTurns() : 0);
+                                    stats.put("isError", result.isError());
+                                    // Include token throughput metrics from streaming
+                                    Map<String, Object> tokenMetrics = streamParser.getTokenMetrics(processId);
+                                    if (tokenMetrics != null) {
+                                        stats.put("tokenMetrics", tokenMetrics);
+                                    }
+                                    sendEvent(emitter, "stats", stats);
                                 }
                             }
                         } else {
@@ -302,7 +344,8 @@ public class AgentChatService {
     }
 
     /**
-     * Build the final prompt, optionally augmented with folder context and RAG context.
+     * Build the final prompt, optionally augmented with folder context, RAG
+     * context, and GraphRAG context.
      * MCP tools are now injected automatically via the agent's native MCP server
      * support.
      * Also populates the retrievedSources list for client-side display.
@@ -321,39 +364,117 @@ public class AgentChatService {
         // Note: MCP tools are now injected via native CLI flags (e.g., --mcp-server)
         // rather than being embedded in the prompt text
 
-        if (!request.isEnableRag()) {
-            log.debug("RAG disabled, using original message");
+        boolean ragEnabled = request.isEnableRag();
+        boolean graphRagEnabled = request.isEnableGraphRag() && graphRagService != null;
+
+        // If neither RAG nor GraphRAG is enabled, return original message
+        if (!ragEnabled && !graphRagEnabled) {
+            log.debug("RAG and GraphRAG disabled, using original message");
             promptBuilder.append(userMessage);
             return promptBuilder.toString();
         }
 
-        log.info("RAG enabled, retrieving context for: {}",
-                userMessage.substring(0, Math.min(100, userMessage.length())));
+        StringBuilder contextBuilder = new StringBuilder();
+        boolean hasContext = false;
 
-        // Retrieve documents
-        List<RetrievedDoc> retrievedDocs = retrieveDocuments(
-                userMessage,
-                request.getRagMaxResults(),
-                request.getRagSimilarityThreshold(),
-                request.isIncludeKeywordSearch(),
-                request.isIncludeSemanticSearch());
+        // Retrieve GraphRAG context if enabled
+        if (graphRagEnabled) {
+            log.info("GraphRAG enabled, retrieving graph context for: {}",
+                    userMessage.substring(0, Math.min(100, userMessage.length())));
 
-        if (retrievedDocs.isEmpty()) {
-            log.warn("No documents retrieved, using original message");
+            GraphRagResult graphResult = retrieveGraphContext(
+                    userMessage,
+                    request.getGraphRagMaxResults(),
+                    request.getGraphRagSearchType(),
+                    request.getGraphRagConversationId());
+
+            if (graphResult != null && graphResult.getFormattedContext() != null
+                    && !graphResult.getFormattedContext().isEmpty()) {
+                contextBuilder.append(String.format(GRAPH_RAG_CONTEXT_TEMPLATE, graphResult.getFormattedContext()));
+                contextBuilder.append("\n");
+                hasContext = true;
+                log.info("Retrieved graph context for augmentation");
+
+                // Add graph result as a source for client display
+                RetrievedDoc graphDoc = new RetrievedDoc(
+                        "graph-context",
+                        graphResult.getFormattedContext(),
+                        Map.of("type", "graph", "searchType", request.getGraphRagSearchType()),
+                        1.0);
+                retrievedSources.add(graphDoc);
+            }
+        }
+
+        // Retrieve RAG context if enabled
+        if (ragEnabled) {
+            log.info("RAG enabled, retrieving context for: {}",
+                    userMessage.substring(0, Math.min(100, userMessage.length())));
+
+            List<RetrievedDoc> retrievedDocs = retrieveDocuments(
+                    userMessage,
+                    request.getRagMaxResults(),
+                    request.getRagSimilarityThreshold(),
+                    request.isIncludeKeywordSearch(),
+                    request.isIncludeSemanticSearch());
+
+            if (!retrievedDocs.isEmpty()) {
+                // Populate sources for client
+                retrievedSources.addAll(retrievedDocs);
+
+                // Format context
+                String formattedContext = formatContext(retrievedDocs);
+                log.info("Retrieved {} documents for context augmentation", retrievedDocs.size());
+
+                contextBuilder.append(String.format(RAG_CONTEXT_TEMPLATE, formattedContext, ""));
+                hasContext = true;
+            }
+        }
+
+        // If no context was retrieved, use original message
+        if (!hasContext) {
+            log.warn("No context retrieved from RAG or GraphRAG, using original message");
             promptBuilder.append(userMessage);
             return promptBuilder.toString();
         }
 
-        // Populate sources for client
-        retrievedSources.addAll(retrievedDocs);
-
-        // Format context
-        String formattedContext = formatContext(retrievedDocs);
-        log.info("Retrieved {} documents for context augmentation", retrievedDocs.size());
-
-        // Build augmented prompt
-        promptBuilder.append(String.format(RAG_CONTEXT_TEMPLATE, formattedContext, userMessage));
+        // Build the final prompt with context and question
+        promptBuilder.append(contextBuilder);
+        promptBuilder.append("\n---\n\n## User Question\n");
+        promptBuilder.append(userMessage);
         return promptBuilder.toString();
+    }
+
+    /**
+     * Retrieve context from the knowledge graph using GraphRAG.
+     */
+    private GraphRagResult retrieveGraphContext(
+            String query,
+            int maxResults,
+            String searchType,
+            String conversationId) {
+
+        if (graphRagService == null) {
+            log.debug("GraphRagService not available");
+            return null;
+        }
+
+        try {
+            SearchType type = "GLOBAL".equalsIgnoreCase(searchType)
+                    ? SearchType.GLOBAL
+                    : SearchType.LOCAL;
+
+            GraphRagQuery graphQuery = GraphRagQuery.builder()
+                    .query(query)
+                    .searchType(type)
+                    .k(maxResults)
+                    .conversationId(conversationId != null ? conversationId : "default")
+                    .build();
+
+            return graphRagService.answerQuery(graphQuery);
+        } catch (Exception e) {
+            log.error("Error retrieving graph context: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -606,9 +727,7 @@ public class AgentChatService {
             // Create in project's .gemini/tmp/ directory
             promptDir = Path.of(workingDirectory, ".gemini", "tmp");
         } else {
-            // Fallback to user's ~/.gemini/tmp/
-            String userHome = System.getProperty("user.home");
-            promptDir = Path.of(userHome, ".gemini", "tmp");
+            throw new IllegalStateException("workingDirectory is required for Gemini agents but was not provided");
         }
 
         // Ensure directory exists
@@ -730,7 +849,12 @@ public class AgentChatService {
     public boolean cancelProcess(String processId) {
         log.info("Cancel requested for process: {}", processId);
 
-        // Get and remove the process from tracking map
+        // Try API agent cancellation first
+        if (apiAgentChatExecutor != null && apiAgentChatExecutor.isApiStream(processId)) {
+            return apiAgentChatExecutor.cancelApiStream(processId);
+        }
+
+        // Get and remove the CLI process from tracking map
         Process process = runningProcesses.remove(processId);
 
         if (process == null) {

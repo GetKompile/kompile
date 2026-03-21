@@ -23,10 +23,14 @@ import java.util.concurrent.Callable;
         NativeImageBuilder.class,
         PomGenerator.class,
         CloneBuildComponents.class,
-        GenerateDl4jBuild.class
+        GenerateDl4jBuild.class,
+        BuildNd4jBackend.class
 }, mixinStandardHelpOptions = false,
         description = "Commands related to building Kompile applications, including native images and specific framework builds.\n" +
-                "Primary entry points for application creation and building are 'kompile build-kompile-app', 'kompile build-rag-app', etc.")
+                "Primary entry points for application creation and building are 'kompile build-kompile-app', 'kompile build-rag-app', etc.\n\n" +
+                "For custom ND4J/DL4J backend builds with fine-grained control over data types, operations, and optimizations:\n" +
+                "  kompile build nd4j-backend --preset=minimal-inference\n" +
+                "  kompile build nd4j-backend --backend=cuda --cuda-version=12.3 --helper-cudnn")
 public class BuildMain implements Callable<Integer> {
     public BuildMain() {
     }

@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, ViewChild, AfterViewInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, AfterViewInit, ChangeDetectorRef } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { MatTableDataSource } from '@angular/material/table';
 import { MatPaginator } from '@angular/material/paginator';
 import { MatSort } from '@angular/material/sort';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { Subscription } from 'rxjs';
+import { OcrService } from '../../../services/ocr.service';
+import { OcrStatus, OcrConfig, OcrModelInfo } from '../../../models/ocr-models';
 
 export interface LoaderDebugInfo {
   name: string;
@@ -52,6 +55,12 @@ export interface ChunkDebugInfo {
   contentLength: number;
   chunkIndex: number;
   metadata: any;
+  // Table-specific fields from metadata
+  contentType?: string;
+  fullTableContent?: string;
+  tableRowCount?: number;
+  tableColumnCount?: number;
+  tableHeaders?: string;
 }
 
 export interface DebugAnalysisResult {
@@ -74,7 +83,7 @@ export interface DebugAnalysisResult {
   templateUrl: './document-debugger.component.html',
   styleUrls: ['./document-debugger.component.css']
 })
-export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
+export class DocumentDebuggerComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ViewChild references for chunks table only (simplified)
   @ViewChild('chunksPaginator') chunksPaginator!: MatPaginator;
@@ -101,8 +110,30 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
   expandedChunkIndex: number | null = null;
   analysisError: string | null = null;
 
+  // OCR status
+  ocrStatus: OcrStatus | null = null;
+  ocrConfig: OcrConfig | null = null;
+  ocrModels: OcrModelInfo[] = [];
+  isLoadingOcrStatus: boolean = false;
+  ocrStatusError: string | null = null;
+  showOcrStatusDetails: boolean = false;
+
+  // File types that typically require OCR
+  private readonly ocrRequiredExtensions: Set<string> = new Set([
+    'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'tif', 'webp',
+    'heic', 'heif', 'raw', 'svg'
+  ]);
+
+  // File types that may benefit from OCR (scanned PDFs)
+  private readonly ocrBeneficialExtensions: Set<string> = new Set([
+    'pdf'
+  ]);
+
+  private subscriptions: Subscription = new Subscription();
+
   constructor(
     private http: HttpClient,
+    private ocrService: OcrService,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef
   ) {
@@ -118,7 +149,12 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
   }
 
   ngOnInit(): void {
-    // Simplified initialization - no need to load status or uploaded files
+    // Load OCR status on initialization
+    this.loadOcrStatus();
+  }
+
+  ngOnDestroy(): void {
+    this.subscriptions.unsubscribe();
   }
 
   ngAfterViewInit(): void {
@@ -203,7 +239,34 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
 
   private updateDataSources(): void {
     if (!this.analysisResult) return;
-    this.chunksDataSource.data = this.analysisResult.chunks || [];
+    // Enrich chunks with content_type from metadata
+    const enrichedChunks = (this.analysisResult.chunks || []).map(chunk => {
+      const contentType = chunk.metadata?.content_type || chunk.metadata?.contentType || 'text';
+      const fullTableContent = chunk.metadata?.full_table_content || chunk.metadata?.fullTableContent;
+      return {
+        ...chunk,
+        contentType,
+        fullTableContent,
+        tableRowCount: chunk.metadata?.table_row_count,
+        tableColumnCount: chunk.metadata?.table_column_count,
+        tableHeaders: chunk.metadata?.table_headers
+      };
+    });
+    this.chunksDataSource.data = enrichedChunks;
+  }
+
+  /**
+   * Check if a chunk contains table content.
+   */
+  isTableChunk(chunk: ChunkDebugInfo): boolean {
+    return chunk.contentType === 'table';
+  }
+
+  /**
+   * Get the table content for rendering (prefers full_table_content, falls back to content).
+   */
+  getTableContent(chunk: ChunkDebugInfo): string {
+    return chunk.fullTableContent || chunk.content || '';
   }
 
   // Toggle chunk content expansion
@@ -308,5 +371,207 @@ export class DocumentDebuggerComponent implements OnInit, AfterViewInit {
       this.showSnackbar('Fallback copy error', true);
     }
     document.body.removeChild(ta);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // OCR STATUS METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  loadOcrStatus(): void {
+    this.isLoadingOcrStatus = true;
+    this.ocrStatusError = null;
+    this.cdr.detectChanges();
+
+    // Load status, config, and models in parallel
+    this.subscriptions.add(
+      this.ocrService.getStatus().subscribe({
+        next: (status) => {
+          this.ocrStatus = status;
+          this.isLoadingOcrStatus = false;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to load OCR status:', err);
+          this.ocrStatusError = this.getOcrErrorMessage(err);
+          this.ocrStatus = {
+            ocrEnabled: false,
+            pipelineReady: false,
+            postProcessorAvailable: false
+          };
+          this.isLoadingOcrStatus = false;
+          this.cdr.detectChanges();
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.ocrService.getConfig().subscribe({
+        next: (config) => {
+          this.ocrConfig = config;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to load OCR config:', err);
+        }
+      })
+    );
+
+    this.subscriptions.add(
+      this.ocrService.getModels().subscribe({
+        next: (models) => {
+          this.ocrModels = models;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Failed to load OCR models:', err);
+        }
+      })
+    );
+  }
+
+  refreshOcrStatus(): void {
+    this.loadOcrStatus();
+  }
+
+  toggleOcrStatusDetails(): void {
+    this.showOcrStatusDetails = !this.showOcrStatusDetails;
+    this.cdr.detectChanges();
+  }
+
+  private getOcrErrorMessage(error: any): string {
+    return error?.error?.message || error?.error?.error || error?.message || 'OCR service unavailable';
+  }
+
+  /**
+   * Check if the selected file requires OCR processing.
+   */
+  fileRequiresOcr(): boolean {
+    if (!this.selectedFile) return false;
+    const ext = this.getFileExtension(this.selectedFile.name);
+    return this.ocrRequiredExtensions.has(ext);
+  }
+
+  /**
+   * Check if the selected file may benefit from OCR (e.g., PDFs).
+   */
+  fileMayBenefitFromOcr(): boolean {
+    if (!this.selectedFile) return false;
+    const ext = this.getFileExtension(this.selectedFile.name);
+    return this.ocrBeneficialExtensions.has(ext);
+  }
+
+  /**
+   * Check if the uploaded file (by name) requires OCR.
+   */
+  uploadedFileRequiresOcr(): boolean {
+    if (!this.selectedFileName) return false;
+    const ext = this.getFileExtension(this.selectedFileName);
+    return this.ocrRequiredExtensions.has(ext);
+  }
+
+  /**
+   * Check if the uploaded file may benefit from OCR.
+   */
+  uploadedFileMayBenefitFromOcr(): boolean {
+    if (!this.selectedFileName) return false;
+    const ext = this.getFileExtension(this.selectedFileName);
+    return this.ocrBeneficialExtensions.has(ext);
+  }
+
+  private getFileExtension(fileName: string): string {
+    return fileName.split('.').pop()?.toLowerCase() || '';
+  }
+
+  /**
+   * Check if OCR is fully available (enabled and pipeline ready).
+   */
+  isOcrAvailable(): boolean {
+    return !!(this.ocrStatus?.ocrEnabled && this.ocrStatus?.pipelineReady);
+  }
+
+  /**
+   * Get the count of loaded OCR models.
+   */
+  getLoadedOcrModelCount(): number {
+    return this.ocrModels.filter(m => m.isLoaded).length;
+  }
+
+  /**
+   * Get OCR status text for display.
+   */
+  getOcrStatusText(): string {
+    if (this.isLoadingOcrStatus) {
+      return 'Checking OCR status...';
+    }
+    if (this.ocrStatusError) {
+      return `OCR Error: ${this.ocrStatusError}`;
+    }
+    if (!this.ocrStatus) {
+      return 'OCR status unknown';
+    }
+    if (!this.ocrStatus.ocrEnabled) {
+      return 'OCR is disabled';
+    }
+    if (!this.ocrStatus.pipelineReady) {
+      return 'OCR pipeline not ready - models may need to be loaded';
+    }
+    return 'OCR is available';
+  }
+
+  /**
+   * Get OCR status color class.
+   */
+  getOcrStatusColorClass(): string {
+    if (this.isLoadingOcrStatus) return 'ocr-loading';
+    if (this.ocrStatusError || !this.ocrStatus?.ocrEnabled) return 'ocr-error';
+    if (!this.ocrStatus?.pipelineReady) return 'ocr-warning';
+    return 'ocr-success';
+  }
+
+  /**
+   * Get OCR status icon.
+   */
+  getOcrStatusIcon(): string {
+    if (this.isLoadingOcrStatus) return 'hourglass_empty';
+    if (this.ocrStatusError) return 'error';
+    if (!this.ocrStatus?.ocrEnabled) return 'visibility_off';
+    if (!this.ocrStatus?.pipelineReady) return 'warning';
+    return 'check_circle';
+  }
+
+  /**
+   * Check if we should show an OCR warning for the current selection.
+   */
+  shouldShowOcrWarning(): boolean {
+    if (this.isOcrAvailable()) return false;
+
+    // Check selected file (before upload)
+    if (this.selectedFile) {
+      return this.fileRequiresOcr() || this.fileMayBenefitFromOcr();
+    }
+
+    // Check uploaded file (after upload, before analysis)
+    if (this.selectedFileName) {
+      return this.uploadedFileRequiresOcr() || this.uploadedFileMayBenefitFromOcr();
+    }
+
+    return false;
+  }
+
+  /**
+   * Get the OCR warning message for display.
+   */
+  getOcrWarningMessage(): string {
+    const fileName = this.selectedFile?.name || this.selectedFileName || '';
+    const ext = this.getFileExtension(fileName);
+    const requiresOcr = this.ocrRequiredExtensions.has(ext);
+
+    if (requiresOcr) {
+      return `Image files like "${fileName}" require OCR for text extraction. ` +
+        'OCR is currently ' + (this.ocrStatus?.ocrEnabled ? 'enabled but the pipeline is not ready' : 'not available') + '.';
+    }
+
+    return 'PDF files may contain scanned images that require OCR for proper text extraction. ' +
+      'OCR is currently ' + (this.ocrStatus?.ocrEnabled ? 'enabled but the pipeline is not ready' : 'not available') + '.';
   }
 }

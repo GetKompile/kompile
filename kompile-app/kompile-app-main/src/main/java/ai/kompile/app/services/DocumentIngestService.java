@@ -33,6 +33,7 @@ import ai.kompile.app.services.subprocess.SubprocessIngestLauncher;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
+import ai.kompile.app.web.dto.IngestProgressUpdate.OcrProcessingMetrics;
 import ai.kompile.core.indexers.IndexerService;
 import ai.kompile.core.indexers.NoOpIndexerService;
 import ai.kompile.core.loaders.DocumentLoader;
@@ -131,7 +132,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             @Autowired List<DocumentLoader> documentLoaders,
             @Autowired List<TextChunker> textChunkers,
             @Autowired List<IndexerService> indexerServices,
-            @Autowired List<ai.kompile.core.embeddings.EmbeddingModel> embeddingModels,
+            @Lazy @Autowired List<ai.kompile.core.embeddings.EmbeddingModel> embeddingModels,
             IngestConfiguration ingestConfiguration,
             @Lazy MemoryWatchdogService memoryWatchdogService,
             TextConversionService textConversionService,
@@ -652,7 +653,48 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             }
 
             // Load documents (standard flow for small/medium documents)
-            List<Document> loadedDocuments = selectedLoader.load(sourceDescriptor);
+            // Use progress-aware loading to surface OCR/VLM page-by-page progress
+            final long ocrStartTime = System.currentTimeMillis();
+            final int[] ocrCumulativeTokens = {0};
+            final int[] ocrPagesCompleted = {0};
+            List<Document> loadedDocuments = selectedLoader.load(sourceDescriptor, loaderProgress -> {
+                if ("OCR_PROCESSING".equals(loaderProgress.phase())) {
+                    Map<String, Object> m = loaderProgress.metrics();
+                    int currentPage = m.get("currentPage") != null ? ((Number) m.get("currentPage")).intValue() : 0;
+                    int totalPages = m.get("totalPages") != null ? ((Number) m.get("totalPages")).intValue() : 0;
+                    String vlmModelId = (String) m.get("vlmModelId");
+
+                    OcrProcessingMetrics ocrMetrics;
+                    if (m.containsKey("generatedTokens") && m.get("generatedTokens") != null) {
+                        // Page completed with token metrics
+                        int genTokens = ((Number) m.get("generatedTokens")).intValue();
+                        int promptTokens = m.get("promptTokens") != null ? ((Number) m.get("promptTokens")).intValue() : 0;
+                        double tps = m.get("tokensPerSecond") != null ? ((Number) m.get("tokensPerSecond")).doubleValue() : 0.0;
+                        long genMs = m.get("generateTimeMs") != null ? ((Number) m.get("generateTimeMs")).longValue() : 0L;
+                        ocrCumulativeTokens[0] += genTokens;
+                        ocrPagesCompleted[0]++;
+                        long totalOcrMs = System.currentTimeMillis() - ocrStartTime;
+                        double avgTps = totalOcrMs > 0 ? (ocrCumulativeTokens[0] * 1000.0 / totalOcrMs) : 0.0;
+                        ocrMetrics = OcrProcessingMetrics.pageCompleted(
+                                currentPage, totalPages, genTokens, promptTokens, tps, genMs, vlmModelId,
+                                ocrCumulativeTokens[0], ocrPagesCompleted[0], totalOcrMs, avgTps);
+                    } else {
+                        // Sub-step within a page (Rendering, Preprocessing, Generating)
+                        ocrMetrics = OcrProcessingMetrics.pageStep(
+                                currentPage, totalPages, loaderProgress.currentStep(), vlmModelId);
+                    }
+
+                    statsBuilder.currentOcrMetrics(ocrMetrics)
+                            .ocrProcessingTimeMs(System.currentTimeMillis() - ocrStartTime);
+
+                    // Map 0-100% OCR progress to 10-25% overall progress
+                    int ocrPercent = 10 + (int) (loaderProgress.progressPercent() * 0.15);
+                    sendProgress(IngestProgressUpdate.progress(
+                            taskId, fileName, IngestPhase.OCR_PROCESSING, ocrPercent,
+                            loaderProgress.currentStep(), loaderProgress.message(),
+                            statsBuilder.build()));
+                }
+            });
             int documentsLoaded = loadedDocuments.size();
             loadingEndTime = System.currentTimeMillis();
             long loadingDuration = loadingEndTime - loadingStartTime;
@@ -923,6 +965,8 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                                 // Status
                                 .statusLevel(batch.statusLevel())
                                 .etaMessage(batch.etaMessage())
+                                // Per-passage token counts
+                                .passageTokenCounts(batch.passageTokenCounts())
                                 .build();
                     }
 
@@ -1373,8 +1417,11 @@ public class DocumentIngestService implements org.springframework.beans.factory.
             case QUEUED -> IngestEvent.IngestPhase.QUEUED;
             case UPLOADING -> IngestEvent.IngestPhase.QUEUED; // No direct mapping, use QUEUED
             case LOADING -> IngestEvent.IngestPhase.LOADING;
+            case OCR_PROCESSING -> IngestEvent.IngestPhase.OCR_PROCESSING;
             case CONVERTING -> IngestEvent.IngestPhase.CONVERTING;
             case CHUNKING -> IngestEvent.IngestPhase.CHUNKING;
+            case EXTRACTION -> IngestEvent.IngestPhase.EXTRACTION;
+            case INDEXING_AND_EMBEDDING -> IngestEvent.IngestPhase.INDEXING_AND_EMBEDDING;
             case EMBEDDING -> IngestEvent.IngestPhase.EMBEDDING;
             case INDEXING -> IngestEvent.IngestPhase.INDEXING;
             case COMPLETED -> IngestEvent.IngestPhase.COMPLETED;
@@ -1665,6 +1712,7 @@ public class DocumentIngestService implements org.springframework.beans.factory.
                             .modelName(batch.modelName())
                             .deviceType(batch.deviceType())
                             .isBatched(batch.isBatched())
+                            .passageTokenCounts(batch.passageTokenCounts())
                             .build();
                 }
 

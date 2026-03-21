@@ -30,6 +30,30 @@ import java.util.List;
 public interface GraphConstructor {
 
     /**
+     * Configuration for entity extraction model.
+     */
+    record ExtractionModelConfig(
+            String provider,      // e.g., "default", "openai", "anthropic", "ollama"
+            String modelName,     // e.g., "gpt-4o", "claude-3-5-sonnet", null for provider default
+            Double temperature,   // 0.0 to 2.0
+            Integer maxTokens,    // max response tokens
+            String customPrompt   // optional custom extraction prompt
+    ) {
+        public static ExtractionModelConfig defaults() {
+            return new ExtractionModelConfig("default", null, 0.0, 4096, null);
+        }
+    }
+
+    /**
+     * Configure the extraction model settings.
+     *
+     * @param config the extraction model configuration
+     */
+    default void configure(ExtractionModelConfig config) {
+        // Default implementation does nothing - implementations can override
+    }
+
+    /**
      * Constructs a comprehensive knowledge graph from all documents within a specified collection in the index.
      * This is typically a long-running, offline process.
      *

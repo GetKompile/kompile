@@ -26,16 +26,19 @@ import ai.kompile.orchestrator.model.workflow.WorkflowStep;
 import ai.kompile.orchestrator.repository.AuditLogRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Async;
 
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Map;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 /**
  * Service for managing audit logs.
@@ -314,6 +317,177 @@ public class AuditService {
         log.info("Deleted audit entries before {}", cutoff);
     }
 
+    // ==================== Advanced Query Methods ====================
+
+    /**
+     * Search audit logs with multiple filters and text search.
+     */
+    public Page<AuditLogEntry> searchAuditLogs(String instanceId, AuditSearchCriteria criteria, Pageable pageable) {
+        if (criteria.getSearch() != null && !criteria.getSearch().isEmpty()) {
+            return auditRepository.findWithFiltersAndSearch(
+                    instanceId,
+                    criteria.getEventType(),
+                    criteria.getEntityType(),
+                    criteria.getFromTime(),
+                    criteria.getToTime(),
+                    criteria.isErrorsOnly(),
+                    criteria.getSearch(),
+                    pageable);
+        } else {
+            return auditRepository.findWithFilters(
+                    instanceId,
+                    criteria.getEventType(),
+                    criteria.getEntityType(),
+                    criteria.getFromTime(),
+                    criteria.getToTime(),
+                    criteria.isErrorsOnly(),
+                    pageable);
+        }
+    }
+
+    /**
+     * Get audit log statistics for an instance.
+     */
+    public AuditStats getStats(String instanceId) {
+        long totalEvents = auditRepository.countByOrchestratorInstanceId(instanceId);
+        long errorCount = auditRepository.countErrors(instanceId);
+        Double avgDuration = auditRepository.averageDuration(instanceId);
+
+        // Get counts by event type
+        List<Object[]> eventTypeCounts = auditRepository.countByEventType(instanceId);
+        Map<String, Long> eventsByType = new LinkedHashMap<>();
+        for (Object[] row : eventTypeCounts) {
+            if (row[0] != null) {
+                eventsByType.put(row[0].toString(), (Long) row[1]);
+            }
+        }
+
+        // Get counts by entity type
+        List<Object[]> entityTypeCounts = auditRepository.countByEntityType(instanceId);
+        Map<String, Long> eventsByEntityType = new LinkedHashMap<>();
+        for (Object[] row : entityTypeCounts) {
+            if (row[0] != null) {
+                eventsByEntityType.put(row[0].toString(), (Long) row[1]);
+            }
+        }
+
+        // Get events by hour for the last 24 hours
+        LocalDateTime since = LocalDateTime.now().minusHours(24);
+        List<Object[]> hourCounts = auditRepository.countByHour(instanceId, since);
+        List<AuditStats.HourlyCount> eventsByHour = new ArrayList<>();
+        for (Object[] row : hourCounts) {
+            int hour = ((Number) row[0]).intValue();
+            long count = (Long) row[1];
+            eventsByHour.add(new AuditStats.HourlyCount(hour, count));
+        }
+
+        return AuditStats.builder()
+                .totalEvents(totalEvents)
+                .errorCount(errorCount)
+                .avgDurationMs(avgDuration != null ? avgDuration : 0.0)
+                .eventsByType(eventsByType)
+                .eventsByEntityType(eventsByEntityType)
+                .eventsByHour(eventsByHour)
+                .build();
+    }
+
+    /**
+     * Export audit logs to JSON format.
+     */
+    public String exportToJson(String instanceId, AuditSearchCriteria criteria) {
+        Pageable pageable = PageRequest.of(0, 10000); // Limit export to 10000 records
+        Page<AuditLogEntry> entries = searchAuditLogs(instanceId, criteria, pageable);
+
+        ObjectMapper exportMapper = new ObjectMapper();
+        exportMapper.registerModule(new JavaTimeModule());
+
+        try {
+            return exportMapper.writerWithDefaultPrettyPrinter().writeValueAsString(entries.getContent());
+        } catch (JsonProcessingException e) {
+            log.error("Failed to export audit logs to JSON", e);
+            return "[]";
+        }
+    }
+
+    /**
+     * Export audit logs to CSV format.
+     */
+    public String exportToCsv(String instanceId, AuditSearchCriteria criteria) {
+        Pageable pageable = PageRequest.of(0, 10000); // Limit export to 10000 records
+        Page<AuditLogEntry> entries = searchAuditLogs(instanceId, criteria, pageable);
+
+        StringBuilder csv = new StringBuilder();
+        // CSV Header
+        csv.append("ID,Timestamp,Event Type,Entity Type,Entity ID,Action,Message,Error,Error Message,Duration (ms),Actor ID,Trigger ID,Hook ID\n");
+
+        DateTimeFormatter formatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+
+        for (AuditLogEntry entry : entries.getContent()) {
+            csv.append(escapeCsv(entry.getId() != null ? entry.getId().toString() : "")).append(",");
+            csv.append(escapeCsv(entry.getTimestamp() != null ? entry.getTimestamp().format(formatter) : "")).append(",");
+            csv.append(escapeCsv(entry.getEventType() != null ? entry.getEventType().name() : "")).append(",");
+            csv.append(escapeCsv(entry.getEntityType() != null ? entry.getEntityType().name() : "")).append(",");
+            csv.append(escapeCsv(entry.getEntityId())).append(",");
+            csv.append(escapeCsv(entry.getAction())).append(",");
+            csv.append(escapeCsv(entry.getMessage())).append(",");
+            csv.append(entry.isError()).append(",");
+            csv.append(escapeCsv(entry.getErrorMessage())).append(",");
+            csv.append(entry.getDurationMs() != null ? entry.getDurationMs() : "").append(",");
+            csv.append(escapeCsv(entry.getActorId())).append(",");
+            csv.append(escapeCsv(entry.getTriggerId())).append(",");
+            csv.append(escapeCsv(entry.getHookId())).append("\n");
+        }
+
+        return csv.toString();
+    }
+
+    /**
+     * Get audit logs by actor.
+     */
+    public List<AuditLogEntry> getByActor(String instanceId, String actorId) {
+        return auditRepository.findByOrchestratorInstanceIdAndActorIdOrderByTimestampDesc(instanceId, actorId);
+    }
+
+    // ==================== Generic Event Logging ====================
+
+    /**
+     * Log a generic event with custom parameters.
+     * This is useful for extensibility when specific methods aren't available.
+     */
+    @Async
+    public CompletableFuture<AuditLogEntry> logEvent(String instanceId, AuditEventType eventType,
+                                                      AuditEntityType entityType, String entityId,
+                                                      String message, Map<String, Object> details) {
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .orchestratorInstanceId(instanceId)
+                .eventType(eventType)
+                .entityType(entityType)
+                .entityId(entityId)
+                .action(eventType.name())
+                .message(message)
+                .detailsJson(toJson(details))
+                .build();
+        return CompletableFuture.completedFuture(auditRepository.save(entry));
+    }
+
+    /**
+     * Synchronous version for use in critical paths.
+     */
+    public AuditLogEntry logEventSync(String instanceId, AuditEventType eventType,
+                                      AuditEntityType entityType, String entityId,
+                                      String message, Map<String, Object> details) {
+        AuditLogEntry entry = AuditLogEntry.builder()
+                .orchestratorInstanceId(instanceId)
+                .eventType(eventType)
+                .entityType(entityType)
+                .entityId(entityId)
+                .action(eventType.name())
+                .message(message)
+                .detailsJson(toJson(details))
+                .build();
+        return auditRepository.save(entry);
+    }
+
     // ==================== Utility ====================
 
     private String toJson(Object obj) {
@@ -321,6 +495,60 @@ public class AuditService {
             return objectMapper.writeValueAsString(obj);
         } catch (JsonProcessingException e) {
             return null;
+        }
+    }
+
+    private String escapeCsv(String value) {
+        if (value == null) {
+            return "";
+        }
+        // Escape quotes and wrap in quotes if contains comma, quote, or newline
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
+
+    // ==================== DTOs ====================
+
+    /**
+     * Search criteria for audit log queries.
+     */
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class AuditSearchCriteria {
+        private AuditEventType eventType;
+        private AuditEntityType entityType;
+        private LocalDateTime fromTime;
+        private LocalDateTime toTime;
+        private String search;
+        private String actorId;
+        private boolean errorsOnly;
+    }
+
+    /**
+     * Audit log statistics.
+     */
+    @lombok.Data
+    @lombok.Builder
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class AuditStats {
+        private long totalEvents;
+        private long errorCount;
+        private double avgDurationMs;
+        private Map<String, Long> eventsByType;
+        private Map<String, Long> eventsByEntityType;
+        private List<HourlyCount> eventsByHour;
+
+        @lombok.Data
+        @lombok.AllArgsConstructor
+        @lombok.NoArgsConstructor
+        public static class HourlyCount {
+            private int hour;
+            private long count;
         }
     }
 }

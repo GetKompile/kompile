@@ -41,7 +41,8 @@ public enum ValueType implements Serializable {
     BOUNDING_BOX,
     OBJECT,
     LIST,    // Represents a list of one of the other ValueTypes
-    DATA;    // Represents a nested Data object
+    DATA,    // Represents a nested Data object
+    KV_CACHE; // Represents a KV cache object for autoregressive decoding
 
     private static final Map<String, ValueType> NAME_MAP = new HashMap<>();
 

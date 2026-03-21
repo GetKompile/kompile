@@ -17,15 +17,21 @@
 package ai.kompile.vectorstore.anserini;
 
 import lombok.extern.slf4j.Slf4j;
+import io.anserini.index.codecs.AnseriniLucene99FlatVectorFormat;
+import io.anserini.index.codecs.AnseriniLucene99ScalarQuantizedVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.KnnVectorsWriter;
 import org.apache.lucene.codecs.lucene99.Lucene99Codec;
 import org.apache.lucene.codecs.lucene99.Lucene99HnswScalarQuantizedVectorsFormat;
 import org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat;
+import org.apache.lucene.index.ConcurrentMergeScheduler;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LogByteSizeMergePolicy;
+import org.apache.lucene.index.MergeScheduler;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
+import org.apache.lucene.index.TieredMergePolicy;
 
 import java.io.IOException;
 
@@ -97,15 +103,13 @@ public class AnseriniIndexUtils {
 
         // 3. Configure concurrent merge scheduler for parallel segment merging
         // This allows merges to happen in background while indexing continues
-        org.apache.lucene.index.ConcurrentMergeScheduler mergeScheduler =
-                new org.apache.lucene.index.ConcurrentMergeScheduler();
+        ConcurrentMergeScheduler mergeScheduler =
+                new ConcurrentMergeScheduler();
         mergeScheduler.setMaxMergesAndThreads(MERGE_THREADS + 1, MERGE_THREADS);
         config.setMergeScheduler(mergeScheduler);
 
-        // 4. Use TieredMergePolicy for better segment management
-        // This policy is optimized for mixed small/large segment scenarios
-        org.apache.lucene.index.TieredMergePolicy mergePolicy =
-                new org.apache.lucene.index.TieredMergePolicy();
+        TieredMergePolicy mergePolicy =
+                new TieredMergePolicy();
         // Increase max merge size for bulk indexing (default is 5GB)
         mergePolicy.setMaxMergedSegmentMB(10 * 1024); // 10GB max segment
         // Reduce merge at to delay merging until more segments exist
@@ -141,8 +145,8 @@ public class AnseriniIndexUtils {
 
         // For bulk loading, use LogByteSizeMergePolicy which is more predictable
         // and better for scenarios where we'll force-merge at the end
-        org.apache.lucene.index.LogByteSizeMergePolicy bulkMergePolicy =
-                new org.apache.lucene.index.LogByteSizeMergePolicy();
+        LogByteSizeMergePolicy bulkMergePolicy =
+                new LogByteSizeMergePolicy();
         bulkMergePolicy.setMaxMergeMB(5 * 1024); // 5GB max merge
         bulkMergePolicy.setMergeFactor(10); // Merge 10 segments at a time
         config.setMergePolicy(bulkMergePolicy);
@@ -182,9 +186,9 @@ public class AnseriniIndexUtils {
                 KnnVectorsFormat baseFormat;
                 
                 if (properties.isQuantizeInt8()) {
-                    baseFormat = new io.anserini.index.codecs.AnseriniLucene99ScalarQuantizedVectorsFormat();
+                    baseFormat = new AnseriniLucene99ScalarQuantizedVectorsFormat();
                 } else {
-                    baseFormat = new io.anserini.index.codecs.AnseriniLucene99FlatVectorFormat();
+                    baseFormat = new AnseriniLucene99FlatVectorFormat();
                 }
                 
                 return new DelegatingKnnVectorsFormat(baseFormat, properties.getMaxDimensions());

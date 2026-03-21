@@ -16,9 +16,11 @@
 
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener } from '@angular/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { MatDialog } from '@angular/material/dialog';
 import { Subscription, fromEvent } from 'rxjs';
-import { throttleTime, takeUntil } from 'rxjs/operators';
+import { throttleTime, takeUntil, filter } from 'rxjs/operators';
 import { Subject } from 'rxjs';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 
 // Services
 import { ConversationalRagService } from '../../services/conversational-rag.service';
@@ -40,6 +42,7 @@ import {
   RERANKER_TYPES,
   RerankerTypeInfo,
   AgentProvider,
+  ApiAgentConfigRequest,
   LocalAgentSession,
   RagServiceStatus,
   ChatFolder
@@ -78,6 +81,13 @@ interface UnifiedMessage {
   _sourcesExpanded?: boolean;
   latencyMs?: number;
   tokenCount?: number;
+  tokenMetrics?: {
+    outputTokens: number;
+    inputTokens: number;
+    totalGenerationMs: number;
+    tokensPerSecond: number;
+    model?: string;
+  };
 }
 
 // Session for persistence
@@ -225,6 +235,20 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   skipPermissions: boolean = true;
   agentsLoading: boolean = false;
 
+  // API Agent configuration UI state
+  showApiAgentConfig: boolean = false;
+  apiAgentName: string = '';
+  apiAgentDisplayName: string = '';
+  apiAgentEndpointUrl: string = '';
+  apiAgentApiKey: string = '';
+  apiAgentModelName: string = '';
+  apiAgentTemperature: number = 0.7;
+  apiAgentMaxTokens: number = 4096;
+  apiAgentTestResult: string = '';
+  apiAgentTestLoading: boolean = false;
+  apiAgentSaving: boolean = false;
+  editingApiAgentName: string | null = null;
+
   // RAG settings (augments agent prompts with document context)
   ragEnabled: boolean = false;
   ragMaxResults: number = 5;
@@ -274,7 +298,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private folderService: FolderService,
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
-    private sanitizer: DomSanitizer
+    private sanitizer: DomSanitizer,
+    private dialog: MatDialog
   ) {}
 
   /**
@@ -487,14 +512,26 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   }
 
   deleteSession(session: ChatSession): void {
-    if (confirm(`Delete "${session.name}"?`)) {
-      this.sessions = this.sessions.filter(s => s.id !== session.id);
-      if (this.currentSession?.id === session.id) {
-        this.currentSession = null;
-        this.messages = [];
-      }
-      this.saveSessions();
-    }
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Session',
+      message: `Are you sure you want to delete "${session.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(filter(confirmed => confirmed === true))
+      .subscribe(() => {
+        this.sessions = this.sessions.filter(s => s.id !== session.id);
+        if (this.currentSession?.id === session.id) {
+          this.currentSession = null;
+          this.messages = [];
+        }
+        this.saveSessions();
+        this.cdr.detectChanges();
+      });
   }
 
   archiveSession(session: ChatSession): void {
@@ -673,6 +710,14 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       }
     });
 
+    // Subscribe to chat stats (token metrics)
+    const statsSub = this.agentChatService.getChatStats().subscribe((stats) => {
+      const lastMsg = this.messages[this.messages.length - 1];
+      if (lastMsg && lastMsg.role === 'assistant' && stats.tokenMetrics) {
+        lastMsg.tokenMetrics = stats.tokenMetrics;
+      }
+    });
+
     const completeSub = this.agentChatService.getStreamingComplete().subscribe((msg) => {
       // Update last message with final content
       const lastMsg = this.messages[this.messages.length - 1];
@@ -681,6 +726,9 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         lastMsg.isStreaming = false;
         lastMsg.latencyMs = msg.latencyMs || (Date.now() - startTime);
         lastMsg.sources = msg.sources;
+        if (msg.tokenMetrics) {
+          lastMsg.tokenMetrics = msg.tokenMetrics;
+        }
       }
       this.isStreaming = false;
 
@@ -691,6 +739,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       contentSub.unsubscribe();
       completeSub.unsubscribe();
       errorSub.unsubscribe();
+      statsSub.unsubscribe();
     });
 
     const errorSub = this.agentChatService.getStreamingError().subscribe((errorMsg: string) => {
@@ -708,6 +757,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       contentSub.unsubscribe();
       completeSub.unsubscribe();
       errorSub.unsubscribe();
+      statsSub.unsubscribe();
     });
 
     // Add placeholder assistant message
@@ -748,6 +798,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       contentSub.unsubscribe();
       completeSub.unsubscribe();
       errorSub.unsubscribe();
+      statsSub.unsubscribe();
     }
   }
 
@@ -837,14 +888,27 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   clearConversation(): void {
     if (this.messages.length === 0) return;
-    if (confirm('Clear this conversation?')) {
-      this.messages = [];
-      this.currentConversationId = null;
-      if (this.currentSession) {
-        this.currentSession.messages = [];
-        this.saveSessions();
-      }
-    }
+
+    const dialogData: ConfirmDialogData = {
+      title: 'Clear Conversation',
+      message: 'Are you sure you want to clear this conversation? This cannot be undone.',
+      confirmText: 'Clear',
+      confirmColor: 'warn',
+      icon: 'delete_forever'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(filter(confirmed => confirmed === true))
+      .subscribe(() => {
+        this.messages = [];
+        this.currentConversationId = null;
+        if (this.currentSession) {
+          this.currentSession.messages = [];
+          this.saveSessions();
+        }
+        this.cdr.detectChanges();
+      });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1083,11 +1147,145 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       'gemini': '✨',
       'gemini-cli': '✨'
     };
+    // For API agents, use a different icon
+    const agent = this.agents.find(a => a.name === agentName);
+    if (agent?.agentType === 'API') {
+      return '🌐';
+    }
     return icons[agentName] || '🔧';
   }
 
   getAvailableAgentCount(): number {
     return this.agents.filter(a => a.available).length;
+  }
+
+  isApiAgent(agent: AgentProvider | null): boolean {
+    return agent?.agentType === 'API';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // API AGENT CONFIGURATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  toggleApiAgentConfig(): void {
+    this.showApiAgentConfig = !this.showApiAgentConfig;
+    if (!this.showApiAgentConfig) {
+      this.resetApiAgentForm();
+    }
+  }
+
+  resetApiAgentForm(): void {
+    this.apiAgentName = '';
+    this.apiAgentDisplayName = '';
+    this.apiAgentEndpointUrl = '';
+    this.apiAgentApiKey = '';
+    this.apiAgentModelName = '';
+    this.apiAgentTemperature = 0.7;
+    this.apiAgentMaxTokens = 4096;
+    this.apiAgentTestResult = '';
+    this.editingApiAgentName = null;
+  }
+
+  editApiAgent(agent: AgentProvider): void {
+    this.showApiAgentConfig = true;
+    this.editingApiAgentName = agent.name;
+    this.apiAgentName = agent.name;
+    this.apiAgentDisplayName = agent.displayName;
+    this.apiAgentEndpointUrl = agent.endpointUrl || '';
+    this.apiAgentApiKey = ''; // Don't show masked key
+    this.apiAgentModelName = agent.modelName || '';
+    this.apiAgentTemperature = agent.temperature ?? 0.7;
+    this.apiAgentMaxTokens = agent.maxTokens ?? 4096;
+    this.apiAgentTestResult = '';
+    this.cdr.markForCheck();
+  }
+
+  saveApiAgent(): void {
+    if (!this.apiAgentName || !this.apiAgentEndpointUrl || !this.apiAgentModelName) {
+      this.apiAgentTestResult = 'Name, endpoint URL, and model name are required.';
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.apiAgentSaving = true;
+    const config: ApiAgentConfigRequest = {
+      name: this.apiAgentName,
+      displayName: this.apiAgentDisplayName || this.apiAgentName,
+      endpointUrl: this.apiAgentEndpointUrl,
+      apiKey: this.apiAgentApiKey || undefined,
+      modelName: this.apiAgentModelName,
+      temperature: this.apiAgentTemperature,
+      maxTokens: this.apiAgentMaxTokens
+    };
+
+    const obs = this.editingApiAgentName
+      ? this.agentService.updateApiAgentConfig(this.editingApiAgentName, config)
+      : this.agentService.addApiAgentConfig(config);
+
+    obs.subscribe({
+      next: (result: any) => {
+        this.apiAgentSaving = false;
+        this.apiAgentTestResult = result.message || 'Saved successfully';
+        this.resetApiAgentForm();
+        this.showApiAgentConfig = false;
+        this.refreshAgents();
+        this.cdr.markForCheck();
+      },
+      error: (err: any) => {
+        this.apiAgentSaving = false;
+        this.apiAgentTestResult = 'Error: ' + (err.error?.error || err.message || 'Failed to save');
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  deleteApiAgent(agent: AgentProvider): void {
+    if (!confirm(`Remove API agent "${agent.displayName}"?`)) return;
+
+    this.agentService.deleteApiAgentConfig(agent.name).subscribe({
+      next: () => {
+        if (this.selectedAgent?.name === agent.name) {
+          this.selectedAgent = null;
+        }
+        this.refreshAgents();
+      },
+      error: (err: any) => {
+        console.error('Failed to delete API agent:', err);
+      }
+    });
+  }
+
+  testApiEndpoint(): void {
+    if (!this.apiAgentEndpointUrl) {
+      this.apiAgentTestResult = 'Enter an endpoint URL first.';
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.apiAgentTestLoading = true;
+    this.apiAgentTestResult = 'Testing...';
+    this.cdr.markForCheck();
+
+    this.agentService.testApiEndpoint({
+      endpointUrl: this.apiAgentEndpointUrl,
+      apiKey: this.apiAgentApiKey || undefined
+    }).subscribe({
+      next: (result: any) => {
+        this.apiAgentTestLoading = false;
+        if (result.reachable) {
+          const models = result.models ? result.models.slice(0, 5).join(', ') : '';
+          this.apiAgentTestResult = 'Connected! ' + (models ? 'Models: ' + models : '');
+        } else {
+          this.apiAgentTestResult = 'Failed: ' + (result.error || 'Endpoint not reachable');
+        }
+        this.cdr.markForCheck();
+      },
+      error: (err: any) => {
+        this.apiAgentTestLoading = false;
+        this.apiAgentTestResult = 'Error: ' + (err.message || 'Connection failed');
+        this.cdr.markForCheck();
+      }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

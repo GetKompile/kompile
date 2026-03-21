@@ -16,10 +16,10 @@
 
 package ai.kompile.staging.web.dto;
 
-import ai.kompile.staging.registry.ModelMetadata;
-import ai.kompile.staging.registry.ModelStatus;
-import ai.kompile.staging.registry.ModelType;
-import ai.kompile.staging.registry.TokenizerConfig;
+import ai.kompile.modelmanager.registry.ModelMetadata;
+import ai.kompile.modelmanager.registry.ModelStatus;
+import ai.kompile.modelmanager.registry.ModelType;
+import ai.kompile.modelmanager.registry.TokenizerConfig;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

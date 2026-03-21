@@ -11,7 +11,7 @@
                 <div class="settings-section">
                     <div class="section-header">
                         <h3>Vector Store Configuration</h3>
-                        <p>Manage where your data is stored and indexed.</p>
+                        <p>Select and configure your vector store backend.</p>
                     </div>
 
                     <div class="loading-shade" *ngIf="isLoading">
@@ -19,18 +19,156 @@
                     </div>
 
                     <div class="config-form" *ngIf="!isLoading">
+                        <!-- Vector Store Type Selection -->
+                        <div class="vector-store-selector">
+                            <mat-label class="section-label">Vector Store Type</mat-label>
+                            <mat-radio-group [(ngModel)]="config.vectorStoreType" [ngModelOptions]="{standalone: true}" class="vector-store-options">
+                                <mat-radio-button *ngFor="let option of vectorStoreOptions" [value]="option.value"
+                                    class="vector-store-option">
+                                    <div class="option-content">
+                                        <mat-icon>{{option.icon}}</mat-icon>
+                                        <div class="option-text">
+                                            <span class="option-label">{{option.label}}</span>
+                                            <span class="option-description">{{option.description}}</span>
+                                        </div>
+                                        <mat-chip *ngIf="option.requiresServer" class="server-chip">
+                                            Requires Server
+                                        </mat-chip>
+                                    </div>
+                                </mat-radio-button>
+                            </mat-radio-group>
+                        </div>
 
+                        <mat-divider style="margin: 24px 0;"></mat-divider>
 
+                        <!-- Anserini Configuration -->
+                        <div *ngIf="config.vectorStoreType === 'ANSERINI'" class="store-config-panel">
+                            <h4><mat-icon>storage</mat-icon> Anserini Configuration</h4>
+                            <p class="panel-description">Embedded Lucene-based vector store with HNSW indexing.</p>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>Vector (Dense) Store Path</mat-label>
+                                <input matInput [(ngModel)]="config.vectorStorePath" [ngModelOptions]="{standalone: true}"
+                                    placeholder="e.g. ~/.kompile/anserini-vector-index">
+                                <mat-hint>Location for embedding vectors. Absolute path or ~ for user home.</mat-hint>
+                            </mat-form-field>
+                        </div>
+
+                        <!-- Vespa Configuration -->
+                        <div *ngIf="config.vectorStoreType === 'VESPA'" class="store-config-panel">
+                            <h4><mat-icon>cloud</mat-icon> Vespa Configuration</h4>
+                            <p class="panel-description">
+                                Distributed search engine with hybrid BM25+vector search.
+                                <a href="https://vespa.ai/documentation" target="_blank">Documentation</a>
+                            </p>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>Vespa Endpoint</mat-label>
+                                <input matInput [(ngModel)]="config.vespaEndpoint" [ngModelOptions]="{standalone: true}"
+                                    placeholder="http://localhost:8080">
+                                <mat-hint>Vespa server URL (query and feed endpoint)</mat-hint>
+                            </mat-form-field>
+
+                            <div class="two-column-grid">
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Namespace</mat-label>
+                                    <input matInput [(ngModel)]="config.vespaNamespace" [ngModelOptions]="{standalone: true}" placeholder="default">
+                                </mat-form-field>
+
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Document Type</mat-label>
+                                    <input matInput [(ngModel)]="config.vespaDocumentType" [ngModelOptions]="{standalone: true}" placeholder="document">
+                                </mat-form-field>
+                            </div>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>Vector Field Name</mat-label>
+                                <input matInput [(ngModel)]="config.vespaVectorField" [ngModelOptions]="{standalone: true}" placeholder="embedding">
+                                <mat-hint>Field name in Vespa schema for vector embeddings</mat-hint>
+                            </mat-form-field>
+
+                            <div class="hybrid-search-toggle">
+                                <mat-slide-toggle [(ngModel)]="config.vespaHybridSearchEnabled" [ngModelOptions]="{standalone: true}">
+                                    Enable Hybrid Search (BM25 + Vector)
+                                </mat-slide-toggle>
+                            </div>
+
+                            <mat-form-field appearance="outline" class="full-width"
+                                *ngIf="config.vespaHybridSearchEnabled">
+                                <mat-label>Vector Weight (0.0 - 1.0)</mat-label>
+                                <input matInput type="number" [(ngModel)]="config.vespaHybridVectorWeight" [ngModelOptions]="{standalone: true}" min="0"
+                                    max="1" step="0.1">
+                                <mat-hint>Weight for vector similarity. Text weight = 1.0 - vector weight</mat-hint>
+                            </mat-form-field>
+                        </div>
+
+                        <!-- pgvector Configuration -->
+                        <div *ngIf="config.vectorStoreType === 'PGVECTOR'" class="store-config-panel">
+                            <h4><mat-icon>dns</mat-icon> pgvector Configuration</h4>
+                            <p class="panel-description">
+                                PostgreSQL with pgvector extension for vector similarity search.
+                                <a href="https://github.com/pgvector/pgvector" target="_blank">Documentation</a>
+                            </p>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>PostgreSQL JDBC URL</mat-label>
+                                <input matInput [(ngModel)]="config.pgvectorUrl" [ngModelOptions]="{standalone: true}"
+                                    placeholder="jdbc:postgresql://localhost:5432/kompile">
+                            </mat-form-field>
+
+                            <div class="two-column-grid">
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Username</mat-label>
+                                    <input matInput [(ngModel)]="config.pgvectorUsername" [ngModelOptions]="{standalone: true}" placeholder="postgres">
+                                </mat-form-field>
+
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Password</mat-label>
+                                    <input matInput type="password" [(ngModel)]="config.pgvectorPassword" [ngModelOptions]="{standalone: true}"
+                                        [placeholder]="config.pgvectorPasswordSet ? '(password set)' : 'Enter password'">
+                                    <mat-hint *ngIf="config.pgvectorPasswordSet">Leave empty to keep existing
+                                        password</mat-hint>
+                                </mat-form-field>
+                            </div>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>Table Name</mat-label>
+                                <input matInput [(ngModel)]="config.pgvectorTableName" [ngModelOptions]="{standalone: true}" placeholder="vector_store">
+                            </mat-form-field>
+                        </div>
+
+                        <!-- Chroma Configuration -->
+                        <div *ngIf="config.vectorStoreType === 'CHROMA'" class="store-config-panel">
+                            <h4><mat-icon>palette</mat-icon> Chroma Configuration</h4>
+                            <p class="panel-description">
+                                Open-source embedding database with simple API.
+                                <a href="https://docs.trychroma.com/" target="_blank">Documentation</a>
+                            </p>
+
+                            <div class="two-column-grid">
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Host</mat-label>
+                                    <input matInput [(ngModel)]="config.chromaHost" [ngModelOptions]="{standalone: true}" placeholder="localhost">
+                                </mat-form-field>
+
+                                <mat-form-field appearance="outline">
+                                    <mat-label>Port</mat-label>
+                                    <input matInput type="number" [(ngModel)]="config.chromaPort" [ngModelOptions]="{standalone: true}" placeholder="8000">
+                                </mat-form-field>
+                            </div>
+
+                            <mat-form-field appearance="outline" class="full-width">
+                                <mat-label>Collection Name</mat-label>
+                                <input matInput [(ngModel)]="config.chromaCollectionName" [ngModelOptions]="{standalone: true}" placeholder="kompile">
+                            </mat-form-field>
+                        </div>
+
+                        <mat-divider style="margin: 24px 0;"></mat-divider>
+
+                        <!-- Keyword Index Path (common to all) -->
                         <mat-form-field appearance="outline" class="full-width">
-                            <mat-label>Vector (Dense) Store Path</mat-label>
-                            <input matInput [(ngModel)]="config.vectorStorePath"
-                                placeholder="e.g. ~/.kompile/anserini-vector-index">
-                            <mat-hint>Location for embedding vectors. Absolute path or ~ for user home.</mat-hint>
-                        </mat-form-field>
-
-                        <mat-form-field appearance="outline" class="full-width" style="margin-top: 16px;">
                             <mat-label>Keyword (Sparse) Index Path</mat-label>
-                            <input matInput [(ngModel)]="config.keywordIndexPath"
+                            <input matInput [(ngModel)]="config.keywordIndexPath" [ngModelOptions]="{standalone: true}"
                                 placeholder="e.g. ~/.kompile/anserini-keyword-index">
                             <mat-hint>Location for Lucene keyword index. Absolute path or ~ for user home.</mat-hint>
                         </mat-form-field>
@@ -63,6 +201,41 @@
             <mat-tab label="Batch Tuning">
                 <div class="tab-padding">
                     <app-batch-size-config></app-batch-size-config>
+                </div>
+            </mat-tab>
+
+            <!-- Job Logs Tab -->
+            <mat-tab label="Job Logs">
+                <div class="tab-padding">
+                    <app-log-settings></app-log-settings>
+                </div>
+            </mat-tab>
+
+            <!-- Guardrails Tab -->
+            <mat-tab label="Guardrails">
+                <div class="tab-padding">
+                    <app-guardrails-settings></app-guardrails-settings>
+                </div>
+            </mat-tab>
+
+            <!-- Filter Chain Tab -->
+            <mat-tab label="Filter Chain">
+                <div class="tab-padding">
+                    <app-filter-chain-settings></app-filter-chain-settings>
+                </div>
+            </mat-tab>
+
+            <!-- Evaluation Tab -->
+            <mat-tab label="Evaluation">
+                <div class="tab-padding">
+                    <app-evaluation-settings></app-evaluation-settings>
+                </div>
+            </mat-tab>
+
+            <!-- Query Transformer Tab -->
+            <mat-tab label="Query Transform">
+                <div class="tab-padding">
+                    <app-query-transformer-settings></app-query-transformer-settings>
                 </div>
             </mat-tab>
         </mat-tab-group>

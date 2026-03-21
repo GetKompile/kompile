@@ -148,16 +148,16 @@
                 </mat-label>
 
                 <!-- String input -->
-                <input matInput *ngIf="arg.type === 'string'" [(ngModel)]="arg.value"
+                <input matInput *ngIf="arg.type === 'string'" [(ngModel)]="arg.value" [ngModelOptions]="{standalone: true}"
                        [placeholder]="arg.required ? 'Required' : 'Optional'">
 
                 <!-- Number input -->
                 <input matInput *ngIf="arg.type === 'integer' || arg.type === 'number'"
-                       type="number" [(ngModel)]="arg.value"
+                       type="number" [(ngModel)]="arg.value" [ngModelOptions]="{standalone: true}"
                        [placeholder]="arg.required ? 'Required' : 'Optional'">
 
                 <!-- Boolean input -->
-                <mat-select *ngIf="arg.type === 'boolean'" [(ngModel)]="arg.value">
+                <mat-select *ngIf="arg.type === 'boolean'" [(ngModel)]="arg.value" [ngModelOptions]="{standalone: true}">
                   <mat-option [value]="null">Not set</mat-option>
                   <mat-option [value]="true">true</mat-option>
                   <mat-option [value]="false">false</mat-option>
@@ -165,7 +165,7 @@
 
                 <!-- Object/Array input as JSON -->
                 <textarea matInput *ngIf="arg.type === 'object' || arg.type === 'array'"
-                          [(ngModel)]="arg.value" rows="3"
+                          [(ngModel)]="arg.value" [ngModelOptions]="{standalone: true}" rows="3"
                           [placeholder]="arg.type === 'array' ? '[]' : '{}'"></textarea>
               </mat-form-field>
             </div>
@@ -279,7 +279,7 @@
     <div class="action-log-filters">
       <mat-form-field appearance="outline">
         <mat-label>Limit</mat-label>
-        <mat-select [(ngModel)]="actionLogFilter.limit" (selectionChange)="loadActionLog()">
+        <mat-select [(ngModel)]="actionLogFilter.limit" [ngModelOptions]="{standalone: true}" (selectionChange)="loadActionLog()">
           <mat-option [value]="10">10</mat-option>
           <mat-option [value]="25">25</mat-option>
           <mat-option [value]="50">50</mat-option>
@@ -289,14 +289,14 @@
 
       <mat-form-field appearance="outline">
         <mat-label>Action Type</mat-label>
-        <mat-select [(ngModel)]="actionLogFilter.actionType" (selectionChange)="loadActionLog()">
+        <mat-select [(ngModel)]="actionLogFilter.actionType" [ngModelOptions]="{standalone: true}" (selectionChange)="loadActionLog()">
           <mat-option *ngFor="let type of actionTypes" [value]="type">
             {{ type || 'All' }}
           </mat-option>
         </mat-select>
       </mat-form-field>
 
-      <mat-slide-toggle [(ngModel)]="actionLogFilter.undoableOnly" (change)="loadActionLog()">
+      <mat-slide-toggle [(ngModel)]="actionLogFilter.undoableOnly" [ngModelOptions]="{standalone: true}" (change)="loadActionLog()">
         Undoable only
       </mat-slide-toggle>
 

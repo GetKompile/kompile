@@ -883,6 +883,83 @@
   font-size: 13px;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   BOUNDARY PRESERVATION OPTIONS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.boundary-options {
+  margin-top: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f8f9fa 0%, #fff 100%);
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+}
+
+.boundary-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 12px;
+}
+
+.boundary-label mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #1976d2;
+}
+
+.boundary-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: #666;
+}
+
+.boundary-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.boundary-toggles mat-slide-toggle {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.boundary-toggles mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #666;
+  margin-right: 4px;
+}
+
+.boundary-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #e3f2fd;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #1565c0;
+  line-height: 1.4;
+}
+
+.boundary-info mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
 /* Language Field */
 .language-field {
   width: 200px;
@@ -1472,6 +1549,125 @@
 
 .memory-very-high {
   color: #1565c0;
+}
+
+/* GPU/VRAM Tier Colors */
+.vram-low {
+  color: #f44336;
+}
+
+.vram-medium {
+  color: #ff9800;
+}
+
+.vram-high {
+  color: #4caf50;
+}
+
+.vram-very-high {
+  color: #1565c0;
+}
+
+.gpu-inactive {
+  color: #9e9e9e;
+}
+
+.cpu-mode {
+  color: #1976d2;
+  font-weight: 600;
+}
+
+/* GPU-specific card styling */
+.batch-rec-card.gpu-constrained {
+  border-color: #ff9800;
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+}
+
+.gpu-device-name {
+  font-size: 10px;
+  color: #666;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.constraint-info {
+  font-size: 10px;
+  color: #666;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+/* GPU badge styling */
+.batch-type-badge.gpu-badge {
+  background: linear-gradient(135deg, #26a69a 0%, #00796b 100%);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* GPU constraint banner */
+.gpu-constraint-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #fff8e1 0%, #ffe0b2 100%);
+  border-radius: 6px;
+  border-left: 3px solid #ff9800;
+  font-size: 12px;
+  color: #e65100;
+  line-height: 1.4;
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+.gpu-constraint-banner mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #ff9800;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* GPU reference table styling */
+.gpu-reference {
+  background: linear-gradient(135deg, rgba(38, 166, 154, 0.05) 0%, rgba(0, 121, 107, 0.08) 100%);
+  border: 1px solid rgba(0, 121, 107, 0.2);
+}
+
+.gpu-reference .batch-ref-header {
+  color: #00796b;
+}
+
+.gpu-reference .batch-ref-header mat-icon {
+  color: #26a69a;
+}
+
+.gpu-ref-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 4px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: #666;
+}
+
+.gpu-ref-note mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  color: #26a69a;
+  flex-shrink: 0;
 }
 
 /* Batch Reference Table */
@@ -2550,6 +2746,530 @@ mat-dialog-actions button mat-icon {
 
 .youtube-info-box .info-content strong {
   color: #333;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   COMPOSITE PDF LOADER SECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.composite-loader-section {
+  margin-bottom: 16px;
+}
+
+.composite-loader-card {
+  background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+  border: 1px solid #c8e6c9;
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.composite-loader-card:hover {
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.15);
+}
+
+.composite-loader-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.composite-toggle {
+  flex: 1;
+}
+
+.composite-toggle .toggle-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+}
+
+.composite-toggle .toggle-content mat-icon {
+  color: #2e7d32;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.composite-toggle .toggle-label {
+  font-weight: 500;
+  font-size: 14px;
+  color: #2e7d32;
+}
+
+.composite-loader-description {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #558b2f;
+  line-height: 1.5;
+}
+
+.composite-loader-description .info-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #7cb342;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.composite-loader-description strong {
+  color: #33691e;
+}
+
+/* Responsive adjustments for composite loader */
+@media (max-width: 600px) {
+  .composite-loader-card {
+    padding: 12px;
+  }
+
+  .composite-toggle .toggle-content {
+    flex-wrap: wrap;
+  }
+
+  .composite-loader-description {
+    font-size: 11px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PDF PROCESSING CONFIGURATION SECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.pdf-processing-section {
+  margin-top: 16px;
+  margin-bottom: 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: white;
+}
+
+.pdf-processing-section .section-header-left mat-icon {
+  color: #e53935;
+}
+
+.pdf-processing-content {
+  padding: 16px;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+}
+
+/* PDF Processing Mode Selection */
+.processing-mode-section {
+  margin-bottom: 20px;
+}
+
+.processing-mode-section .mode-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.processing-mode-section .mode-description-text {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 12px;
+}
+
+.pdf-mode-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.pdf-mode-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #fff;
+  position: relative;
+}
+
+.pdf-mode-card:hover:not(.disabled) {
+  border-color: #e53935;
+  background: #fff5f5;
+}
+
+.pdf-mode-card.mode-selected {
+  border-color: #e53935;
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+  box-shadow: 0 2px 6px rgba(229, 57, 53, 0.15);
+}
+
+.pdf-mode-card.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.pdf-mode-card .mode-icon {
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.pdf-mode-card.mode-selected .mode-icon {
+  color: #e53935;
+}
+
+.pdf-mode-card .mode-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.pdf-mode-card .mode-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 2px;
+}
+
+.pdf-mode-card .mode-description {
+  display: block;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.3;
+}
+
+.pdf-mode-card .check-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #e53935;
+}
+
+/* Table Extraction Section */
+.table-extraction-section {
+  padding: 16px;
+  background: linear-gradient(135deg, #f5f5f5 0%, #fafafa 100%);
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 16px;
+}
+
+.table-extraction-header {
+  margin-bottom: 12px;
+}
+
+.table-extraction-header .toggle-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+}
+
+.table-extraction-header .toggle-content mat-icon {
+  color: #4caf50;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.table-extraction-header .toggle-label {
+  font-weight: 500;
+  font-size: 14px;
+  color: #333;
+}
+
+.table-options {
+  margin-top: 16px;
+}
+
+.table-options .options-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Table Method Cards */
+.table-method-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.table-method-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: #fff;
+  position: relative;
+}
+
+.table-method-card:hover:not(.disabled) {
+  border-color: #4caf50;
+  background: #f8fff8;
+}
+
+.table-method-card.method-selected {
+  border-color: #4caf50;
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+}
+
+.table-method-card.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.table-method-card .method-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.table-method-card.method-selected .method-icon {
+  color: #4caf50;
+}
+
+.table-method-card .method-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.table-method-card .method-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+}
+
+.table-method-card .method-description {
+  display: block;
+  font-size: 10px;
+  color: #666;
+  line-height: 1.2;
+}
+
+.table-method-card .check-icon {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  color: #4caf50;
+}
+
+/* Table Storage Options */
+.table-storage-options {
+  margin-top: 16px;
+}
+
+.table-storage-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.table-storage-toggle .mat-button-toggle-button {
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+/* VLM Configuration Section */
+.vlm-config-section {
+  padding: 16px;
+  background: linear-gradient(135deg, #ede7f6 0%, #e8eaf6 100%);
+  border-radius: 8px;
+  border: 1px solid #d1c4e9;
+  margin-bottom: 16px;
+}
+
+.vlm-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #5e35b1;
+}
+
+.vlm-header mat-icon {
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+  color: #7e57c2;
+}
+
+.vlm-options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.vlm-model-field,
+.vlm-format-field,
+.vlm-dpi-field,
+.vlm-tokens-field {
+  width: 100%;
+}
+
+.vlm-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #5e35b1;
+  line-height: 1.5;
+}
+
+.vlm-info-box mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #7e57c2;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.vlm-info-box .info-content {
+  flex: 1;
+}
+
+.vlm-info-box .info-content strong {
+  color: #4527a0;
+}
+
+.vlm-info-box .info-content ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.vlm-info-box .info-content li {
+  margin-bottom: 4px;
+}
+
+/* Auto Mode Section */
+.auto-mode-section {
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+  border-radius: 6px;
+  border: 1px solid #ffcc80;
+  margin-bottom: 16px;
+}
+
+.auto-mode-option {
+  margin-bottom: 12px;
+}
+
+.auto-threshold-field {
+  max-width: 200px;
+}
+
+.auto-mode-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: #e65100;
+  line-height: 1.4;
+}
+
+.auto-mode-info mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #ff9800;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* Additional Extraction Options */
+.extraction-options-section {
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.extraction-options-section .options-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.extraction-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.extraction-toggles mat-slide-toggle {
+  font-size: 13px;
+}
+
+.extraction-toggles mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  vertical-align: middle;
+  color: #666;
+}
+
+/* Responsive adjustments for PDF processing */
+@media (max-width: 600px) {
+  .pdf-mode-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .table-method-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .vlm-options-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .extraction-toggles {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .table-storage-toggle {
+    flex-direction: column;
+  }
 }
 
 .youtube-info-box .info-content ul {

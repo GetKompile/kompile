@@ -18,6 +18,8 @@ package ai.kompile.core.loaders;
 
 import org.springframework.ai.document.Document; // Spring AI's Document class
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Interface for components capable of loading documents from a specific type of source.
@@ -47,4 +49,29 @@ public interface DocumentLoader {
      * @throws Exception if loading fails for any reason (e.g., IOException, parsing errors).
      */
     List<Document> load(DocumentSourceDescriptor sourceDescriptor) throws Exception;
+
+    /**
+     * Loads documents with a progress callback for real-time status updates.
+     * Default implementation delegates to {@link #load(DocumentSourceDescriptor)} ignoring the callback.
+     *
+     * @param sourceDescriptor The descriptor of the document source.
+     * @param progressCallback Callback for reporting loading progress (may be null).
+     * @return A list of Spring AI {@link Document} objects.
+     * @throws Exception if loading fails for any reason.
+     */
+    default List<Document> load(DocumentSourceDescriptor sourceDescriptor,
+                                Consumer<LoaderProgress> progressCallback) throws Exception {
+        return load(sourceDescriptor);
+    }
+
+    /**
+     * Progress information reported by a document loader during processing.
+     */
+    record LoaderProgress(
+        String phase,          // "OCR_PROCESSING", "PARSING", etc.
+        int progressPercent,   // 0-100 within this loader
+        String currentStep,
+        String message,
+        Map<String, Object> metrics  // Extensible metrics map
+    ) {}
 }

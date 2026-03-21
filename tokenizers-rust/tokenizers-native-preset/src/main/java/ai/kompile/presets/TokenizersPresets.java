@@ -59,21 +59,11 @@ import org.bytedeco.javacpp.tools.*;
                         compiler = {"cpp17", "nowarnings"},
                         library = "jnitokenizers",
                         link = "tokenizers_wrapper",
-                        linkpath = {
-                                // JavaCPP-style link paths using platform-specific directory
-                                "/ai/kompile/tokenizers/${javacpp.platform}/",
-                                // Fallback to legacy paths
-                                "../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}/",
-                                "../libtokenizers/target/native/${javacpp.platform}/"
-                        },
-                        preload = "libtokenizers_wrapper",
-                        preloadpath = {
-                                // JavaCPP-style preload paths
-                                "/ai/kompile/tokenizers/${javacpp.platform}/",
-                                // Fallback to legacy paths
-                                "../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}/",
-                                "../libtokenizers/target/native/${javacpp.platform}/"
-                        }
+                        // NOTE: linkpath is configured via Maven pom.xml <linkPaths> because
+                        // ${javacpp.platform} in Java annotations is NOT substituted by Maven.
+                        // The pom.xml linkPaths use proper Maven property substitution.
+                        preload = "libtokenizers_wrapper"
+                        // NOTE: preloadpath is also configured via Maven pom.xml for the same reason
                 ),
                 @Platform(
                         value = "linux",

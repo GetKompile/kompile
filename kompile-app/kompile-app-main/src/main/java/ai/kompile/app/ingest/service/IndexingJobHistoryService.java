@@ -23,6 +23,7 @@ import ai.kompile.app.ingest.domain.IngestEvent.IngestPhase;
 import ai.kompile.app.ingest.repository.IndexingJobHistoryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.domain.Page;
@@ -55,6 +56,7 @@ import java.util.stream.Stream;
 public class IndexingJobHistoryService {
 
     private final IndexingJobHistoryRepository repository;
+    private final JobLogService jobLogService;
 
     @Value("${kompile.ingest.job-history.retention-days:30}")
     private int retentionDays;
@@ -66,8 +68,11 @@ public class IndexingJobHistoryService {
     private String stateDirectory;
 
     @Autowired
-    public IndexingJobHistoryService(IndexingJobHistoryRepository repository) {
+    public IndexingJobHistoryService(
+            IndexingJobHistoryRepository repository,
+            @Autowired(required = false) JobLogService jobLogService) {
         this.repository = repository;
+        this.jobLogService = jobLogService;
     }
 
     /**
@@ -272,6 +277,7 @@ public class IndexingJobHistoryService {
 
     /**
      * Mark a job as completed.
+     * Also archives the job logs if archiving is enabled.
      */
     @Transactional("ingestEventTransactionManager")
     public void markJobCompleted(String taskId) {
@@ -279,11 +285,25 @@ public class IndexingJobHistoryService {
             job.markCompleted();
             repository.save(job);
             log.info("Marked job {} as COMPLETED (duration: {}ms)", taskId, job.getTotalDurationMs());
+
+            // Archive logs for completed job if archiving is enabled
+            if (jobLogService != null && jobLogService.isArchiveEnabled()) {
+                try {
+                    Path archivePath = jobLogService.archiveLogsForTask(taskId);
+                    if (archivePath != null) {
+                        log.debug("Archived logs for completed job {} to {}", taskId, archivePath);
+                    }
+                } catch (IOException e) {
+                    log.warn("Failed to archive logs for completed job {}: {}", taskId, e.getMessage());
+                    // Non-fatal - logs are still in the database
+                }
+            }
         });
     }
 
     /**
      * Mark a job as failed.
+     * Also archives the job logs if archiving is enabled.
      */
     @Transactional("ingestEventTransactionManager")
     public void markJobFailed(String taskId, IngestPhase failedPhase, String errorMessage,
@@ -292,6 +312,19 @@ public class IndexingJobHistoryService {
             job.markFailed(failedPhase, errorMessage, exception, reason);
             repository.save(job);
             log.warn("Marked job {} as FAILED in phase {} (reason: {})", taskId, failedPhase, reason);
+
+            // Archive logs for failed job if archiving is enabled
+            if (jobLogService != null && jobLogService.isArchiveEnabled()) {
+                try {
+                    Path archivePath = jobLogService.archiveLogsForTask(taskId);
+                    if (archivePath != null) {
+                        log.debug("Archived logs for failed job {} to {}", taskId, archivePath);
+                    }
+                } catch (IOException e) {
+                    log.warn("Failed to archive logs for failed job {}: {}", taskId, e.getMessage());
+                    // Non-fatal - logs are still in the database
+                }
+            }
         });
     }
 
@@ -341,6 +374,136 @@ public class IndexingJobHistoryService {
         });
     }
 
+    // ===================== RESTART TRACKING METHODS =====================
+
+    /**
+     * Initialize restart tracking for a job with initial configuration.
+     *
+     * @param taskId Task identifier
+     * @param maxAttempts Maximum restart attempts configured
+     * @param heapBytes Initial heap size in bytes
+     * @param batchSize Initial batch size
+     * @param threadCount Initial thread count
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void initializeRestartTracking(String taskId, int maxAttempts, long heapBytes, int batchSize, int threadCount) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.initializeRestartTracking(maxAttempts, heapBytes, batchSize, threadCount);
+            repository.save(job);
+            log.debug("Initialized restart tracking for job {}: maxAttempts={}, heap={}MB, batch={}, threads={}",
+                    taskId, maxAttempts, heapBytes / (1024 * 1024), batchSize, threadCount);
+        });
+    }
+
+    /**
+     * Record a restart attempt for a job.
+     *
+     * @param taskId Task identifier
+     * @param attemptNumber Current attempt number (1-based)
+     * @param reason Reason for restart (e.g., "OUT_OF_MEMORY", "OOM_KILLED")
+     * @param newHeapBytes New heap size after adjustment
+     * @param newBatchSize New batch size after adjustment
+     * @param newThreadCount New thread count after adjustment
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void recordRestartAttempt(String taskId, int attemptNumber, String reason,
+                                      long newHeapBytes, int newBatchSize, int newThreadCount) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.recordRestartAttempt(attemptNumber, reason, newHeapBytes, newBatchSize, newThreadCount);
+            repository.save(job);
+            log.info("Recorded restart attempt {} for job {} (reason: {}, heap: {}MB, batch: {}, threads: {})",
+                    attemptNumber, taskId, reason, newHeapBytes / (1024 * 1024), newBatchSize, newThreadCount);
+        });
+    }
+
+    /**
+     * Mark a job's restart as successful (job completed after restart).
+     *
+     * @param taskId Task identifier
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void markRestartSuccessful(String taskId) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            job.markRestartSuccessful();
+            repository.save(job);
+            log.info("Marked restart as successful for job {} (attempt {})", taskId, job.getRestartAttempts());
+        });
+    }
+
+    /**
+     * Update restart tracking info from callback data.
+     *
+     * @param taskId Task identifier
+     * @param restartAttempts Number of restart attempts (null to not update)
+     * @param maxRestartAttempts Max restart attempts (null to not update)
+     * @param initialHeapBytes Initial heap bytes (null to not update)
+     * @param finalHeapBytes Final heap bytes (null to not update)
+     * @param initialBatchSize Initial batch size (null to not update)
+     * @param finalBatchSize Final batch size (null to not update)
+     * @param initialThreadCount Initial thread count (null to not update)
+     * @param finalThreadCount Final thread count (null to not update)
+     * @param reason Restart reason (null to not update)
+     * @param recoveredAfterRestart Whether recovered after restart (null to not update)
+     */
+    @Transactional("ingestEventTransactionManager")
+    public void updateRestartInfo(String taskId,
+                                   Integer restartAttempts,
+                                   Integer maxRestartAttempts,
+                                   Long initialHeapBytes,
+                                   Long finalHeapBytes,
+                                   Integer initialBatchSize,
+                                   Integer finalBatchSize,
+                                   Integer initialThreadCount,
+                                   Integer finalThreadCount,
+                                   String reason,
+                                   Boolean recoveredAfterRestart) {
+        repository.findByTaskId(taskId).ifPresent(job -> {
+            // Update only non-null fields
+            if (restartAttempts != null) {
+                // If this is a new restart attempt, record it properly
+                if (restartAttempts > 0 && (job.getRestartAttempts() == null || restartAttempts > job.getRestartAttempts())) {
+                    job.recordRestartAttempt(
+                            restartAttempts,
+                            reason,
+                            finalHeapBytes != null ? finalHeapBytes : (job.getFinalHeapBytes() != null ? job.getFinalHeapBytes() : 0L),
+                            finalBatchSize != null ? finalBatchSize : (job.getFinalBatchSize() != null ? job.getFinalBatchSize() : 0),
+                            finalThreadCount != null ? finalThreadCount : (job.getFinalThreadCount() != null ? job.getFinalThreadCount() : 0)
+                    );
+                } else {
+                    job.setRestartAttempts(restartAttempts);
+                }
+            }
+            if (maxRestartAttempts != null) job.setMaxRestartAttempts(maxRestartAttempts);
+            if (initialHeapBytes != null) job.setInitialHeapBytes(initialHeapBytes);
+            if (finalHeapBytes != null) job.setFinalHeapBytes(finalHeapBytes);
+            if (initialBatchSize != null) job.setInitialBatchSize(initialBatchSize);
+            if (finalBatchSize != null) job.setFinalBatchSize(finalBatchSize);
+            if (initialThreadCount != null) job.setInitialThreadCount(initialThreadCount);
+            if (finalThreadCount != null) job.setFinalThreadCount(finalThreadCount);
+            if (recoveredAfterRestart != null && recoveredAfterRestart) {
+                job.markRestartSuccessful();
+            }
+            repository.save(job);
+            log.debug("Updated restart info for job {}", taskId);
+        });
+    }
+
+    /**
+     * Get jobs that recovered after restart.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsRecoveredAfterRestart() {
+        return repository.findByRecoveredAfterRestartTrue();
+    }
+
+    /**
+     * Get jobs with restart attempts.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsWithRestarts() {
+        return repository.findByRestartAttemptsGreaterThan(0);
+    }
+
     // ===================== QUERY METHODS =====================
 
     /**
@@ -366,6 +529,15 @@ public class IndexingJobHistoryService {
     @Transactional(value = "ingestEventTransactionManager", readOnly = true)
     public List<IndexingJobHistory> getJobsByStatus(JobStatus status) {
         return repository.findByStatusOrderByStartTimeDesc(status);
+    }
+
+    /**
+     * Get jobs by status within a time range.
+     */
+    @Transactional(value = "ingestEventTransactionManager", readOnly = true)
+    public List<IndexingJobHistory> getJobsByStatus(JobStatus status, int hours) {
+        Instant since = Instant.now().minus(Duration.ofHours(hours));
+        return repository.findByStatusAndStartTimeAfter(status, since);
     }
 
     /**
@@ -478,12 +650,12 @@ public class IndexingJobHistoryService {
 
         Map<String, Object> stats = new HashMap<>();
 
-        // Status counts
-        stats.put("totalJobs", repository.count());
-        stats.put("completedJobs", repository.countByStatus(JobStatus.COMPLETED));
-        stats.put("failedJobs", repository.countByStatus(JobStatus.FAILED));
-        stats.put("cancelledJobs", repository.countByStatus(JobStatus.CANCELLED));
-        stats.put("memoryKilledJobs", repository.countByStatus(JobStatus.MEMORY_KILLED));
+        // Status counts - filtered by time range to match the job list
+        stats.put("totalJobs", repository.countByStartTimeAfter(start));
+        stats.put("completedJobs", repository.countByStatusAndStartTimeAfter(JobStatus.COMPLETED, start));
+        stats.put("failedJobs", repository.countByStatusAndStartTimeAfter(JobStatus.FAILED, start));
+        stats.put("cancelledJobs", repository.countByStatusAndStartTimeAfter(JobStatus.CANCELLED, start));
+        stats.put("memoryKilledJobs", repository.countByStatusAndStartTimeAfter(JobStatus.MEMORY_KILLED, start));
         stats.put("activeJobs", repository.findActiveJobs().size());
 
         // Status breakdown
@@ -616,12 +788,36 @@ public class IndexingJobHistoryService {
     }
 
     /**
-     * Delete associated job artifacts (checkpoints) from disk.
+     * Delete associated job artifacts (checkpoints, logs) from disk and database.
+     * Archives logs before deleting if archiving is enabled.
      */
     private void cleanupJobArtifacts(String taskId) {
         if (taskId == null || taskId.isEmpty())
             return;
 
+        // Archive and delete job logs from database
+        if (jobLogService != null) {
+            try {
+                // Archive logs before deleting if archiving is enabled
+                if (jobLogService.isArchiveEnabled()) {
+                    try {
+                        Path archivePath = jobLogService.archiveLogsForTask(taskId);
+                        if (archivePath != null) {
+                            log.debug("Archived log entries for taskId: {} to {}", taskId, archivePath);
+                        }
+                    } catch (IOException e) {
+                        log.warn("Failed to archive logs for job {} before deletion: {}", taskId, e.getMessage());
+                        // Continue with deletion even if archive fails
+                    }
+                }
+                jobLogService.deleteLogsForTask(taskId);
+                log.debug("Deleted log entries for taskId: {}", taskId);
+            } catch (Exception e) {
+                log.warn("Failed to delete logs for job {}: {}", taskId, e.getMessage());
+            }
+        }
+
+        // Delete checkpoints from disk
         try {
             // Checkpoints are stored in {stateDirectory}/checkpoints/{taskId}
             Path checkpointPath = Paths.get(stateDirectory, "checkpoints", taskId);
@@ -634,7 +830,7 @@ public class IndexingJobHistoryService {
                 log.debug("Deleted checkpoint directory for taskId: {}", taskId);
             }
         } catch (IOException e) {
-            log.warn("Failed to clean up artifacts for job {}: {}", taskId, e.getMessage());
+            log.warn("Failed to clean up checkpoint artifacts for job {}: {}", taskId, e.getMessage());
         }
     }
 

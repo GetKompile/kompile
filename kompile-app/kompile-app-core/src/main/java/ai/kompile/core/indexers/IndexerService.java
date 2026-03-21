@@ -97,6 +97,26 @@ public abstract class IndexerService {
     }
 
     /**
+     * Indexes documents to the keyword index only, with option to skip embedding entirely.
+     * This is optimized for high-throughput ingestion where vector store population
+     * will be done later via {@link #indexFromLucene()}.
+     * <p>
+     * When skipEmbedding is true:
+     * - Documents are indexed to Lucene keyword index only
+     * - No embedding computation occurs (faster ingestion)
+     * - Vector store can be populated later from the keyword index
+     * </p>
+     *
+     * @param documents     The documents to index
+     * @param skipEmbedding If true, skip all embedding computation and vector store updates
+     * @throws IOException if there is an error during indexing
+     */
+    public void indexToKeywordIndexOnly(List<RetrievedDoc> documents, boolean skipEmbedding) throws IOException {
+        // Default implementation delegates to non-embedding version
+        indexToKeywordIndexOnly(documents);
+    }
+
+    /**
      * Indexes documents to the vector store only (no keyword index).
      * This method enables parallel indexing where keyword and vector stores
      * are updated independently by separate workers.
@@ -126,6 +146,156 @@ public abstract class IndexerService {
         public int minIndexed() {
             return Math.min(keywordIndexed, vectorIndexed);
         }
+    }
+
+    /**
+     * Configuration options for indexing operations.
+     * Allows fine-grained control over what gets indexed and how.
+     */
+    public record IndexingOptions(
+            boolean indexKeyword,        // Index to Lucene keyword index
+            boolean indexVector,         // Index to vector store
+            boolean computeEmbeddings,   // Compute embeddings (if false, uses provided embeddings or skips vector)
+            boolean concurrent           // Run keyword and vector indexing concurrently
+    ) {
+        /**
+         * Default options: index to both stores with embedding computation.
+         */
+        public static IndexingOptions defaults() {
+            return new IndexingOptions(true, true, true, true);
+        }
+
+        /**
+         * Keyword-only indexing for fast ingestion. Vector store can be populated later.
+         */
+        public static IndexingOptions keywordOnly() {
+            return new IndexingOptions(true, false, false, false);
+        }
+
+        /**
+         * Vector-only indexing for populating vector store from existing keyword index.
+         */
+        public static IndexingOptions vectorOnly() {
+            return new IndexingOptions(false, true, true, false);
+        }
+
+        /**
+         * Full indexing with pre-computed embeddings (no re-embedding).
+         */
+        public static IndexingOptions withPrecomputedEmbeddings() {
+            return new IndexingOptions(true, true, false, true);
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private boolean indexKeyword = true;
+            private boolean indexVector = true;
+            private boolean computeEmbeddings = true;
+            private boolean concurrent = true;
+
+            public Builder indexKeyword(boolean v) { this.indexKeyword = v; return this; }
+            public Builder indexVector(boolean v) { this.indexVector = v; return this; }
+            public Builder computeEmbeddings(boolean v) { this.computeEmbeddings = v; return this; }
+            public Builder concurrent(boolean v) { this.concurrent = v; return this; }
+
+            public IndexingOptions build() {
+                return new IndexingOptions(indexKeyword, indexVector, computeEmbeddings, concurrent);
+            }
+        }
+    }
+
+    /**
+     * Indexes documents with configurable options for concurrent embedding and indexing.
+     * <p>
+     * This method enables true concurrent processing:
+     * - Embedding computation can run in parallel with keyword indexing
+     * - Vector store indexing happens after embedding (if enabled)
+     * - All operations are non-blocking and return immediately
+     * </p>
+     *
+     * @param documents The documents to index
+     * @param options   Configuration for what to index and how
+     * @return A CompletableFuture that completes with the indexing result
+     */
+    public java.util.concurrent.CompletableFuture<IndexingResult> indexDocumentsWithOptions(
+            List<RetrievedDoc> documents, IndexingOptions options) {
+        if (documents == null || documents.isEmpty()) {
+            return java.util.concurrent.CompletableFuture.completedFuture(new IndexingResult(0, 0));
+        }
+
+        java.util.concurrent.atomic.AtomicInteger keywordCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger vectorCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        // Keyword-only mode: fastest path, no embedding computation
+        if (options.indexKeyword() && !options.indexVector()) {
+            return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    indexToKeywordIndexOnly(documents, true);
+                    keywordCount.set(documents.size());
+                    return new IndexingResult(keywordCount.get(), 0);
+                } catch (java.io.IOException e) {
+                    throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
+                }
+            });
+        }
+
+        // Vector-only mode: embedding + vector store
+        if (!options.indexKeyword() && options.indexVector()) {
+            return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    // embeddings will be computed by the vector store
+                    int indexed = indexToVectorStoreOnly(documents, null);
+                    vectorCount.set(indexed);
+                    return new IndexingResult(0, vectorCount.get());
+                } catch (java.io.IOException e) {
+                    throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
+                }
+            });
+        }
+
+        // Full mode with concurrent execution
+        if (options.concurrent()) {
+            // Run keyword indexing immediately (no embedding needed)
+            java.util.concurrent.CompletableFuture<Void> keywordFuture =
+                java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    try {
+                        indexToKeywordIndexOnly(documents, true);
+                        keywordCount.set(documents.size());
+                    } catch (java.io.IOException e) {
+                        throw new java.util.concurrent.CompletionException("Keyword indexing failed", e);
+                    }
+                });
+
+            // Vector indexing runs concurrently - embeddings computed by vector store
+            java.util.concurrent.CompletableFuture<Void> vectorFuture =
+                java.util.concurrent.CompletableFuture.runAsync(() -> {
+                    try {
+                        int indexed = indexToVectorStoreOnly(documents, null);
+                        vectorCount.set(indexed);
+                    } catch (java.io.IOException e) {
+                        throw new java.util.concurrent.CompletionException("Vector indexing failed", e);
+                    }
+                });
+
+            return java.util.concurrent.CompletableFuture.allOf(keywordFuture, vectorFuture)
+                    .thenApply(v -> new IndexingResult(keywordCount.get(), vectorCount.get()));
+        }
+
+        // Sequential mode (default fallback)
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                indexToKeywordIndexOnly(documents, true);
+                keywordCount.set(documents.size());
+                int indexed = indexToVectorStoreOnly(documents, null);
+                vectorCount.set(indexed);
+                return new IndexingResult(keywordCount.get(), vectorCount.get());
+            } catch (java.io.IOException e) {
+                throw new java.util.concurrent.CompletionException("Indexing failed", e);
+            }
+        });
     }
 
     /**

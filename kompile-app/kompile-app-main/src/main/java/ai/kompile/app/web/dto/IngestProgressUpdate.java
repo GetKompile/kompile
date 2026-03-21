@@ -39,7 +39,11 @@ public record IngestProgressUpdate(
         String errorMessage,
         Instant timestamp,
         /** The ID of the fact sheet this task is associated with */
-        Long factSheetId
+        Long factSheetId,
+        /** Categorized reason for failure (null unless status is FAILED or CANCELLED) */
+        FailureReason failureReason,
+        /** Information about restart attempts for OOM recovery (null if no restarts) */
+        RestartInfo restartInfo
 ) {
     /**
      * The current phase of the ingest pipeline.
@@ -48,9 +52,15 @@ public record IngestProgressUpdate(
         QUEUED,
         UPLOADING,
         LOADING,
+        /** VLM/OCR processing pages (between LOADING and CONVERTING) */
+        OCR_PROCESSING,
         /** Converting rich format to plain text */
         CONVERTING,
         CHUNKING,
+        /** Concurrent extraction of structured content (entities, concepts, facts, etc.) */
+        EXTRACTION,
+        /** Concurrent keyword indexing and embedding (keyword index updated immediately) */
+        INDEXING_AND_EMBEDDING,
         EMBEDDING,
         INDEXING,
         COMPLETED,
@@ -66,6 +76,75 @@ public record IngestProgressUpdate(
         COMPLETED,
         FAILED,
         CANCELLED
+    }
+
+    /**
+     * Reason for task failure, providing more specific categorization for UI display.
+     */
+    public enum FailureReason {
+        /** Generic/unknown failure */
+        UNKNOWN,
+        /** Out of memory error in subprocess */
+        OUT_OF_MEMORY,
+        /** Process was killed by OOM killer or similar */
+        OOM_KILLED,
+        /** Memory threshold exceeded, job stopped gracefully */
+        MEMORY_PRESSURE,
+        /** Native library crash (SIGSEGV, SIGABRT, etc.) */
+        NATIVE_CRASH,
+        /** User cancelled the job */
+        USER_CANCELLED,
+        /** Process became unresponsive (heartbeat timeout) */
+        PROCESS_STUCK,
+        /** Document loading failed */
+        LOAD_ERROR,
+        /** Embedding model error */
+        EMBEDDING_ERROR,
+        /** Indexing error */
+        INDEXING_ERROR,
+        /** All automatic restart attempts exhausted */
+        RESTART_EXHAUSTED
+    }
+
+    /**
+     * Information about restart attempts for OOM recovery.
+     */
+    @lombok.Builder
+    public record RestartInfo(
+            /** Current restart attempt number (0 = first run, 1+ = restart) */
+            int attemptNumber,
+            /** Maximum number of restart attempts allowed */
+            int maxAttempts,
+            /** Whether a restart is currently scheduled */
+            boolean restartScheduled,
+            /** Time (epoch millis) when next restart will occur */
+            Long nextRestartTime,
+            /** Current heap size being used */
+            String currentHeapSize,
+            /** Whether heap was increased from original */
+            boolean heapIncreased,
+            /** Current OMP_NUM_THREADS setting */
+            Integer ompThreads,
+            /** Current OPENBLAS_NUM_THREADS setting */
+            Integer blasThreads,
+            /** Memory analysis reason (why heap was/wasn't increased) */
+            String memoryAnalysisReason
+    ) {
+        public static RestartInfo none() {
+            return new RestartInfo(0, 0, false, null, null, false, null, null, null);
+        }
+
+        public static RestartInfo scheduled(int attempt, int max, long nextRestartTime, String heapSize, boolean heapIncreased) {
+            return new RestartInfo(attempt, max, true, nextRestartTime, heapSize, heapIncreased, null, null, null);
+        }
+
+        public boolean hasRestartAttempts() {
+            return attemptNumber > 0;
+        }
+
+        public boolean hasAttemptsRemaining() {
+            return attemptNumber < maxAttempts;
+        }
     }
 
     /**
@@ -166,6 +245,21 @@ public record IngestProgressUpdate(
                     null, null, null
             );
         }
+
+        public static SubprocessRuntimeInfo forProcessMode(String processMode) {
+            return new SubprocessRuntimeInfo(
+                    null, null, processMode != null ? processMode : "UNKNOWN",
+                    null, null, null, null, null,
+                    null, null, null, null, null,
+                    null, null,
+                    null, null, null,
+                    null, List.of(), List.of(),
+                    null, null, null, null,
+                    null, null,
+                    null, null, null, null,
+                    null, null, null
+            );
+        }
     }
 
     /**
@@ -230,7 +324,10 @@ public record IngestProgressUpdate(
 
             // Processing status
             String statusLevel,            // RUNNING, PROCESSING, SLOW, VERY_SLOW, EXTREMELY_SLOW
-            String etaMessage              // Estimated time remaining message
+            String etaMessage,             // Estimated time remaining message
+
+            // Per-passage token counts
+            int[] passageTokenCounts       // Token count for each passage in the batch
     ) {
         public static EmbeddingBatchMetrics empty() {
             return new EmbeddingBatchMetrics(
@@ -238,7 +335,8 @@ public record IngestProgressUpdate(
                     null, null, null, null, null, null,
                     null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null
+                    null, null, null, null, null, null, null, null,
+                    null  // passageTokenCounts
             );
         }
 
@@ -282,6 +380,7 @@ public record IngestProgressUpdate(
             private String actualOutputShape;
             private String statusLevel;
             private String etaMessage;
+            private int[] passageTokenCounts;
 
             public Builder batchNumber(Integer v) { this.batchNumber = v; return this; }
             public Builder totalBatches(Integer v) { this.totalBatches = v; return this; }
@@ -318,6 +417,7 @@ public record IngestProgressUpdate(
             public Builder actualOutputShape(String v) { this.actualOutputShape = v; return this; }
             public Builder statusLevel(String v) { this.statusLevel = v; return this; }
             public Builder etaMessage(String v) { this.etaMessage = v; return this; }
+            public Builder passageTokenCounts(int[] v) { this.passageTokenCounts = v; return this; }
 
             public EmbeddingBatchMetrics build() {
                 return new EmbeddingBatchMetrics(
@@ -332,9 +432,68 @@ public record IngestProgressUpdate(
                         sourceDocuments, sourceDocumentCount,
                         inputTensorShape, outputTensorShape,
                         actualInputShape, actualOutputShape,
-                        statusLevel, etaMessage
+                        statusLevel, etaMessage,
+                        passageTokenCounts
                 );
             }
+        }
+    }
+
+    /**
+     * Entry in the batch history representing a completed embedding batch.
+     * Contains key metrics from completed batches for UI display.
+     */
+    public record BatchHistoryEntry(
+            int batchNumber,
+            int inputTexts,
+            int maxSequenceLength,
+            int embeddingDimension,
+            String actualInputShape,
+            String actualOutputShape,
+            long totalBatchTimeMs,
+            String currentStep,
+            double tokensPerSecond,
+            int[] passageTokenCounts
+    ) {
+    }
+
+    /**
+     * Metrics for OCR/VLM page-by-page processing.
+     */
+    public record OcrProcessingMetrics(
+            Integer currentPage,
+            Integer totalPages,
+            String currentStep,          // "Rendering page", "Preprocessing image", "Generating tokens", "Page completed"
+            String vlmModelId,
+            // Per-page token metrics (updated after each page completes)
+            Integer generatedTokens,
+            Integer promptTokens,
+            Double tokensPerSecond,
+            Long generateTimeMs,
+            // Cumulative metrics
+            Integer totalTokensGenerated,
+            Integer pagesCompleted,
+            Long totalOcrTimeMs,
+            Double averageTokensPerSecond
+    ) {
+        public static OcrProcessingMetrics starting(int totalPages, String modelId) {
+            return new OcrProcessingMetrics(0, totalPages, "Starting OCR", modelId,
+                    null, null, null, null, 0, 0, 0L, null);
+        }
+
+        public static OcrProcessingMetrics pageStep(int page, int total, String step, String modelId) {
+            return new OcrProcessingMetrics(page, total, step, modelId,
+                    null, null, null, null, null, null, null, null);
+        }
+
+        public static OcrProcessingMetrics pageCompleted(int page, int total,
+                int generatedTokens, int promptTokens, double tokensPerSecond,
+                long generateTimeMs, String modelId,
+                int totalTokensGenerated, int pagesCompleted, long totalOcrTimeMs,
+                double averageTokensPerSecond) {
+            return new OcrProcessingMetrics(page, total, "Page completed", modelId,
+                    generatedTokens, promptTokens, tokensPerSecond, generateTimeMs,
+                    totalTokensGenerated, pagesCompleted, totalOcrTimeMs, averageTokensPerSecond);
         }
     }
 
@@ -402,9 +561,23 @@ public record IngestProgressUpdate(
             // ========== EMBEDDING INFERENCE METRICS ==========
             // Current embedding batch details
             EmbeddingBatchMetrics currentEmbeddingBatch,
+            // Batch history - last N completed batches for UI visibility
+            List<BatchHistoryEntry> batchHistory,
             // ========== SUBPROCESS RUNTIME INFO ==========
             // Runtime details when running in subprocess mode
-            SubprocessRuntimeInfo subprocessRuntimeInfo
+            SubprocessRuntimeInfo subprocessRuntimeInfo,
+            // ========== RESTART TRACKING ==========
+            // Current restart attempt (0 = first run, 1+ = restart)
+            Integer restartAttempt,
+            // Maximum allowed restart attempts
+            Integer maxRestartAttempts,
+            // Current heap size being used
+            String heapSize,
+            // Whether heap was increased from previous attempt
+            Boolean heapIncreased,
+            // ========== OCR PROCESSING METRICS ==========
+            OcrProcessingMetrics currentOcrMetrics,
+            Long ocrProcessingTimeMs
     ) {
         public static IngestStats empty() {
             return new IngestStats(0, 0, 0, 0, 0,
@@ -420,8 +593,14 @@ public record IngestProgressUpdate(
                     List.of(), null,
                     // Embedding batch metrics
                     null,
+                    // Batch history
+                    null,
                     // Subprocess runtime info
-                    null);
+                    null,
+                    // Restart tracking
+                    null, null, null, null,
+                    // OCR processing metrics
+                    null, null);
         }
 
         /**
@@ -480,7 +659,16 @@ public record IngestProgressUpdate(
             private List<WorkerStatusDto> workerStatuses = List.of();
             private QueueStatusDto queueStatus;
             private EmbeddingBatchMetrics currentEmbeddingBatch;
+            private List<BatchHistoryEntry> batchHistory;
             private SubprocessRuntimeInfo subprocessRuntimeInfo;
+            // Restart tracking
+            private Integer restartAttempt;
+            private Integer maxRestartAttempts;
+            private String heapSize;
+            private Boolean heapIncreased;
+            // OCR processing metrics
+            private OcrProcessingMetrics currentOcrMetrics;
+            private Long ocrProcessingTimeMs;
 
             public Builder documentsLoaded(Integer val) { this.documentsLoaded = val; return this; }
             public Builder chunksCreated(Integer val) { this.chunksCreated = val; return this; }
@@ -529,7 +717,16 @@ public record IngestProgressUpdate(
             public Builder workerStatuses(List<WorkerStatusDto> val) { this.workerStatuses = val; return this; }
             public Builder queueStatus(QueueStatusDto val) { this.queueStatus = val; return this; }
             public Builder currentEmbeddingBatch(EmbeddingBatchMetrics val) { this.currentEmbeddingBatch = val; return this; }
+            public Builder batchHistory(List<BatchHistoryEntry> val) { this.batchHistory = val; return this; }
             public Builder subprocessRuntimeInfo(SubprocessRuntimeInfo val) { this.subprocessRuntimeInfo = val; return this; }
+            // Restart tracking setters
+            public Builder restartAttempt(Integer val) { this.restartAttempt = val; return this; }
+            public Builder maxRestartAttempts(Integer val) { this.maxRestartAttempts = val; return this; }
+            public Builder heapSize(String val) { this.heapSize = val; return this; }
+            public Builder heapIncreased(Boolean val) { this.heapIncreased = val; return this; }
+            // OCR processing metrics setters
+            public Builder currentOcrMetrics(OcrProcessingMetrics val) { this.currentOcrMetrics = val; return this; }
+            public Builder ocrProcessingTimeMs(Long val) { this.ocrProcessingTimeMs = val; return this; }
 
             public IngestStats build() {
                 return new IngestStats(documentsLoaded, chunksCreated, chunksEmbedded,
@@ -550,8 +747,14 @@ public record IngestProgressUpdate(
                         workerStatuses, queueStatus,
                         // Embedding batch metrics
                         currentEmbeddingBatch,
+                        // Batch history
+                        batchHistory,
                         // Subprocess runtime info
-                        subprocessRuntimeInfo);
+                        subprocessRuntimeInfo,
+                        // Restart tracking
+                        restartAttempt, maxRestartAttempts, heapSize, heapIncreased,
+                        // OCR processing metrics
+                        currentOcrMetrics, ocrProcessingTimeMs);
             }
         }
     }
@@ -578,7 +781,9 @@ public record IngestProgressUpdate(
                 IngestStats.empty(),
                 null,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                null,
+                null
         );
     }
 
@@ -608,7 +813,9 @@ public record IngestProgressUpdate(
                 stats,
                 null,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                null,
+                null
         );
     }
 
@@ -634,7 +841,9 @@ public record IngestProgressUpdate(
                 stats,
                 null,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                null,
+                null
         );
     }
 
@@ -643,7 +852,7 @@ public record IngestProgressUpdate(
      */
     public static IngestProgressUpdate failed(String taskId, String fileName, IngestPhase failedPhase,
                                                 String errorMessage, IngestStats stats) {
-        return failed(taskId, fileName, failedPhase, errorMessage, stats, null);
+        return failed(taskId, fileName, failedPhase, errorMessage, stats, null, FailureReason.UNKNOWN);
     }
 
     /**
@@ -651,6 +860,15 @@ public record IngestProgressUpdate(
      */
     public static IngestProgressUpdate failed(String taskId, String fileName, IngestPhase failedPhase,
                                                 String errorMessage, IngestStats stats, Long factSheetId) {
+        return failed(taskId, fileName, failedPhase, errorMessage, stats, factSheetId, FailureReason.UNKNOWN);
+    }
+
+    /**
+     * Creates a failure update with fact sheet association and specific failure reason.
+     */
+    public static IngestProgressUpdate failed(String taskId, String fileName, IngestPhase failedPhase,
+                                                String errorMessage, IngestStats stats, Long factSheetId,
+                                                FailureReason failureReason) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -662,7 +880,9 @@ public record IngestProgressUpdate(
                 stats,
                 errorMessage,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                failureReason,
+                null
         );
     }
 
@@ -688,7 +908,9 @@ public record IngestProgressUpdate(
                 IngestStats.empty(),
                 "Job stopped: " + message,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                FailureReason.MEMORY_PRESSURE,
+                null
         );
     }
 
@@ -705,6 +927,15 @@ public record IngestProgressUpdate(
      */
     public static IngestProgressUpdate cancelled(String taskId, String fileName, IngestPhase currentPhase,
                                                    String reason, IngestStats stats, Long factSheetId) {
+        return cancelled(taskId, fileName, currentPhase, reason, stats, factSheetId, FailureReason.USER_CANCELLED);
+    }
+
+    /**
+     * Creates a cancellation update with stats, fact sheet association, and specific reason.
+     */
+    public static IngestProgressUpdate cancelled(String taskId, String fileName, IngestPhase currentPhase,
+                                                   String reason, IngestStats stats, Long factSheetId,
+                                                   FailureReason failureReason) {
         return new IngestProgressUpdate(
                 taskId,
                 fileName,
@@ -716,7 +947,9 @@ public record IngestProgressUpdate(
                 stats,
                 "Job cancelled: " + reason,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                failureReason,
+                null
         );
     }
 
@@ -744,7 +977,31 @@ public record IngestProgressUpdate(
                 IngestStats.empty(),
                 "CRITICAL: " + message,
                 Instant.now(),
-                factSheetId
+                factSheetId,
+                FailureReason.OOM_KILLED,
+                null
+        );
+    }
+
+    /**
+     * Creates a failure update specifically for OutOfMemoryError in subprocess.
+     */
+    public static IngestProgressUpdate outOfMemory(String taskId, String fileName, IngestPhase failedPhase,
+                                                     String errorMessage, IngestStats stats, Long factSheetId) {
+        return new IngestProgressUpdate(
+                taskId,
+                fileName,
+                failedPhase,
+                IngestStatus.FAILED,
+                -1,
+                "OUT OF MEMORY",
+                "Subprocess ran out of memory - consider reducing batch size or increasing heap",
+                stats,
+                errorMessage,
+                Instant.now(),
+                factSheetId,
+                FailureReason.OUT_OF_MEMORY,
+                null
         );
     }
 

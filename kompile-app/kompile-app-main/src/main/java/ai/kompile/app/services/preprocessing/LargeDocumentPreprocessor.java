@@ -336,8 +336,8 @@ public class LargeDocumentPreprocessor {
                 if (currentPage % 10 == 0 || currentPage == docInfo.totalPages()) {
                     long elapsed = System.currentTimeMillis() - startTime;
                     double pagesPerSec = elapsed > 0 ? (currentPage * 1000.0 / elapsed) : 0;
-                    logger.info("Processed page {}/{} ({} chunks, {:.1f} pages/sec)",
-                               currentPage, docInfo.totalPages(), chunksCreated.get(), pagesPerSec);
+                    logger.info("Processed page {}/{} ({} chunks, {} pages/sec)",
+                               currentPage, docInfo.totalPages(), chunksCreated.get(), String.format("%.1f", pagesPerSec));
                 }
             }
 

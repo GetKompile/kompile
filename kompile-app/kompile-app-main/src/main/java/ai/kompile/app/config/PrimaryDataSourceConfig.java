@@ -45,7 +45,14 @@ import java.util.Properties;
         "ai.kompile.app.facts.repository",
         "ai.kompile.app.ingest.repository",
         "ai.kompile.app.staging.repository",
-        "ai.kompile.chat.history.repository"
+        "ai.kompile.app.eval.repository",
+        "ai.kompile.app.prompts.repository",
+        "ai.kompile.chat.history.repository",
+        "ai.kompile.knowledgegraph.repository",
+        "ai.kompile.knowledgegraph.builder.repository",
+        "ai.kompile.knowledgegraph.embedding.repository",
+        "ai.kompile.oauth.repository",
+        "ai.kompile.orchestrator.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -54,7 +61,14 @@ import java.util.Properties;
     "ai.kompile.app.facts.domain",
     "ai.kompile.app.ingest.domain",
     "ai.kompile.app.staging.domain",
-    "ai.kompile.chat.history.domain"
+    "ai.kompile.app.eval.domain",
+    "ai.kompile.app.prompts.domain",
+    "ai.kompile.chat.history.domain",
+    "ai.kompile.knowledgegraph.domain",
+    "ai.kompile.knowledgegraph.builder.domain",
+    "ai.kompile.knowledgegraph.embedding.domain",
+    "ai.kompile.oauth.domain",
+    "ai.kompile.orchestrator.model"
 })
 public class PrimaryDataSourceConfig {
 
@@ -83,8 +97,19 @@ public class PrimaryDataSourceConfig {
     }
 
     @Bean
+    public SchemaMigrationBridgeService schemaMigrationBridgeService(DataSource dataSource) {
+        return new SchemaMigrationBridgeService(dataSource);
+    }
+
+    @Bean
     @Primary
-    public LocalContainerEntityManagerFactoryBean entityManagerFactory(DataSource dataSource) {
+    public LocalContainerEntityManagerFactoryBean entityManagerFactory(
+            DataSource dataSource,
+            SchemaMigrationBridgeService schemaMigrationBridgeService) {
+        // Run bridge migrations BEFORE Hibernate schema update
+        log.info("Running schema migrations before EntityManagerFactory creation...");
+        schemaMigrationBridgeService.runMigrations();
+
         log.info("Creating primary entity manager factory");
 
         LocalContainerEntityManagerFactoryBean em = new LocalContainerEntityManagerFactoryBean();
@@ -93,7 +118,14 @@ public class PrimaryDataSourceConfig {
             "ai.kompile.app.facts.domain",
             "ai.kompile.app.ingest.domain",
             "ai.kompile.app.staging.domain",
-            "ai.kompile.chat.history.domain"
+            "ai.kompile.app.eval.domain",
+            "ai.kompile.app.prompts.domain",
+            "ai.kompile.chat.history.domain",
+            "ai.kompile.knowledgegraph.domain",
+            "ai.kompile.knowledgegraph.builder.domain",
+            "ai.kompile.knowledgegraph.embedding.domain",
+            "ai.kompile.oauth.domain",
+            "ai.kompile.orchestrator.model"
         );
         em.setPersistenceUnitName("primary");
 

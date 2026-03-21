@@ -144,9 +144,9 @@ public class IndexingStage implements PipelineStage<EmbeddingStage.EmbeddingOutp
                     double batchThroughput = batchTimeMs > 0 ?
                             (currentBatch.size() * 1000.0) / batchTimeMs : 0;
 
-                    logger.debug("Batch {}: indexed {} chunks in {}ms ({:.0f}/sec) [{}/{}]",
+                    logger.debug("Batch {}: indexed {} chunks in {}ms ({}/sec) [{}/{}]",
                             batchCount, currentBatch.size(), batchTimeMs,
-                            batchThroughput, chunksIndexed, totalChunks);
+                            String.format("%.0f", batchThroughput), chunksIndexed, totalChunks);
 
                     // MEMORY LEAK FIX: Close embedding INDArrays after they've been indexed
                     // The embeddings are stored in metadata and passed to the indexer.

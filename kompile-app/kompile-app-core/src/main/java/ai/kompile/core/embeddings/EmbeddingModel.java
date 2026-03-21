@@ -82,17 +82,31 @@ public interface EmbeddingModel extends AutoCloseable {
         int numCols = (int) matrix.columns();
         List<float[]> results = new java.util.ArrayList<>(numRows);
 
-        // Extract embeddings efficiently from flat buffer
-        float[] flatData = matrix.data().asFloat();
-        for (int i = 0; i < numRows; i++) {
-            float[] embedding = new float[numCols];
-            System.arraycopy(flatData, i * numCols, embedding, 0, numCols);
-            results.add(embedding);
-        }
-
-        // Clean up
-        if (!matrix.wasClosed()) {
-            try { matrix.close(); } catch (Exception ignored) {}
+        try {
+            // Fast path: contiguous row-major data - single bulk read + arraycopy
+            if (matrix.ordering() == 'c' && !matrix.isView()
+                    && matrix.stride(0) == numCols && matrix.stride(1) == 1) {
+                float[] flat = matrix.data().getFloatsAt(matrix.offset(), numRows * numCols);
+                for (int i = 0; i < numRows; i++) {
+                    float[] embedding = new float[numCols];
+                    System.arraycopy(flat, i * numCols, embedding, 0, numCols);
+                    results.add(embedding);
+                }
+            } else {
+                // General path: direct element access avoids intermediate INDArray allocations
+                for (int i = 0; i < numRows; i++) {
+                    float[] embedding = new float[numCols];
+                    for (int j = 0; j < numCols; j++) {
+                        embedding[j] = matrix.getFloat(i, j);
+                    }
+                    results.add(embedding);
+                }
+            }
+        } finally {
+            // Clean up original matrix
+            if (!matrix.wasClosed()) {
+                try { matrix.close(); } catch (Exception ignored) {}
+            }
         }
 
         return results;
@@ -144,7 +158,10 @@ public interface EmbeddingModel extends AutoCloseable {
 
     /**
      * Information about the current batch being processed.
-     * Provides visibility into the actual tensor shapes during inference.
+     * Provides visibility into the actual tensor shapes AND timing during inference.
+     *
+     * This is THE authoritative source for batch timing - it shows exactly what's
+     * happening inside the NDArray creation and forward pass.
      */
     record BatchInfo(
             int numChunks,           // Number of text chunks in the batch
@@ -153,11 +170,24 @@ public interface EmbeddingModel extends AutoCloseable {
             int totalTokens,         // Total tokens across all chunks
             long[] inputShape,       // Actual input tensor shape [batch, seq_len]
             long[] outputShape,      // Actual output tensor shape [batch, embedding_dim]
-            String step,             // Current step: TOKENIZING, PADDING, FORWARD_PASS, EXTRACTING
-            long stepStartTimeMs     // When current step started
+            String step,             // Current step: TOKENIZING, PADDING, TENSOR_CREATION, FORWARD_PASS, EXTRACTING, COMPLETE
+            long stepStartTimeMs,    // When current step started
+            // ========== TIMING FIELDS ==========
+            long batchStartTimeMs,   // When this batch started processing
+            long tokenizeTimeMs,     // Time spent tokenizing all chunks
+            long paddingTimeMs,      // Time spent padding to max length
+            long tensorCreationTimeMs, // Time spent creating NDArrays
+            long forwardPassTimeMs,  // Time spent in model.output() - THE KEY METRIC
+            long extractionTimeMs,   // Time spent extracting embeddings from output
+            long totalTimeMs,        // Total time for this batch (when COMPLETE)
+            double tokensPerSecond,  // Throughput: tokens processed per second
+            double chunksPerSecond,  // Throughput: chunks processed per second
+            // ========== PER-PASSAGE TOKEN COUNTS ==========
+            int[] passageTokenCounts // Token count for each passage in the batch
     ) {
         public static BatchInfo empty() {
-            return new BatchInfo(0, 0, 0, 0, new long[0], new long[0], "IDLE", 0);
+            return new BatchInfo(0, 0, 0, 0, new long[0], new long[0], "IDLE", 0,
+                    0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, null);
         }
 
         /**
@@ -191,6 +221,18 @@ public interface EmbeddingModel extends AutoCloseable {
             sb.append("]");
             return sb.toString();
         }
+
+        /** Get elapsed time in current step */
+        public long stepElapsedMs() {
+            if (stepStartTimeMs == 0) return 0;
+            return System.currentTimeMillis() - stepStartTimeMs;
+        }
+
+        /** Get total elapsed time since batch started */
+        public long batchElapsedMs() {
+            if (batchStartTimeMs == 0) return 0;
+            return System.currentTimeMillis() - batchStartTimeMs;
+        }
     }
 
     /**
@@ -210,6 +252,76 @@ public interface EmbeddingModel extends AutoCloseable {
      */
     default int getDimensions() {
         return dimensions();
+    }
+
+    /**
+     * Gets the dimensionality of the embeddings produced by this model.
+     * Another alias for dimensions() for compatibility.
+     * @return The dimension of the vectors.
+     */
+    default int getEmbeddingDimension() {
+        return dimensions();
+    }
+
+    /**
+     * Gets the initialization error message if the model failed to load.
+     * This allows graceful handling of model unavailability in the UI.
+     *
+     * @return The error message, or null if no error occurred
+     */
+    default String getInitializationError() {
+        return null;
+    }
+
+    /**
+     * Checks if the embedding model is initialized and ready for use.
+     * This allows the UI to show appropriate status information.
+     *
+     * @return true if the model is loaded and ready, false otherwise
+     */
+    default boolean isInitialized() {
+        return dimensions() > 0;
+    }
+
+    /**
+     * Checks if the embedding model is currently loading/initializing.
+     * This allows the UI to show a loading indicator.
+     *
+     * @return true if the model is being loaded, false otherwise
+     */
+    default boolean isLoading() {
+        return false;
+    }
+
+    /**
+     * Gets the current loading phase name.
+     * Phases typically include: IDLE, STARTING, LOOKING_UP_REGISTRY,
+     * LOADING_MODEL_FILES, CREATING_ENCODER, TESTING_ENCODER, COMPLETE, FAILED
+     *
+     * @return The loading phase name, or "IDLE" if not loading
+     */
+    default String getLoadingPhase() {
+        return "IDLE";
+    }
+
+    /**
+     * Gets a human-readable message about the current loading progress.
+     * This is useful for displaying in the UI during model initialization.
+     *
+     * @return The loading message, or null if not loading
+     */
+    default String getLoadingMessage() {
+        return null;
+    }
+
+    /**
+     * Gets the elapsed time in milliseconds since loading started.
+     * This is useful for displaying loading progress in the UI.
+     *
+     * @return The elapsed time in milliseconds, or 0 if not loading
+     */
+    default long getLoadingElapsedMs() {
+        return 0;
     }
 
     /**

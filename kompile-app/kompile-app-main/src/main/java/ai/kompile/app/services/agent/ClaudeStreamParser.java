@@ -62,6 +62,23 @@ public class ClaudeStreamParser {
     // Track modified files per session (from Edit/Write tool calls)
     private final Map<String, Set<String>> modifiedFilesPerSession = new ConcurrentHashMap<>();
 
+    // Track token generation metrics per session for hosted API responses
+    private final Map<String, TokenSessionMetrics> tokenMetricsPerSession = new ConcurrentHashMap<>();
+
+    /**
+     * Tracks token metrics accumulated across streaming events for a session.
+     */
+    private static class TokenSessionMetrics {
+        long messageStartTimeNanos;
+        int inputTokens;
+        int outputTokens;
+        String model;
+
+        TokenSessionMetrics() {
+            this.messageStartTimeNanos = System.nanoTime();
+        }
+    }
+
     // Pattern to filter out system reminders
     private static final Pattern SYSTEM_REMINDER_PATTERN = Pattern.compile(
         "<system-reminder>.*?</system-reminder>",
@@ -201,12 +218,21 @@ public class ClaudeStreamParser {
     }
 
     private ParseResult handleMessageStart(String sessionId, JsonNode event) {
+        // Initialize token metrics tracking for this session
+        TokenSessionMetrics metrics = new TokenSessionMetrics();
         if (event.has("message")) {
             JsonNode message = event.get("message");
             String model = message.has("model") ? message.get("model").asText() : "unknown";
             String msgId = message.has("id") ? message.get("id").asText() : "";
+            metrics.model = model;
+            // Extract input tokens from message_start usage if present
+            if (message.has("usage")) {
+                JsonNode usage = message.get("usage");
+                metrics.inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0;
+            }
             log.debug("Message start: model={}, id={}", model, msgId);
         }
+        tokenMetricsPerSession.put(sessionId, metrics);
         return ParseResult.event("message_start", null);
     }
 
@@ -329,6 +355,11 @@ public class ClaudeStreamParser {
         if (event.has("usage")) {
             JsonNode usage = event.get("usage");
             int outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asInt() : 0;
+            // Accumulate output tokens into session metrics
+            TokenSessionMetrics metrics = tokenMetricsPerSession.get(sessionId);
+            if (metrics != null) {
+                metrics.outputTokens = outputTokens; // Anthropic sends cumulative count
+            }
             log.debug("Output tokens: {}", outputTokens);
         }
         return null;
@@ -402,11 +433,34 @@ public class ClaudeStreamParser {
     }
 
     /**
+     * Get token generation metrics for a session.
+     * Returns a map with: outputTokens, inputTokens, totalGenerationMs, tokensPerSecond, model.
+     * Returns null if no metrics are available.
+     */
+    public Map<String, Object> getTokenMetrics(String sessionId) {
+        TokenSessionMetrics metrics = tokenMetricsPerSession.get(sessionId);
+        if (metrics == null || metrics.outputTokens <= 0) {
+            return null;
+        }
+        long totalMs = (System.nanoTime() - metrics.messageStartTimeNanos) / 1_000_000;
+        double tokensPerSecond = totalMs > 0
+                ? (metrics.outputTokens * 1000.0) / totalMs : 0.0;
+        return Map.of(
+                "outputTokens", metrics.outputTokens,
+                "inputTokens", metrics.inputTokens,
+                "totalGenerationMs", totalMs,
+                "tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0,
+                "model", metrics.model != null ? metrics.model : "unknown"
+        );
+    }
+
+    /**
      * Clear all tracked content blocks for a session.
      * Call this when a session ends.
      */
     public void clearSession(String sessionId) {
         contentBlocks.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
+        tokenMetricsPerSession.remove(sessionId);
     }
 
     /**

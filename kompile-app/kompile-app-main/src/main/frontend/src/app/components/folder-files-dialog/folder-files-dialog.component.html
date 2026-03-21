@@ -157,7 +157,7 @@
             type="text"
             class="chat-search-input"
             placeholder="Search chats..."
-            [(ngModel)]="sessionSearchQuery">
+            [(ngModel)]="sessionSearchQuery" [ngModelOptions]="{standalone: true}">
         </div>
 
         <div class="available-sessions-list">

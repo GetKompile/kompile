@@ -19,7 +19,7 @@ package ai.kompile.staging.cli;
 import ai.kompile.staging.download.DownloadRequest;
 import ai.kompile.staging.download.DownloadResult;
 import ai.kompile.staging.download.DownloadService;
-import ai.kompile.staging.registry.ModelType;
+import ai.kompile.modelmanager.registry.ModelType;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;

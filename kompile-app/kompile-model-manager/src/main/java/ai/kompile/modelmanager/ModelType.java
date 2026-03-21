@@ -57,5 +57,92 @@ public enum ModelType {
     /**
      * Reranking models (general category for any reranking approach).
      */
-    RERANKER_MODEL
+    RERANKER_MODEL,
+
+    // ==================== OCR Model Types ====================
+
+    /**
+     * OCR text detection model.
+     * Detects text regions in images.
+     * Examples: DBNet, EAST, CRAFT
+     */
+    OCR_DETECTION,
+
+    /**
+     * OCR text recognition model.
+     * Converts text region images to strings.
+     * Examples: CRNN, SVTR, TrOCR
+     */
+    OCR_RECOGNITION,
+
+    /**
+     * OCR table extraction model.
+     * Identifies and structures tables.
+     * Examples: TableFormer, PubLayNet
+     */
+    OCR_TABLE,
+
+    /**
+     * Document layout understanding model.
+     * Maps text to semantic fields.
+     * Examples: LayoutLM, LayoutLMv2, LayoutLMv3, DiT
+     */
+    LAYOUT_MODEL,
+
+    /**
+     * End-to-end OCR pipeline model.
+     * Combined detection + recognition.
+     * Examples: PaddleOCR pipeline, DocTR
+     */
+    OCR_PIPELINE,
+
+    /**
+     * Document classification model.
+     * Classifies document types.
+     * Examples: Invoice detector, receipt classifier
+     */
+    DOCUMENT_CLASSIFIER,
+
+    // ==================== VLM Model Types ====================
+
+    /**
+     * Vision-Language Model for end-to-end document understanding.
+     * Multi-part models with vision encoder + text decoder.
+     * Examples: SmolDocling, LLaVA, Donut, Nougat
+     */
+    VLM_MODEL,
+
+    /**
+     * Vision encoder component of a VLM.
+     * Converts images to embeddings.
+     * Examples: ViT, CLIP vision encoder
+     */
+    VLM_VISION_ENCODER,
+
+    /**
+     * Text decoder component of a VLM.
+     * Generates text from embeddings.
+     * Examples: GPT-2, LLaMA decoder
+     */
+    VLM_DECODER,
+
+    /**
+     * Token embeddings component of a VLM.
+     * Embeds text tokens for decoder.
+     */
+    VLM_EMBED_TOKENS,
+
+    // ==================== SDX Runtime Types ====================
+
+    /**
+     * SDX Runtime SDK — platform-specific native runtime libraries.
+     * Packages: .xcframework (iOS), .aar (Android), .zip (desktop)
+     */
+    SDX_RUNTIME_SDK,
+
+    /**
+     * SDX Model Bundle — inference bundles (.sdz files with manifest.json).
+     * Platform-independent model packages for on-device inference.
+     */
+    SDX_MODEL_BUNDLE
 }

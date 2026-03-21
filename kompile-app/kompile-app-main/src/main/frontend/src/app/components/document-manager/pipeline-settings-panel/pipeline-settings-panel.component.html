@@ -107,7 +107,8 @@
             </mat-select>
           </mat-form-field>
           <mat-slide-toggle
-            [(ngModel)]="config.extraction.autoDetectLoader"
+            name="autoDetectLoader"
+            [(ngModel)]="config.extraction.autoDetectLoader" [ngModelOptions]="{standalone: true}"
             (change)="onSettingChange()">
             Auto-detect loader
           </mat-slide-toggle>
@@ -123,7 +124,8 @@
         </div>
         <div class="stage-options">
           <mat-slide-toggle
-            [(ngModel)]="config.tokenization.enabled"
+            name="tokenizationEnabled"
+            [(ngModel)]="config.tokenization.enabled" [ngModelOptions]="{standalone: true}"
             (change)="onSettingChange()">
             Enable pre-tokenization
           </mat-slide-toggle>
@@ -137,7 +139,7 @@
           </mat-form-field>
           <mat-form-field appearance="outline" *ngIf="config.tokenization?.enabled">
             <mat-label>Max Token Length</mat-label>
-            <input matInput type="number" [(ngModel)]="config.tokenization.maxTokenLength"
+            <input matInput type="number" [(ngModel)]="config.tokenization.maxTokenLength" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="64" max="2048">
           </mat-form-field>
         </div>
@@ -153,18 +155,19 @@
         <div class="stage-options">
           <mat-form-field appearance="outline">
             <mat-label>Chunk Size</mat-label>
-            <input matInput type="number" [(ngModel)]="config.chunking.chunkSize"
+            <input matInput type="number" [(ngModel)]="config.chunking.chunkSize" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="100" max="5000">
             <mat-hint>Characters per chunk</mat-hint>
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Chunk Overlap</mat-label>
-            <input matInput type="number" [(ngModel)]="config.chunking.chunkOverlap"
+            <input matInput type="number" [(ngModel)]="config.chunking.chunkOverlap" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="0" max="500">
             <mat-hint>Overlap between chunks</mat-hint>
           </mat-form-field>
           <mat-slide-toggle
-            [(ngModel)]="config.chunking.preserveParagraphs"
+            name="preserveParagraphs"
+            [(ngModel)]="config.chunking.preserveParagraphs" [ngModelOptions]="{standalone: true}"
             (change)="onSettingChange()">
             Preserve paragraph boundaries
           </mat-slide-toggle>
@@ -181,7 +184,7 @@
         <div class="stage-options">
           <mat-form-field appearance="outline">
             <mat-label>Inference Batch Size (NDArray)</mat-label>
-            <input matInput type="number" [(ngModel)]="config.embedding.batchSize"
+            <input matInput type="number" [(ngModel)]="config.embedding.batchSize" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="1" max="128">
             <mat-hint>Text chunks per forward pass through embedding model</mat-hint>
           </mat-form-field>
@@ -202,7 +205,7 @@
         <div class="stage-options">
           <mat-form-field appearance="outline">
             <mat-label>Index Batch Size (Chunks)</mat-label>
-            <input matInput type="number" [(ngModel)]="config.indexing.batchSize"
+            <input matInput type="number" [(ngModel)]="config.indexing.batchSize" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="10" max="500">
             <mat-hint>Chunks per Lucene index write operation</mat-hint>
           </mat-form-field>
@@ -210,6 +213,226 @@
             <mat-icon>info_outline</mat-icon>
             <span>What is index batch size?</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Knowledge Graph / Entity Extraction Stage -->
+      <div class="stage-section" *ngIf="graphConfig">
+        <div class="stage-header">
+          <mat-icon>hub</mat-icon>
+          <h4>Knowledge Graph (Entity Extraction)</h4>
+          <span class="thread-count" *ngIf="graphConfig.enabled">Enabled</span>
+          <span class="thread-count" *ngIf="!graphConfig.enabled">Disabled</span>
+          <mat-spinner *ngIf="graphConfigSaving" diameter="16"></mat-spinner>
+        </div>
+        <div class="stage-options">
+          <mat-slide-toggle
+            [checked]="graphConfig.enabled || false"
+            (change)="toggleGraphExtraction()"
+            [disabled]="graphConfigSaving"
+            matTooltip="Extract entities and relationships from documents to build a knowledge graph">
+            Enable entity extraction
+          </mat-slide-toggle>
+          <ng-container *ngIf="graphConfig.enabled">
+            <mat-form-field appearance="outline">
+              <mat-label>Extraction Batch Size</mat-label>
+              <input matInput type="number" [value]="graphConfig.batchSize || 10"
+                     (change)="onGraphConfigChange('batchSize', $any($event.target).value)"
+                     [disabled]="graphConfigSaving" min="1" max="50">
+              <mat-hint>Chunks per LLM entity extraction call</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline" *ngIf="schemaModes.length > 0">
+              <mat-label>Schema Enforcement</mat-label>
+              <mat-select [value]="graphConfig.schemaEnforcement || 'LENIENT'"
+                          (selectionChange)="onGraphConfigChange('schemaEnforcement', $event.value)"
+                          [disabled]="graphConfigSaving">
+                <mat-option *ngFor="let mode of schemaModes" [value]="mode.value"
+                            [matTooltip]="mode.description">
+                  {{ mode.label }}
+                </mat-option>
+              </mat-select>
+              <mat-hint>Control type validation strictness</mat-hint>
+            </mat-form-field>
+            <div class="batch-info-tooltip" matTooltip="Entity extraction uses LLM to identify named entities (people, organizations, locations, concepts) and relationships from text. Smaller batches mean more LLM calls but better memory usage.">
+              <mat-icon>info_outline</mat-icon>
+              <span>How entity extraction works</span>
+            </div>
+          </ng-container>
+        </div>
+
+        <!-- Entity Extraction Model Settings -->
+        <ng-container *ngIf="graphConfig.enabled">
+          <div class="model-config-section" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.08);">
+            <div class="stage-header">
+              <mat-icon>psychology</mat-icon>
+              <h5 style="margin: 0; font-size: 13px;">Entity Extraction Model</h5>
+            </div>
+            <div class="stage-options" style="margin-top: 8px;">
+              <mat-form-field appearance="outline">
+                <mat-label>Model Provider</mat-label>
+                <mat-select [value]="graphConfig.extractionModelProvider || 'default'"
+                            (selectionChange)="onModelProviderChange($event.value)"
+                            [disabled]="graphConfigSaving">
+                  <mat-option *ngFor="let provider of modelProviders" [value]="provider.id"
+                              [disabled]="!provider.available">
+                    {{ provider.name }} <span *ngIf="!provider.available">(unavailable)</span>
+                  </mat-option>
+                </mat-select>
+                <mat-hint>LLM provider for entity extraction</mat-hint>
+              </mat-form-field>
+              <!-- Model dropdown when provider has models available -->
+              <mat-form-field appearance="outline" *ngIf="graphConfig.extractionModelProvider && graphConfig.extractionModelProvider !== 'default' && hasModelsAvailable()">
+                <mat-label>Model</mat-label>
+                <mat-select [value]="graphConfig.extractionModelName"
+                            (selectionChange)="onGraphConfigChange('extractionModelName', $event.value)"
+                            [disabled]="graphConfigSaving">
+                  <mat-option [value]="null">Provider Default</mat-option>
+                  <mat-option *ngFor="let model of getAvailableModels()" [value]="model.id"
+                              [matTooltip]="model.description || ''">
+                    {{ model.name }}
+                  </mat-option>
+                </mat-select>
+                <mat-hint>Select a model from the provider</mat-hint>
+              </mat-form-field>
+              <!-- Free text input when provider doesn't expose models -->
+              <mat-form-field appearance="outline" *ngIf="graphConfig.extractionModelProvider && graphConfig.extractionModelProvider !== 'default' && !hasModelsAvailable()">
+                <mat-label>Model Name</mat-label>
+                <input matInput [value]="graphConfig.extractionModelName || ''"
+                       (change)="onGraphConfigChange('extractionModelName', $any($event.target).value)"
+                       [disabled]="graphConfigSaving"
+                       placeholder="Leave empty for provider default">
+                <mat-hint>Model name (e.g., gpt-4o, claude-3-5-sonnet)</mat-hint>
+              </mat-form-field>
+            </div>
+            <div class="stage-options" style="margin-top: 8px;">
+              <mat-form-field appearance="outline">
+                <mat-label>Temperature</mat-label>
+                <input matInput type="number" [value]="graphConfig.extractionTemperature || 0"
+                       (change)="onGraphConfigChange('extractionTemperature', $any($event.target).value)"
+                       [disabled]="graphConfigSaving" min="0" max="2" step="0.1">
+                <mat-hint>0.0 (deterministic) - 2.0 (creative)</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Max Tokens</mat-label>
+                <input matInput type="number" [value]="graphConfig.extractionMaxTokens || 4096"
+                       (change)="onGraphConfigChange('extractionMaxTokens', $any($event.target).value)"
+                       [disabled]="graphConfigSaving" min="100" max="32000" step="100">
+                <mat-hint>Max response tokens</mat-hint>
+              </mat-form-field>
+            </div>
+            <div class="stage-options" style="margin-top: 8px;">
+              <mat-form-field appearance="outline" style="width: 100%;">
+                <mat-label>Custom Extraction Prompt (Optional)</mat-label>
+                <textarea matInput [value]="graphConfig.customExtractionPrompt || ''"
+                          (change)="onGraphConfigChange('customExtractionPrompt', $any($event.target).value)"
+                          [disabled]="graphConfigSaving"
+                          rows="3"
+                          placeholder="Leave empty to use default extraction prompt..."></textarea>
+                <mat-hint>Custom prompt template for entity extraction</mat-hint>
+              </mat-form-field>
+            </div>
+          </div>
+        </ng-container>
+
+        <!-- Advanced Entity Extraction Settings -->
+        <ng-container *ngIf="graphConfig.enabled">
+          <div class="stage-options" style="margin-top: 12px;">
+            <mat-form-field appearance="outline">
+              <mat-label>Max Entities Per Chunk</mat-label>
+              <input matInput type="number" [value]="graphConfig.maxEntitiesPerChunk || 20"
+                     (change)="onGraphConfigChange('maxEntitiesPerChunk', $any($event.target).value)"
+                     [disabled]="graphConfigSaving" min="1" max="100">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Relationships Per Chunk</mat-label>
+              <input matInput type="number" [value]="graphConfig.maxRelationshipsPerChunk || 30"
+                     (change)="onGraphConfigChange('maxRelationshipsPerChunk', $any($event.target).value)"
+                     [disabled]="graphConfigSaving" min="1" max="200">
+            </mat-form-field>
+          </div>
+
+          <!-- Deduplication Settings -->
+          <div class="stage-options" style="margin-top: 12px;">
+            <mat-slide-toggle
+              [checked]="graphConfig.deduplicationEnabled !== false"
+              (change)="onGraphConfigChange('deduplicationEnabled', $event.checked)"
+              [disabled]="graphConfigSaving"
+              matTooltip="Merge similar entities to reduce duplicates">
+              Enable entity deduplication
+            </mat-slide-toggle>
+            <mat-form-field appearance="outline" *ngIf="graphConfig.deduplicationEnabled !== false">
+              <mat-label>Similarity Threshold</mat-label>
+              <input matInput type="number" [value]="graphConfig.similarityThreshold || 0.85"
+                     (change)="onGraphConfigChange('similarityThreshold', $any($event.target).value)"
+                     [disabled]="graphConfigSaving" min="0" max="1" step="0.05">
+              <mat-hint>0.0-1.0 (higher = stricter matching)</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Neo4j Integration -->
+          <div class="neo4j-section" style="margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.08);">
+            <div class="stage-header">
+              <mat-icon>share</mat-icon>
+              <h5 style="margin: 0; font-size: 13px;">Neo4j Integration (Optional)</h5>
+            </div>
+            <div class="stage-options">
+              <mat-slide-toggle
+                [checked]="graphConfig.neo4jEnabled || false"
+                (change)="onGraphConfigChange('neo4jEnabled', $event.checked)"
+                [disabled]="graphConfigSaving"
+                matTooltip="Export extracted graph to Neo4j database">
+                Enable Neo4j export
+              </mat-slide-toggle>
+            </div>
+            <ng-container *ngIf="graphConfig.neo4jEnabled">
+              <div class="stage-options" style="margin-top: 8px;">
+                <mat-form-field appearance="outline">
+                  <mat-label>Neo4j URI</mat-label>
+                  <input matInput [value]="graphConfig.neo4jUri || 'bolt://localhost:7687'"
+                         (change)="onGraphConfigChange('neo4jUri', $any($event.target).value)"
+                         [disabled]="graphConfigSaving" placeholder="bolt://localhost:7687">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Database</mat-label>
+                  <input matInput [value]="graphConfig.neo4jDatabase || 'neo4j'"
+                         (change)="onGraphConfigChange('neo4jDatabase', $any($event.target).value)"
+                         [disabled]="graphConfigSaving" placeholder="neo4j">
+                </mat-form-field>
+              </div>
+              <div class="stage-options" style="margin-top: 8px;">
+                <mat-form-field appearance="outline">
+                  <mat-label>Username</mat-label>
+                  <input matInput [value]="graphConfig.neo4jUsername || 'neo4j'"
+                         (change)="onGraphConfigChange('neo4jUsername', $any($event.target).value)"
+                         [disabled]="graphConfigSaving" placeholder="neo4j">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Password</mat-label>
+                  <input matInput type="password"
+                         (change)="onGraphConfigChange('neo4jPassword', $any($event.target).value)"
+                         [disabled]="graphConfigSaving" placeholder="Enter password">
+                </mat-form-field>
+              </div>
+            </ng-container>
+          </div>
+
+          <!-- Reset Button -->
+          <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
+            <button mat-stroked-button color="warn" (click)="resetGraphConfig()"
+                    [disabled]="graphConfigSaving" matTooltip="Reset to default settings">
+              <mat-icon>restore</mat-icon>
+              Reset to Defaults
+            </button>
+          </div>
+        </ng-container>
+
+        <div class="graph-info" *ngIf="graphConfig.enabled">
+          <mat-icon>info</mat-icon>
+          <span>
+            Entity extraction will analyze indexed documents using LLM to extract entities (people, organizations,
+            locations, concepts) and their relationships. Extracted data is stored in the knowledge graph for
+            enhanced search and graph-based queries.
+          </span>
         </div>
       </div>
 
@@ -254,11 +477,12 @@
         <div class="stage-options">
           <mat-form-field appearance="outline">
             <mat-label>Queue Capacity</mat-label>
-            <input matInput type="number" [(ngModel)]="config.queues.capacity"
+            <input matInput type="number" [(ngModel)]="config.queues.capacity" [ngModelOptions]="{standalone: true}"
                    (change)="onSettingChange()" min="10" max="1000">
           </mat-form-field>
           <mat-slide-toggle
-            [(ngModel)]="config.queues.backpressureEnabled"
+            name="backpressureEnabled"
+            [(ngModel)]="config.queues.backpressureEnabled" [ngModelOptions]="{standalone: true}"
             (change)="onSettingChange()">
             Enable backpressure
           </mat-slide-toggle>

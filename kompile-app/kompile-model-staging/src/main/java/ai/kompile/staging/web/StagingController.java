@@ -24,7 +24,7 @@ import ai.kompile.staging.config.ModelSourceConfiguration;
 import ai.kompile.staging.download.DownloadRequest;
 import ai.kompile.staging.export.ExportService;
 import ai.kompile.staging.export.ImportService;
-import ai.kompile.staging.registry.*;
+import ai.kompile.modelmanager.registry.*;
 import ai.kompile.staging.staging.StagingModelInfo;
 import ai.kompile.staging.staging.StagingService;
 import ai.kompile.staging.web.dto.*;

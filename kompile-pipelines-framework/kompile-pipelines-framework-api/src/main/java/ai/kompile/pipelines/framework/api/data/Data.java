@@ -17,6 +17,7 @@
 package ai.kompile.pipelines.framework.api.data;
 
 import ai.kompile.pipelines.framework.api.Configuration;
+import ai.kompile.pipelines.framework.api.kvcache.KVCache;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -181,6 +182,34 @@ public interface Data extends Configuration {
      * @param value The nested Data object.
      */
     void put(String key, Data value);
+
+    /**
+     * Puts a {@link KVCache} value. If value is null, it's equivalent to putting a null Object.
+     * @param key The key.
+     * @param value The KVCache value.
+     */
+    default void put(String key, KVCache value) {
+        put(key, (Object) value);
+    }
+
+    /**
+     * Retrieves a {@link KVCache} value.
+     * @param key The key.
+     * @return The KVCache, or null if not found.
+     */
+    default KVCache getKVCache(String key) {
+        return get(key);
+    }
+
+    /**
+     * Retrieves a {@link KVCache} value with a default.
+     * @param key The key.
+     * @param defaultValue The default value if not found.
+     * @return The KVCache, or defaultValue if not found.
+     */
+    default KVCache getKVCache(String key, KVCache defaultValue) {
+        return get(key, defaultValue);
+    }
 
     /**
      * Puts a List of a specific {@link ValueType}.

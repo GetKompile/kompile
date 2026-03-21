@@ -19,7 +19,6 @@ package ai.kompile.app;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
-import org.nd4j.common.config.ND4JSystemProperties;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.factory.Nd4jBackend;
@@ -45,12 +44,13 @@ import java.util.Map;
 import java.util.Properties;
 
 import ai.kompile.orchestrator.config.OrchestratorAutoConfiguration;
+import ai.kompile.pipeline.management.config.PipelineManagementAutoConfiguration;
 import org.springframework.context.annotation.Import;
 
 @SpringBootApplication(scanBasePackages = "ai.kompile")
 @EnableConfigurationProperties({}) // Keep if other @ConfigurationProperties are used elsewhere
 @EnableScheduling
-@Import(OrchestratorAutoConfiguration.class)
+@Import({OrchestratorAutoConfiguration.class, PipelineManagementAutoConfiguration.class})
 public class MainApplication {
 
     private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
@@ -77,21 +77,22 @@ public class MainApplication {
             }
         }
 
+
+        Nd4j.getEnvironment().setDebug(true);
+        Nd4j.getEnvironment().setVerbose(true);
         System.setProperty(MAX_FILE_SIZE_PROPERTY, maxFileSizeArg);
         System.setProperty(MAX_REQUEST_SIZE_PROPERTY, maxRequestSizeArg);
 
         DifferentialFunctionClassHolder.initInstance();
-        NativeOps nativeOps = null;
-        System.setProperty(ND4JSystemProperties.INIT_NATIVEOPS_HOLDER, "false");
-        Class<? extends NativeOps> nativeOpsClazz = (Class<? extends NativeOps>) Class
-                .forName("org.nd4j.linalg.cpu.nativecpu.bindings.Nd4jCpu");
-        nativeOps = nativeOpsClazz.newInstance();
-        NativeOpsHolder.getInstance().setDeviceNativeOps(nativeOps);
-        NativeOpsHolder.getInstance().initOps();
-        nativeOps.initializeDevicesAndFunctions();
 
-        Nd4jBackend load = Nd4jBackend.load();
-        Nd4j.backend = load;
+        // Use built-in backend discovery - automatically finds CUDA, CPU, or other available backends
+        Nd4jBackend backend = Nd4jBackend.load();
+        Nd4j.backend = backend;
+        logger.info("Loaded ND4J backend: {}", backend.getClass().getSimpleName());
+
+        // NativeOps is automatically initialized by backend loading
+        NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
+        nativeOps.initializeDevicesAndFunctions();
 
         // CRITICAL: Load and apply persisted ND4J environment configuration BEFORE
         // Spring context starts.
@@ -167,9 +168,15 @@ public class MainApplication {
                 config = Nd4jEnvironmentConfig.defaults().merge(loaded);
                 logger.info("Successfully loaded persisted ND4J environment configuration");
             } catch (IOException e) {
-                logger.warn("Failed to load persisted ND4J config from {}: {} - using defaults",
+                // CRITICAL: Do NOT set needsPersist = true here!
+                // If file exists but reading fails (temporary lock, I/O error, etc.),
+                // we should NOT overwrite the user's config with defaults.
+                // This was causing the "random reset" bug where transient read failures
+                // would permanently destroy user settings.
+                logger.error("Failed to load persisted ND4J config from {}: {} - using defaults for THIS SESSION ONLY",
                         configFilePath, e.getMessage());
-                needsPersist = true; // Persist defaults since file was corrupt/unreadable
+                logger.warn("The existing config file will NOT be overwritten. Fix the underlying I/O issue.");
+                // needsPersist remains false - do not overwrite user's config!
             }
         } else {
             logger.info("No persisted ND4J config found at {} - will create with defaults", configFilePath);
@@ -192,6 +199,8 @@ public class MainApplication {
     /**
      * Persist ND4J environment configuration to disk.
      * Creates parent directories if they don't exist.
+     * Uses atomic write (write to temp file, then rename) for safety.
+     * Creates a backup of existing config before overwriting.
      *
      * @param configFilePath Path to the config file
      * @param config         Configuration to persist
@@ -205,9 +214,31 @@ public class MainApplication {
                 logger.info("Created config directory: {}", parentDir);
             }
 
+            // Create backup of existing config if it exists
+            if (Files.exists(configFilePath)) {
+                Path backupPath = configFilePath.resolveSibling(
+                        configFilePath.getFileName().toString() + ".backup");
+                try {
+                    Files.copy(configFilePath, backupPath,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.debug("Created backup at: {}", backupPath);
+                } catch (IOException e) {
+                    logger.warn("Failed to create backup of config: {}", e.getMessage());
+                    // Continue anyway - backup is best-effort
+                }
+            }
+
             // Write config with pretty printing for easy manual editing
             String json = OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(config);
-            Files.writeString(configFilePath, json);
+
+            // Atomic write: write to temp file, then rename
+            Path tempFile = configFilePath.resolveSibling(
+                    configFilePath.getFileName().toString() + ".tmp");
+            Files.writeString(tempFile, json);
+            Files.move(tempFile, configFilePath,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+
             logger.info("Persisted ND4J environment config to: {}", configFilePath);
             logger.info("You can edit this file to change ND4J settings for the next startup");
         } catch (IOException e) {
@@ -248,7 +279,7 @@ public class MainApplication {
 
             // === DEBUG/VERBOSE MODES ===
             if (config.debug() != null) {
-                Nd4j.getEnvironment().setDebug(config.debug());
+                Nd4j.getEnvironment().setDebug(true);
                 logger.debug("Set debug to {}", config.debug());
             }
             if (config.verbose() != null) {
@@ -354,6 +385,9 @@ public class MainApplication {
             if (config.logNDArrayEvents() != null) {
                 Nd4j.getEnvironment().setLogNDArrayEvents(config.logNDArrayEvents());
             }
+            if (config.truncateNDArrayLogStrings() != null) {
+                Nd4j.getEnvironment().setTruncateLogStrings(config.truncateNDArrayLogStrings());
+            }
             if (config.checkInputChange() != null) {
                 Nd4j.getEnvironment().setCheckInputChange(config.checkInputChange());
             }
@@ -384,6 +418,139 @@ public class MainApplication {
                 System.setProperty("org.bytedeco.javacpp.pathsFirst", config.javacppPathsFirst().toString());
             }
 
+            // === OMP THREADS (OpenMP parallelism) ===
+            if (config.ompNumThreads() != null && config.ompNumThreads() > 0) {
+                try {
+                    NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
+                    nativeOps.setOmpNumThreads(config.ompNumThreads());
+                    logger.info("Set OpenMP threads to {} (persisted setting)", config.ompNumThreads());
+                } catch (Exception e) {
+                    logger.warn("Failed to set OMP threads to {}: {}", config.ompNumThreads(), e.getMessage());
+                }
+            }
+
+            // === CUDA CONFIGURATION ===
+            // Only apply CUDA settings if running on CUDA backend
+            if (!Nd4j.getEnvironment().isCPU()) {
+                logger.info("CUDA backend detected - applying CUDA configuration settings");
+                var env = Nd4j.getEnvironment();
+                if (config.cudaCurrentDevice() != null) {
+                    env.setCudaCurrentDevice(config.cudaCurrentDevice());
+                }
+                if (config.cudaMemoryPinned() != null) {
+                    env.setCudaMemoryPinned(config.cudaMemoryPinned());
+                }
+                if (config.cudaUseManagedMemory() != null) {
+                    env.setCudaUseManagedMemory(config.cudaUseManagedMemory());
+                }
+                if (config.cudaMemoryPoolSize() != null) {
+                    env.setCudaMemoryPoolSize(config.cudaMemoryPoolSize());
+                }
+                if (config.cudaForceP2P() != null) {
+                    env.setCudaForceP2P(config.cudaForceP2P());
+                }
+                if (config.cudaAllocatorEnabled() != null) {
+                    env.setCudaAllocatorEnabled(config.cudaAllocatorEnabled());
+                }
+                if (config.cudaMaxBlocks() != null) {
+                    env.setCudaMaxBlocks(config.cudaMaxBlocks());
+                }
+                if (config.cudaMaxThreadsPerBlock() != null) {
+                    env.setCudaMaxThreadsPerBlock(config.cudaMaxThreadsPerBlock());
+                }
+                if (config.cudaAsyncExecution() != null) {
+                    env.setCudaAsyncExecution(config.cudaAsyncExecution());
+                }
+                if (config.cudaStreamLimit() != null) {
+                    env.setCudaStreamLimit(config.cudaStreamLimit());
+                }
+                if (config.cudaUseDeviceHost() != null) {
+                    env.setCudaUseDeviceHost(config.cudaUseDeviceHost());
+                }
+                if (config.cudaEventLimit() != null) {
+                    env.setCudaEventLimit(config.cudaEventLimit());
+                }
+                if (config.cudaCachingAllocatorLimit() != null) {
+                    env.setCudaCachingAllocatorLimit(config.cudaCachingAllocatorLimit());
+                }
+                if (config.cudaUseUnifiedMemory() != null) {
+                    env.setCudaUseUnifiedMemory(config.cudaUseUnifiedMemory());
+                }
+                if (config.cudaPrefetchSize() != null) {
+                    env.setCudaPrefetchSize(config.cudaPrefetchSize());
+                }
+                if (config.cudaGraphOptimization() != null) {
+                    env.setCudaGraphOptimization(config.cudaGraphOptimization());
+                }
+                if (config.cudaTensorCoreEnabled() != null) {
+                    env.setCudaTensorCoreEnabled(config.cudaTensorCoreEnabled());
+                }
+                if (config.cudaBlockingSync() != null) {
+                    env.setCudaBlockingSync(config.cudaBlockingSync());
+                }
+                if (config.cudaDeviceSchedule() != null) {
+                    env.setCudaDeviceSchedule(config.cudaDeviceSchedule());
+                }
+                if (config.cudaStackSize() != null) {
+                    env.setCudaStackSize(config.cudaStackSize());
+                }
+                if (config.cudaMallocHeapSize() != null) {
+                    env.setCudaMallocHeapSize(config.cudaMallocHeapSize());
+                }
+                if (config.cudaPrintfFifoSize() != null) {
+                    env.setCudaPrintfFifoSize(config.cudaPrintfFifoSize());
+                }
+                if (config.cudaDevRuntimeSyncDepth() != null) {
+                    env.setCudaDevRuntimeSyncDepth(config.cudaDevRuntimeSyncDepth());
+                }
+                if (config.cudaDevRuntimePendingLaunchCount() != null) {
+                    env.setCudaDevRuntimePendingLaunchCount(config.cudaDevRuntimePendingLaunchCount());
+                }
+                if (config.cudaMaxL2FetchGranularity() != null) {
+                    env.setCudaMaxL2FetchGranularity(config.cudaMaxL2FetchGranularity());
+                }
+                if (config.cudaPersistingL2CacheSize() != null) {
+                    env.setCudaPersistingL2CacheSize(config.cudaPersistingL2CacheSize());
+                }
+                logger.info("Applied CUDA-specific configuration settings");
+
+                // === TRITON COMPILER CONFIGURATION (GPU only) ===
+                if (config.tritonBuildThreads() != null) {
+                    env.setTritonBuildThreads(config.tritonBuildThreads());
+                }
+                if (config.tritonCacheEnabled() != null) {
+                    env.setTritonCacheEnabled(config.tritonCacheEnabled());
+                }
+                if (config.tritonVerbose() != null) {
+                    env.setTritonVerbose(config.tritonVerbose());
+                }
+                if (config.tritonAlwaysCompile() != null) {
+                    env.setTritonAlwaysCompile(config.tritonAlwaysCompile());
+                }
+                if (config.tritonNumWarps() != null) {
+                    env.setTritonNumWarps(config.tritonNumWarps());
+                }
+                if (config.tritonNumStages() != null) {
+                    env.setTritonNumStages(config.tritonNumStages());
+                }
+                if (config.tritonNumCTAs() != null) {
+                    env.setTritonNumCTAs(config.tritonNumCTAs());
+                }
+                if (config.tritonEnableFpFusion() != null) {
+                    env.setTritonEnableFpFusion(config.tritonEnableFpFusion());
+                }
+                if (config.tritonCacheDir() != null) {
+                    env.setTritonCacheDir(config.tritonCacheDir());
+                }
+                if (config.tritonDumpDir() != null) {
+                    env.setTritonDumpDir(config.tritonDumpDir());
+                }
+                if (config.tritonOverrideArch() != null) {
+                    env.setTritonOverrideArch(config.tritonOverrideArch());
+                }
+                logger.info("Applied Triton compiler configuration settings");
+            }
+
             logger.info("ND4J environment configuration applied successfully");
             logger.info("  enableBlas={}, helpersAllowed={}, maxThreads={}, maxMasterThreads={}",
                     Nd4j.getEnvironment().isEnableBlas(),
@@ -395,6 +562,9 @@ public class MainApplication {
                     Nd4j.getEnvironment().isVerbose(),
                     Nd4j.getEnvironment().isProfiling(),
                     Nd4j.getEnvironment().isLifecycleTracking());
+            logger.info("  ompNumThreads={} (from config: {})",
+                    config.ompNumThreads() != null ? config.ompNumThreads() : "default",
+                    config.ompNumThreads());
 
         } catch (Exception e) {
             logger.error("Error applying ND4J environment configuration: {}", e.getMessage(), e);

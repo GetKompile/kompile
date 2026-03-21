@@ -15,9 +15,11 @@
  */
 
 import { Component, OnInit, OnDestroy } from '@angular/core';
+import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Subject, interval } from 'rxjs';
-import { takeUntil, switchMap } from 'rxjs/operators';
+import { takeUntil, switchMap, filter } from 'rxjs/operators';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
   McpServerBuilderService,
   McpServerConfig,
@@ -74,7 +76,8 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   constructor(
     private mcpService: McpServerBuilderService,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private dialog: MatDialog
   ) {}
 
   ngOnInit(): void {
@@ -159,20 +162,35 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   deleteServer(server: McpServerConfig): void {
     if (!server.id) return;
-    if (!confirm(`Are you sure you want to delete server "${server.name}"?`)) return;
 
-    this.mcpService.deleteServer(server.id).subscribe({
-      next: () => {
-        this.showSuccess('Server deleted successfully');
-        if (this.selectedServer?.id === server.id) {
-          this.selectedServer = null;
-        }
-        this.loadServers();
-      },
-      error: (err) => {
-        this.showError('Failed to delete server: ' + (err.error?.error || err.message));
-      }
-    });
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Server',
+      message: `Are you sure you want to delete server "${server.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.mcpService.deleteServer(server.id!).subscribe({
+          next: () => {
+            this.showSuccess('Server deleted successfully');
+            if (this.selectedServer?.id === server.id) {
+              this.selectedServer = null;
+            }
+            this.loadServers();
+          },
+          error: (err) => {
+            this.showError('Failed to delete server: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   startServer(server: McpServerConfig): void {
@@ -302,17 +320,32 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   deleteTool(tool: McpToolConfig): void {
     if (!this.selectedServer?.id) return;
-    if (!confirm(`Are you sure you want to delete tool "${tool.name}"?`)) return;
 
-    this.mcpService.removeTool(this.selectedServer.id, tool.name).subscribe({
-      next: (updated) => {
-        this.showSuccess('Tool deleted successfully');
-        this.selectedServer = updated;
-      },
-      error: (err) => {
-        this.showError('Failed to delete tool: ' + (err.error?.error || err.message));
-      }
-    });
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Tool',
+      message: `Are you sure you want to delete tool "${tool.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.mcpService.removeTool(this.selectedServer!.id!, tool.name).subscribe({
+          next: (updated) => {
+            this.showSuccess('Tool deleted successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to delete tool: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   addParameter(): void {
@@ -377,17 +410,32 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   deleteResource(resource: McpResourceConfig): void {
     if (!this.selectedServer?.id) return;
-    if (!confirm(`Are you sure you want to delete resource "${resource.name}"?`)) return;
 
-    this.mcpService.removeResource(this.selectedServer.id, resource.uri).subscribe({
-      next: (updated) => {
-        this.showSuccess('Resource deleted successfully');
-        this.selectedServer = updated;
-      },
-      error: (err) => {
-        this.showError('Failed to delete resource: ' + (err.error?.error || err.message));
-      }
-    });
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Resource',
+      message: `Are you sure you want to delete resource "${resource.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.mcpService.removeResource(this.selectedServer!.id!, resource.uri).subscribe({
+          next: (updated) => {
+            this.showSuccess('Resource deleted successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to delete resource: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   // Prompt Operations
@@ -441,17 +489,32 @@ export class McpServerBuilderComponent implements OnInit, OnDestroy {
 
   deletePrompt(prompt: McpPromptConfig): void {
     if (!this.selectedServer?.id) return;
-    if (!confirm(`Are you sure you want to delete prompt "${prompt.name}"?`)) return;
 
-    this.mcpService.removePrompt(this.selectedServer.id, prompt.name).subscribe({
-      next: (updated) => {
-        this.showSuccess('Prompt deleted successfully');
-        this.selectedServer = updated;
-      },
-      error: (err) => {
-        this.showError('Failed to delete prompt: ' + (err.error?.error || err.message));
-      }
-    });
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Prompt',
+      message: `Are you sure you want to delete prompt "${prompt.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.mcpService.removePrompt(this.selectedServer!.id!, prompt.name).subscribe({
+          next: (updated) => {
+            this.showSuccess('Prompt deleted successfully');
+            this.selectedServer = updated;
+          },
+          error: (err) => {
+            this.showError('Failed to delete prompt: ' + (err.error?.error || err.message));
+          }
+        });
+      });
   }
 
   addPromptArgument(): void {

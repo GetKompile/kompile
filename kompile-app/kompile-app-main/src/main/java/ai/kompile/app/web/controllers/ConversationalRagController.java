@@ -20,6 +20,8 @@ import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.rag.ConversationalRagOptions;
 import ai.kompile.core.rag.ConversationalRagResult;
 import ai.kompile.core.rag.ConversationalRagService;
+import ai.kompile.kvcache.model.KVCacheStats;
+import ai.kompile.kvcache.service.KVCacheManager;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.Message;
@@ -56,6 +58,9 @@ import java.util.UUID;
 public class ConversationalRagController {
 
     private final ConversationalRagService ragService;
+
+    @Autowired(required = false)
+    private KVCacheManager kvCacheManager;
 
     @Autowired
     public ConversationalRagController(
@@ -98,7 +103,16 @@ public class ConversationalRagController {
             log.info("Chat completed for conversation '{}': {} docs, {}ms",
                     conversationId, result.documentCount(), result.totalTimeMs());
 
-            return ResponseEntity.ok(ChatResponse.fromResult(conversationId, result));
+            KVCacheStats cacheStats = null;
+            if (kvCacheManager != null) {
+                try {
+                    cacheStats = kvCacheManager.getAggregateStats();
+                } catch (Exception ex) {
+                    log.trace("Could not collect KV cache stats: {}", ex.getMessage());
+                }
+            }
+
+            return ResponseEntity.ok(ChatResponse.fromResult(conversationId, result, cacheStats));
 
         } catch (Exception e) {
             log.error("Error processing chat for conversation '{}': {}",
@@ -296,9 +310,14 @@ public class ConversationalRagController {
             List<DocumentDto> documents,
             QueryMetadata queryMetadata,
             PerformanceMetrics metrics,
+            KVCacheStats kvCacheStats,
             String error
     ) {
         public static ChatResponse fromResult(String conversationId, ConversationalRagResult result) {
+            return fromResult(conversationId, result, null);
+        }
+
+        public static ChatResponse fromResult(String conversationId, ConversationalRagResult result, KVCacheStats kvCacheStats) {
             List<DocumentDto> docs = result.retrievedDocuments().stream()
                     .map(sd -> new DocumentDto(sd.getId(), sd.getText(), sd.score(), sd.getMetadata()))
                     .toList();
@@ -328,12 +347,13 @@ public class ConversationalRagController {
                     docs,
                     queryMeta,
                     perf,
+                    kvCacheStats,
                     result.isError() ? result.answer() : null
             );
         }
 
         public static ChatResponse error(String error) {
-            return new ChatResponse(null, null, null, null, null, error);
+            return new ChatResponse(null, null, null, null, null, null, error);
         }
     }
 

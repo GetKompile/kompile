@@ -29,6 +29,7 @@ import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.nd4j.linalg.factory.Nd4j;
+import org.nd4j.nativeblas.NativeOpsHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -148,7 +149,7 @@ public class IngestPipelineRunner {
 
             if (documents.isEmpty()) {
                 logger.warn("No documents loaded from file");
-                return new PipelineResult(0, 0, 0, 0, 0, 0, 0, 0);
+                return new PipelineResult(0, 0, 0, 0, 0, 0, 0, 0, 0);
             }
 
             // ========== PARALLEL PIPELINE ==========
@@ -156,6 +157,9 @@ public class IngestPipelineRunner {
             Map<String, Object> chunkingOptions = new HashMap<>();
             chunkingOptions.put("chunkSize", args.chunkSize());
             chunkingOptions.put("overlap", args.chunkOverlap());
+            // Disable garbage collection - the SentenceFilter marks chunks not ending
+            // with . ! ? as garbage, which is too aggressive for most content
+            chunkingOptions.put("collectGarbage", false);
 
             // Find chunker
             TextChunker chunker = findChunker(args.chunkerName());
@@ -261,6 +265,7 @@ public class IngestPipelineRunner {
                         pipelineResult.chunksCreated(),
                         pipelineResult.chunksIndexed(), // Approximation: assume all indexed were embedded
                         pipelineResult.chunksIndexed(), // "documentsIndexed" actually tracks chunks
+                        pipelineResult.tokensProcessed(),
                         finalLoadingDuration,
                         0, // Chunking duration not exposed by ParallelPipeline yet
                         0, // Embedding duration not exposed by ParallelPipeline yet
@@ -349,11 +354,66 @@ public class IngestPipelineRunner {
             }
         }
 
+        // Extract tensor shape and timing info from embedding batch metrics
+        Integer currentBatchNumber = null;
+        Integer totalBatches = null;
+        Integer inputTexts = null;
+        Integer maxSequenceLength = null;
+        Integer embeddingDimension = null;
+        String actualInputShape = null;
+        String actualOutputShape = null;
+        String currentStep = null;
+        Long tokenizationTimeMs = null;
+        Long paddingTimeMs = null;
+        Long tensorCreationTimeMs = null;
+        Long forwardPassTimeMs = null;
+        Long extractionTimeMs = null;
+        int[] passageTokenCounts = null;
+
+        PipelineProgress.EmbeddingBatchMetrics bm = progress.currentEmbeddingBatch();
+        if (bm != null) {
+            currentBatchNumber = bm.batchNumber() > 0 ? bm.batchNumber() : null;
+            totalBatches = bm.totalBatches() > 0 ? bm.totalBatches() : null;
+            inputTexts = bm.inputTexts() > 0 ? bm.inputTexts() : null;
+            maxSequenceLength = bm.maxSequenceLength() > 0 ? bm.maxSequenceLength() : null;
+            embeddingDimension = bm.embeddingDimension() > 0 ? bm.embeddingDimension() : null;
+            actualInputShape = bm.actualInputShape();
+            actualOutputShape = bm.actualOutputShape();
+            currentStep = bm.currentStep();
+            tokenizationTimeMs = bm.tokenizationTimeMs() > 0 ? bm.tokenizationTimeMs() : null;
+            paddingTimeMs = bm.paddingTimeMs() > 0 ? bm.paddingTimeMs() : null;
+            tensorCreationTimeMs = bm.tensorCreationTimeMs() > 0 ? bm.tensorCreationTimeMs() : null;
+            forwardPassTimeMs = bm.forwardPassTimeMs() > 0 ? bm.forwardPassTimeMs() : null;
+            extractionTimeMs = bm.extractionTimeMs() > 0 ? bm.extractionTimeMs() : null;
+            passageTokenCounts = bm.passageTokenCounts();
+        }
+
+        // Convert batch history from PipelineProgress.EmbeddingBatchMetrics to SubprocessMessage.BatchHistoryEntry
+        java.util.List<SubprocessMessage.BatchHistoryEntry> batchHistoryEntries = null;
+        if (progress.batchHistory() != null && !progress.batchHistory().isEmpty()) {
+            batchHistoryEntries = progress.batchHistory().stream()
+                    .map(h -> new SubprocessMessage.BatchHistoryEntry(
+                            h.batchNumber(),
+                            h.inputTexts(),
+                            h.maxSequenceLength(),
+                            h.embeddingDimension(),
+                            h.actualInputShape(),
+                            h.actualOutputShape(),
+                            h.totalBatchTimeMs(),
+                            h.currentStep(),
+                            h.tokensPerSecond(),
+                            h.passageTokenCounts()
+                    ))
+                    .toList();
+        }
+
         return new SubprocessMessage.ProgressStats(
                 documentsLoaded,
                 progress.chunksCreated(),
                 progress.chunksEmbedded(),
                 progress.chunksIndexed(),
+                progress.tokensProcessed(),  // tokensProcessed
+                0L,  // totalTokensInIndex - not tracked during progress
                 totalTime,
                 loadingDuration,
                 0L, // dynamic duration tracking not explicitly passed in PipelineProgress yet
@@ -372,7 +432,29 @@ public class IngestPipelineRunner {
                 progress.queueStatus() != null ? progress.queueStatus().chunkQueueSize() : 0,
                 progress.queueStatus() != null ? progress.queueStatus().embeddedQueueSize() : 0,
                 workers,
-                runtimeInfo);
+                runtimeInfo,
+                // ========== Embedding batch metrics with tensor shapes ==========
+                currentBatchNumber,               // currentBatchNumber
+                totalBatches,                     // totalBatches
+                inputTexts,                       // inputTexts
+                maxSequenceLength,                // maxSequenceLength
+                embeddingDimension,               // embeddingDimension
+                actualInputShape,                 // actualInputShape
+                actualOutputShape,                // actualOutputShape
+                currentStep,                      // currentStep
+                tokenizationTimeMs,               // tokenizationTimeMs
+                paddingTimeMs,                    // paddingTimeMs
+                tensorCreationTimeMs,             // tensorCreationTimeMs
+                forwardPassTimeMs,                // forwardPassTimeMs
+                extractionTimeMs,                 // extractionTimeMs
+                batchHistoryEntries,              // batchHistory
+                passageTokenCounts,               // passageTokenCounts
+                // ========== Resume/Restart info ==========
+                null,                             // resumedFromChunkCount (not applicable for ingest)
+                null,                             // resumedFromEmbeddedCount
+                null,                             // resumedFromIndexedCount
+                null                              // isResumedRun
+        );
     }
 
     private static Nd4jEnvironmentConfig parseNd4jEnvironmentConfig(String nd4jConfigJson) {
@@ -389,64 +471,120 @@ public class IngestPipelineRunner {
 
     private static Nd4jEnvironmentConfig captureNd4jEnvironmentConfig() {
         try {
+            var env = Nd4j.getEnvironment();
+            boolean isCuda = !env.isCPU();
             return new Nd4jEnvironmentConfig(
                     // Thread configuration
-                    (int) Nd4j.getEnvironment().maxThreads(),
-                    (int) Nd4j.getEnvironment().maxMasterThreads(),
+                    (int) env.maxThreads(),
+                    (int) env.maxMasterThreads(),
                     // Debug/verbose modes
-                    Nd4j.getEnvironment().isDebug(),
-                    Nd4j.getEnvironment().isVerbose(),
-                    Nd4j.getEnvironment().isProfiling(),
+                    env.isDebug(),
+                    env.isVerbose(),
+                    env.isProfiling(),
                     // Core settings
-                    Nd4j.getEnvironment().isEnableBlas(),
-                    Nd4j.getEnvironment().helpersAllowed(),
-                    Nd4j.getEnvironment().isDetectingLeaks(),
+                    env.isEnableBlas(),
+                    env.helpersAllowed(),
+                    env.isDetectingLeaks(),
                     // Performance thresholds
-                    Nd4j.getEnvironment().tadThreshold(),
-                    Nd4j.getEnvironment().elementwiseThreshold(),
+                    env.tadThreshold(),
+                    env.elementwiseThreshold(),
                     // Memory limits (read as 0 if not explicitly set)
                     0L, // maxPrimaryMemory - no getter available
                     0L, // maxSpecialMemory - no getter available
                     0L, // maxDeviceMemory - no getter available
                     // Lifecycle tracking
-                    Nd4j.getEnvironment().isLifecycleTracking(),
-                    Nd4j.getEnvironment().isTrackViews(),
-                    Nd4j.getEnvironment().isTrackDeletions(),
-                    Nd4j.getEnvironment().isSnapshotFiles(),
-                    Nd4j.getEnvironment().isTrackOperations(),
-                    (int) Nd4j.getEnvironment().getStackDepth(),
-                    (int) Nd4j.getEnvironment().getReportInterval(),
-                    (int) Nd4j.getEnvironment().getMaxDeletionHistory(),
+                    env.isLifecycleTracking(),
+                    env.isTrackViews(),
+                    env.isTrackDeletions(),
+                    env.isSnapshotFiles(),
+                    env.isTrackOperations(),
+                    (int) env.getStackDepth(),
+                    (int) env.getReportInterval(),
+                    (int) env.getMaxDeletionHistory(),
                     // Individual tracker toggles
-                    Nd4j.getEnvironment().isNDArrayTracking(),
-                    Nd4j.getEnvironment().isDataBufferTracking(),
-                    Nd4j.getEnvironment().isTADCacheTracking(),
-                    Nd4j.getEnvironment().isShapeCacheTracking(),
-                    Nd4j.getEnvironment().isOpContextTracking(),
+                    env.isNDArrayTracking(),
+                    env.isDataBufferTracking(),
+                    env.isTADCacheTracking(),
+                    env.isShapeCacheTracking(),
+                    env.isOpContextTracking(),
                     // Advanced debugging - function tracing
-                    Nd4j.getEnvironment().isFuncTracePrintAllocate(),
-                    Nd4j.getEnvironment().isFuncTracePrintDeallocate(),
-                    Nd4j.getEnvironment().isFuncTracePrintJavaOnly(),
+                    env.isFuncTracePrintAllocate(),
+                    env.isFuncTracePrintDeallocate(),
+                    env.isFuncTracePrintJavaOnly(),
                     // Advanced debugging - other
-                    Nd4j.getEnvironment().isLogNativeNDArrayCreation(),
-                    Nd4j.getEnvironment().isLogNDArrayEvents(),
-                    Nd4j.getEnvironment().isCheckInputChange(),
-                    Nd4j.getEnvironment().isCheckOutputChange(),
-                    Nd4j.getEnvironment().isTrackWorkspaceOpenClose(),
-                    Nd4j.getEnvironment().isDeleteShapeInfo(),
-                    Nd4j.getEnvironment().isDeletePrimary(),
-                    Nd4j.getEnvironment().isDeleteSpecial(),
-                    Nd4j.getEnvironment().isVariableTracingEnabled(),
+                    env.isLogNativeNDArrayCreation(),
+                    env.isLogNDArrayEvents(),
+                    env.isTruncateNDArrayLogStrings(),
+                    env.numWorkspaceEventsToKeep(),
+                    env.isCheckInputChange(),
+                    env.isCheckOutputChange(),
+                    env.isTrackWorkspaceOpenClose(),
+                    env.isDeleteShapeInfo(),
+                    env.isDeletePrimary(),
+                    env.isDeleteSpecial(),
+                    env.isVariableTracingEnabled(),
                     // JavaCPP settings
                     "true".equals(System.getProperty("org.bytedeco.javacpp.logger.debug")),
                     "true".equals(System.getProperty("org.bytedeco.javacpp.pathsFirst")),
                     // BLAS configuration - use defaults since ND4J Environment doesn't expose getters
                     true,  // blasSerializationEnabled
-                    1      // openBlasThreads
+                    1,     // openBlasThreads
+                    getOmpNumThreads(),  // ompNumThreads
+                    // CUDA settings - only populated if running on CUDA backend
+                    isCuda ? env.cudaCurrentDevice() : null,
+                    isCuda ? env.cudaMemoryPinned() : null,
+                    isCuda ? env.cudaUseManagedMemory() : null,
+                    isCuda ? env.cudaMemoryPoolSize() : null,
+                    isCuda ? env.cudaForceP2P() : null,
+                    isCuda ? env.cudaAllocatorEnabled() : null,
+                    isCuda ? env.cudaMaxBlocks() : null,
+                    isCuda ? env.cudaMaxThreadsPerBlock() : null,
+                    isCuda ? env.cudaAsyncExecution() : null,
+                    isCuda ? env.cudaStreamLimit() : null,
+                    isCuda ? env.cudaUseDeviceHost() : null,
+                    isCuda ? env.cudaEventLimit() : null,
+                    isCuda ? env.cudaCachingAllocatorLimit() : null,
+                    isCuda ? env.cudaUseUnifiedMemory() : null,
+                    isCuda ? env.cudaPrefetchSize() : null,
+                    isCuda ? env.cudaGraphOptimization() : null,
+                    isCuda ? env.cudaTensorCoreEnabled() : null,
+                    isCuda ? env.cudaBlockingSync() : null,
+                    isCuda ? env.cudaDeviceSchedule() : null,
+                    isCuda ? env.cudaStackSize() : null,
+                    isCuda ? env.cudaMallocHeapSize() : null,
+                    isCuda ? env.cudaPrintfFifoSize() : null,
+                    isCuda ? env.cudaDevRuntimeSyncDepth() : null,
+                    isCuda ? env.cudaDevRuntimePendingLaunchCount() : null,
+                    isCuda ? env.cudaMaxL2FetchGranularity() : null,
+                    isCuda ? env.cudaPersistingL2CacheSize() : null,
+                    // Triton settings
+                    isCuda ? env.tritonBuildThreads() : null,
+                    isCuda ? env.tritonCacheEnabled() : null,
+                    isCuda ? env.tritonVerbose() : null,
+                    isCuda ? env.tritonAlwaysCompile() : null,
+                    isCuda ? env.tritonNumWarps() : null,
+                    isCuda ? env.tritonNumStages() : null,
+                    isCuda ? env.tritonNumCTAs() : null,
+                    isCuda ? env.tritonEnableFpFusion() : null,
+                    isCuda ? env.tritonCacheDir() : null,
+                    isCuda ? env.tritonDumpDir() : null,
+                    isCuda ? env.tritonOverrideArch() : null
             );
         } catch (Exception e) {
             logger.debug("Failed to capture ND4J environment config in subprocess: {}", e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Get current OpenMP thread count from NativeOps.
+     */
+    private static int getOmpNumThreads() {
+        try {
+            return NativeOpsHolder.getInstance().getDeviceNativeOps().ompGetNumThreads();
+        } catch (Exception e) {
+            logger.debug("Failed to get OMP num threads: {}", e.getMessage());
+            return 4; // default
         }
     }
 
@@ -458,6 +596,7 @@ public class IngestPipelineRunner {
             int chunksCreated,
             int chunksEmbedded,
             int documentsIndexed,
+            long tokensProcessed,
             long loadingDurationMs,
             long chunkingDurationMs,
             long embeddingDurationMs,

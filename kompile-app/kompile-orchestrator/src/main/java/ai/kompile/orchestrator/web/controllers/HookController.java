@@ -20,7 +20,6 @@ import ai.kompile.orchestrator.service.impl.DefaultOrchestratorService;
 import ai.kompile.orchestrator.service.registry.HookRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -35,7 +34,6 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/orchestrator/hooks")
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "kompile.orchestrator", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class HookController {
 
     private final HookRegistry hookRegistry;

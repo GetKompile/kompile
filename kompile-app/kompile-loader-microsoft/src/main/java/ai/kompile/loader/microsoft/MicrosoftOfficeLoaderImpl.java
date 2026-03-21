@@ -135,15 +135,88 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
     }
 
     private List<Document> loadWordDocx(File file) throws IOException {
+        List<Document> documents = new ArrayList<>();
+
         try (FileInputStream fis = new FileInputStream(file);
              XWPFDocument document = new XWPFDocument(fis);
              XWPFWordExtractor extractor = new XWPFWordExtractor(document)) {
 
+            // Extract full text content
             String content = extractor.getText();
-            Document springDoc = new Document(content);
-            addMetadata(springDoc, file, "Microsoft Word Document (.docx)");
-            return List.of(springDoc);
+            Document textDoc = new Document(content);
+            addMetadata(textDoc, file, "Microsoft Word Document (.docx)");
+            textDoc.getMetadata().put("content_type", "text");
+            documents.add(textDoc);
+
+            // Extract tables as separate documents
+            List<org.apache.poi.xwpf.usermodel.XWPFTable> tables = document.getTables();
+            for (int i = 0; i < tables.size(); i++) {
+                Document tableDoc = extractWordTableAsDocument(tables.get(i), file, i);
+                if (tableDoc != null) {
+                    documents.add(tableDoc);
+                }
+            }
         }
+
+        return documents;
+    }
+
+    /**
+     * Extracts a Word table as a separate Document with markdown formatting.
+     */
+    private Document extractWordTableAsDocument(org.apache.poi.xwpf.usermodel.XWPFTable table, File file, int tableIndex) {
+        List<org.apache.poi.xwpf.usermodel.XWPFTableRow> rows = table.getRows();
+        if (rows.isEmpty()) {
+            return null;
+        }
+
+        StringBuilder markdown = new StringBuilder();
+        List<String> headers = new ArrayList<>();
+
+        // Process header row
+        org.apache.poi.xwpf.usermodel.XWPFTableRow headerRow = rows.get(0);
+        markdown.append("|");
+        for (org.apache.poi.xwpf.usermodel.XWPFTableCell cell : headerRow.getTableCells()) {
+            String cellText = cell.getText().trim().replace("|", "\\|");
+            headers.add(cellText);
+            markdown.append(" ").append(cellText).append(" |");
+        }
+        markdown.append("\n|");
+
+        // Separator row
+        for (int i = 0; i < headers.size(); i++) {
+            markdown.append("---|");
+        }
+        markdown.append("\n");
+
+        // Process data rows
+        for (int i = 1; i < rows.size(); i++) {
+            markdown.append("|");
+            for (org.apache.poi.xwpf.usermodel.XWPFTableCell cell : rows.get(i).getTableCells()) {
+                String cellText = cell.getText().trim().replace("|", "\\|");
+                // Replace newlines within cells with spaces
+                cellText = cellText.replace("\n", " ").replace("\r", "");
+                markdown.append(" ").append(cellText).append(" |");
+            }
+            markdown.append("\n");
+        }
+
+        // Generate summary for embedding
+        String summary = String.format("Table %d with %d rows and %d columns. Columns: %s",
+            tableIndex + 1, rows.size() - 1, headers.size(), String.join(", ", headers));
+
+        // Create document with summary as main content (for embedding)
+        Document doc = new Document(summary);
+        addMetadata(doc, file, "Microsoft Word Table");
+        doc.getMetadata().put("content_type", "table");
+        doc.getMetadata().put("full_table_content", markdown.toString());
+        doc.getMetadata().put("table_index", tableIndex);
+        doc.getMetadata().put("table_row_count", rows.size() - 1); // Exclude header
+        doc.getMetadata().put("table_column_count", headers.size());
+        doc.getMetadata().put("table_headers", String.join(",", headers));
+        doc.getMetadata().put("storage_type", "search");
+
+        return doc;
     }
 
     private List<Document> loadExcelXls(File file) throws IOException {
@@ -250,7 +323,6 @@ public class MicrosoftOfficeLoaderImpl implements DocumentLoader {
                 }
                 content.append("\n");
 
-                // Add rows
                 for (com.healthmarketscience.jackcess.Row row : table) {
                     for (com.healthmarketscience.jackcess.Column column : table.getColumns()) {
                         Object value = row.get(column.getName());

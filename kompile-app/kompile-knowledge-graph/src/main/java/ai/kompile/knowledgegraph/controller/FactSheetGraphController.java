@@ -54,7 +54,7 @@ public class FactSheetGraphController {
      */
     @PostMapping("/build")
     public ResponseEntity<GraphBuildStatus> buildGraph(
-            @PathVariable Long factSheetId,
+            @PathVariable("factSheetId") Long factSheetId,
             @RequestBody(required = false) BuildRequest request) {
 
         GraphBuildConfig config = request != null && request.config() != null ?
@@ -69,8 +69,8 @@ public class FactSheetGraphController {
      */
     @GetMapping("/build/status/{jobId}")
     public ResponseEntity<GraphBuildStatus> getBuildStatus(
-            @PathVariable Long factSheetId,
-            @PathVariable String jobId) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @PathVariable("jobId") String jobId) {
 
         GraphBuildStatus status = factSheetGraphService.getBuildStatus(jobId);
         if (status == null) {
@@ -84,8 +84,8 @@ public class FactSheetGraphController {
      */
     @PostMapping("/build/cancel/{jobId}")
     public ResponseEntity<Map<String, Object>> cancelBuild(
-            @PathVariable Long factSheetId,
-            @PathVariable String jobId) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @PathVariable("jobId") String jobId) {
 
         boolean cancelled = factSheetGraphService.cancelBuild(jobId);
         return ResponseEntity.ok(Map.of(
@@ -99,7 +99,7 @@ public class FactSheetGraphController {
      */
     @GetMapping("/build/running")
     public ResponseEntity<List<GraphBuildStatus>> getRunningJobs(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
         return ResponseEntity.ok(factSheetGraphService.getRunningJobs());
     }
 
@@ -112,9 +112,9 @@ public class FactSheetGraphController {
      */
     @GetMapping("/visualization")
     public ResponseEntity<GraphVisualizationData> getVisualization(
-            @PathVariable Long factSheetId,
-            @RequestParam(defaultValue = "500") int maxNodes,
-            @RequestParam(defaultValue = "1000") int maxEdges) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "500", name = "maxNodes") int maxNodes,
+            @RequestParam(defaultValue = "1000", name = "maxEdges") int maxEdges) {
 
         GraphVisualizationData data = factSheetGraphService.getVisualizationData(
             factSheetId, maxNodes, maxEdges);
@@ -126,7 +126,7 @@ public class FactSheetGraphController {
      */
     @GetMapping("/statistics")
     public ResponseEntity<Map<String, Object>> getStatistics(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
         return ResponseEntity.ok(factSheetGraphService.getGraphStatistics(factSheetId));
     }
 
@@ -135,7 +135,7 @@ public class FactSheetGraphController {
      */
     @DeleteMapping
     public ResponseEntity<Map<String, Object>> clearGraph(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
 
         int deleted = factSheetGraphService.clearGraph(factSheetId);
         return ResponseEntity.ok(Map.of(
@@ -153,8 +153,8 @@ public class FactSheetGraphController {
      */
     @GetMapping("/concepts/top")
     public ResponseEntity<List<Map<String, Object>>> getTopConcepts(
-            @PathVariable Long factSheetId,
-            @RequestParam(defaultValue = "20") int limit) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "20", name = "limit") int limit) {
 
         return ResponseEntity.ok(factSheetGraphService.getTopConcepts(factSheetId, limit));
     }
@@ -164,8 +164,8 @@ public class FactSheetGraphController {
      */
     @PostMapping("/concepts/rebuild-edges")
     public ResponseEntity<Map<String, Object>> rebuildConceptEdges(
-            @PathVariable Long factSheetId,
-            @RequestParam(defaultValue = "2") int minSharedConcepts) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "2", name = "minSharedConcepts") int minSharedConcepts) {
 
         int edgesCreated = factSheetGraphService.rebuildConceptEdges(factSheetId, minSharedConcepts);
         return ResponseEntity.ok(Map.of(
@@ -183,9 +183,9 @@ public class FactSheetGraphController {
      */
     @GetMapping("/search")
     public ResponseEntity<List<Map<String, Object>>> searchNodes(
-            @PathVariable Long factSheetId,
-            @RequestParam String query,
-            @RequestParam(defaultValue = "20") int limit) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(name = "query") String query,
+            @RequestParam(defaultValue = "20", name = "limit") int limit) {
 
         return ResponseEntity.ok(factSheetGraphService.searchNodes(factSheetId, query, limit));
     }
@@ -195,10 +195,10 @@ public class FactSheetGraphController {
      */
     @GetMapping("/documents/{documentNodeId}/related")
     public ResponseEntity<List<Map<String, Object>>> getRelatedDocuments(
-            @PathVariable Long factSheetId,
-            @PathVariable String documentNodeId,
-            @RequestParam(defaultValue = "2") int minSharedConcepts,
-            @RequestParam(defaultValue = "10") int limit) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @PathVariable("documentNodeId") String documentNodeId,
+            @RequestParam(defaultValue = "2", name = "minSharedConcepts") int minSharedConcepts,
+            @RequestParam(defaultValue = "10", name = "limit") int limit) {
 
         return ResponseEntity.ok(factSheetGraphService.getRelatedDocuments(
             factSheetId, documentNodeId, minSharedConcepts, limit));
@@ -213,7 +213,7 @@ public class FactSheetGraphController {
      */
     @PostMapping("/sources/link")
     public ResponseEntity<LinkingResult> linkSources(
-            @PathVariable Long factSheetId,
+            @PathVariable("factSheetId") Long factSheetId,
             @RequestBody(required = false) LinkingConfigRequest request) {
 
         LinkingConfig config = request != null && request.config() != null ?
@@ -228,7 +228,7 @@ public class FactSheetGraphController {
      */
     @GetMapping("/sources/links")
     public ResponseEntity<List<SourceLink>> getSourceLinks(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
         return ResponseEntity.ok(sourceLinkingService.getSourceLinks(factSheetId));
     }
 
@@ -237,8 +237,8 @@ public class FactSheetGraphController {
      */
     @GetMapping("/sources/{sourceNodeId}/links")
     public ResponseEntity<List<SourceLink>> getLinksForSource(
-            @PathVariable Long factSheetId,
-            @PathVariable String sourceNodeId) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @PathVariable("sourceNodeId") String sourceNodeId) {
         return ResponseEntity.ok(sourceLinkingService.getLinksForSource(factSheetId, sourceNodeId));
     }
 
@@ -247,7 +247,7 @@ public class FactSheetGraphController {
      */
     @PostMapping("/sources/links")
     public ResponseEntity<SourceLink> createManualLink(
-            @PathVariable Long factSheetId,
+            @PathVariable("factSheetId") Long factSheetId,
             @RequestBody CreateLinkRequest request) {
 
         SourceLink link = sourceLinkingService.createManualLink(
@@ -265,9 +265,9 @@ public class FactSheetGraphController {
      */
     @DeleteMapping("/sources/links")
     public ResponseEntity<Map<String, Object>> removeLink(
-            @PathVariable Long factSheetId,
-            @RequestParam String sourceNodeId1,
-            @RequestParam String sourceNodeId2) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(name = "sourceNodeId1") String sourceNodeId1,
+            @RequestParam(name = "sourceNodeId2") String sourceNodeId2) {
 
         boolean removed = sourceLinkingService.removeLink(factSheetId, sourceNodeId1, sourceNodeId2);
         return ResponseEntity.ok(Map.of(
@@ -282,7 +282,7 @@ public class FactSheetGraphController {
      */
     @GetMapping("/sources/connectivity")
     public ResponseEntity<Map<String, Object>> getConnectivitySummary(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
         return ResponseEntity.ok(sourceLinkingService.getConnectivitySummary(factSheetId));
     }
 
@@ -291,7 +291,7 @@ public class FactSheetGraphController {
      */
     @GetMapping("/sources/isolated")
     public ResponseEntity<List<String>> findIsolatedSources(
-            @PathVariable Long factSheetId) {
+            @PathVariable("factSheetId") Long factSheetId) {
         return ResponseEntity.ok(sourceLinkingService.findIsolatedSources(factSheetId));
     }
 
@@ -300,8 +300,8 @@ public class FactSheetGraphController {
      */
     @GetMapping("/sources/most-connected")
     public ResponseEntity<List<Map<String, Object>>> findMostConnectedSources(
-            @PathVariable Long factSheetId,
-            @RequestParam(defaultValue = "10") int limit) {
+            @PathVariable("factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "10", name = "limit") int limit) {
         return ResponseEntity.ok(sourceLinkingService.findMostConnectedSources(factSheetId, limit));
     }
 

@@ -19,7 +19,7 @@ package ai.kompile.staging.cli;
 import ai.kompile.staging.export.BundleManifest;
 import ai.kompile.staging.export.ImportService;
 import ai.kompile.staging.export.ImportService.ImportResult;
-import ai.kompile.staging.registry.ModelEntry;
+import ai.kompile.modelmanager.registry.ModelEntry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import picocli.CommandLine.Command;

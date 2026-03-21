@@ -25,6 +25,8 @@ import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvi
 import org.springframework.ai.chat.client.advisor.vectorstore.VectorStoreChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.util.Assert;
 
 import java.util.ArrayList;
@@ -304,7 +306,7 @@ public final class LLMChatUtils {
         // Create adapter from our VectorStore to Spring AI VectorStore
         org.springframework.ai.vectorstore.VectorStore springAiVectorStore = createSpringAiVectorStoreAdapter(vectorStore, maxDocuments, similarityThreshold);
         
-        org.springframework.ai.vectorstore.SearchRequest searchRequest = org.springframework.ai.vectorstore.SearchRequest.builder()
+        SearchRequest searchRequest = SearchRequest.builder()
                 .topK(maxDocuments)
                 .similarityThreshold(similarityThreshold)
                 .build();
@@ -383,14 +385,14 @@ public final class LLMChatUtils {
             }
 
             @Override
-            public void delete(org.springframework.ai.vectorstore.filter.Filter.Expression filterExpression) {
+            public void delete(Filter.Expression filterExpression) {
                 // Note: Our Kompile VectorStore doesn't support filter expressions yet
                 // This would need to be implemented based on your specific VectorStore implementation
                 throw new UnsupportedOperationException("Filter-based deletion not yet supported in Kompile VectorStore adapter");
             }
 
             @Override
-            public List<Document> similaritySearch(org.springframework.ai.vectorstore.SearchRequest request) {
+            public List<Document> similaritySearch(SearchRequest request) {
                 String query = request.getQuery();
                 int topK = request.getTopK() > 0 ? request.getTopK() : defaultMaxDocuments;
                 double threshold = request.getSimilarityThreshold() >= 0 ? request.getSimilarityThreshold() : defaultSimilarityThreshold;

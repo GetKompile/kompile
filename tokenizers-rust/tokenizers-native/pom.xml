@@ -150,8 +150,14 @@
                         <includePath>${project.basedir}/../libtokenizers/include</includePath>
                     </includePaths>
                     <linkPaths>
-                        <linkPath>${project.basedir}/../libtokenizers/target/native/lib64</linkPath>
+                        <!-- Primary JavaCPP structure path (where buildnativetokenizers.sh outputs) -->
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}</linkPath>
+                        <!-- Legacy paths for backward compatibility -->
                         <linkPath>${project.basedir}/../libtokenizers/target/native/${javacpp.platform}</linkPath>
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/lib64</linkPath>
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/lib</linkPath>
+                        <!-- Build directory output location -->
+                        <linkPath>${project.basedir}/../libtokenizers/build</linkPath>
                         <linkPath>${project.build.directory}/native</linkPath>
                     </linkPaths>
 
@@ -170,6 +176,8 @@
                     <linkResources>
                         <linkResource>/${javacpp.platform.library.path}/</linkResource>
                         <linkResource>/${javacpp.platform.library.path}/lib/</linkResource>
+                        <!-- Primary JavaCPP structure path -->
+                        <linkResource>${project.basedir}/../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}</linkResource>
                         <linkResource>${project.basedir}/../libtokenizers/target/native/${javacpp.platform}</linkResource>
                     </linkResources>
                 </configuration>
@@ -197,6 +205,45 @@
                             <copyResources>true</copyResources>
                             <configDirectory>${project.build.directory}/classes/META-INF/native-image/${javacpp.platform}${javacpp.platform.extension}/</configDirectory>
                             <outputDirectory>${javacpp.build.output.path}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Copy libtokenizers_wrapper.so to the same location as libjnitokenizers.so -->
+            <!-- This is required because libjnitokenizers.so dynamically links to libtokenizers_wrapper.so -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-wrapper-lib</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <!-- Copy wrapper library to the same directory as the JNI library -->
+                                <echo message="Copying libtokenizers_wrapper to ${javacpp.build.output.path}"/>
+                                <copy todir="${javacpp.build.output.path}" failonerror="false" overwrite="true">
+                                    <fileset dir="${project.basedir}/../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}">
+                                        <include name="libtokenizers_wrapper.so*"/>
+                                        <include name="libtokenizers_wrapper.dylib*"/>
+                                        <include name="libtokenizers_wrapper.dll*"/>
+                                        <include name="libtokenizers_ffi.so*"/>
+                                        <include name="libtokenizers_ffi.dylib*"/>
+                                        <include name="libtokenizers_ffi.dll*"/>
+                                    </fileset>
+                                </copy>
+                                <!-- Debug: List what was copied -->
+                                <echo message="Native libraries in output directory:"/>
+                                <exec executable="ls" failonerror="false">
+                                    <arg value="-la"/>
+                                    <arg value="${javacpp.build.output.path}"/>
+                                </exec>
+                            </target>
                         </configuration>
                     </execution>
                 </executions>

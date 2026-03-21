@@ -62,6 +62,11 @@ public class OrchestratorProperties {
      */
     private WebSocketProperties websocket = new WebSocketProperties();
 
+    /**
+     * Prompt management configuration.
+     */
+    private PromptProperties prompt = new PromptProperties();
+
     @Data
     public static class TaskProperties {
         /**
@@ -168,5 +173,78 @@ public class OrchestratorProperties {
          * Heartbeat interval.
          */
         private Duration heartbeatInterval = Duration.ofSeconds(30);
+    }
+
+    @Data
+    public static class PromptProperties {
+        /**
+         * Whether dynamic prompt management is enabled.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Path to external prompt configurations (YAML/JSON).
+         */
+        private String configPath;
+
+        /**
+         * Master prompt template (can be overridden per state).
+         */
+        private String masterPromptTemplate;
+
+        /**
+         * Default system prompt for LLM interactions.
+         */
+        private String defaultSystemPrompt;
+
+        /**
+         * Whether to include routing advice in prompts.
+         */
+        private boolean includeRoutingAdvice = true;
+
+        /**
+         * Whether to include error-specific guidance.
+         */
+        private boolean includeErrorGuidance = true;
+
+        /**
+         * Whether to include safety constraints.
+         */
+        private boolean includeSafetyConstraints = true;
+
+        /**
+         * Maximum output length to include in prompts.
+         */
+        private int maxOutputLength = 10000;
+
+        /**
+         * Maximum context entries to include.
+         */
+        private int maxContextEntries = 20;
+
+        /**
+         * Default max tokens for LLM response.
+         */
+        private Integer defaultMaxTokens;
+
+        /**
+         * Default temperature for LLM response.
+         */
+        private Double defaultTemperature;
+
+        /**
+         * Maximum retry count for routing rules.
+         */
+        private int maxRetries = 5;
+
+        /**
+         * Default retry delay in seconds.
+         */
+        private long retryDelaySeconds = 5;
+
+        /**
+         * Whether to use exponential backoff for retries.
+         */
+        private boolean exponentialBackoff = true;
     }
 }

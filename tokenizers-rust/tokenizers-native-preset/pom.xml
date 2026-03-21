@@ -109,14 +109,22 @@
                         <includePath>${project.basedir}/../libtokenizers/include</includePath>
                     </includePaths>
                     <linkPaths>
+                        <!-- Primary JavaCPP structure path (where buildnativetokenizers.sh outputs) -->
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}</linkPath>
+                        <!-- Legacy paths for backward compatibility -->
+                        <linkPath>${project.basedir}/../libtokenizers/target/native/${javacpp.platform}</linkPath>
                         <linkPath>${project.basedir}/../libtokenizers/target/native/lib</linkPath>
                         <linkPath>${project.basedir}/../libtokenizers/target/native/lib64</linkPath>
-                        <linkPath>${project.basedir}/../libtokenizers/target/native/linux-x86_64</linkPath>
+                        <!-- Build directory -->
+                        <linkPath>${project.basedir}/../libtokenizers/build</linkPath>
                     </linkPaths>
                     <preloadPaths>
+                        <!-- Primary JavaCPP structure path -->
+                        <preloadPath>${project.basedir}/../libtokenizers/target/native/ai/kompile/tokenizers/${javacpp.platform}</preloadPath>
+                        <!-- Legacy paths -->
+                        <preloadPath>${project.basedir}/../libtokenizers/target/native/${javacpp.platform}</preloadPath>
                         <preloadPath>${project.basedir}/../libtokenizers/target/native/lib</preloadPath>
                         <preloadPath>${project.basedir}/../libtokenizers/target/native/lib64</preloadPath>
-                        <preloadPath>${project.basedir}/../libtokenizers/target/native/linux-x86_64</preloadPath>
                     </preloadPaths>
                     <resourcePath>${project.basedir}/../libtokenizers/target/native/lib64</resourcePath>
                     <buildResources>

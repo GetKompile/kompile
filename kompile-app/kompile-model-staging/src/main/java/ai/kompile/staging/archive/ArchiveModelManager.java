@@ -17,9 +17,9 @@
 package ai.kompile.staging.archive;
 
 import ai.kompile.staging.config.ModelSourceConfiguration;
-import ai.kompile.staging.registry.ModelEntry;
-import ai.kompile.staging.registry.ModelRegistry;
-import ai.kompile.staging.registry.RegistryService;
+import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.modelmanager.registry.ModelRegistry;
+import ai.kompile.modelmanager.registry.RegistryService;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;

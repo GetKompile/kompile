@@ -18,9 +18,9 @@ package ai.kompile.graph.neo4j;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.graphrag.GraphConstructor;
-import ai.kompile.core.graphrag.model.Entity; // User's DTO
+import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
-import ai.kompile.core.graphrag.model.Relationship; // User's DTO
+import ai.kompile.core.graphrag.model.Relationship;
 import ai.kompile.core.graphrag.model.schema.GraphSchema;
 import ai.kompile.core.graphrag.model.schema.NodeType;
 import ai.kompile.core.graphrag.model.schema.PropertyType;
@@ -28,16 +28,14 @@ import ai.kompile.core.graphrag.model.schema.RelationshipType;
 import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import ai.kompile.knowledgegraph.builder.dto.ExtractedGraphDTO;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.Data; // Using @Data for inner DTOs for brevity
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.Values;
-import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 
 import java.io.IOException;
@@ -49,8 +47,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-@Service
-@RequiredArgsConstructor
+/**
+ * Neo4j-based graph constructor implementation.
+ * Bean registration is handled by Neo4jGraphBeans.
+ */
 @Slf4j
 public class Neo4jGraphConstructor implements GraphConstructor {
 
@@ -58,6 +58,25 @@ public class Neo4jGraphConstructor implements GraphConstructor {
     private final LLMChat llmChat;
     private final ObjectMapper objectMapper;
     private final TextChunker textChunker;
+
+    // Extraction model configuration
+    private ExtractionModelConfig extractionConfig = ExtractionModelConfig.defaults();
+
+    public Neo4jGraphConstructor(Driver neo4jDriver, LLMChat llmChat, ObjectMapper objectMapper, TextChunker textChunker) {
+        this.neo4jDriver = neo4jDriver;
+        this.llmChat = llmChat;
+        this.objectMapper = objectMapper;
+        this.textChunker = textChunker;
+    }
+
+    @Override
+    public void configure(ExtractionModelConfig config) {
+        if (config != null) {
+            this.extractionConfig = config;
+            log.info("Configured entity extraction: provider={}, model={}, temperature={}, maxTokens={}",
+                    config.provider(), config.modelName(), config.temperature(), config.maxTokens());
+        }
+    }
 
     // Cypher queries remain the same
     private static final String UPSERT_NODE_QUERY = """
@@ -79,34 +98,6 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             """;
 
 
-    // Inner DTOs for LLM extraction, containing 'label' for entities and 'type' for relationships
-    @Data
-    private static class ExtractedGraph {
-        private List<ExtractedEntity> entities;
-        private List<ExtractedRelationship> relationships;
-    }
-
-    @Data
-    private static class ExtractedEntity {
-        private String id;
-        private String title;
-        @JsonProperty("label") // Explicitly map JSON 'label' to this field
-        private String nodeLabel; // Conceptual Neo4j node label (e.g., "PERSON")
-        private String description;
-        private Map<String, Object> metadata;
-    }
-
-    @Data
-    private static class ExtractedRelationship {
-        private String source;
-        private String target;
-        @JsonProperty("type") // Explicitly map JSON 'type' to this field
-        private String relationshipType; // Conceptual Neo4j relationship type (e.g., "WORKS_AT")
-        private String description;
-        private Map<String, Object> metadata;
-    }
-
-
     @Override
     public Graph constructGraph(String collectionName) throws IOException {
         log.warn("constructGraph(collectionName) is not fully implemented. It would require an IndexerService to fetch documents.");
@@ -117,8 +108,8 @@ public class Neo4jGraphConstructor implements GraphConstructor {
 
     @Override
     public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema schema, SchemaEnforcementMode enforcementMode) {
-        List<ExtractedEntity> allExtractedEntities = new ArrayList<>();
-        List<ExtractedRelationship> allExtractedRelationships = new ArrayList<>();
+        List<ExtractedGraphDTO.ExtractedEntity> allExtractedEntities = new ArrayList<>();
+        List<ExtractedGraphDTO.ExtractedRelationship> allExtractedRelationships = new ArrayList<>();
         SchemaEnforcementMode currentMode = (enforcementMode == null) ? SchemaEnforcementMode.NONE : enforcementMode;
 
         for (RetrievedDoc doc : docs) {
@@ -127,8 +118,23 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             for (RetrievedDoc chunk : chunks) {
                 try {
                     String prompt = createExtractionPrompt(chunk.getText(), schema);
-                    String jsonResponse = llmChat.prompt().user(prompt).call().content();
-                    ExtractedGraph extractedGraph = objectMapper.readValue(jsonResponse, ExtractedGraph.class);
+
+                    // Build chat options from extraction config
+                    ChatOptions.Builder optionsBuilder = ChatOptions.builder();
+                    if (extractionConfig.temperature() != null) {
+                        optionsBuilder.temperature(extractionConfig.temperature());
+                    }
+                    if (extractionConfig.maxTokens() != null) {
+                        optionsBuilder.maxTokens(extractionConfig.maxTokens());
+                    }
+                    ChatOptions options = optionsBuilder.build();
+
+                    String jsonResponse = llmChat.prompt()
+                            .user(prompt)
+                            .options(options)
+                            .call()
+                            .content();
+                    ExtractedGraphDTO.ExtractedGraph extractedGraph = objectMapper.readValue(jsonResponse, ExtractedGraphDTO.ExtractedGraph.class);
 
                     if (currentMode == SchemaEnforcementMode.STRICT && schema != null) {
                         cleanGraph(extractedGraph, schema); // Operates on internal DTOs
@@ -136,7 +142,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
 
                     String chunkPrefix = "chunk_" + chunk.getId() + "_";
                     if (extractedGraph.getEntities() != null) {
-                        for (ExtractedEntity entity : extractedGraph.getEntities()) {
+                        for (ExtractedGraphDTO.ExtractedEntity entity : extractedGraph.getEntities()) {
                             entity.setId(chunkPrefix + entity.getId());
                             if (entity.getMetadata() == null) {
                                 entity.setMetadata(new HashMap<>());
@@ -147,7 +153,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                         }
                     }
                     if (extractedGraph.getRelationships() != null) {
-                        for (ExtractedRelationship rel : extractedGraph.getRelationships()) {
+                        for (ExtractedGraphDTO.ExtractedRelationship rel : extractedGraph.getRelationships()) {
                             rel.setSource(chunkPrefix + rel.getSource());
                             rel.setTarget(chunkPrefix + rel.getTarget());
                             if (rel.getMetadata() == null) {
@@ -177,9 +183,10 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             Entity entity = new Entity();
             entity.setId(ee.getId());
             entity.setTitle(ee.getTitle());
+            entity.setType(ee.getNodeLabel()); // Now properly set the type from extraction
             entity.setDescription(ee.getDescription());
             entity.setMetadata(ee.getMetadata());
-            // ee.getNodeLabel() is used for Neo4j labeling but not set in user's Entity DTO
+            entity.setConfidence(1.0); // Default confidence for LLM extraction
             return entity;
         }).collect(Collectors.toList()));
 
@@ -187,9 +194,11 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             Relationship relationship = new Relationship();
             relationship.setSource(er.getSource());
             relationship.setTarget(er.getTarget());
+            relationship.setType(er.getRelationshipType()); // Now properly set the type from extraction
             relationship.setDescription(er.getDescription());
             relationship.setMetadata(er.getMetadata());
-            // er.getRelationshipType() is used for Neo4j type but not set in user's Relationship DTO
+            relationship.setWeight(1.0); // Default weight
+            relationship.setConfidence(1.0); // Default confidence for LLM extraction
             return relationship;
         }).collect(Collectors.toList()));
 
@@ -197,6 +206,13 @@ public class Neo4jGraphConstructor implements GraphConstructor {
     }
 
     private String createExtractionPrompt(String text, GraphSchema schema) throws JsonProcessingException {
+        // Use custom prompt if configured
+        if (extractionConfig.customPrompt() != null && !extractionConfig.customPrompt().isEmpty()) {
+            return extractionConfig.customPrompt()
+                    .replace("{{TEXT}}", text)
+                    .replace("{text}", text);
+        }
+
         String schemaDescription;
         if (schema != null && schema.getNodeTypes() != null && schema.getRelationshipTypes() != null) {
             schemaDescription = """
@@ -205,7 +221,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
 
                     The relationships must conform to the following types:
                     %s
-                    
+
                     For each entity, provide:
                     - "id": a unique identifier for the entity within this text chunk.
                     - "title": the primary name or title of the entity.
@@ -242,7 +258,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                """.formatted(schemaDescription, text);
     }
 
-    private void cleanGraph(ExtractedGraph graph, GraphSchema schema) {
+    private void cleanGraph(ExtractedGraphDTO.ExtractedGraph graph, GraphSchema schema) {
         if (graph == null || schema == null) {
             return;
         }
@@ -252,9 +268,9 @@ public class Neo4jGraphConstructor implements GraphConstructor {
         Map<String, Set<String>> allowedNodePropsMap = schema.getNodePropertiesByName();
         Map<String, Set<String>> allowedRelPropsMap = schema.getRelationshipPropertiesByName();
 
-        List<ExtractedEntity> filteredEntities = new ArrayList<>();
+        List<ExtractedGraphDTO.ExtractedEntity> filteredEntities = new ArrayList<>();
         if (!CollectionUtils.isEmpty(graph.getEntities())) {
-            for (ExtractedEntity entity : graph.getEntities()) {
+            for (ExtractedGraphDTO.ExtractedEntity entity : graph.getEntities()) {
                 NodeType nt = nodeTypeMap.get(entity.getNodeLabel()); // Use internal DTO's nodeLabel
                 if (nt != null) {
                     if (entity.getMetadata() == null) entity.setMetadata(new HashMap<>());
@@ -273,11 +289,11 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             }
         }
         graph.setEntities(filteredEntities);
-        Set<String> validEntityIds = filteredEntities.stream().map(ExtractedEntity::getId).collect(Collectors.toSet());
+        Set<String> validEntityIds = filteredEntities.stream().map(ExtractedGraphDTO.ExtractedEntity::getId).collect(Collectors.toSet());
 
-        List<ExtractedRelationship> filteredRelationships = new ArrayList<>();
+        List<ExtractedGraphDTO.ExtractedRelationship> filteredRelationships = new ArrayList<>();
         if (!CollectionUtils.isEmpty(graph.getRelationships())) {
-            for (ExtractedRelationship rel : graph.getRelationships()) {
+            for (ExtractedGraphDTO.ExtractedRelationship rel : graph.getRelationships()) {
                 RelationshipType rt = relationshipTypeMap.get(rel.getRelationshipType()); // Use internal DTO's relationshipType
                 if (rt != null && validEntityIds.contains(rel.getSource()) && validEntityIds.contains(rel.getTarget())) {
                     if (rel.getMetadata() == null) rel.setMetadata(new HashMap<>());
@@ -299,7 +315,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
         log.info("After schema cleaning: {} entities, {} relationships remaining.", graph.getEntities().size(), graph.getRelationships().size());
     }
 
-    private void writeEntitiesToNeo4j(List<ExtractedEntity> entities, GraphSchema schema) {
+    private void writeEntitiesToNeo4j(List<ExtractedGraphDTO.ExtractedEntity> entities, GraphSchema schema) {
         if (entities.isEmpty()) return;
         List<Map<String, Object>> entityRows = entities.stream()
                 .map(e -> {
@@ -328,7 +344,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
         }
     }
 
-    private void writeRelationshipsToNeo4j(List<ExtractedRelationship> relationships, GraphSchema schema) {
+    private void writeRelationshipsToNeo4j(List<ExtractedGraphDTO.ExtractedRelationship> relationships, GraphSchema schema) {
         if (relationships.isEmpty()) return;
         List<Map<String, Object>> relationshipRows = relationships.stream()
                 .filter(r -> {
@@ -348,7 +364,7 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                     return Map.of(
                             "source", r.getSource(),
                             "target", r.getTarget(),
-                            "type", r.getRelationshipType(), // Use the type from ExtractedRelationship
+                            "type", r.getRelationshipType(), // Use the type from ExtractedGraphDTO.ExtractedRelationship
                             "properties", props);
                 })
                 .collect(Collectors.toList());

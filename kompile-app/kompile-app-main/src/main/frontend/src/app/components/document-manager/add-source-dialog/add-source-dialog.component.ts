@@ -31,6 +31,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { TextFieldModule } from '@angular/cdk/text-field';
 import { Subscription, merge, startWith } from 'rxjs';
 import { trigger, state, style, transition, animate } from '@angular/animations';
@@ -65,7 +66,21 @@ import {
   DEFAULT_SUBPROCESS_CONFIG,
   HEAP_SIZE_OPTIONS,
   getRecommendedHeapSize,
-  ProcessingMode
+  ProcessingMode,
+  DeviceInfo,
+  DevicesResponse,
+  BatchSizeRecommendation,
+  getRecommendedBatchSizesWithGpu,
+  getGpuMemoryTierLabel,
+  getGpuMemoryTierClass,
+  PdfProcessingConfig,
+  PdfProcessingMode,
+  TableExtractionMethod,
+  PdfProcessingModeInfo,
+  TableExtractionMethodInfo,
+  PDF_PROCESSING_MODES,
+  TABLE_EXTRACTION_METHODS,
+  DEFAULT_PDF_PROCESSING_CONFIG
 } from '../../../models/api-models';
 import { HttpClient } from '@angular/common/http';
 import { backendUrl } from '../../../services/base.service';
@@ -140,6 +155,7 @@ interface AddSourceFormModel {
     MatChipsModule,
     MatTooltipModule,
     MatDividerModule,
+    MatButtonToggleModule,
     TextFieldModule
   ],
   animations: [
@@ -198,14 +214,32 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   // Batch size recommendations
   showBatchRecommendations: boolean = true;
   systemMemoryMB: number = 8192; // Default to 8GB
-  recommendedBatchSizes: typeof RECOMMENDED_BATCH_SIZES[keyof typeof RECOMMENDED_BATCH_SIZES] = RECOMMENDED_BATCH_SIZES.MEDIUM_MEMORY;
+  recommendedBatchSizes: BatchSizeRecommendation = RECOMMENDED_BATCH_SIZES.MEDIUM_MEMORY;
   embeddingBatchSize: number = 8;
   isLoadingSystemInfo: boolean = false;
+
+  // GPU/CUDA device information
+  gpuDevices: DeviceInfo[] = [];
+  isGpuBackend: boolean = false;
+  currentGpuDevice: DeviceInfo | null = null;
+  gpuFreeMemoryMB: number = 0;
+  gpuTotalMemoryMB: number = 0;
+  isGpuConstrained: boolean = false;
+  gpuConstraintReason: string = '';
 
   // Adaptive performance mode
   adaptiveMode: boolean = false;
   showAdaptiveOptions: boolean = false;
   adaptiveConfig: AdaptiveConfig = { ...DEFAULT_ADAPTIVE_CONFIG };
+
+  // Composite PDF loader option (auto-select best PDF loader)
+  useCompositePdfLoader: boolean = false;
+
+  // PDF processing configuration
+  showPdfProcessingOptions: boolean = false;
+  pdfProcessingModes: PdfProcessingModeInfo[] = PDF_PROCESSING_MODES;
+  tableExtractionMethods: TableExtractionMethodInfo[] = TABLE_EXTRACTION_METHODS;
+  pdfProcessingConfig: PdfProcessingConfig = { ...DEFAULT_PDF_PROCESSING_CONFIG };
 
   // Subprocess configuration
   showSubprocessOptions: boolean = false;
@@ -593,7 +627,11 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       adaptivePerformanceConfig: this.adaptiveMode ? this.adaptiveConfig : undefined,
       subprocessConfig: this.subprocessConfig,
       // Override the processing mode if user selected a specific one for this request
-      processingMode: this.selectedProcessingMode
+      processingMode: this.selectedProcessingMode,
+      // Composite PDF loader option (auto-select best PDF loader)
+      useCompositePdfLoader: this.useCompositePdfLoader && this.hasSelectedPdfFiles() && !formValue.loaderSelect,
+      // PDF processing configuration (only for PDFs)
+      pdfProcessingConfig: this.hasSelectedPdfFiles() ? this.pdfProcessingConfig : undefined
     };
 
     if (formValue.sourceType === 'file') {
@@ -788,6 +826,102 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     } else {
       return `${(totalBytes / (1024 * 1024)).toFixed(2)} MB`;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // COMPOSITE PDF LOADER METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check if any selected file is a PDF.
+   * Used to show/hide the composite PDF loader option.
+   */
+  hasSelectedPdfFiles(): boolean {
+    return this.selectedFiles.some(file => file.name.toLowerCase().endsWith('.pdf'));
+  }
+
+  /**
+   * Get the count of selected PDF files.
+   */
+  getSelectedPdfCount(): number {
+    return this.selectedFiles.filter(file => file.name.toLowerCase().endsWith('.pdf')).length;
+  }
+
+  /**
+   * Toggle the composite PDF loader option.
+   */
+  toggleCompositePdfLoader(): void {
+    this.useCompositePdfLoader = !this.useCompositePdfLoader;
+    this.cdr.markForCheck();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PDF PROCESSING CONFIGURATION METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Toggle PDF processing options section visibility.
+   */
+  togglePdfProcessingSection(): void {
+    this.showPdfProcessingOptions = !this.showPdfProcessingOptions;
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Select a PDF processing mode.
+   */
+  selectPdfProcessingMode(mode: PdfProcessingMode): void {
+    this.pdfProcessingConfig.processingMode = mode;
+    // Enable VLM when VLM mode is selected
+    this.pdfProcessingConfig.useVlm = (mode === 'VLM');
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Select a table extraction method.
+   */
+  selectTableExtractionMethod(method: TableExtractionMethod): void {
+    this.pdfProcessingConfig.tableExtractionMethod = method;
+    // Disable table extraction when NONE is selected
+    this.pdfProcessingConfig.extractTables = (method !== 'NONE');
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Toggle table extraction.
+   */
+  toggleTableExtraction(): void {
+    this.pdfProcessingConfig.extractTables = !this.pdfProcessingConfig.extractTables;
+    if (!this.pdfProcessingConfig.extractTables) {
+      this.pdfProcessingConfig.tableExtractionMethod = 'NONE';
+    } else if (this.pdfProcessingConfig.tableExtractionMethod === 'NONE') {
+      this.pdfProcessingConfig.tableExtractionMethod = 'AUTO';
+    }
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Check if VLM options should be shown (VLM mode or AUTO mode).
+   */
+  shouldShowVlmOptions(): boolean {
+    const mode = this.pdfProcessingConfig.processingMode;
+    return mode === 'VLM' || mode === 'AUTO' || mode === 'COMPARE';
+  }
+
+  /**
+   * Get description text for current PDF processing mode.
+   */
+  getPdfProcessingModeDescription(): string {
+    const mode = this.pdfProcessingModes.find(m => m.id === this.pdfProcessingConfig.processingMode);
+    return mode?.description || '';
+  }
+
+  /**
+   * Get description text for current table extraction method.
+   */
+  getTableExtractionMethodDescription(): string {
+    const method = this.tableExtractionMethods.find(m => m.id === this.pdfProcessingConfig.tableExtractionMethod);
+    return method?.description || '';
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1079,7 +1213,7 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     this.recommendations = [];
     if (!this.documentAnalysis) return;
 
-    const { totalSize, fileCount, dominantType, hasLargeFiles, hasVeryLargeFiles, estimatedChunks, fileTypes } = this.documentAnalysis;
+    const { totalSize, fileCount, dominantType, hasLargeFiles, hasVeryLargeFiles, estimatedChunks, fileTypes, memoryWarning } = this.documentAnalysis;
 
     // Critical: Very large files warning
     if (hasVeryLargeFiles) {
@@ -1203,8 +1337,77 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       });
     }
 
+    // GPU/CUDA memory recommendations
+    this.addGpuMemoryRecommendations(estimatedChunks, memoryWarning);
+
     // Add embedding batch size recommendation based on estimated chunks
     this.updateBatchSizeRecommendation();
+  }
+
+  /**
+   * Add GPU/CUDA-specific recommendations based on device memory.
+   */
+  private addGpuMemoryRecommendations(estimatedChunks: number, memoryWarning: boolean): void {
+    // Only add GPU recommendations if using CUDA backend
+    if (!this.isGpuBackend) {
+      return;
+    }
+
+    const gpuMemoryGB = this.gpuTotalMemoryMB / 1024;
+    const gpuFreeGB = this.gpuFreeMemoryMB / 1024;
+
+    // Critical: Very low GPU memory
+    if (this.gpuFreeMemoryMB > 0 && this.gpuFreeMemoryMB < 1024) {
+      this.recommendations.push({
+        id: 'gpu-memory-critical',
+        severity: 'critical',
+        title: 'GPU Memory Critical',
+        description: `Only ${gpuFreeGB.toFixed(1)}GB free VRAM. Embedding computations may fail. Consider reducing batch size or using CPU mode.`,
+        icon: 'memory'
+      });
+    }
+    // Warning: Low GPU memory
+    else if (this.gpuFreeMemoryMB > 0 && this.gpuFreeMemoryMB < 2048) {
+      this.recommendations.push({
+        id: 'gpu-memory-low',
+        severity: 'warning',
+        title: 'Low GPU Memory',
+        description: `${gpuFreeGB.toFixed(1)}GB free VRAM available. Using conservative batch sizes for stability.`,
+        icon: 'memory'
+      });
+    }
+    // Info: GPU is the constraining factor
+    else if (this.isGpuConstrained) {
+      this.recommendations.push({
+        id: 'gpu-constrained',
+        severity: 'info',
+        title: 'GPU Memory Limited',
+        description: this.gpuConstraintReason,
+        icon: 'developer_board'
+      });
+    }
+
+    // Info: GPU backend active
+    if (this.currentGpuDevice && !this.isGpuConstrained && this.gpuFreeMemoryMB >= 2048) {
+      this.recommendations.push({
+        id: 'gpu-active',
+        severity: 'info',
+        title: 'GPU Acceleration Active',
+        description: `Using ${this.currentGpuDevice.name || 'GPU'} with ${gpuFreeGB.toFixed(1)}GB/${gpuMemoryGB.toFixed(1)}GB VRAM. Embeddings will be GPU-accelerated.`,
+        icon: 'speed'
+      });
+    }
+
+    // High workload + limited GPU memory warning
+    if (estimatedChunks > 5000 && this.gpuTotalMemoryMB > 0 && this.gpuTotalMemoryMB < 8192) {
+      this.recommendations.push({
+        id: 'gpu-high-workload',
+        severity: 'warning',
+        title: 'High Workload + Limited GPU',
+        description: `Processing ${estimatedChunks.toLocaleString()} chunks with ${gpuMemoryGB.toFixed(1)}GB GPU. Consider subprocess mode for better stability.`,
+        icon: 'warning_amber'
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1322,9 +1525,12 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
 
   /**
    * Fetches system resources to determine optimal batch sizes.
+   * Also fetches GPU device information to factor in CUDA memory constraints.
    */
   private fetchSystemResources(): void {
     this.isLoadingSystemInfo = true;
+
+    // Fetch both system resources and device info in parallel
     this.http.get<any>(`${backendUrl}/system/resources`).subscribe({
       next: (response) => {
         // Extract system memory from response
@@ -1335,9 +1541,18 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
           this.systemMemoryMB = response.memory.jvm.maxMB;
         }
 
-        // Update batch size recommendations based on available memory
-        this.recommendedBatchSizes = getRecommendedBatchSizes(this.systemMemoryMB);
-        this.embeddingBatchSize = this.recommendedBatchSizes.embeddingBatch;
+        // Check ND4J backend info from resources response
+        if (response?.nd4j) {
+          this.isGpuBackend = response.nd4j.isGpuBackend || false;
+
+          // Extract device memory from ND4J info
+          if (response.nd4j.devices && response.nd4j.devices.length > 0) {
+            this.processDeviceInfo(response.nd4j.devices, response.nd4j.currentDevice);
+          }
+        }
+
+        // Update batch size recommendations considering both RAM and GPU
+        this.updateBatchSizeRecommendationsWithGpu();
         this.isLoadingSystemInfo = false;
         this.cdr.markForCheck();
       },
@@ -1350,6 +1565,68 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       }
     });
+
+    // Also fetch dedicated device info for more complete GPU information
+    this.http.get<DevicesResponse>(`${backendUrl}/system/devices`).subscribe({
+      next: (response) => {
+        if (response.status === 'success') {
+          this.isGpuBackend = response.isGpuBackend || false;
+          this.gpuDevices = response.devices || [];
+
+          // Find current GPU device
+          if (this.isGpuBackend && this.gpuDevices.length > 0) {
+            this.processDeviceInfo(this.gpuDevices, response.currentDevice ?? 0);
+          }
+
+          // Update recommendations with GPU info
+          this.updateBatchSizeRecommendationsWithGpu();
+          this.cdr.markForCheck();
+        }
+      },
+      error: (err) => {
+        console.warn('Failed to fetch GPU device info:', err);
+        // Continue without GPU info - will use CPU-based recommendations
+      }
+    });
+  }
+
+  /**
+   * Process device information to extract current GPU memory stats.
+   */
+  private processDeviceInfo(devices: any[], currentDeviceId: number): void {
+    // Filter to GPU devices only
+    const gpuDevices = devices.filter(d => d.type === 'GPU');
+    this.gpuDevices = gpuDevices;
+
+    // Find the current/active GPU device
+    this.currentGpuDevice = gpuDevices.find(d => d.id === currentDeviceId && d.type === 'GPU')
+                           || gpuDevices.find(d => d.current === true)
+                           || gpuDevices[0]
+                           || null;
+
+    if (this.currentGpuDevice) {
+      this.gpuFreeMemoryMB = this.currentGpuDevice.freeMemoryMB || 0;
+      this.gpuTotalMemoryMB = this.currentGpuDevice.totalMemoryMB || 0;
+    }
+  }
+
+  /**
+   * Update batch size recommendations considering both system RAM and GPU VRAM.
+   */
+  private updateBatchSizeRecommendationsWithGpu(): void {
+    const result = getRecommendedBatchSizesWithGpu(
+      this.systemMemoryMB,
+      {
+        isGpuBackend: this.isGpuBackend,
+        freeMemoryMB: this.gpuFreeMemoryMB,
+        totalMemoryMB: this.gpuTotalMemoryMB
+      }
+    );
+
+    this.recommendedBatchSizes = result.settings;
+    this.isGpuConstrained = result.isGpuConstrained;
+    this.gpuConstraintReason = result.constraintReason;
+    this.embeddingBatchSize = this.recommendedBatchSizes.embeddingBatch;
   }
 
   /**
@@ -1394,6 +1671,57 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
     if (this.systemMemoryMB < 8192) return 'memory-medium';
     if (this.systemMemoryMB < 16384) return 'memory-high';
     return 'memory-very-high';
+  }
+
+  /**
+   * Gets GPU memory tier label.
+   */
+  getGpuMemoryTierLabel(): string {
+    if (!this.isGpuBackend || this.gpuTotalMemoryMB === 0) {
+      return 'CPU Mode';
+    }
+    return getGpuMemoryTierLabel(this.gpuTotalMemoryMB);
+  }
+
+  /**
+   * Gets GPU memory tier class for styling.
+   */
+  getGpuMemoryTierClass(): string {
+    if (!this.isGpuBackend || this.gpuTotalMemoryMB === 0) {
+      return 'gpu-inactive';
+    }
+    return getGpuMemoryTierClass(this.gpuTotalMemoryMB);
+  }
+
+  /**
+   * Gets a combined memory summary for display.
+   */
+  getMemorySummary(): string {
+    const ramGB = (this.systemMemoryMB / 1024).toFixed(1);
+
+    if (!this.isGpuBackend || this.gpuTotalMemoryMB === 0) {
+      return `System RAM: ${ramGB}GB (CPU Mode)`;
+    }
+
+    const vramGB = (this.gpuTotalMemoryMB / 1024).toFixed(1);
+    const vramFreeGB = (this.gpuFreeMemoryMB / 1024).toFixed(1);
+
+    return `RAM: ${ramGB}GB | GPU: ${vramFreeGB}/${vramGB}GB VRAM`;
+  }
+
+  /**
+   * Gets the effective memory constraint info.
+   */
+  getEffectiveConstraintInfo(): string {
+    if (!this.isGpuBackend) {
+      return 'Batch sizes based on available system RAM.';
+    }
+
+    if (this.isGpuConstrained) {
+      return `Batch sizes limited by GPU VRAM (${(this.gpuFreeMemoryMB / 1024).toFixed(1)}GB free).`;
+    }
+
+    return `GPU has sufficient VRAM. Batch sizes based on system RAM (${(this.systemMemoryMB / 1024).toFixed(1)}GB).`;
   }
 
   /**

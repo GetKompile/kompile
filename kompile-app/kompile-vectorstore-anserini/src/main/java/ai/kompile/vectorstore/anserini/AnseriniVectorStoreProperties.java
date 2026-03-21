@@ -28,11 +28,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AnseriniVectorStoreProperties {
 
     /**
-     * Path to the Lucene index directory for storing vectors.
-     * Default: Uses ~/.kompile/anserini-vector-index for persistent storage.
      * Set explicitly via kompile.vectorstore.anserini.index-path to customize.
      */
-    private String indexPath = System.getProperty("user.home") + "/.kompile/anserini-vector-index";
+    private String indexPath;
 
     /**
      * Whether to enable the Anserini VectorStore.
@@ -91,7 +89,8 @@ public class AnseriniVectorStoreProperties {
     /**
      * Number of batch add operations before committing to the index.
      * PERFORMANCE: Higher values reduce commit overhead during bulk indexing.
-     * Set to 1 for immediate durability (slower), or 10-50 for bulk indexing (faster).
+     * Set to 1 for immediate durability (slower), or 10-50 for bulk indexing
+     * (faster).
      * Note: A commit is always performed after the final batch in a bulk operation.
      * Default: 10 (commit every 10 batches for 10x fewer commits)
      */
@@ -99,7 +98,8 @@ public class AnseriniVectorStoreProperties {
 
     /**
      * Maximum number of documents to buffer before forcing a commit.
-     * This provides a safety net to ensure commits happen even if batch count is low.
+     * This provides a safety net to ensure commits happen even if batch count is
+     * low.
      * Set to 0 to disable document-based commit triggering.
      * Default: 5000 (commit at least every 5000 documents)
      */

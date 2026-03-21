@@ -18,6 +18,10 @@ package ai.kompile.app.rag;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.ScoredDocument;
+import ai.kompile.core.filter.FilterAction;
+import ai.kompile.core.filter.FilterContext;
+import ai.kompile.core.filter.FilterPhase;
+import ai.kompile.core.filter.FilterResult;
 import ai.kompile.core.llm.ConversationalLanguageModel;
 import ai.kompile.core.llm.LanguageModel;
 import ai.kompile.core.llm.memory.KompileChatMemory;
@@ -32,6 +36,7 @@ import ai.kompile.core.rag.query.QueryProcessor;
 import ai.kompile.core.rag.retrieval.OptimizedRetriever;
 import ai.kompile.core.rag.retrieval.RetrievalMetrics;
 import ai.kompile.core.rag.retrieval.RetrievalResult;
+import ai.kompile.filterchain.service.FilterChainService;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -44,6 +49,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Primary implementation of {@link ConversationalRagService} that orchestrates the full RAG pipeline.
@@ -105,6 +111,7 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
     private final KompileChatMemory chatMemory;
     private final LanguageModel languageModel;
     private final ConversationalLanguageModel conversationalLanguageModel;
+    private final FilterChainService filterChainService;
 
     @Autowired
     public KompileRagOrchestratorImpl(
@@ -114,7 +121,8 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             @Autowired(required = false) @Qualifier("defaultContextBuilder") ContextBuilder contextBuilder,
             @Autowired(required = false) KompileChatMemory chatMemory,
             @Autowired(required = false) LanguageModel languageModel,
-            @Autowired(required = false) ConversationalLanguageModel conversationalLanguageModel) {
+            @Autowired(required = false) ConversationalLanguageModel conversationalLanguageModel,
+            @Autowired(required = false) FilterChainService filterChainService) {
 
         this.embeddingModel = embeddingModel;
         this.retriever = retriever;
@@ -123,6 +131,7 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
         this.chatMemory = chatMemory;
         this.languageModel = languageModel;
         this.conversationalLanguageModel = conversationalLanguageModel;
+        this.filterChainService = filterChainService;
 
         log.info("KompileRagOrchestrator initialized with:");
         log.info("  - EmbeddingModel: {}", embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "null");
@@ -133,6 +142,8 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
         log.info("  - LanguageModel: {}", languageModel != null ? languageModel.getClass().getSimpleName() : "null");
         log.info("  - ConversationalLanguageModel: {}", conversationalLanguageModel != null ?
                 conversationalLanguageModel.getClass().getSimpleName() : "null");
+        log.info("  - FilterChainService: {}", filterChainService != null ?
+                (filterChainService.isEnabled() ? "enabled" : "disabled") : "null");
     }
 
     @Override
@@ -157,10 +168,33 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             List<Message> history = getConversationHistoryInternal(conversationId, options.maxHistoryMessages());
 
             // ══════════════════════════════════════════════════════════════════════
+            // FILTER CHAIN: PRE_RETRIEVAL PHASE
+            // ══════════════════════════════════════════════════════════════════════
+            FilterContext filterContext = FilterContext.forConversation(conversationId, userMessage, history);
+            filterContext.setSystemPrompt(options.systemPrompt());
+            filterContext.setMaxResults(options.totalK());
+
+            if (isFilterChainEnabled()) {
+                FilterResult preRetrievalResult = filterChainService.execute(filterContext, FilterPhase.PRE_RETRIEVAL);
+                if (preRetrievalResult.isTerminating()) {
+                    return handleFilterTermination(preRetrievalResult, filterContext, startTime);
+                }
+                filterContext = preRetrievalResult.getMutatedContext();
+            }
+
+            // ══════════════════════════════════════════════════════════════════════
             // STEP 2: Process Query
             // ══════════════════════════════════════════════════════════════════════
-            ProcessedQuery processedQuery = processQuery(userMessage, history, options);
+            // Use rewritten query from filters if available
+            String queryToProcess = filterContext.getRewrittenQuery() != null ?
+                    filterContext.getRewrittenQuery() : userMessage;
+            ProcessedQuery processedQuery = processQuery(queryToProcess, history, options);
             String queryForRetrieval = processedQuery.rewrittenQuery();
+
+            // Update filter context with processed query
+            if (filterContext.getRewrittenQuery() == null) {
+                filterContext.setRewrittenQuery(queryForRetrieval);
+            }
 
             // ══════════════════════════════════════════════════════════════════════
             // STEP 3: Generate Embedding (INDArray-native)
@@ -179,7 +213,7 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             // ══════════════════════════════════════════════════════════════════════
             RetrievalResult retrievalResult = retrieveDocuments(queryEmbedding, queryForRetrieval, options);
             RetrievalMetrics retrievalMetrics = retrievalResult.metrics();
-            List<ScoredDocument> documents = retrievalResult.documents();
+            List<ScoredDocument> documents = new ArrayList<>(retrievalResult.documents());
 
             // Clean up embedding
             if (queryEmbedding != null && !queryEmbedding.wasClosed()) {
@@ -191,9 +225,45 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             }
 
             // ══════════════════════════════════════════════════════════════════════
+            // FILTER CHAIN: POST_RETRIEVAL PHASE
+            // ══════════════════════════════════════════════════════════════════════
+            filterContext.setRetrievedDocuments(documents);
+
+            if (isFilterChainEnabled()) {
+                FilterResult postRetrievalResult = filterChainService.execute(filterContext, FilterPhase.POST_RETRIEVAL);
+                if (postRetrievalResult.isTerminating()) {
+                    return handleFilterTermination(postRetrievalResult, filterContext, startTime);
+                }
+                filterContext = postRetrievalResult.getMutatedContext();
+                // Filters may have modified the documents (reranked, filtered, enriched)
+                documents = filterContext.getRetrievedDocuments();
+            }
+
+            // ══════════════════════════════════════════════════════════════════════
             // STEP 5: Build Context
             // ══════════════════════════════════════════════════════════════════════
             BuiltContext builtContext = buildContext(documents, history, userMessage, options);
+            filterContext.setFormattedContext(builtContext.contextString());
+
+            // ══════════════════════════════════════════════════════════════════════
+            // FILTER CHAIN: PRE_LLM PHASE
+            // ══════════════════════════════════════════════════════════════════════
+            if (isFilterChainEnabled()) {
+                FilterResult preLlmResult = filterChainService.execute(filterContext, FilterPhase.PRE_LLM);
+                if (preLlmResult.isTerminating()) {
+                    return handleFilterTermination(preLlmResult, filterContext, startTime);
+                }
+                filterContext = preLlmResult.getMutatedContext();
+                // Update context if filter modified it
+                if (filterContext.getFormattedContext() != null &&
+                        !filterContext.getFormattedContext().equals(builtContext.contextString())) {
+                    builtContext = BuiltContext.builder()
+                            .contextString(filterContext.getFormattedContext())
+                            .userPromptWithContext(filterContext.getFormattedContext() + "\n\n" + userMessage)
+                            .includedDocCount(documents.size())
+                            .build();
+                }
+            }
 
             // ══════════════════════════════════════════════════════════════════════
             // STEP 6: Generate Response
@@ -201,6 +271,21 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             long generationStart = System.currentTimeMillis();
             String answer = generateResponse(conversationId, builtContext, options);
             long generationTimeMs = System.currentTimeMillis() - generationStart;
+            filterContext.setLlmResponse(answer);
+            filterContext.setGenerationTimeMs(generationTimeMs);
+
+            // ══════════════════════════════════════════════════════════════════════
+            // FILTER CHAIN: POST_LLM PHASE
+            // ══════════════════════════════════════════════════════════════════════
+            if (isFilterChainEnabled()) {
+                FilterResult postLlmResult = filterChainService.execute(filterContext, FilterPhase.POST_LLM);
+                if (postLlmResult.isTerminating()) {
+                    return handleFilterTermination(postLlmResult, filterContext, startTime);
+                }
+                filterContext = postLlmResult.getMutatedContext();
+                // Use potentially modified response
+                answer = filterContext.getLlmResponse();
+            }
 
             // ══════════════════════════════════════════════════════════════════════
             // STEP 7: Update Conversation Memory
@@ -224,6 +309,8 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
                     .retrievalMetrics(retrievalMetrics)
                     .generationTimeMs(generationTimeMs)
                     .totalTimeMs(totalTimeMs)
+                    .filterTraces(filterContext.getTraces())
+                    .filterMutations(filterContext.getMutations())
                     .build();
 
         } catch (Exception e) {
@@ -458,6 +545,78 @@ public class KompileRagOrchestratorImpl implements ConversationalRagService {
             messages.add(new AssistantMessage(assistantResponse));
             chatMemory.add(conversationId, messages);
             log.trace("Updated conversation memory for: {}", conversationId);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // FILTER CHAIN HELPER METHODS
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Check if the filter chain is enabled and available.
+     */
+    private boolean isFilterChainEnabled() {
+        return filterChainService != null && filterChainService.isEnabled();
+    }
+
+    /**
+     * Handle a terminating filter result by returning an appropriate ConversationalRagResult.
+     *
+     * @param result The terminating filter result
+     * @param context The filter context at termination
+     * @param startTime The start time of the chat request
+     * @return A ConversationalRagResult reflecting the filter termination
+     */
+    private ConversationalRagResult handleFilterTermination(FilterResult result, FilterContext context, long startTime) {
+        long totalTimeMs = System.currentTimeMillis() - startTime;
+
+        FilterAction action = result.getAction();
+        String message = result.getMessage();
+        int statusCode = result.getHttpStatusCode();
+
+        log.info("Filter chain terminated with action={}, status={}, message='{}' in {}ms",
+                action, statusCode, message, totalTimeMs);
+
+        if (action == FilterAction.TERMINATE_SUCCESS) {
+            // Early successful response from filter
+            return ConversationalRagResult.builder()
+                    .answer(message != null ? message : "Request handled by filter")
+                    .retrievedDocuments(context.getRetrievedDocuments() != null ?
+                            context.getRetrievedDocuments() : List.of())
+                    .formattedContext(context.getFormattedContext())
+                    .conversationHistory(context.getConversationHistory())
+                    .totalTimeMs(totalTimeMs)
+                    .filterTraces(context.getTraces())
+                    .filterMutations(context.getMutations())
+                    .filterTerminated(true)
+                    .filterTerminationStatus(statusCode)
+                    .build();
+        } else if (action == FilterAction.TERMINATE_USER_ERROR) {
+            // User error (4xx) - policy violation, validation failure, etc.
+            return ConversationalRagResult.builder()
+                    .answer(message != null ? message : "Request blocked by filter")
+                    .error(true)
+                    .errorMessage(message)
+                    .errorCode(statusCode)
+                    .totalTimeMs(totalTimeMs)
+                    .filterTraces(context.getTraces())
+                    .filterMutations(context.getMutations())
+                    .filterTerminated(true)
+                    .filterTerminationStatus(statusCode)
+                    .build();
+        } else {
+            // Fatal error (5xx) - filter failure
+            return ConversationalRagResult.builder()
+                    .answer("An error occurred processing your request")
+                    .error(true)
+                    .errorMessage(message != null ? message : "Filter chain error")
+                    .errorCode(statusCode)
+                    .totalTimeMs(totalTimeMs)
+                    .filterTraces(context.getTraces())
+                    .filterMutations(context.getMutations())
+                    .filterTerminated(true)
+                    .filterTerminationStatus(statusCode)
+                    .build();
         }
     }
 

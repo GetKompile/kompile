@@ -35,6 +35,12 @@
             <artifactId>kompile-app-core</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-orchestrator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Core OpenAI library for chat only -->
         <dependency>
             <groupId>org.springframework.ai</groupId>

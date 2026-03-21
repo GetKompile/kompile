@@ -21,10 +21,13 @@ import { MatSort } from '@angular/material/sort';
 import { FormControl } from '@angular/forms';
 import { MatDialog } from '@angular/material/dialog';
 import { IndexBrowserService } from '../../services/index-browser.service';
+import { MainPanelNavigationService } from '../../services/main-panel-navigation.service';
 import { WebSocketService } from '../../services/websocket.service';
 import { SourceViewerService } from '../../services/source-viewer.service';
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { CrossIndexService } from '../../services/cross-index.service';
+import { ChunkManagerService } from '../../services/chunk-manager.service';
+import { DeduplicationStrategy, KeepPolicy, DuplicateAnalysisResponse } from '../../models/chunk-manager.models';
 import {
   IndexedDocInfo,
   SearchResult,
@@ -53,10 +56,12 @@ import {
 } from '../../models/api-models';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
-import { debounceTime, distinctUntilChanged } from 'rxjs/operators';
-import { Subscription, timer } from 'rxjs';
+import { debounceTime, distinctUntilChanged, takeUntil, filter, switchMap } from 'rxjs/operators';
+import { Subscription, timer, Subject } from 'rxjs';
+import { ModelStatusUpdate } from '../../models/api-models';
 import { SubprocessLogsComponent } from '../subprocess-logs/subprocess-logs.component';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 
 // Legacy interface for backward compatibility - maps to new VectorPopulationUpdate
 interface VectorPopulationProgress {
@@ -114,14 +119,16 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   // Vector Store data source
   vectorDataSource = new MatTableDataSource<DisplayItem>();
 
-  // Keyword Index Search functionality
+  // Keyword Index mode and search functionality
+  keywordViewMode: 'browse' | 'search' = 'browse';  // Toggle between browse and search
   searchControl = new FormControl('');
   searchResults: SearchResult[] = [];
   isSearchMode: boolean = false;
   currentSearchQuery: string = '';
   maxSearchResults: number = 20;
 
-  // Vector Store Search functionality
+  // Vector Store mode and search functionality
+  vectorViewMode: 'browse' | 'search' = 'browse';  // Toggle between browse and search
   vectorSearchControl = new FormControl('');
   vectorSearchResults: SearchResult[] = [];
   isVectorSearchMode: boolean = false;
@@ -137,6 +144,36 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   totalDocsEstimate = 0;
   pageSize = 10;
   currentPage = 0;
+
+  // Embedding model status polling
+  private embeddingModelPollingSub: Subscription | null = null;
+  private embeddingModelPollIntervalSlow = 3000; // Poll every 3 seconds when waiting for model
+  private embeddingModelPollIntervalFast = 500;  // Poll every 500ms when model is actively loading
+
+  // WebSocket model status subscription
+  private destroy$ = new Subject<void>();
+  private modelStatusSubscribed = false;
+
+  // Public getter for template access
+  get isPollingEmbeddingModel(): boolean {
+    return this.embeddingModelPollingSub !== null;
+  }
+
+  // Display-friendly loading phase names
+  getLoadingPhaseDisplay(phase: string | undefined): string {
+    if (!phase) return 'Starting';
+    switch (phase) {
+      case 'IDLE': return 'Waiting';
+      case 'STARTING': return 'Starting';
+      case 'LOOKING_UP_REGISTRY': return 'Registry Lookup';
+      case 'LOADING_MODEL_FILES': return 'Loading Files';
+      case 'CREATING_ENCODER': return 'Creating Encoder';
+      case 'TESTING_ENCODER': return 'Testing';
+      case 'COMPLETE': return 'Complete';
+      case 'FAILED': return 'Failed';
+      default: return phase;
+    }
+  }
 
   // Vector Store state
   isLoadingVector = false;
@@ -181,15 +218,25 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
 
   @ViewChild('sourcesPaginator') sourcesPaginator!: MatPaginator;
 
+  // Deduplication state
+  showDedupDialog = false;
+  dedupStrategy: DeduplicationStrategy = 'content_hash';
+  dedupKeepPolicy: KeepPolicy = 'first';
+  dedupDryRun = true;
+  isDeduplicating = false;
+  duplicateAnalysis: DuplicateAnalysisResponse | null = null;
+
   constructor(
     private indexBrowserService: IndexBrowserService,
     private websocketService: WebSocketService,
     private sourceViewerService: SourceViewerService,
     private factSheetService: FactSheetService,
     private crossIndexService: CrossIndexService,
+    private chunkManagerService: ChunkManagerService,
     private dialog: MatDialog,
     private cdr: ChangeDetectorRef,
-    private snackBar: MatSnackBar
+    private snackBar: MatSnackBar,
+    private mainPanelNavigationService: MainPanelNavigationService
   ) { }
 
   ngOnInit(): void {
@@ -197,18 +244,27 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.loadDocuments();
     this.setupSearchControl();
     this.setupVectorSearchControl();
-    // Restore active vector population task state on page load/reload
-    this.restoreActiveVectorPopulationState();
     // Load fact sheets
     this.loadFactSheets();
     // Load cross-index summary for the badge count
     this.loadCrossIndexSummary();
 
+    // Subscribe to WebSocket model status updates for real-time UI updates
+    this.subscribeToModelStatusUpdates();
+
     // Subscribe to active sheet changes
     this.factSheetService.activeSheet$.subscribe(sheet => {
       if (sheet && (!this.activeFactSheet || sheet.id !== this.activeFactSheet.id)) {
         this.activeFactSheet = sheet;
+        // Refresh sources for the new sheet
         this.loadSources();
+        // Refresh index status to update storage paths and document counts
+        this.loadStatus();
+        // Refresh cross-index summary for the badge count
+        this.loadCrossIndexSummary();
+        // Refresh keyword and vector documents for the new sheet
+        this.loadDocuments();
+        this.loadVectorDocuments();
         this.cdr.detectChanges();
       }
     });
@@ -234,9 +290,32 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.isLoadingStatus = true;
     this.indexBrowserService.getIndexBrowserStatus().subscribe({
       next: (status) => {
+        const wasNotInitialized = this.indexBrowserStatus &&
+          (this.indexBrowserStatus as any).embeddingModelInitialized === false;
+        const isNowInitialized = (status as any).embeddingModelInitialized === true;
+
         this.indexBrowserStatus = status;
         this.isLoadingStatus = false;
         this.cdr.detectChanges();
+
+        // Show snackbar when model becomes initialized
+        if (wasNotInitialized && isNowInitialized) {
+          this.snackBar.open('Embedding model is now ready!', 'Close', {
+            duration: 5000,
+            panelClass: ['snackbar-success']
+          });
+        }
+
+        // Start/stop polling based on embedding model status
+        const embeddingNotInitialized = (status as any).embeddingModelInitialized === false;
+        const embeddingLoading = (status as any).embeddingModelLoading === true;
+
+        if (embeddingNotInitialized || embeddingLoading) {
+          // Start or adjust polling based on loading state
+          this.startEmbeddingModelPolling(embeddingLoading);
+        } else if (!embeddingNotInitialized && !embeddingLoading && this.embeddingModelPollingSub) {
+          this.stopEmbeddingModelPolling();
+        }
 
         if (status.warning) {
           this.snackBar.open(status.warning, 'Close', {
@@ -253,6 +332,117 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
         });
       }
     });
+  }
+
+  // Track current polling speed to detect changes
+  private currentPollingFast = false;
+
+  /**
+   * Start polling for embedding model status when model is not yet initialized.
+   * This allows the UI to auto-update when the model becomes ready.
+   * @param fastPolling If true, poll more frequently (during active loading)
+   */
+  private startEmbeddingModelPolling(fastPolling: boolean = false): void {
+    // If already polling at the correct speed, do nothing
+    if (this.embeddingModelPollingSub && this.currentPollingFast === fastPolling) {
+      return;
+    }
+
+    // Stop existing polling if speed needs to change
+    if (this.embeddingModelPollingSub && this.currentPollingFast !== fastPolling) {
+      this.stopEmbeddingModelPolling();
+    }
+
+    const interval = fastPolling ? this.embeddingModelPollIntervalFast : this.embeddingModelPollIntervalSlow;
+    this.currentPollingFast = fastPolling;
+
+    console.log(`[STATUS] Starting embedding model status polling (${fastPolling ? 'fast' : 'slow'}: ${interval}ms)...`);
+    this.embeddingModelPollingSub = timer(interval, interval)
+      .subscribe(() => {
+        // Only poll if we're not already loading status
+        if (!this.isLoadingStatus) {
+          this.loadStatus();
+        }
+      });
+  }
+
+  /**
+   * Stop polling for embedding model status (when model is initialized or component destroyed).
+   */
+  private stopEmbeddingModelPolling(): void {
+    if (this.embeddingModelPollingSub) {
+      console.log('[STATUS] Stopping embedding model status polling.');
+      this.embeddingModelPollingSub.unsubscribe();
+      this.embeddingModelPollingSub = null;
+    }
+  }
+
+  /**
+   * Subscribe to WebSocket model status updates for real-time UI updates.
+   * This replaces polling with push-based updates when model status changes.
+   */
+  private subscribeToModelStatusUpdates(): void {
+    if (this.modelStatusSubscribed) {
+      return;
+    }
+
+    // Connect WebSocket and subscribe to model status
+    this.websocketService.connect();
+    this.modelStatusSubscribed = true;
+
+    this.websocketService.subscribeToModelStatus().pipe(
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: (status: ModelStatusUpdate) => {
+        this.handleModelStatusUpdate(status);
+      },
+      error: (err) => {
+        console.error('[WS-MODEL] Error in model status WebSocket:', err);
+      }
+    });
+
+    console.log('[WS-MODEL] Subscribed to model status updates');
+  }
+
+  /**
+   * Handle incoming model status updates from WebSocket.
+   */
+  private handleModelStatusUpdate(status: ModelStatusUpdate): void {
+    if (!status.embedding) return;
+
+    const wasInitialized = (this.indexBrowserStatus as any)?.embeddingModelInitialized === true;
+    const isNowInitialized = status.embedding.initialized && (status.embedding.dimensions || 0) > 0;
+
+    // Update embedded status in our local cache
+    if (this.indexBrowserStatus) {
+      (this.indexBrowserStatus as any).embeddingModelInitialized = isNowInitialized;
+      (this.indexBrowserStatus as any).embeddingModelLoading = status.embedding.loading;
+      (this.indexBrowserStatus as any).embeddingModelLoadingPhase = status.embedding.loadingPhase;
+      (this.indexBrowserStatus as any).embeddingModelLoadingMessage = status.embedding.loadingMessage;
+      (this.indexBrowserStatus as any).embeddingDimensions = status.embedding.dimensions || 0;
+    }
+
+    // If model just became ready, stop polling and show notification
+    if (!wasInitialized && isNowInitialized) {
+      console.log('[WS-MODEL] Embedding model is now ready!');
+      this.stopEmbeddingModelPolling();
+      this.snackBar.open('Embedding model is now ready!', 'Close', {
+        duration: 5000,
+        panelClass: ['snackbar-success']
+      });
+      // Refresh full status from server to get accurate counts
+      this.loadStatus();
+    }
+
+    // Update staging connection status
+    if (status.staging) {
+      if (this.indexBrowserStatus) {
+        (this.indexBrowserStatus as any).stagingConnected = status.staging.connected;
+        (this.indexBrowserStatus as any).stagingError = status.staging.lastError;
+      }
+    }
+
+    this.cdr.detectChanges();
   }
 
   setupSearchControl(): void {
@@ -303,6 +493,22 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.searchResults = [];
     this.searchControl.setValue('', { emitEvent: false });
     this.loadDocuments();
+  }
+
+  // Mode switching for Keyword Index
+  setKeywordViewMode(mode: 'browse' | 'search'): void {
+    this.keywordViewMode = mode;
+    if (mode === 'browse') {
+      this.clearSearch();
+    }
+  }
+
+  // Mode switching for Vector Store
+  setVectorViewMode(mode: 'browse' | 'search'): void {
+    this.vectorViewMode = mode;
+    if (mode === 'browse') {
+      this.clearVectorSearch();
+    }
   }
 
   updateDataSourceWithSearchResults(results: SearchResult[]): void {
@@ -530,14 +736,16 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   // Get workers by type
   getWorkersByType(workers: VectorPopulationWorkerStatus[] | undefined, type: string): VectorPopulationWorkerStatus[] {
     if (!workers) return [];
-    return workers.filter(w => w.workerType === type);
+    const normalizedType = type?.toLowerCase();
+    return workers.filter(w => (w.workerType || '').toLowerCase() === normalizedType);
   }
 
   // Get total processed by worker type
   getTotalProcessed(workers: VectorPopulationWorkerStatus[] | undefined, type: string): number {
     if (!workers) return 0;
+    const normalizedType = type?.toLowerCase();
     return workers
-      .filter(w => w.workerType === type)
+      .filter(w => (w.workerType || '').toLowerCase() === normalizedType)
       .reduce((sum, w) => sum + (w.itemsProcessed || 0), 0);
   }
 
@@ -587,6 +795,19 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     return `${hours}h ${mins}m`;
   }
 
+  /**
+   * Format a token count for display with K/M suffixes for large values.
+   */
+  formatTokenCount(value: number | undefined | null): string {
+    if (value === undefined || value === null) return '0';
+    if (value >= 1000000) {
+      return (value / 1000000).toFixed(1) + 'M';
+    } else if (value >= 1000) {
+      return (value / 1000).toFixed(1) + 'K';
+    }
+    return value.toLocaleString();
+  }
+
   // Track by function for worker status ngFor
   trackByWorkerId(index: number, worker: VectorPopulationWorkerStatus): string {
     return `${worker.workerType}-${worker.workerId}`;
@@ -622,42 +843,19 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.isLoading = true;
     this.snackBar.open('Initiating vector index creation with pipeline...', 'Close', { duration: 3000 });
 
-    // Subscribe to WebSocket progress first
-    this.subscribeToVectorProgress();
-
     // Use new pipeline-based endpoint
     this.indexBrowserService.startVectorPopulation().subscribe({
       next: (response: any) => {
         this.isLoading = false;
-        this.isVectorIndexing = true;
-        this.currentVectorTaskId = response.taskId;
-
-        // Initialize progress display
-        this.vectorPopulationProgress = {
-          taskId: response.taskId,
-          phase: 'LOADING',
-          progressPercent: 0,
-          message: 'Starting vector population...'
-        };
-
-        this.snackBar.open(response.message || 'Vector population started. Watch progress below.', 'Close', {
+        this.snackBar.open(response.message || 'Vector population started. Check Active Processing for progress.', 'Close', {
           duration: 5000,
           panelClass: ['snackbar-success']
         });
-
-        // Initialize subprocess logs if component is available
-        if (this.subprocessLogsComponent && this.currentVectorTaskId) {
-          this.subprocessLogsComponent.setTaskId(this.currentVectorTaskId);
-        }
-        this.expandedLogs = true;  // Auto-expand logs panel
-
-        // Also start polling as fallback
-        this.startStatusPolling();
+        this.mainPanelNavigationService.requestMainPanelFocus();
         this.cdr.detectChanges();
       },
       error: (err) => {
         this.isLoading = false;
-        this.unsubscribeFromVectorProgress();
         this.snackBar.open(`Error creating vector index: ${err.message || 'Server error'}`, 'Close', {
           duration: 5000,
           panelClass: ['snackbar-error']
@@ -1001,7 +1199,12 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopStatusPolling();
+    this.stopEmbeddingModelPolling();
     this.unsubscribeFromVectorProgress();
+    // Unsubscribe from WebSocket model status
+    this.websocketService.unsubscribeFromModelStatus();
+    this.destroy$.next();
+    this.destroy$.complete();
     if (this.documentRefreshSub) {
       this.documentRefreshSub.unsubscribe();
       this.documentRefreshSub = null;
@@ -1065,6 +1268,14 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     return 'Index available and ready';
   }
 
+  /**
+   * Check if keyword index has documents available for populating vector store.
+   */
+  hasKeywordIndexDocuments(): boolean {
+    const count = this.indexBrowserStatus?.approximateDocumentCount;
+    return typeof count === 'number' && count > 0;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // TAB HANDLING
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1073,13 +1284,13 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
     this.selectedTabIndex = index;
     this.selectedDoc = null;
 
-    if (index === TAB_VECTOR_STORE && this.vectorDataSource.data.length === 0 && !this.isLoadingVector) {
-      // Load vector store documents when switching to vector tab for the first time
+    if (index === TAB_VECTOR_STORE && !this.isLoadingVector) {
+      // Always load vector store documents when switching to vector tab
       this.loadVectorDocuments();
     }
 
     // Load sources when switching to Sources tab (index 2)
-    if (index === 2 && this.sourcesDataSource.data.length === 0 && !this.isLoadingSources) {
+    if (index === 2 && !this.isLoadingSources) {
       this.loadSources();
     }
   }
@@ -1539,33 +1750,46 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
   deleteSelectedFacts(): void {
     if (this.selectedFactIds.size === 0) return;
 
-    if (!confirm(`Are you sure you want to delete ${this.selectedFactIds.size} selected facts?`)) {
-      return;
-    }
-
     const factIds = Array.from(this.selectedFactIds).filter(id => typeof id === 'number') as number[];
     if (factIds.length === 0) {
       this.snackBar.open('No valid facts selected for deletion', 'Close', { duration: 3000 });
       return;
     }
 
-    this.factSheetService.deleteFacts(factIds).subscribe({
-      next: () => {
-        this.snackBar.open(`Deleted ${factIds.length} facts`, 'Close', {
-          duration: 3000,
-          panelClass: ['snackbar-success']
-        });
-        this.selectedFactIds.clear();
-        this.loadSources();
-        this.loadFactSheets();
-      },
-      error: (err) => {
-        this.snackBar.open('Failed to delete facts', 'Close', {
-          duration: 5000,
-          panelClass: ['snackbar-error']
-        });
-      }
-    });
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Selected Facts',
+      message: `Are you sure you want to delete ${this.selectedFactIds.size} selected facts? This action cannot be undone.`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        switchMap(() => this.factSheetService.deleteFacts(factIds)),
+        takeUntil(this.destroy$)
+      )
+      .subscribe({
+        next: () => {
+          this.snackBar.open(`Deleted ${factIds.length} facts`, 'Close', {
+            duration: 3000,
+            panelClass: ['snackbar-success']
+          });
+          this.selectedFactIds.clear();
+          this.loadSources();
+          this.loadFactSheets();
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          this.snackBar.open('Failed to delete facts', 'Close', {
+            duration: 5000,
+            panelClass: ['snackbar-error']
+          });
+          this.cdr.detectChanges();
+        }
+      });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1592,5 +1816,95 @@ export class IndexBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     });
   }
-}
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // DEDUPLICATION METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Open the deduplication dialog
+   */
+  openDedupDialog(): void {
+    this.showDedupDialog = true;
+    this.duplicateAnalysis = null;
+    this.dedupDryRun = true;
+  }
+
+  /**
+   * Close the deduplication dialog
+   */
+  closeDedupDialog(): void {
+    this.showDedupDialog = false;
+    this.duplicateAnalysis = null;
+  }
+
+  /**
+   * Analyze duplicates without removing them
+   */
+  analyzeDuplicates(): void {
+    this.isDeduplicating = true;
+    this.chunkManagerService.analyzeDuplicates(this.dedupStrategy)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (response) => {
+          this.duplicateAnalysis = response;
+          this.isDeduplicating = false;
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Error analyzing duplicates:', err);
+          this.snackBar.open('Failed to analyze duplicates', 'Close', {
+            duration: 5000,
+            panelClass: ['snackbar-error']
+          });
+          this.isDeduplicating = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+
+  /**
+   * Run deduplication (either dry run or actual removal)
+   */
+  runDeduplication(): void {
+    this.isDeduplicating = true;
+    this.chunkManagerService.deduplicate({
+      strategy: this.dedupStrategy,
+      keepPolicy: this.dedupKeepPolicy,
+      dryRun: this.dedupDryRun
+    })
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (result) => {
+          this.isDeduplicating = false;
+          if (result.success) {
+            this.snackBar.open(result.message, 'Close', {
+              duration: 5000,
+              panelClass: ['snackbar-success']
+            });
+            if (!this.dedupDryRun) {
+              // Refresh data after actual deduplication
+              this.refreshVectorData();
+              this.loadStatus();
+              this.closeDedupDialog();
+            }
+          } else {
+            this.snackBar.open(result.message, 'Close', {
+              duration: 5000,
+              panelClass: ['snackbar-error']
+            });
+          }
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          console.error('Error during deduplication:', err);
+          this.snackBar.open('Failed to run deduplication', 'Close', {
+            duration: 5000,
+            panelClass: ['snackbar-error']
+          });
+          this.isDeduplicating = false;
+          this.cdr.detectChanges();
+        }
+      });
+  }
+}

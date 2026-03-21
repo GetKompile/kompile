@@ -16,7 +16,7 @@
 
 package ai.kompile.staging.staging;
 
-import ai.kompile.staging.registry.ModelType;
+import ai.kompile.modelmanager.registry.ModelType;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;

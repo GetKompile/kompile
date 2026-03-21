@@ -16,6 +16,7 @@
 
 package ai.kompile.app.chunker.recursivecharacter;
 
+import ai.kompile.app.core.chunking.SentenceFilter;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import lombok.extern.slf4j.Slf4j;
@@ -51,9 +52,11 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
     public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
         // Validate document using the interface method
         validateDocument(document);
-        
+
         // Prepare options with defaults
         Map<String, Object> mergedOptions = prepareOptions(options);
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
 
         String text = document.getText();
 
@@ -73,7 +76,7 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
             metadata.put("original_document_id", document.getId());
             metadata.put("chunk_number", chunkNumber++);
             metadata.put("chunker", getName());
-            
+
             // Create RetrievedDoc using proper constructor
             RetrievedDoc chunk;
             if (document.getScore() != null) {
@@ -85,6 +88,12 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
         }
         log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, chunkOverlap={}",
                 document.getId(), resultDocuments.size(), getName(), chunkSize, chunkOverlap);
+
+        // Apply sentence filtering and garbage collection if enabled
+        if (collectGarbage) {
+            return SentenceFilter.filterAndCollectGarbage(resultDocuments, document, getName(), includeGarbageChunk);
+        }
+
         return resultDocuments;
     }
 
@@ -209,6 +218,11 @@ public class CustomRecursiveCharacterTextChunker implements TextChunker {
         defaults.put("chunkSize", DEFAULT_CHUNK_SIZE);
         defaults.put("overlap", DEFAULT_CHUNK_OVERLAP);
         defaults.put("preserveParagraphs", true);
+        // Garbage collection options - disabled by default because the SentenceFilter
+        // marks any chunk not ending with . ! ? as "garbage", which is too aggressive
+        // for most content (PDFs, technical docs, code, etc.)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
         return defaults;
     }
 }

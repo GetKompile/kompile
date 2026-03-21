@@ -14,15 +14,54 @@
  * limitations under the License.
  */
 
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Router } from '@angular/router';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { PageEvent } from '@angular/material/paginator';
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
+import { WebSocketService } from '../../services/websocket.service';
+import { ModelStatusUpdate } from '../../models/api-models';
+import { OpTimingService, OpTimingStatus, OpTimingStat, FlushResponse, SubprocessOpTimingStats } from '../../services/op-timing.service';
 
 interface RagStatus {
   keywordRetriever: { class: string; available: boolean };
   vectorStore: { class: string; available: boolean };
   embeddingModel: { class: string; available: boolean };
   reranker: { class: string; available: boolean; supportedTypes: string[] };
+  graphRag: { class: string; available: boolean; searchTypes: string[] };
+}
+
+interface GraphRagSearchType {
+  id: string;
+  name: string;
+  description: string;
+}
+
+interface GraphRagInfo {
+  available: boolean;
+  class: string;
+  fullClass?: string;
+  type: string;
+  description: string;
+  searchTypes: GraphRagSearchType[];
+}
+
+interface GraphRagQueryResponse {
+  query: string;
+  searchType: string;
+  k: number;
+  conversationId: string;
+  available: boolean;
+  serviceClass?: string;
+  durationMs?: number;
+  answer?: string;
+  context?: string;
+  contextPreview?: string;
+  contextLength?: number;
+  error?: string;
+  searchTypeWarning?: string;
 }
 
 interface RerankerParam {
@@ -109,12 +148,20 @@ interface HybridResponse {
   semanticError?: string;
 }
 
+interface EmbedTiming {
+  totalWallClockMs: number;
+  subprocessInferenceMs: number;
+  subprocessOverheadMs: number;
+  overheadPercent?: number;
+}
+
 interface EmbedResponse {
   text: string;
   embeddingModel: string;
   dimensions?: number;
   shape?: string;
   durationMs?: number;
+  timing?: EmbedTiming;  // Detailed timing breakdown (subprocess overhead vs inference)
   preview?: number[];
   error?: string;
 }
@@ -125,13 +172,19 @@ interface EmbedResponse {
   templateUrl: './rag-tester.component.html',
   styleUrls: ['./rag-tester.component.css']
 })
-export class RagTesterComponent implements OnInit {
+export class RagTesterComponent implements OnInit, OnDestroy {
 
   private backendUrl: string;
+  private destroy$ = new Subject<void>();
+  private modelStatusSubscribed = false;
 
   // Status
   status: RagStatus | null = null;
   statusLoading = false;
+  embeddingModelError: string | null = null;
+  embeddingModelInitialized = false;
+  embeddingModelLoading = false;
+  embeddingModelLoadingPhase: string | null = null;
 
   // Query form
   query = '';
@@ -190,9 +243,49 @@ export class RagTesterComponent implements OnInit {
     crossEncoderModel: 'ms-marco-MiniLM-L-6-v2'
   };
 
+  // Op Timing
+  opTimingEnabled = false;
+  opTimingStatus: OpTimingStatus | null = null;
+  opTimingStats: OpTimingStat[] = [];
+  opTimingStatsAll: OpTimingStat[] = []; // All stats for pagination
+  opTimingLoading = false;
+  showOpTimingPanel = false;
+  opTimingTotalExecutions = 0;
+  opTimingNumOps = 0;
+
+  // Subprocess Op Timing (where actual inference runs!)
+  subprocessOpTiming: SubprocessOpTimingStats | null = null;
+  subprocessOpTimingStats: OpTimingStat[] = [];
+  subprocessOpTimingStatsAll: OpTimingStat[] = [];
+  subprocessOpTimingTotalExecutions = 0;
+  subprocessOpTimingNumOps = 0;
+
+  // Op Timing Pagination
+  opTimingPageSize = 10;
+  opTimingPageIndex = 0;
+  opTimingPageSizeOptions = [5, 10, 25, 50];
+
+  // Subprocess Op Timing Pagination
+  subprocessOpTimingPageSize = 10;
+  subprocessOpTimingPageIndex = 0;
+
+  // Graph RAG
+  graphRagInfo: GraphRagInfo | null = null;
+  graphRagQuery = '';
+  graphRagSearchType = 'LOCAL';
+  graphRagMaxResults = 5;
+  graphRagConversationId = 'test';
+  graphRagResponse: GraphRagQueryResponse | null = null;
+  isGraphRagSearching = false;
+  showGraphRagContext = false;
+
   constructor(
     private http: HttpClient,
-    private snackBar: MatSnackBar
+    private router: Router,
+    private snackBar: MatSnackBar,
+    private websocketService: WebSocketService,
+    private cdr: ChangeDetectorRef,
+    private opTimingService: OpTimingService
   ) {
     if (typeof window !== 'undefined' && window.location) {
       const protocol = window.location.protocol;
@@ -207,6 +300,106 @@ export class RagTesterComponent implements OnInit {
   ngOnInit(): void {
     this.loadStatus();
     this.loadRerankers();
+    this.loadOpTimingStatus();
+    this.loadGraphRagInfo();
+    // Subscribe to WebSocket model status updates for real-time UI updates
+    this.subscribeToModelStatusUpdates();
+  }
+
+  ngOnDestroy(): void {
+    // Unsubscribe from WebSocket model status
+    this.websocketService.unsubscribeFromModelStatus();
+    this.destroy$.next();
+    this.destroy$.complete();
+  }
+
+  /**
+   * Subscribe to WebSocket model status updates for real-time UI updates.
+   * This provides push-based updates when model status changes.
+   */
+  private subscribeToModelStatusUpdates(): void {
+    if (this.modelStatusSubscribed) {
+      return;
+    }
+
+    // Connect WebSocket and subscribe to model status
+    this.websocketService.connect();
+    this.modelStatusSubscribed = true;
+
+    this.websocketService.subscribeToModelStatus().pipe(
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: (status: ModelStatusUpdate) => {
+        this.handleModelStatusUpdate(status);
+      },
+      error: (err) => {
+        console.error('[WS-MODEL] Error in model status WebSocket:', err);
+      }
+    });
+
+    console.log('[WS-MODEL] RAG Tester subscribed to model status updates');
+  }
+
+  /**
+   * Handle incoming model status updates from WebSocket.
+   */
+  private handleModelStatusUpdate(status: ModelStatusUpdate): void {
+    if (!status.embedding) return;
+
+    const isNowInitialized = status.embedding.initialized && (status.embedding.dimensions || 0) > 0;
+
+    // Track detailed embedding status
+    this.embeddingModelInitialized = isNowInitialized;
+    this.embeddingModelLoading = status.embedding.loading || false;
+    this.embeddingModelLoadingPhase = status.embedding.loadingPhase || null;
+    this.embeddingModelError = status.embedding.error || null;
+
+    // Update the local status if we have one
+    if (this.status) {
+      const wasAvailable = this.status.embeddingModel?.available;
+      this.status.embeddingModel = {
+        ...this.status.embeddingModel,
+        available: isNowInitialized
+      };
+
+      // Show notification when model becomes ready
+      if (!wasAvailable && isNowInitialized) {
+        console.log('[WS-MODEL] Embedding model is now ready in RAG Tester!');
+        this.showSnackbar('Embedding model is now ready!');
+        this.embeddingModelError = null; // Clear error on success
+        // Refresh full status to get accurate info
+        this.loadStatus();
+      }
+    }
+
+    // Trigger change detection to update UI
+    this.cdr.detectChanges();
+  }
+
+  /**
+   * Check if embedding model is ready to use.
+   * Returns true only if initialized and not loading.
+   */
+  isEmbeddingReady(): boolean {
+    return this.embeddingModelInitialized && !this.embeddingModelLoading;
+  }
+
+  /**
+   * Get the embedding status message for display.
+   */
+  getEmbeddingStatusMessage(): string {
+    if (this.embeddingModelLoading) {
+      return this.embeddingModelLoadingPhase
+        ? `Loading model (${this.embeddingModelLoadingPhase})...`
+        : 'Loading model...';
+    }
+    if (this.embeddingModelError) {
+      return this.embeddingModelError;
+    }
+    if (!this.embeddingModelInitialized) {
+      return 'Embedding model not loaded';
+    }
+    return 'Ready';
   }
 
   loadStatus(): void {
@@ -215,10 +408,40 @@ export class RagTesterComponent implements OnInit {
       next: (status) => {
         this.status = status;
         this.statusLoading = false;
+        // Also load detailed embedding model status
+        this.loadEmbeddingModelStatus();
       },
       error: (err) => {
         this.showSnackbar('Failed to load RAG status: ' + (err.error?.message || err.message), true);
         this.statusLoading = false;
+      }
+    });
+  }
+
+  /**
+   * Load detailed embedding model status from the model status endpoint.
+   */
+  private loadEmbeddingModelStatus(): void {
+    this.http.get<any>(`${this.backendUrl}/models/embedding/status`).subscribe({
+      next: (modelStatus) => {
+        // Update embedding status fields
+        this.embeddingModelInitialized = modelStatus.initialized && (modelStatus.dimensions || 0) > 0;
+        this.embeddingModelLoading = modelStatus.loading || false;
+        this.embeddingModelLoadingPhase = modelStatus.loadingPhase || null;
+        this.embeddingModelError = modelStatus.initializationError || modelStatus.error || null;
+
+        // Update the status.embeddingModel.available to reflect true initialized state
+        if (this.status) {
+          this.status.embeddingModel = {
+            ...this.status.embeddingModel,
+            available: this.embeddingModelInitialized
+          };
+        }
+
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        console.error('Failed to load embedding model status:', err);
       }
     });
   }
@@ -300,7 +523,14 @@ export class RagTesterComponent implements OnInit {
         if (response.error) {
           this.showSnackbar('Embedding error: ' + response.error, true);
         } else {
-          this.showSnackbar(`Generated ${response.dimensions}-dim embedding in ${response.durationMs}ms`);
+          // Show timing breakdown in snackbar if available
+          if (response.timing) {
+            this.showSnackbar(
+              `Generated ${response.dimensions}-dim embedding: ${response.timing.subprocessInferenceMs}ms inference + ${response.timing.subprocessOverheadMs}ms overhead = ${response.durationMs}ms total`
+            );
+          } else {
+            this.showSnackbar(`Generated ${response.dimensions}-dim embedding in ${response.durationMs}ms`);
+          }
         }
       },
       error: (err) => {
@@ -552,5 +782,242 @@ export class RagTesterComponent implements OnInit {
       verticalPosition: 'top',
       panelClass: isError ? 'snackbar-error' : 'snackbar-success'
     });
+  }
+
+  // Op Timing Methods
+  loadOpTimingStatus(): void {
+    // Subscribe to shared state from service - keeps this component in sync with nd4j-environment
+    this.opTimingService.state$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(state => {
+        this.opTimingEnabled = state.enabled;
+        // Sort by totalMs descending (highest times first) and store all stats
+        this.opTimingStatsAll = [...state.stats].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
+        this.updateOpTimingPage();
+        if (state.stats.length > 0) {
+          this.showOpTimingPanel = true;
+        }
+      });
+  }
+
+  // Update displayed page of op timing stats
+  updateOpTimingPage(): void {
+    const start = this.opTimingPageIndex * this.opTimingPageSize;
+    const end = start + this.opTimingPageSize;
+    this.opTimingStats = this.opTimingStatsAll.slice(start, end);
+  }
+
+  // Handle page change event
+  onOpTimingPageChange(event: PageEvent): void {
+    this.opTimingPageIndex = event.pageIndex;
+    this.opTimingPageSize = event.pageSize;
+    this.updateOpTimingPage();
+  }
+
+  toggleOpTiming(): void {
+    this.opTimingLoading = true;
+    // Note: ngModel updates opTimingEnabled BEFORE this handler runs
+    // So if opTimingEnabled is true, user just clicked to enable it
+    const action$ = this.opTimingEnabled
+      ? this.opTimingService.enableTiming(true)  // Enable detailed mode
+      : this.opTimingService.disableTiming();
+
+    action$.pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (response) => {
+          // State is updated via the service's state$ observable
+          this.opTimingLoading = false;
+          this.showSnackbar(response.message || (this.opTimingEnabled ? 'Op timing enabled' : 'Op timing disabled'));
+        },
+        error: (err) => {
+          // Revert toggle on error
+          this.opTimingEnabled = !this.opTimingEnabled;
+          this.showSnackbar('Failed to toggle op timing: ' + (err.message || err), true);
+          this.opTimingLoading = false;
+        }
+      });
+  }
+
+  flushOpTimingStats(): void {
+    this.opTimingLoading = true;
+    // Request more stats for pagination (up to 100)
+    this.opTimingService.flushAndGetStats(100)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (response: FlushResponse) => {
+          // Main JVM op timing (usually empty since inference runs in subprocess)
+          const sortedStats = [...(response.hotspots || [])].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
+          sortedStats.forEach((stat, index) => stat.rank = index + 1);
+          this.opTimingStatsAll = sortedStats;
+          this.opTimingPageIndex = 0;
+          this.updateOpTimingPage();
+          this.opTimingTotalExecutions = response.totalExecutions;
+          this.opTimingNumOps = response.numOps;
+
+          // Subprocess op timing (where actual inference runs!)
+          this.subprocessOpTiming = response.subprocess || null;
+          if (response.subprocess?.hotspots) {
+            const subSortedStats = [...response.subprocess.hotspots].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
+            subSortedStats.forEach((stat, index) => stat.rank = index + 1);
+            this.subprocessOpTimingStatsAll = subSortedStats;
+            this.subprocessOpTimingPageIndex = 0;
+            this.updateSubprocessOpTimingPage();
+            this.subprocessOpTimingTotalExecutions = response.subprocess.totalExecutions || 0;
+            this.subprocessOpTimingNumOps = response.subprocess.numOps || 0;
+          }
+
+          this.opTimingLoading = false;
+          this.showOpTimingPanel = true;
+
+          // Build message showing both main and subprocess stats
+          let message = `Main JVM: ${response.numOps} ops, ${response.totalExecutions} executions`;
+          if (response.subprocess?.available && response.subprocess?.success) {
+            message += ` | Subprocess: ${response.subprocess.numOps} ops, ${response.subprocess.totalExecutions} executions`;
+          }
+          this.showSnackbar(message);
+        },
+        error: (err) => {
+          this.showSnackbar('Failed to flush op timing: ' + (err.message || err), true);
+          this.opTimingLoading = false;
+        }
+      });
+  }
+
+  updateSubprocessOpTimingPage(): void {
+    const start = this.subprocessOpTimingPageIndex * this.subprocessOpTimingPageSize;
+    const end = start + this.subprocessOpTimingPageSize;
+    this.subprocessOpTimingStats = this.subprocessOpTimingStatsAll.slice(start, end);
+  }
+
+  onSubprocessOpTimingPageChange(event: PageEvent): void {
+    this.subprocessOpTimingPageSize = event.pageSize;
+    this.subprocessOpTimingPageIndex = event.pageIndex;
+    this.updateSubprocessOpTimingPage();
+  }
+
+  resetOpTiming(): void {
+    this.opTimingLoading = true;
+    this.opTimingService.reset()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => {
+          this.opTimingStats = [];
+          this.opTimingStatsAll = [];
+          this.opTimingPageIndex = 0;
+          this.opTimingTotalExecutions = 0;
+          this.opTimingNumOps = 0;
+          this.opTimingLoading = false;
+          this.showSnackbar('Op timing data reset');
+        },
+        error: (err) => {
+          this.showSnackbar('Failed to reset op timing: ' + (err.message || err), true);
+          this.opTimingLoading = false;
+        }
+      });
+  }
+
+  formatOpTimingNumber(value: number, decimals: number = 2): string {
+    if (value === undefined || value === null) return 'N/A';
+    return value.toFixed(decimals);
+  }
+
+  getHelperPercentClass(percent: number): string {
+    if (percent >= 90) return 'helper-high';
+    if (percent >= 50) return 'helper-medium';
+    if (percent > 0) return 'helper-low';
+    return 'helper-none';
+  }
+
+  // Graph RAG Methods
+  loadGraphRagInfo(): void {
+    this.http.get<GraphRagInfo>(`${this.backendUrl}/rag/test/graph/info`).subscribe({
+      next: (info) => {
+        this.graphRagInfo = info;
+      },
+      error: (err) => {
+        console.error('Failed to load Graph RAG info:', err);
+      }
+    });
+  }
+
+  runGraphRagQuery(): void {
+    if (!this.graphRagQuery.trim()) {
+      this.showSnackbar('Please enter a query', true);
+      return;
+    }
+
+    this.isGraphRagSearching = true;
+    this.graphRagResponse = null;
+
+    const params: any = {
+      q: this.graphRagQuery,
+      searchType: this.graphRagSearchType,
+      k: this.graphRagMaxResults,
+      conversationId: this.graphRagConversationId
+    };
+
+    this.http.get<GraphRagQueryResponse>(`${this.backendUrl}/rag/test/graph/query`, { params }).subscribe({
+      next: (response) => {
+        this.graphRagResponse = response;
+        this.isGraphRagSearching = false;
+        if (response.error) {
+          this.showSnackbar('Graph RAG error: ' + response.error, true);
+        } else {
+          this.showSnackbar(`Graph RAG query completed in ${response.durationMs}ms`);
+        }
+      },
+      error: (err) => {
+        this.showSnackbar('Graph RAG query failed: ' + (err.error?.message || err.message), true);
+        this.isGraphRagSearching = false;
+      }
+    });
+  }
+
+  toggleGraphRagContext(): void {
+    this.showGraphRagContext = !this.showGraphRagContext;
+  }
+
+  getGraphRagSearchTypeDescription(): string {
+    if (!this.graphRagInfo?.searchTypes) return '';
+    const type = this.graphRagInfo.searchTypes.find(t => t.id === this.graphRagSearchType);
+    return type?.description || '';
+  }
+
+  getGraphRagTypeIcon(): string {
+    if (!this.graphRagInfo) return 'account_tree';
+    switch (this.graphRagInfo.type) {
+      case 'neo4j': return 'hub';
+      case 'matrix': return 'grid_on';
+      default: return 'account_tree';
+    }
+  }
+
+  copyGraphRagContent(content: string): void {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(content)
+        .then(() => this.showSnackbar('Content copied to clipboard'))
+        .catch(() => this.showSnackbar('Failed to copy', true));
+    }
+  }
+
+  clearGraphRagConversation(): void {
+    this.graphRagConversationId = 'test-' + Date.now();
+    this.showSnackbar('Conversation reset with new ID');
+  }
+
+  /**
+   * Navigate to the Developer Hub > System > Embedding Subprocess logs tab.
+   * This helps users diagnose embedding model failures.
+   */
+  navigateToEmbeddingLogs(): void {
+    // Navigate to developer-hub with query params to select the System tab (index 3)
+    // and the Embedding Subprocess sub-tab (index 2)
+    this.router.navigate(['/developer-hub'], {
+      queryParams: {
+        tab: 3,       // System tab
+        subtab: 2     // Embedding Subprocess sub-tab
+      }
+    });
+    this.showSnackbar('Navigate to Developer Hub > System > Embedding Subprocess to view logs');
   }
 }

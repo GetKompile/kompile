@@ -34,7 +34,23 @@ import lombok.NoArgsConstructor;
 public class AppIndexConfig {
 
     /**
-     * Path to the vector store index directory.
+     * Supported vector store types.
+     */
+    public enum VectorStoreType {
+        ANSERINI,    // Embedded Lucene-based (default)
+        VESPA,       // Distributed Vespa server
+        PGVECTOR,    // PostgreSQL with pgvector extension
+        CHROMA       // Chroma vector database
+    }
+
+    /**
+     * The type of vector store to use.
+     * Default: ANSERINI (embedded)
+     */
+    private VectorStoreType vectorStoreType;
+
+    /**
+     * Path to the vector store index directory (for Anserini).
      */
     private String vectorStorePath;
 
@@ -68,19 +84,115 @@ public class AppIndexConfig {
      */
     private Integer embeddingTargetBatchSize;
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VESPA-SPECIFIC CONFIGURATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Vespa endpoint URL (e.g., http://localhost:8080).
+     */
+    private String vespaEndpoint;
+
+    /**
+     * Vespa document namespace.
+     */
+    private String vespaNamespace;
+
+    /**
+     * Vespa document type.
+     */
+    private String vespaDocumentType;
+
+    /**
+     * Vespa vector field name.
+     */
+    private String vespaVectorField;
+
+    /**
+     * Whether to enable Vespa hybrid search (BM25 + vector).
+     */
+    private Boolean vespaHybridSearchEnabled;
+
+    /**
+     * Vector weight for hybrid search (0.0 - 1.0).
+     */
+    private Double vespaHybridVectorWeight;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PGVECTOR-SPECIFIC CONFIGURATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * PostgreSQL connection URL for pgvector.
+     */
+    private String pgvectorUrl;
+
+    /**
+     * PostgreSQL username.
+     */
+    private String pgvectorUsername;
+
+    /**
+     * PostgreSQL password (note: consider using secrets management in production).
+     */
+    private String pgvectorPassword;
+
+    /**
+     * Table name for vector storage.
+     */
+    private String pgvectorTableName;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CHROMA-SPECIFIC CONFIGURATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Chroma server host.
+     */
+    private String chromaHost;
+
+    /**
+     * Chroma server port.
+     */
+    private Integer chromaPort;
+
+    /**
+     * Chroma collection name.
+     */
+    private String chromaCollectionName;
+
     /**
      * Creates a default configuration with system defaults.
+     * Uses ~/.kompile/models/anserini/indexes/ as the default location for indexes.
      */
     public static AppIndexConfig defaults() {
-        String homeDir = System.getProperty("user.home");
+        String baseDir = System.getProperty("user.home") + "/.kompile/models/anserini/indexes";
         return AppIndexConfig.builder()
-                .vectorStorePath(homeDir + "/.kompile/anserini-vector-index")
-                .keywordIndexPath(homeDir + "/.kompile/models/anserini/indexes/default_index")
+                // Default to Anserini (embedded)
+                .vectorStoreType(VectorStoreType.ANSERINI)
+                .vectorStorePath(baseDir + "/vector_index")
+                .keywordIndexPath(baseDir + "/default_index")
                 .subprocessEnabled(true)
                 .subprocessHeapSize("4g")
                 .indexBatchSize(100)
                 .adaptiveBatchSize(true)
                 .embeddingTargetBatchSize(64)
+                // Vespa defaults
+                .vespaEndpoint("http://localhost:8080")
+                .vespaNamespace("default")
+                .vespaDocumentType("document")
+                .vespaVectorField("embedding")
+                .vespaHybridSearchEnabled(false)
+                .vespaHybridVectorWeight(0.7)
+                // pgvector defaults
+                .pgvectorUrl("jdbc:postgresql://localhost:5432/kompile")
+                .pgvectorUsername("postgres")
+                .pgvectorPassword("")
+                .pgvectorTableName("vector_store")
+                // Chroma defaults
+                .chromaHost("localhost")
+                .chromaPort(8000)
+                .chromaCollectionName("kompile")
                 .build();
     }
 
@@ -92,13 +204,33 @@ public class AppIndexConfig {
             return this;
         }
         return AppIndexConfig.builder()
+                // Core settings
+                .vectorStoreType(other.vectorStoreType != null ? other.vectorStoreType : this.vectorStoreType)
                 .vectorStorePath(other.vectorStorePath != null ? other.vectorStorePath : this.vectorStorePath)
                 .keywordIndexPath(other.keywordIndexPath != null ? other.keywordIndexPath : this.keywordIndexPath)
                 .subprocessEnabled(other.subprocessEnabled != null ? other.subprocessEnabled : this.subprocessEnabled)
-                .subprocessHeapSize(other.subprocessHeapSize != null ? other.subprocessHeapSize : this.subprocessHeapSize)
+                .subprocessHeapSize(
+                        other.subprocessHeapSize != null ? other.subprocessHeapSize : this.subprocessHeapSize)
                 .indexBatchSize(other.indexBatchSize != null ? other.indexBatchSize : this.indexBatchSize)
                 .adaptiveBatchSize(other.adaptiveBatchSize != null ? other.adaptiveBatchSize : this.adaptiveBatchSize)
-                .embeddingTargetBatchSize(other.embeddingTargetBatchSize != null ? other.embeddingTargetBatchSize : this.embeddingTargetBatchSize)
+                .embeddingTargetBatchSize(other.embeddingTargetBatchSize != null ? other.embeddingTargetBatchSize
+                        : this.embeddingTargetBatchSize)
+                // Vespa settings
+                .vespaEndpoint(other.vespaEndpoint != null ? other.vespaEndpoint : this.vespaEndpoint)
+                .vespaNamespace(other.vespaNamespace != null ? other.vespaNamespace : this.vespaNamespace)
+                .vespaDocumentType(other.vespaDocumentType != null ? other.vespaDocumentType : this.vespaDocumentType)
+                .vespaVectorField(other.vespaVectorField != null ? other.vespaVectorField : this.vespaVectorField)
+                .vespaHybridSearchEnabled(other.vespaHybridSearchEnabled != null ? other.vespaHybridSearchEnabled : this.vespaHybridSearchEnabled)
+                .vespaHybridVectorWeight(other.vespaHybridVectorWeight != null ? other.vespaHybridVectorWeight : this.vespaHybridVectorWeight)
+                // pgvector settings
+                .pgvectorUrl(other.pgvectorUrl != null ? other.pgvectorUrl : this.pgvectorUrl)
+                .pgvectorUsername(other.pgvectorUsername != null ? other.pgvectorUsername : this.pgvectorUsername)
+                .pgvectorPassword(other.pgvectorPassword != null ? other.pgvectorPassword : this.pgvectorPassword)
+                .pgvectorTableName(other.pgvectorTableName != null ? other.pgvectorTableName : this.pgvectorTableName)
+                // Chroma settings
+                .chromaHost(other.chromaHost != null ? other.chromaHost : this.chromaHost)
+                .chromaPort(other.chromaPort != null ? other.chromaPort : this.chromaPort)
+                .chromaCollectionName(other.chromaCollectionName != null ? other.chromaCollectionName : this.chromaCollectionName)
                 .build();
     }
 }

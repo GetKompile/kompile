@@ -1127,3 +1127,300 @@ mat-chip-option.severity-info {
 ::ng-deep .environment-panel .mat-expansion-indicator::after {
   color: #a0aec0;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   RESTART EVENT STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Restart scheduled - orange/warning */
+.log-line.log-restart-scheduled {
+  color: #f6ad55;
+  background: rgba(246, 173, 85, 0.15);
+  border-left: 3px solid #f6ad55;
+}
+
+/* Restart attempted - blue/processing */
+.log-line.log-restart-attempted {
+  color: #63b3ed;
+  background: rgba(99, 179, 237, 0.15);
+  border-left: 3px solid #63b3ed;
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-left-color: #63b3ed; }
+  50% { border-left-color: #4299e1; }
+}
+
+/* Restart succeeded - green/success */
+.log-line.log-restart-succeeded {
+  color: #48bb78;
+  background: rgba(72, 187, 120, 0.15);
+  border-left: 3px solid #48bb78;
+}
+
+/* Restart failed - red/error */
+.log-line.log-restart-failed {
+  color: #fc8181;
+  background: rgba(252, 129, 129, 0.15);
+  border-left: 3px solid #fc8181;
+}
+
+/* Memory analysis - purple */
+.log-line.log-memory-analysis {
+  color: #9f7aea;
+  background: rgba(159, 122, 234, 0.1);
+  border-left: 3px solid #9f7aea;
+}
+
+/* Heap adjusted - teal */
+.log-line.log-heap-adjusted {
+  color: #38b2ac;
+  background: rgba(56, 178, 172, 0.1);
+  border-left: 3px solid #38b2ac;
+}
+
+/* Threads reduced - cyan */
+.log-line.log-threads-reduced {
+  color: #4fd1c5;
+  background: rgba(79, 209, 197, 0.1);
+  border-left: 3px solid #4fd1c5;
+}
+
+/* Manual restart - yellow */
+.log-line.log-manual-restart {
+  color: #ecc94b;
+  background: rgba(236, 201, 75, 0.1);
+  border-left: 3px solid #ecc94b;
+}
+
+/* Active restart in panel */
+.log-line.log-restart-active {
+  color: #f6ad55;
+  background: rgba(246, 173, 85, 0.1);
+  border-left: 3px solid #f6ad55;
+}
+
+/* Restart attempt badge */
+.restart-attempt-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.75em;
+  border-radius: 12px;
+  background: rgba(99, 179, 237, 0.2);
+  color: #63b3ed;
+  font-weight: 500;
+}
+
+/* Restart countdown */
+.restart-countdown {
+  color: #f6ad55;
+  font-style: italic;
+  margin-left: 4px;
+}
+
+/* Restart detail span */
+.restart-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: 0.8em;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+/* Heap icons */
+.heap-increased {
+  color: #48bb78;
+  font-size: 14px !important;
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.heap-unchanged {
+  color: #f6ad55;
+  font-size: 14px !important;
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* Inline restart button */
+.inline-restart-btn {
+  margin-left: auto;
+  opacity: 0.7;
+  color: #48bb78 !important;
+  width: 28px !important;
+  height: 28px !important;
+  line-height: 28px !important;
+}
+
+.inline-restart-btn:hover {
+  opacity: 1;
+  background: rgba(72, 187, 120, 0.2) !important;
+}
+
+.inline-restart-btn mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+/* Event severity for restart events */
+.event-item.severity-restart-scheduled .event-marker { border-color: #f6ad55; color: #f6ad55; }
+.event-item.severity-restart-attempted .event-marker { border-color: #63b3ed; color: #63b3ed; }
+.event-item.severity-restart-succeeded .event-marker { border-color: #48bb78; color: #48bb78; }
+.event-item.severity-restart-failed .event-marker { border-color: #fc8181; color: #fc8181; }
+.event-item.severity-memory-analysis .event-marker { border-color: #9f7aea; color: #9f7aea; }
+
+.timeline-item.severity-restart-scheduled .timeline-marker { border-color: #f6ad55; color: #f6ad55; }
+.timeline-item.severity-restart-attempted .timeline-marker { border-color: #63b3ed; color: #63b3ed; }
+.timeline-item.severity-restart-succeeded .timeline-marker { border-color: #48bb78; color: #48bb78; }
+.timeline-item.severity-restart-failed .timeline-marker { border-color: #fc8181; color: #fc8181; }
+.timeline-item.severity-memory-analysis .timeline-marker { border-color: #9f7aea; color: #9f7aea; }
+
+/* Memory analysis expansion panel (for future use) */
+.memory-analysis-panel {
+  margin-top: 8px;
+  background: rgba(159, 122, 234, 0.1) !important;
+  border: 1px solid rgba(159, 122, 234, 0.3);
+}
+
+.memory-analysis-panel .mat-expansion-panel-header {
+  background: transparent !important;
+}
+
+.memory-analysis-panel mat-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #9f7aea;
+}
+
+.memory-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'Courier New', monospace;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.memory-row .label {
+  color: #a0aec0;
+}
+
+.memory-row .value {
+  color: #e2e8f0;
+}
+
+.memory-row .value.increased {
+  color: #48bb78;
+}
+
+.memory-row .value.unchanged {
+  color: #f6ad55;
+}
+
+.memory-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  font-size: 0.9em;
+  line-height: 1.4;
+  color: #e2e8f0;
+}
+
+.memory-reason mat-icon {
+  color: #9f7aea;
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RESTART BADGE STYLES (for task groups)
+   ═══════════════════════════════════════════════════════════════════ */
+
+.restart-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  padding: 4px 10px;
+  font-size: 0.75em;
+  font-weight: 600;
+  border-radius: 16px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.restart-badge mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+/* Active/pulsing restart */
+.restart-badge.pulsing {
+  background: rgba(246, 173, 85, 0.25);
+  color: #f6ad55;
+  border: 1px solid rgba(246, 173, 85, 0.5);
+  animation: restart-pulse 1.5s ease-in-out infinite;
+}
+
+.restart-badge.pulsing mat-icon {
+  animation: spin 2s linear infinite;
+}
+
+@keyframes restart-pulse {
+  0%, 100% {
+    background: rgba(246, 173, 85, 0.25);
+    box-shadow: 0 0 0 0 rgba(246, 173, 85, 0.4);
+  }
+  50% {
+    background: rgba(246, 173, 85, 0.35);
+    box-shadow: 0 0 8px 2px rgba(246, 173, 85, 0.3);
+  }
+}
+
+/* Completed restart history */
+.restart-badge.completed {
+  background: rgba(99, 179, 237, 0.15);
+  color: #63b3ed;
+  border: 1px solid rgba(99, 179, 237, 0.3);
+}
+
+/* Success restart */
+.restart-badge.success {
+  background: rgba(72, 187, 120, 0.15);
+  color: #48bb78;
+  border: 1px solid rgba(72, 187, 120, 0.3);
+}
+
+/* Failed restart */
+.restart-badge.failed {
+  background: rgba(252, 129, 129, 0.15);
+  color: #fc8181;
+  border: 1px solid rgba(252, 129, 129, 0.3);
+}
+
+/* State banner with restart info */
+.state-display.state-restarting {
+  color: #f6ad55;
+  background: linear-gradient(135deg, rgba(246, 173, 85, 0.1), rgba(236, 201, 75, 0.1));
+  border: 1px solid rgba(246, 173, 85, 0.3);
+}
+
+.state-display.state-restarting mat-icon {
+  animation: spin 2s linear infinite;
+}

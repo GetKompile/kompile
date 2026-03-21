@@ -18,6 +18,7 @@ package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IngestEventService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -166,7 +167,7 @@ public class IngestEventController {
 
         // Parse the JSON snapshot and return it along with metadata
         try {
-            com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            ObjectMapper objectMapper = new ObjectMapper();
             Object environmentConfig = objectMapper.readValue(snapshot, Object.class);
 
             return ResponseEntity.ok(Map.of(

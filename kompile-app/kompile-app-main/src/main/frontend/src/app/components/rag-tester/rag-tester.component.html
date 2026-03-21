@@ -40,11 +40,16 @@
             <span class="status-class">{{ status.vectorStore.class }}</span>
           </div>
         </div>
-        <div class="status-item" [class.available]="status.embeddingModel.available" [class.unavailable]="!status.embeddingModel.available">
-          <mat-icon>{{ status.embeddingModel.available ? 'check_circle' : 'cancel' }}</mat-icon>
+        <div class="status-item" [class.available]="status.embeddingModel.available" [class.unavailable]="!status.embeddingModel.available" [class.loading]="embeddingModelLoading">
+          <mat-icon>{{ embeddingModelLoading ? 'hourglass_empty' : (status.embeddingModel.available ? 'check_circle' : 'cancel') }}</mat-icon>
           <div class="status-info">
             <span class="status-label">Embedding Model</span>
             <span class="status-class">{{ status.embeddingModel.class }}</span>
+            <span *ngIf="embeddingModelLoading" class="status-loading-hint">{{ embeddingModelLoadingPhase || 'Loading...' }}</span>
+            <span *ngIf="embeddingModelError && !embeddingModelLoading" class="status-error-hint">
+              {{ embeddingModelError }}
+              <a href="javascript:void(0)" class="logs-link" (click)="navigateToEmbeddingLogs()">View Logs</a>
+            </span>
           </div>
         </div>
         <div class="status-item" [class.available]="status.reranker?.available" [class.unavailable]="!status.reranker?.available">
@@ -52,6 +57,13 @@
           <div class="status-info">
             <span class="status-label">Reranker</span>
             <span class="status-class">{{ status.reranker?.class || 'N/A' }}</span>
+          </div>
+        </div>
+        <div class="status-item" [class.available]="status.graphRag?.available" [class.unavailable]="!status.graphRag?.available">
+          <mat-icon>{{ status.graphRag?.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Knowledge Graph RAG</span>
+            <span class="status-class">{{ status.graphRag?.class || 'N/A' }}</span>
           </div>
         </div>
       </div>
@@ -67,23 +79,23 @@
       <div class="query-form">
         <mat-form-field appearance="outline" class="query-input">
           <mat-label>Query</mat-label>
-          <input matInput [(ngModel)]="query" placeholder="Enter your search query..." (keyup.enter)="runQuery()">
+          <input matInput [(ngModel)]="query" [ngModelOptions]="{standalone: true}" placeholder="Enter your search query..." (keyup.enter)="runQuery()">
         </mat-form-field>
 
         <div class="query-options">
           <mat-form-field appearance="outline" class="option-field">
             <mat-label>Max Results</mat-label>
-            <input matInput type="number" [(ngModel)]="maxResults" min="1" max="50">
+            <input matInput type="number" [(ngModel)]="maxResults" [ngModelOptions]="{standalone: true}" min="1" max="50">
           </mat-form-field>
 
           <mat-form-field appearance="outline" class="option-field">
             <mat-label>Similarity Threshold</mat-label>
-            <input matInput type="number" [(ngModel)]="threshold" min="0" max="1" step="0.1">
+            <input matInput type="number" [(ngModel)]="threshold" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.1">
           </mat-form-field>
 
-          <mat-slide-toggle [(ngModel)]="includeKeyword" [disabled]="useHybrid">Keyword Search</mat-slide-toggle>
-          <mat-slide-toggle [(ngModel)]="includeSemantic" [disabled]="useHybrid">Semantic Search</mat-slide-toggle>
-          <mat-slide-toggle [(ngModel)]="useHybrid" color="accent">Hybrid Mode</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="includeKeyword" [ngModelOptions]="{standalone: true}" [disabled]="useHybrid">Keyword Search</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="includeSemantic" [ngModelOptions]="{standalone: true}" [disabled]="useHybrid">Semantic Search</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="useHybrid" [ngModelOptions]="{standalone: true}" color="accent">Hybrid Mode</mat-slide-toggle>
         </div>
 
         <button mat-raised-button color="primary" (click)="runQuery()" [disabled]="isSearching || !query.trim()">
@@ -267,23 +279,23 @@
       <div class="reranking-form">
         <mat-form-field appearance="outline" class="query-input">
           <mat-label>Query</mat-label>
-          <input matInput [(ngModel)]="query" placeholder="Enter your search query..." (keyup.enter)="runRerankingQuery()">
+          <input matInput [(ngModel)]="query" [ngModelOptions]="{standalone: true}" placeholder="Enter your search query..." (keyup.enter)="runRerankingQuery()">
         </mat-form-field>
 
         <div class="reranking-options">
           <mat-form-field appearance="outline" class="option-field">
             <mat-label>Max Results</mat-label>
-            <input matInput type="number" [(ngModel)]="maxResults" min="1" max="50">
+            <input matInput type="number" [(ngModel)]="maxResults" [ngModelOptions]="{standalone: true}" min="1" max="50">
           </mat-form-field>
 
           <mat-form-field appearance="outline" class="option-field">
             <mat-label>Threshold</mat-label>
-            <input matInput type="number" [(ngModel)]="threshold" min="0" max="1" step="0.1">
+            <input matInput type="number" [(ngModel)]="threshold" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.1">
           </mat-form-field>
 
           <mat-form-field appearance="outline" class="option-field reranker-select">
             <mat-label>Reranker Type</mat-label>
-            <mat-select [(ngModel)]="selectedRerankerType" (selectionChange)="onRerankerTypeChange()">
+            <mat-select [(ngModel)]="selectedRerankerType" [ngModelOptions]="{standalone: true}" (selectionChange)="onRerankerTypeChange()">
               <mat-option value="none">None (no reranking)</mat-option>
               <mat-option *ngFor="let type of rerankerInfo?.types" [value]="type.id" [disabled]="!type.supported">
                 {{ type.name }} {{ !type.supported ? '(not available)' : '' }}
@@ -482,32 +494,240 @@
     </mat-card-content>
   </mat-card>
 
+  <!-- Knowledge Graph RAG Testing Section -->
+  <mat-card class="graph-rag-card">
+    <mat-card-header>
+      <mat-card-title>
+        <mat-icon>{{ getGraphRagTypeIcon() }}</mat-icon>
+        Knowledge Graph RAG
+      </mat-card-title>
+      <mat-card-subtitle *ngIf="graphRagInfo">
+        {{ graphRagInfo.description }}
+      </mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <!-- Graph RAG Status -->
+      <div class="graph-rag-status">
+        <div class="status-item" [class.available]="graphRagInfo?.available" [class.unavailable]="!graphRagInfo?.available">
+          <mat-icon>{{ graphRagInfo?.available ? 'check_circle' : 'cancel' }}</mat-icon>
+          <div class="status-info">
+            <span class="status-label">Graph RAG Service</span>
+            <span class="status-class">{{ graphRagInfo?.class || 'N/A' }}</span>
+          </div>
+        </div>
+        <div *ngIf="graphRagInfo?.type && graphRagInfo?.type !== 'none'" class="graph-type-badge" [class]="'graph-type-' + graphRagInfo?.type">
+          {{ graphRagInfo?.type | uppercase }}
+        </div>
+      </div>
+
+      <!-- Query Form -->
+      <div *ngIf="graphRagInfo?.available" class="graph-rag-form">
+        <mat-form-field appearance="outline" class="query-input">
+          <mat-label>Knowledge Graph Query</mat-label>
+          <input matInput [(ngModel)]="graphRagQuery" [ngModelOptions]="{standalone: true}" placeholder="Ask a question about your knowledge graph..." (keyup.enter)="runGraphRagQuery()">
+        </mat-form-field>
+
+        <div class="graph-rag-options">
+          <mat-form-field appearance="outline" class="option-field search-type-field">
+            <mat-label>Search Type</mat-label>
+            <mat-select [(ngModel)]="graphRagSearchType" [ngModelOptions]="{standalone: true}">
+              <mat-option *ngFor="let type of graphRagInfo?.searchTypes" [value]="type.id">
+                {{ type.name }}
+              </mat-option>
+            </mat-select>
+            <mat-hint>{{ getGraphRagSearchTypeDescription() }}</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Max Results (k)</mat-label>
+            <input matInput type="number" [(ngModel)]="graphRagMaxResults" [ngModelOptions]="{standalone: true}" min="1" max="50">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="option-field conversation-id-field">
+            <mat-label>Conversation ID</mat-label>
+            <input matInput [(ngModel)]="graphRagConversationId" [ngModelOptions]="{standalone: true}" placeholder="test">
+            <button mat-icon-button matSuffix (click)="clearGraphRagConversation()" matTooltip="Reset conversation">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </mat-form-field>
+        </div>
+
+        <button mat-raised-button color="primary" (click)="runGraphRagQuery()" [disabled]="isGraphRagSearching || !graphRagQuery.trim()">
+          <mat-icon>{{ isGraphRagSearching ? 'hourglass_empty' : 'search' }}</mat-icon>
+          {{ isGraphRagSearching ? 'Querying Graph...' : 'Query Knowledge Graph' }}
+        </button>
+      </div>
+
+      <mat-progress-bar *ngIf="isGraphRagSearching" mode="indeterminate"></mat-progress-bar>
+
+      <!-- Graph RAG Results -->
+      <div *ngIf="graphRagResponse" class="graph-rag-results">
+        <div *ngIf="graphRagResponse.error" class="error-banner">
+          <mat-icon>error</mat-icon>
+          {{ graphRagResponse.error }}
+        </div>
+
+        <div *ngIf="!graphRagResponse.error" class="graph-rag-result-content">
+          <!-- Query Info -->
+          <div class="graph-rag-query-info">
+            <span class="query-badge">{{ graphRagResponse.searchType }}</span>
+            <span class="timing-info">{{ graphRagResponse.durationMs }}ms</span>
+            <span *ngIf="graphRagResponse.searchTypeWarning" class="warning-text">
+              <mat-icon>warning</mat-icon> {{ graphRagResponse.searchTypeWarning }}
+            </span>
+          </div>
+
+          <!-- Answer Section -->
+          <div class="graph-rag-answer">
+            <h4>
+              <mat-icon>lightbulb</mat-icon>
+              Answer
+            </h4>
+            <div class="answer-content">
+              <p>{{ graphRagResponse.answer }}</p>
+              <div class="answer-actions">
+                <button mat-icon-button (click)="copyGraphRagContent(graphRagResponse.answer || '')" matTooltip="Copy answer">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Context Section -->
+          <mat-expansion-panel class="context-panel" [expanded]="showGraphRagContext">
+            <mat-expansion-panel-header (click)="toggleGraphRagContext()">
+              <mat-panel-title>
+                <mat-icon>description</mat-icon>
+                <span>Retrieved Context</span>
+              </mat-panel-title>
+              <mat-panel-description>
+                {{ graphRagResponse.contextLength }} characters
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="context-content">
+              <pre>{{ graphRagResponse.context }}</pre>
+              <div class="context-actions">
+                <button mat-stroked-button (click)="copyGraphRagContent(graphRagResponse.context || '')" matTooltip="Copy context">
+                  <mat-icon>content_copy</mat-icon>
+                  Copy Context
+                </button>
+              </div>
+            </div>
+          </mat-expansion-panel>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
   <!-- Embedding Test Section -->
   <mat-card class="embed-card">
     <mat-card-header>
       <mat-card-title>Test Embedding</mat-card-title>
     </mat-card-header>
     <mat-card-content>
+      <!-- Alert when embedding model is not ready -->
+      <div *ngIf="!isEmbeddingReady() && !embeddingModelLoading" class="embedding-not-ready-alert">
+        <mat-icon>warning</mat-icon>
+        <div class="alert-content">
+          <strong>Embedding Model Not Ready</strong>
+          <p *ngIf="embeddingModelError">{{ embeddingModelError }}</p>
+          <p *ngIf="!embeddingModelError">The embedding model is not loaded. Check the embedding subprocess logs for details.</p>
+          <a href="javascript:void(0)" class="logs-link" (click)="navigateToEmbeddingLogs()">
+            <mat-icon>open_in_new</mat-icon>
+            View Embedding Subprocess Logs
+          </a>
+        </div>
+      </div>
+
+      <!-- Loading indicator -->
+      <div *ngIf="embeddingModelLoading" class="embedding-loading-alert">
+        <mat-icon class="spinning">hourglass_empty</mat-icon>
+        <div class="alert-content">
+          <strong>Loading Embedding Model</strong>
+          <p>{{ embeddingModelLoadingPhase || 'Please wait...' }}</p>
+        </div>
+      </div>
+
       <div class="embed-form">
         <mat-form-field appearance="outline" class="embed-input">
           <mat-label>Text to Embed</mat-label>
-          <textarea matInput [(ngModel)]="embedText" placeholder="Enter text to generate embedding..." rows="3"></textarea>
+          <textarea matInput [(ngModel)]="embedText" [ngModelOptions]="{standalone: true}" placeholder="Enter text to generate embedding..." rows="3" [disabled]="!isEmbeddingReady()"></textarea>
         </mat-form-field>
 
-        <button mat-raised-button color="accent" (click)="testEmbedding()" [disabled]="isEmbedding || !embedText.trim()">
-          <mat-icon>memory</mat-icon>
-          {{ isEmbedding ? 'Embedding...' : 'Generate Embedding' }}
-        </button>
+        <div class="embed-actions">
+          <button mat-raised-button color="accent" (click)="testEmbedding()"
+                  [disabled]="isEmbedding || !embedText.trim() || !isEmbeddingReady()"
+                  [matTooltip]="!isEmbeddingReady() ? 'Embedding model not loaded - check subprocess logs' : ''">
+            <mat-icon>memory</mat-icon>
+            {{ isEmbedding ? 'Embedding...' : 'Generate Embedding' }}
+          </button>
+
+          <!-- Op Timing Controls -->
+          <div class="op-timing-controls">
+            <mat-slide-toggle [(ngModel)]="opTimingEnabled" [ngModelOptions]="{standalone: true}" (change)="toggleOpTiming()"
+              [disabled]="opTimingLoading"
+              matTooltip="Enable ND4J op timing profiler to capture operation execution times">
+              <mat-icon class="toggle-icon">speed</mat-icon>
+              Op Profiling
+            </mat-slide-toggle>
+            <button mat-stroked-button (click)="flushOpTimingStats()"
+              [disabled]="opTimingLoading || !opTimingEnabled"
+              matTooltip="Capture timing statistics from ring buffer">
+              <mat-icon>refresh</mat-icon>
+              Flush Stats
+            </button>
+            <button mat-icon-button (click)="resetOpTiming()"
+              [disabled]="opTimingLoading"
+              matTooltip="Reset all timing data">
+              <mat-icon>restart_alt</mat-icon>
+            </button>
+          </div>
+        </div>
       </div>
 
-      <mat-progress-bar *ngIf="isEmbedding" mode="indeterminate"></mat-progress-bar>
+      <mat-progress-bar *ngIf="isEmbedding || opTimingLoading" mode="indeterminate"></mat-progress-bar>
 
       <div *ngIf="embedResponse" class="embed-result">
         <div class="embed-info">
           <span><strong>Model:</strong> {{ embedResponse.embeddingModel }}</span>
           <span *ngIf="embedResponse.dimensions"><strong>Dimensions:</strong> {{ embedResponse.dimensions }}</span>
-          <span *ngIf="embedResponse.durationMs"><strong>Time:</strong> {{ embedResponse.durationMs }}ms</span>
+          <span *ngIf="embedResponse.durationMs"><strong>Total Time:</strong> {{ embedResponse.durationMs }}ms</span>
         </div>
+
+        <!-- Detailed Timing Breakdown (when subprocess timing is available) -->
+        <div *ngIf="embedResponse.timing" class="embed-timing-breakdown">
+          <div class="timing-header">
+            <mat-icon>schedule</mat-icon>
+            <strong>Timing Breakdown</strong>
+          </div>
+          <div class="timing-grid">
+            <div class="timing-item">
+              <span class="timing-label">Inference Time</span>
+              <span class="timing-value inference-time">{{ embedResponse.timing.subprocessInferenceMs }}ms</span>
+            </div>
+            <div class="timing-item">
+              <span class="timing-label">Subprocess Overhead</span>
+              <span class="timing-value overhead-time" [class.overhead-high]="embedResponse.timing.overheadPercent && embedResponse.timing.overheadPercent > 50">
+                {{ embedResponse.timing.subprocessOverheadMs }}ms
+                <span *ngIf="embedResponse.timing.overheadPercent" class="overhead-percent">({{ embedResponse.timing.overheadPercent }}%)</span>
+              </span>
+            </div>
+            <div class="timing-item">
+              <span class="timing-label">Total Wall Clock</span>
+              <span class="timing-value">{{ embedResponse.timing.totalWallClockMs }}ms</span>
+            </div>
+          </div>
+          <div class="timing-bar">
+            <div class="inference-bar" [style.width.%]="100 - (embedResponse.timing.overheadPercent || 0)"></div>
+            <div class="overhead-bar" [style.width.%]="embedResponse.timing.overheadPercent || 0"></div>
+          </div>
+          <div class="timing-legend">
+            <span class="legend-inference"><span class="legend-color"></span> Inference</span>
+            <span class="legend-overhead"><span class="legend-color"></span> IPC Overhead</span>
+          </div>
+        </div>
+
         <div *ngIf="embedResponse.preview" class="embed-preview">
           <strong>First 10 values:</strong>
           <code>{{ embedResponse.preview | json }}</code>
@@ -516,6 +736,125 @@
           Error: {{ embedResponse.error }}
         </div>
       </div>
+
+      <!-- Op Timing Results Panel -->
+      <mat-expansion-panel *ngIf="showOpTimingPanel || opTimingStatsAll.length > 0 || subprocessOpTimingStatsAll.length > 0" class="op-timing-panel" [expanded]="true">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon>speed</mat-icon>
+            <span>Op Timing Results</span>
+          </mat-panel-title>
+          <mat-panel-description>
+            <span *ngIf="subprocessOpTimingNumOps > 0">Subprocess: {{ subprocessOpTimingNumOps }} ops, {{ subprocessOpTimingTotalExecutions }} executions</span>
+            <span *ngIf="opTimingNumOps > 0"> | Main JVM: {{ opTimingNumOps }} ops</span>
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <!-- Subprocess Op Timing (where actual inference runs!) -->
+        <div class="subprocess-op-timing-section" *ngIf="subprocessOpTimingStatsAll.length > 0">
+          <h4 class="section-title">
+            <mat-icon>psychology</mat-icon>
+            Subprocess Op Timing (Embedding Inference)
+          </h4>
+          <p class="section-subtitle">These are the actual ND4J operations from the embedding subprocess where inference runs.</p>
+
+          <table class="op-timing-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Op Name</th>
+                <th>Calls</th>
+                <th>Total (ms)</th>
+                <th>Avg (us)</th>
+                <th>StdDev (us)</th>
+                <th>Helper %</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let stat of subprocessOpTimingStats">
+                <td>{{ stat.rank }}</td>
+                <td><code>{{ stat.opName }}</code></td>
+                <td>{{ stat.calls | number }}</td>
+                <td>{{ formatOpTimingNumber(stat.totalMs) }}</td>
+                <td>{{ formatOpTimingNumber(stat.avgUs) }}</td>
+                <td>{{ formatOpTimingNumber(stat.stdDevUs) }}</td>
+                <td [ngClass]="getHelperPercentClass(stat.helperPercent)">
+                  {{ formatOpTimingNumber(stat.helperPercent, 1) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Subprocess Paginator -->
+          <mat-paginator
+            [length]="subprocessOpTimingStatsAll.length"
+            [pageSize]="subprocessOpTimingPageSize"
+            [pageIndex]="subprocessOpTimingPageIndex"
+            [pageSizeOptions]="opTimingPageSizeOptions"
+            (page)="onSubprocessOpTimingPageChange($event)"
+            showFirstLastButtons
+            aria-label="Select page of subprocess op timing results">
+          </mat-paginator>
+        </div>
+
+        <!-- Main JVM Op Timing (usually empty since inference runs in subprocess) -->
+        <div class="op-timing-content" *ngIf="opTimingStatsAll.length > 0">
+          <h4 class="section-title">
+            <mat-icon>memory</mat-icon>
+            Main JVM Op Timing
+          </h4>
+          <table class="op-timing-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Op Name</th>
+                <th>Calls</th>
+                <th>Total (ms)</th>
+                <th>Avg (us)</th>
+                <th>StdDev (us)</th>
+                <th>Helper %</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let stat of opTimingStats">
+                <td>{{ stat.rank }}</td>
+                <td><code>{{ stat.opName }}</code></td>
+                <td>{{ stat.calls | number }}</td>
+                <td>{{ formatOpTimingNumber(stat.totalMs) }}</td>
+                <td>{{ formatOpTimingNumber(stat.avgUs) }}</td>
+                <td>{{ formatOpTimingNumber(stat.stdDevUs) }}</td>
+                <td [ngClass]="getHelperPercentClass(stat.helperPercent)">
+                  {{ formatOpTimingNumber(stat.helperPercent, 1) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Main JVM Paginator -->
+          <mat-paginator
+            [length]="opTimingStatsAll.length"
+            [pageSize]="opTimingPageSize"
+            [pageIndex]="opTimingPageIndex"
+            [pageSizeOptions]="opTimingPageSizeOptions"
+            (page)="onOpTimingPageChange($event)"
+            showFirstLastButtons
+            aria-label="Select page of op timing results">
+          </mat-paginator>
+        </div>
+
+        <div class="op-timing-hint" *ngIf="subprocessOpTimingStatsAll.length > 0 || opTimingStatsAll.length > 0">
+          <mat-icon>info</mat-icon>
+          <span>
+            Results sorted by Total (ms) descending. Helper % shows how often platform-optimized helpers (oneDNN/cuDNN) are used.
+            Higher values indicate better hardware utilization.
+          </span>
+        </div>
+
+        <div class="op-timing-empty" *ngIf="opTimingStatsAll.length === 0 && subprocessOpTimingStatsAll.length === 0">
+          <mat-icon>hourglass_empty</mat-icon>
+          <span>No timing data captured yet. Enable profiling, generate an embedding, then click "Flush Stats".</span>
+        </div>
+      </mat-expansion-panel>
     </mat-card-content>
   </mat-card>
 </div>

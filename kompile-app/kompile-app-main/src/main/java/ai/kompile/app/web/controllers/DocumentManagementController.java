@@ -19,8 +19,12 @@ package ai.kompile.app.web.controllers;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
+import ai.kompile.app.ingest.domain.IndexingJobHistory;
+import ai.kompile.app.ingest.domain.IngestEvent;
+import ai.kompile.app.ingest.repository.IndexingJobHistoryRepository;
 import ai.kompile.app.services.DocumentIngestService;
 import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.services.VectorStorePopulationService;
 import ai.kompile.app.services.YouTubeTranscriptService;
 import ai.kompile.app.web.dto.AsyncUploadResponse;
 import ai.kompile.app.web.dto.BatchAsyncUploadResponse;
@@ -72,9 +76,11 @@ public class DocumentManagementController {
     private IndexerService indexerService;
     private final DocumentIngestService documentIngestService;
     private final IngestProgressTracker progressTracker;
+    private final VectorStorePopulationService vectorStorePopulationService;
     private final YouTubeTranscriptService youTubeTranscriptService;
     private final SourceDocumentStorageService sourceDocumentStorageService;
     private final FactSheetService factSheetService;
+    private final IndexingJobHistoryRepository jobHistoryRepository;
 
     @Autowired
     public DocumentManagementController(
@@ -86,10 +92,13 @@ public class DocumentManagementController {
             @Autowired(required = false) List<IndexerService> indexerService,
             @Autowired(required = false) DocumentIngestService documentIngestService,
             @Autowired(required = false) IngestProgressTracker progressTracker,
+            @Autowired(required = false) VectorStorePopulationService vectorStorePopulationService,
             @Autowired(required = false) YouTubeTranscriptService youTubeTranscriptService,
             @Autowired(required = false) SourceDocumentStorageService sourceDocumentStorageService,
-            @Autowired(required = false) FactSheetService factSheetService) {
+            @Autowired(required = false) FactSheetService factSheetService,
+            @Autowired(required = false) IndexingJobHistoryRepository jobHistoryRepository) {
         this.sourceProperties = appDocumentSourceProperties;
+        this.jobHistoryRepository = jobHistoryRepository;
         this.youTubeTranscriptService = youTubeTranscriptService;
         this.restTemplate = restTemplate;
         this.documentLoaders = documentLoaders != null ? documentLoaders : List.of();
@@ -97,6 +106,7 @@ public class DocumentManagementController {
         this.textChunkers = textChunkers != null ? textChunkers : List.of();
         this.documentIngestService = documentIngestService;
         this.progressTracker = progressTracker;
+        this.vectorStorePopulationService = vectorStorePopulationService;
         this.sourceDocumentStorageService = sourceDocumentStorageService != null ? sourceDocumentStorageService : new SourceDocumentStorageService();
         this.factSheetService = factSheetService;
 
@@ -1371,6 +1381,10 @@ public class DocumentManagementController {
             chunkingOptions.put("overlap", 200);
             chunkingOptions.put("maxChunkSize", 2000); // For safety
             chunkingOptions.put("minChunkSize", 100); // Avoid tiny chunks
+            // CRITICAL: Disable garbage collection to prevent all chunks from being filtered
+            // into a single "garbage" chunk. The SentenceFilter marks any chunk not ending
+            // with . ! ? as garbage, which is too aggressive for most PDF content.
+            chunkingOptions.put("collectGarbage", false);
 
             int totalChunksCreated = 0;
             for (int i = 0; i < loadedDocuments.size(); i++) {
@@ -1845,6 +1859,14 @@ public class DocumentManagementController {
                     subprocessHeapSize, subprocessTimeoutMinutes,
                     subprocessHeartbeatSeconds, subprocessStaleThresholdSeconds);
 
+            // Send initial QUEUED progress event BEFORE starting async processing
+            // This ensures the WebSocket event is sent before the HTTP response returns,
+            // preventing race conditions where the frontend subscribes too late
+            if (progressTracker != null) {
+                progressTracker.startTask(taskId, sanitizedFileName);
+                logger.debug("Sent initial QUEUED event for task {} before HTTP response", taskId);
+            }
+
             // Start async processing with specified mode and options
             documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode, subprocessOptions);
 
@@ -1962,6 +1984,12 @@ public class DocumentManagementController {
                 // Generate task ID and queue for async processing
                 String taskId = UUID.randomUUID().toString();
 
+                // Send initial QUEUED progress event BEFORE starting async processing
+                // This ensures the WebSocket event is sent before the HTTP response returns
+                if (progressTracker != null) {
+                    progressTracker.startTask(taskId, sanitizedFileName);
+                }
+
                 // Start async processing with specified mode and options (runs concurrently with other files)
                 documentIngestService.processDocumentAsync(taskId, destinationFile, loaderName, chunkerName, mode, subprocessOptions);
 
@@ -2062,23 +2090,40 @@ public class DocumentManagementController {
     }
 
     /**
-     * Get all active ingest tasks from both async (DocumentIngestService) and sync
-     * (IngestProgressTracker) flows.
+     * Get all active ingest tasks from both async (DocumentIngestService), sync
+     * (IngestProgressTracker) flows, and persisted jobs from database.
      */
     @GetMapping("/ingest-tasks")
     public ResponseEntity<Collection<IngestProgressUpdate>> getAllIngestTasks() {
-        // Combine tasks from both async and sync upload flows
+        // Combine tasks from all sources
         Map<String, IngestProgressUpdate> allTasks = new HashMap<>();
 
-        // Add tasks from async flow (DocumentIngestService)
+        // 1. Load persisted active jobs from database (QUEUED or RUNNING status)
+        // These are jobs that survive restarts
+        if (jobHistoryRepository != null) {
+            try {
+                List<IndexingJobHistory> activeDbJobs = jobHistoryRepository.findActiveJobs();
+                for (IndexingJobHistory job : activeDbJobs) {
+                    IngestProgressUpdate update = convertJobHistoryToProgressUpdate(job);
+                    allTasks.put(job.getTaskId(), update);
+                }
+                if (!activeDbJobs.isEmpty()) {
+                    logger.debug("Loaded {} active jobs from database", activeDbJobs.size());
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to load active jobs from database: {}", e.getMessage());
+            }
+        }
+
+        // 2. Add tasks from async flow (DocumentIngestService) - these override DB entries
+        // as they have more current in-memory state
         if (documentIngestService != null) {
             for (IngestProgressUpdate task : documentIngestService.getAllActiveTasks()) {
                 allTasks.put(task.taskId(), task);
             }
         }
 
-        // Add tasks from sync flow (IngestProgressTracker) - may override if same
-        // taskId
+        // 3. Add tasks from sync flow (IngestProgressTracker) - may override if same taskId
         if (progressTracker != null) {
             for (IngestProgressUpdate task : progressTracker.getAllTasks()) {
                 allTasks.put(task.taskId(), task);
@@ -2095,6 +2140,134 @@ public class DocumentManagementController {
         }
 
         return ResponseEntity.ok(allTasks.values());
+    }
+
+    /**
+     * Convert a persisted IndexingJobHistory to an IngestProgressUpdate for the frontend.
+     */
+    private IngestProgressUpdate convertJobHistoryToProgressUpdate(IndexingJobHistory job) {
+        // Map job status to ingest status
+        IngestProgressUpdate.IngestStatus status = switch (job.getStatus()) {
+            case QUEUED -> IngestProgressUpdate.IngestStatus.PENDING;
+            case RUNNING -> IngestProgressUpdate.IngestStatus.IN_PROGRESS;
+            case COMPLETED -> IngestProgressUpdate.IngestStatus.COMPLETED;
+            case FAILED, MEMORY_KILLED -> IngestProgressUpdate.IngestStatus.FAILED;
+            case CANCELLED -> IngestProgressUpdate.IngestStatus.CANCELLED;
+            case PAUSED -> IngestProgressUpdate.IngestStatus.IN_PROGRESS; // Treat paused as in-progress for now
+        };
+
+        // Map phase from IngestEvent.IngestPhase to IngestProgressUpdate.IngestPhase
+        IngestProgressUpdate.IngestPhase phase = mapToIngestPhase(job.getLastPhase());
+
+        // Build stats from job history
+        IngestProgressUpdate.IngestStats.Builder statsBuilder = IngestProgressUpdate.IngestStats.builder()
+                .documentsLoaded(job.getDocumentsLoaded() != null ? job.getDocumentsLoaded() : 0)
+                .chunksCreated(job.getChunksCreated() != null ? job.getChunksCreated() : 0)
+                .chunksEmbedded(job.getChunksEmbedded() != null ? job.getChunksEmbedded() : 0)
+                .chunksIndexed(job.getDocumentsIndexed() != null ? job.getDocumentsIndexed() : 0)
+                .documentsIndexed(job.getDocumentsIndexed() != null ? job.getDocumentsIndexed() : 0)
+                .totalProcessingTimeMs(job.getTotalDurationMs() != null ? job.getTotalDurationMs() : 0)
+                .loaderUsed(job.getLoaderUsed())
+                .chunkerUsed(job.getChunkerUsed())
+                .loadingTimeMs(job.getLoadingDurationMs())
+                .chunkingTimeMs(job.getChunkingDurationMs())
+                .embeddingTimeMs(job.getEmbeddingDurationMs())
+                .indexingTimeMs(job.getIndexingDurationMs())
+                .workerThreads(job.getWorkerThreads())
+                .memoryUsagePercent(job.getPeakMemoryUsagePercent() != null ? job.getPeakMemoryUsagePercent() : 0.0);
+
+        if ("vector-population".equalsIgnoreCase(job.getContentType())
+                && vectorStorePopulationService != null
+                && vectorStorePopulationService.isSubprocessModeEnabled()) {
+            statsBuilder.subprocessRuntimeInfo(
+                    IngestProgressUpdate.SubprocessRuntimeInfo.forProcessMode("SUBPROCESS"));
+        }
+
+        IngestProgressUpdate.IngestStats stats = statsBuilder.build();
+
+        // Generate a message based on current state
+        String message = switch (job.getStatus()) {
+            case QUEUED -> "Waiting to start processing...";
+            case RUNNING -> "Processing: " + phase.name().toLowerCase();
+            case COMPLETED -> "Completed successfully";
+            case FAILED -> job.getErrorMessage() != null ? job.getErrorMessage() : "Failed";
+            case CANCELLED -> "Cancelled by user";
+            case MEMORY_KILLED -> "Killed due to memory pressure";
+            case PAUSED -> "Paused";
+        };
+
+        // Map failure reason from job history to DTO
+        IngestProgressUpdate.FailureReason failureReason = mapToFailureReason(job.getFailureReason(), job.getStatus());
+
+        return new IngestProgressUpdate(
+                job.getTaskId(),
+                job.getFileName(),
+                phase,
+                status,
+                job.getProgressPercent() != null ? job.getProgressPercent() : 0,
+                phase.name(),  // currentStep as string
+                message,
+                stats,
+                job.getErrorMessage(),
+                job.getStartTime(),  // Instant directly
+                null,  // factSheetId - not stored in job history yet
+                failureReason,
+                null  // restartInfo - not stored in job history
+        );
+    }
+
+    /**
+     * Map IndexingJobHistory.FailureReason to IngestProgressUpdate.FailureReason
+     */
+    private IngestProgressUpdate.FailureReason mapToFailureReason(IndexingJobHistory.FailureReason reason,
+                                                                    IndexingJobHistory.JobStatus status) {
+        // First check status for memory killed (may not have failure reason set)
+        if (status == IndexingJobHistory.JobStatus.MEMORY_KILLED) {
+            return IngestProgressUpdate.FailureReason.OOM_KILLED;
+        }
+        if (status == IndexingJobHistory.JobStatus.CANCELLED) {
+            return IngestProgressUpdate.FailureReason.USER_CANCELLED;
+        }
+
+        if (reason == null) {
+            return null;
+        }
+
+        return switch (reason) {
+            case NONE -> null;
+            case OUT_OF_MEMORY -> IngestProgressUpdate.FailureReason.OUT_OF_MEMORY;
+            case MEMORY_KILLED -> IngestProgressUpdate.FailureReason.OOM_KILLED;
+            case USER_CANCELLED -> IngestProgressUpdate.FailureReason.USER_CANCELLED;
+            case LOAD_ERROR -> IngestProgressUpdate.FailureReason.LOAD_ERROR;
+            case EMBEDDING_ERROR -> IngestProgressUpdate.FailureReason.EMBEDDING_ERROR;
+            case INDEXING_ERROR -> IngestProgressUpdate.FailureReason.INDEXING_ERROR;
+            case TIMEOUT -> IngestProgressUpdate.FailureReason.PROCESS_STUCK;
+            case MODEL_NOT_FOUND, STAGING_ERROR -> IngestProgressUpdate.FailureReason.EMBEDDING_ERROR;
+            case CONVERSION_ERROR, CHUNKING_ERROR, SUBPROCESS_ERROR, IO_ERROR, INVALID_INPUT, UNKNOWN ->
+                    IngestProgressUpdate.FailureReason.UNKNOWN;
+        };
+    }
+
+    /**
+     * Map IngestEvent.IngestPhase to IngestProgressUpdate.IngestPhase
+     */
+    private IngestProgressUpdate.IngestPhase mapToIngestPhase(IngestEvent.IngestPhase eventPhase) {
+        if (eventPhase == null) {
+            return IngestProgressUpdate.IngestPhase.QUEUED;
+        }
+        return switch (eventPhase) {
+            case QUEUED -> IngestProgressUpdate.IngestPhase.QUEUED;
+            case LOADING -> IngestProgressUpdate.IngestPhase.LOADING;
+            case OCR_PROCESSING -> IngestProgressUpdate.IngestPhase.OCR_PROCESSING;
+            case CONVERTING -> IngestProgressUpdate.IngestPhase.CONVERTING;
+            case CHUNKING -> IngestProgressUpdate.IngestPhase.CHUNKING;
+            case EXTRACTION -> IngestProgressUpdate.IngestPhase.EXTRACTION;
+            case INDEXING_AND_EMBEDDING -> IngestProgressUpdate.IngestPhase.INDEXING_AND_EMBEDDING;
+            case EMBEDDING -> IngestProgressUpdate.IngestPhase.EMBEDDING;
+            case INDEXING -> IngestProgressUpdate.IngestPhase.INDEXING;
+            case COMPLETED -> IngestProgressUpdate.IngestPhase.COMPLETED;
+            case FAILED -> IngestProgressUpdate.IngestPhase.FAILED;
+        };
     }
 
     @PostMapping("/add-url")

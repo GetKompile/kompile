@@ -553,6 +553,10 @@ export interface SearchResponse {
   maxResults: number;
   totalResults: number;
   results: SearchResult[];
+  // Total document count in the keyword index (for keyword search)
+  totalDocumentCount?: number;
+  // Total vector count in the vector store (for vector search)
+  totalVectorCount?: number;
 }
 
 // New interface for Index Browser Status
@@ -575,8 +579,33 @@ export interface IndexBrowserStatus {
   vectorStoreAvailable?: boolean;
   vectorStorePath?: string;
   approximateVectorCount?: number | string;
+  approximateTotalTokens?: number;  // Total tokens across all indexed documents
   isNoOpVectorStore?: boolean;
   isUsingFallbackIndex?: boolean;
+
+  // Active Model Status (from Staging Manager)
+  activeEmbeddingModel?: string;       // Currently loaded embedding model identifier
+  embeddingModelName?: string;         // Display name of the embedding model
+  embeddingDimensions?: number;        // Embedding vector dimensions
+  embeddingModelInitialized?: boolean; // Whether the embedding model is ready for use
+  embeddingModelLoading?: boolean;     // Whether the model is currently loading
+  embeddingModelLoadingPhase?: string; // Current loading phase (IDLE, STARTING, LOOKING_UP_REGISTRY, etc.)
+  embeddingModelLoadingMessage?: string; // Human-readable loading progress message
+  embeddingModelWarning?: string;      // Warning message if model not initialized
+  embeddingModelError?: string;        // Error details if initialization failed
+
+  // Staging Service Connection
+  stagingServiceConfigured?: boolean;  // Whether a staging service is configured
+  stagingServiceName?: string;         // Name of the configured staging service
+  stagingServiceUrl?: string;          // URL of the staging service
+  stagingServiceVerified?: boolean;    // Whether the staging service connection is verified
+  stagingConnected?: boolean;          // Whether currently connected to staging service
+
+  // Active Models from Staging (type -> modelId)
+  activeModels?: { [type: string]: string };
+  activeEncoder?: string;              // Active dense encoder model ID
+  activeCrossEncoder?: string;         // Active cross-encoder model ID
+  activeSparseEncoder?: string;        // Active sparse encoder model ID
 }
 
 // Vector Indexing Job Status
@@ -611,6 +640,8 @@ export type ChunkerStrategy =
   | 'spring_token'
   | 'custom_markdown'
   | 'spring_markdown'
+  | 'table-aware'
+  | 'boundary-aware'
   | 'auto';
 
 /**
@@ -640,6 +671,29 @@ export interface ChunkingOptions {
 
   /** Split on headings (Markdown) */
   splitOnHeadings?: boolean;
+
+  // Boundary preservation options (for boundary-aware chunker)
+
+  /** Preserve URLs - prevent splitting URLs across chunks */
+  preserveUrls?: boolean;
+
+  /** Preserve email addresses - prevent splitting emails across chunks */
+  preserveEmails?: boolean;
+
+  /** Preserve file paths - prevent splitting file paths across chunks */
+  preserveFilePaths?: boolean;
+
+  /** Preserve IP addresses - prevent splitting IP addresses across chunks */
+  preserveIpAddresses?: boolean;
+
+  /** Preserve phone numbers - prevent splitting phone numbers across chunks */
+  preservePhoneNumbers?: boolean;
+
+  /** Preserve quoted strings - prevent splitting quoted text across chunks */
+  preserveQuotedStrings?: boolean;
+
+  /** Preserve code identifiers (camelCase, snake_case) - prevent splitting identifiers */
+  preserveCodeIdentifiers?: boolean;
 }
 
 /**
@@ -733,6 +787,20 @@ export const CHUNKER_STRATEGIES: ChunkerStrategyInfo[] = [
     description: 'Spring AI markdown document splitter',
     icon: 'code',
     bestFor: 'Markdown with Spring AI'
+  },
+  {
+    id: 'table-aware',
+    name: 'Table-Aware',
+    description: 'Preserves table structure (markdown, TSV, HTML) as atomic chunks',
+    icon: 'table_chart',
+    bestFor: 'Documents with tables'
+  },
+  {
+    id: 'boundary-aware',
+    name: 'Boundary-Aware',
+    description: 'Prevents splitting URLs, emails, file paths, and other semantic units',
+    icon: 'link',
+    bestFor: 'Technical docs, code references'
   }
 ];
 
@@ -746,7 +814,15 @@ export const DEFAULT_CHUNKING_OPTIONS: ChunkingOptions = {
   minChunkSize: 100,
   maxChunkSize: 2000,
   language: 'en',
-  splitOnHeadings: true
+  splitOnHeadings: true,
+  // Boundary preservation defaults (enabled for common cases)
+  preserveUrls: true,
+  preserveEmails: true,
+  preserveFilePaths: true,
+  preserveIpAddresses: false,
+  preservePhoneNumbers: false,
+  preserveQuotedStrings: false,
+  preserveCodeIdentifiers: false
 };
 
 /**
@@ -1085,7 +1161,224 @@ export interface AddSourceDialogResult {
   confluenceIncludeChildren?: boolean; // Whether to include child pages
   confluenceIncludeAttachments?: boolean; // Whether to include page attachments
   confluenceMaxDepth?: number; // Maximum depth for child page traversal
+  // Composite PDF loader option
+  /**
+   * When true, multiple PDF loaders will be tested and the one extracting
+   * the most content will be used. Useful for handling scanned/image-based PDFs.
+   */
+  useCompositePdfLoader?: boolean;
+  /**
+   * PDF processing configuration for controlling text extraction, VLM, OCR, and table extraction.
+   * When provided, these settings override defaults for PDF processing.
+   */
+  pdfProcessingConfig?: PdfProcessingConfig;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PDF PROCESSING CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * PDF processing mode - determines how PDF content is extracted.
+ */
+export type PdfProcessingMode =
+  | 'TEXT_EXTRACTION'  // Direct text extraction using PDFBox (fast, for text-based PDFs)
+  | 'VLM'              // Vision-Language Model processing (for scanned/image PDFs)
+  | 'TRADITIONAL_OCR'  // Traditional OCR (detection + recognition pipeline)
+  | 'AUTO'             // Try text extraction first, use VLM if insufficient content
+  | 'COMPARE';         // Compare multiple loaders and select best
+
+/**
+ * VLM output format options.
+ */
+export type VlmOutputFormat = 'DOCTAGS' | 'MARKDOWN' | 'FLORENCE2' | 'DONUT' | 'PLAIN_TEXT' | 'JSON' | 'TEXT';
+
+/**
+ * Table storage mode for extracted tables.
+ */
+export type TableStorageMode = 'INLINE' | 'SEPARATE' | 'BOTH' | 'NONE';
+
+/**
+ * Table extraction method options.
+ */
+export type TableExtractionMethod =
+  | 'TABULA'  // Use Tabula (rule-based, fast, works on text PDFs)
+  | 'VLM'     // Use VLM (AI-based, better for scanned/image PDFs)
+  | 'AUTO'    // Try Tabula first, fall back to VLM if no tables found
+  | 'NONE';   // Disable table extraction
+
+/**
+ * Configuration for PDF processing - replaces Spring @Value properties with runtime UI config.
+ */
+export interface PdfProcessingConfig {
+  // Processing mode
+  processingMode: PdfProcessingMode;
+
+  // VLM configuration
+  useVlm: boolean;
+  vlmModelId?: string;
+  vlmOutputFormat?: VlmOutputFormat;
+  maxNewTokens?: number;
+  temperature?: number;
+  topP?: number;
+  beamSize?: number;
+  doSample?: boolean;
+
+  // Traditional OCR configuration
+  detectionModelId?: string;
+  recognitionModelId?: string;
+  tableModelId?: string;
+  layoutModelId?: string;
+
+  // PDF rendering
+  pdfRenderDpi?: number;
+
+  // Table extraction
+  extractTables: boolean;
+  tableStorageMode?: TableStorageMode;
+  tableExtractionMethod?: TableExtractionMethod;
+  tableFormat?: string;
+  minTableRows?: number;
+  minTableCols?: number;
+
+  // Text extraction settings
+  extractByPage?: boolean;
+  extractMetadata?: boolean;
+  extractAnnotations?: boolean;
+  extractFormFields?: boolean;
+  extractBookmarks?: boolean;
+  extractLinks?: boolean;
+
+  // Post-processing
+  enablePostProcessing?: boolean;
+  enableLayoutAnalysis?: boolean;
+
+  // Auto mode threshold
+  autoModeMinCharacters?: number;
+
+  // Composite loader setting
+  useCompositeLoader?: boolean;
+}
+
+/**
+ * Default PDF processing configuration.
+ */
+export const DEFAULT_PDF_PROCESSING_CONFIG: PdfProcessingConfig = {
+  processingMode: 'AUTO',
+  useVlm: false,
+  vlmModelId: 'smoldocling-256m',
+  vlmOutputFormat: 'MARKDOWN',
+  maxNewTokens: 4096,
+  temperature: 0.0,
+  topP: 1.0,
+  beamSize: 1,
+  doSample: false,
+  pdfRenderDpi: 300,
+  extractTables: true,
+  tableStorageMode: 'BOTH',
+  tableExtractionMethod: 'AUTO',
+  tableFormat: 'markdown',
+  minTableRows: 2,
+  minTableCols: 2,
+  extractByPage: false,
+  extractMetadata: true,
+  enablePostProcessing: false,
+  enableLayoutAnalysis: false,
+  autoModeMinCharacters: 100,
+  useCompositeLoader: false
+};
+
+/**
+ * PDF processing mode information for UI display.
+ */
+export interface PdfProcessingModeInfo {
+  id: PdfProcessingMode;
+  name: string;
+  description: string;
+  icon: string;
+  bestFor: string;
+}
+
+/**
+ * Available PDF processing modes for UI selection.
+ */
+export const PDF_PROCESSING_MODES: PdfProcessingModeInfo[] = [
+  {
+    id: 'AUTO',
+    name: 'Auto Detect',
+    description: 'Automatically detect best extraction method based on PDF content',
+    icon: 'auto_awesome',
+    bestFor: 'Most documents (recommended)'
+  },
+  {
+    id: 'TEXT_EXTRACTION',
+    name: 'Text Extraction',
+    description: 'Direct text extraction using PDFBox - fast and accurate for text-based PDFs',
+    icon: 'text_fields',
+    bestFor: 'Native/digital PDFs with embedded text'
+  },
+  {
+    id: 'VLM',
+    name: 'Vision Language Model',
+    description: 'AI-powered document understanding using SmolDocling or similar VLMs',
+    icon: 'psychology',
+    bestFor: 'Scanned documents, images, complex layouts'
+  },
+  {
+    id: 'TRADITIONAL_OCR',
+    name: 'Traditional OCR',
+    description: 'Detection + recognition pipeline using DBNET + CRNN',
+    icon: 'document_scanner',
+    bestFor: 'Scanned text documents without complex layout'
+  },
+  {
+    id: 'COMPARE',
+    name: 'Compare Methods',
+    description: 'Try multiple extraction methods and use the one with best results',
+    icon: 'compare',
+    bestFor: 'Uncertain document types, quality assurance'
+  }
+];
+
+/**
+ * Table extraction method information for UI display.
+ */
+export interface TableExtractionMethodInfo {
+  id: TableExtractionMethod;
+  name: string;
+  description: string;
+  icon: string;
+}
+
+/**
+ * Available table extraction methods for UI selection.
+ */
+export const TABLE_EXTRACTION_METHODS: TableExtractionMethodInfo[] = [
+  {
+    id: 'AUTO',
+    name: 'Auto',
+    description: 'Try Tabula first, fall back to VLM if needed',
+    icon: 'auto_fix_high'
+  },
+  {
+    id: 'TABULA',
+    name: 'Tabula',
+    description: 'Rule-based extraction - fast, works on text PDFs',
+    icon: 'grid_on'
+  },
+  {
+    id: 'VLM',
+    name: 'VLM',
+    description: 'AI-based extraction - better for scanned/image tables',
+    icon: 'psychology'
+  },
+  {
+    id: 'NONE',
+    name: 'Disabled',
+    description: 'Skip table extraction',
+    icon: 'block'
+  }
+];
 
 /**
  * Configuration for adaptive performance mode.
@@ -1177,8 +1470,10 @@ export enum IngestPhase {
   QUEUED = 'QUEUED',
   UPLOADING = 'UPLOADING',
   LOADING = 'LOADING',
+  OCR_PROCESSING = 'OCR_PROCESSING',
   CONVERTING = 'CONVERTING',
   CHUNKING = 'CHUNKING',
+  INDEXING_AND_EMBEDDING = 'INDEXING_AND_EMBEDDING',
   EMBEDDING = 'EMBEDDING',
   INDEXING = 'INDEXING',
   COMPLETED = 'COMPLETED',
@@ -1198,6 +1493,7 @@ export interface IngestStats {
   chunksCreated: number;
   chunksEmbedded: number;
   chunksIndexed: number;  // Number of chunks written to vector store
+  tokensProcessed?: number;  // Total tokens processed during tokenization
   documentsIndexed: number;
   totalProcessingTimeMs: number;
   loaderUsed: string | null;
@@ -1245,9 +1541,46 @@ export interface IngestStats {
   // ========== EMBEDDING INFERENCE METRICS ==========
   // Current embedding batch details
   currentEmbeddingBatch?: EmbeddingBatchMetrics;
+  // Batch history - last N completed batches for UI visibility
+  batchHistory?: BatchHistoryEntry[];
   // ========== SUBPROCESS RUNTIME INFO ==========
   // Runtime details when running in subprocess mode
   subprocessRuntimeInfo?: SubprocessRuntimeInfo;
+  // ========== RESTART TRACKING ==========
+  // Current restart attempt (0 = first run, 1+ = restart)
+  restartAttempt?: number;
+  // Maximum allowed restart attempts
+  maxRestartAttempts?: number;
+  // Current heap size being used
+  heapSize?: string;
+  // Whether heap was increased from previous attempt
+  heapIncreased?: boolean;
+  // ========== RESUME/CHECKPOINT INFO ==========
+  // Resume info - shows where this run was resumed from
+  resumedFromChunkCount?: number;     // Chunks already processed from previous run
+  resumedFromEmbeddedCount?: number;  // Embeddings already done from previous run
+  resumedFromIndexedCount?: number;   // Documents already indexed from previous run
+  isResumedRun?: boolean;             // True if this is a resumed run from checkpoint
+  // ========== OCR PROCESSING METRICS ==========
+  currentOcrMetrics?: OcrProcessingMetrics;
+  ocrProcessingTimeMs?: number;
+}
+
+export interface OcrProcessingMetrics {
+  currentPage?: number;
+  totalPages?: number;
+  currentStep?: string;
+  vlmModelId?: string;
+  // Per-page token metrics (updated after each page completes)
+  generatedTokens?: number;
+  promptTokens?: number;
+  tokensPerSecond?: number;
+  generateTimeMs?: number;
+  // Cumulative metrics
+  totalTokensGenerated?: number;
+  pagesCompleted?: number;
+  totalOcrTimeMs?: number;
+  averageTokensPerSecond?: number;
 }
 
 export interface WorkerStatusDto {
@@ -1315,6 +1648,37 @@ export interface EmbeddingBatchMetrics {
   modelName?: string;             // Name of the embedding model
   deviceType?: string;            // CPU, CUDA, etc.
   isBatched?: boolean;            // Whether batched inference is being used
+
+  // Source document tracking
+  sourceDocuments?: string;       // Comma-separated list of source document names
+  sourceDocumentCount?: number;   // Total number of unique source documents in this batch
+
+  // Tensor shape information
+  inputTensorShape?: string;      // e.g., "[32, 512]" for [batch_size, max_seq_length]
+  outputTensorShape?: string;     // e.g., "[32, 768]" for [batch_size, embedding_dim]
+  actualInputShape?: string;      // Actual input tensor shape from encoder
+  actualOutputShape?: string;     // Actual output tensor shape from encoder
+
+  // Processing status
+  statusLevel?: string;           // RUNNING, PROCESSING, SLOW, VERY_SLOW, EXTREMELY_SLOW
+  etaMessage?: string;            // Estimated time remaining message
+}
+
+/**
+ * Simplified batch history entry for UI display.
+ * Contains key metrics from completed batches.
+ */
+export interface BatchHistoryEntry {
+  batchNumber: number;
+  inputTexts: number;
+  maxSequenceLength: number;
+  embeddingDimension: number;
+  actualInputShape?: string;
+  actualOutputShape?: string;
+  totalBatchTimeMs: number;
+  currentStep?: string;
+  tokensPerSecond: number;
+  passageTokenCounts?: number[];  // Token count for each passage in the batch
 }
 
 /**
@@ -1377,6 +1741,11 @@ export interface SubprocessRuntimeInfo {
   embeddingDimension?: number;
 }
 
+/**
+ * Type of job being tracked in the active jobs panel.
+ */
+export type JobType = 'DOCUMENT_INGEST' | 'VECTOR_POPULATION';
+
 export interface IngestProgressUpdate {
   taskId: string;
   fileName: string;
@@ -1385,11 +1754,17 @@ export interface IngestProgressUpdate {
   progressPercent: number;
   currentStep: string;
   message: string;
-  stats: IngestStats;
+  stats: IngestStats | null;
   errorMessage: string | null;
   timestamp: string;
   /** The ID of the fact sheet this task is associated with */
   factSheetId: number | null;
+  /** Type of job - defaults to 'DOCUMENT_INGEST' for backwards compatibility */
+  jobType?: JobType;
+  /** Keyword index path (for VECTOR_POPULATION jobs) */
+  keywordIndexPath?: string;
+  /** Vector store path (for VECTOR_POPULATION jobs) */
+  vectorIndexPath?: string;
 }
 
 export interface BatchAsyncUploadResponse {
@@ -1528,6 +1903,72 @@ export const RECOMMENDED_BATCH_SIZES = {
 } as const;
 
 /**
+ * Pipeline configuration settings.
+ * These settings control the ingestion pipeline behavior including
+ * batch sizes, thread counts, queue capacities, and timeouts.
+ */
+export interface PipelineConfig {
+  // Batch size settings
+  /** Minimum batch size for processing */
+  minBatchSize?: number;
+  /** Default batch size for processing */
+  defaultBatchSize?: number;
+  /** Maximum batch size for processing */
+  maxBatchSize?: number;
+
+  // Queue settings
+  /** Queue capacity for chunks waiting to be processed */
+  queueCapacity?: number;
+  /** Queue poll timeout in milliseconds */
+  queuePollTimeoutMs?: number;
+  /** Maximum wait time for batch accumulation (ms) */
+  maxBatchWaitMs?: number;
+  /** Minimum wait time for batch accumulation (ms) */
+  minBatchWaitMs?: number;
+
+  // Thread settings
+  /** Number of threads for chunking documents */
+  chunkingThreads?: number;
+  /** Number of threads for computing embeddings */
+  embeddingThreads?: number;
+  /** Number of threads for Lucene indexing */
+  indexingThreads?: number;
+  /** Number of chunks to accumulate before Lucene commit */
+  indexingBatchAccumulationSize?: number;
+
+  // Mode settings
+  /** Skip embedding computation (keyword-only mode) */
+  skipEmbedding?: boolean;
+
+  // Timeout settings
+  /** Timeout for each embedding batch in seconds (0 = no timeout) */
+  embeddingTimeoutSeconds?: number;
+
+  // Read-only status
+  /** Current preset name if using a preset */
+  currentPreset?: string;
+  /** Whether the config has been modified from defaults */
+  isModified?: boolean;
+  /** Available preset names */
+  availablePresets?: string[];
+}
+
+/**
+ * Pipeline preset details for display in the UI.
+ * Note: This is different from the PipelinePreset string type used for preset selection.
+ */
+export interface PipelinePresetDetails {
+  name: string;
+  description: string;
+  embeddingTimeoutSeconds: number;
+  queueCapacity: number;
+  embeddingThreads: number;
+  chunkingThreads: number;
+  indexingThreads: number;
+  skipEmbedding?: boolean;
+}
+
+/**
  * Get recommended batch sizes based on available memory in MB.
  */
 export function getRecommendedBatchSizes(availableMemoryMB: number): typeof RECOMMENDED_BATCH_SIZES[keyof typeof RECOMMENDED_BATCH_SIZES] {
@@ -1540,6 +1981,155 @@ export function getRecommendedBatchSizes(availableMemoryMB: number): typeof RECO
   } else {
     return RECOMMENDED_BATCH_SIZES.VERY_HIGH_MEMORY;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GPU/CUDA DEVICE MEMORY RECOMMENDATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Note: GpuDeviceInfo is an alias for DeviceInfo (defined below in SYSTEM RESOURCE MONITORING section)
+// and DevicesResponse is also defined below. These types are used for GPU memory recommendations.
+
+/**
+ * Recommended batch sizes for GPU/CUDA backends based on device memory.
+ * GPU memory is typically more constrained than system RAM.
+ */
+export const GPU_RECOMMENDED_BATCH_SIZES = {
+  /** For GPUs with < 4GB VRAM */
+  LOW_VRAM: {
+    embeddingBatch: 2,
+    maxEmbeddingBatch: 4,
+    indexBatch: 25,
+    description: 'Conservative settings for low VRAM GPUs (< 4GB)'
+  },
+  /** For GPUs with 4-8GB VRAM */
+  MEDIUM_VRAM: {
+    embeddingBatch: 4,
+    maxEmbeddingBatch: 8,
+    indexBatch: 50,
+    description: 'Balanced settings for mid-range GPUs (4-8GB)'
+  },
+  /** For GPUs with 8-16GB VRAM */
+  HIGH_VRAM: {
+    embeddingBatch: 8,
+    maxEmbeddingBatch: 16,
+    indexBatch: 75,
+    description: 'Performance settings for high-end GPUs (8-16GB)'
+  },
+  /** For GPUs with > 16GB VRAM */
+  VERY_HIGH_VRAM: {
+    embeddingBatch: 16,
+    maxEmbeddingBatch: 32,
+    indexBatch: 100,
+    description: 'High-throughput settings for professional GPUs (> 16GB)'
+  }
+} as const;
+
+/**
+ * Get recommended batch sizes based on GPU VRAM in MB.
+ * Note: GPU batch sizes are more conservative than CPU due to VRAM constraints
+ * and the need to leave room for model weights and intermediate computations.
+ */
+export function getGpuRecommendedBatchSizes(vramMB: number): typeof GPU_RECOMMENDED_BATCH_SIZES[keyof typeof GPU_RECOMMENDED_BATCH_SIZES] {
+  if (vramMB < 4096) {
+    return GPU_RECOMMENDED_BATCH_SIZES.LOW_VRAM;
+  } else if (vramMB < 8192) {
+    return GPU_RECOMMENDED_BATCH_SIZES.MEDIUM_VRAM;
+  } else if (vramMB < 16384) {
+    return GPU_RECOMMENDED_BATCH_SIZES.HIGH_VRAM;
+  } else {
+    return GPU_RECOMMENDED_BATCH_SIZES.VERY_HIGH_VRAM;
+  }
+}
+
+/**
+ * Common type for batch size recommendations (CPU or GPU).
+ */
+export interface BatchSizeRecommendation {
+  embeddingBatch: number;
+  maxEmbeddingBatch: number;
+  indexBatch: number;
+  description: string;
+}
+
+/**
+ * Get recommended batch sizes considering both system RAM and GPU VRAM.
+ * When using CUDA backend, GPU memory is often the limiting factor.
+ *
+ * @param systemMemoryMB Available system RAM in MB
+ * @param gpuInfo Optional GPU device information (if using CUDA)
+ * @returns Recommended batch sizes, accounting for both RAM and VRAM constraints
+ */
+export function getRecommendedBatchSizesWithGpu(
+  systemMemoryMB: number,
+  gpuInfo?: { isGpuBackend: boolean; freeMemoryMB?: number; totalMemoryMB?: number }
+): {
+  settings: BatchSizeRecommendation;
+  isGpuConstrained: boolean;
+  constraintReason: string;
+} {
+  const cpuSettings = getRecommendedBatchSizes(systemMemoryMB);
+
+  // If not using GPU backend, use CPU-based recommendations
+  if (!gpuInfo?.isGpuBackend) {
+    return {
+      settings: cpuSettings,
+      isGpuConstrained: false,
+      constraintReason: 'Using CPU backend - recommendations based on system RAM'
+    };
+  }
+
+  // Get GPU VRAM - prefer free memory, fall back to total
+  const gpuMemoryMB = gpuInfo.freeMemoryMB ?? gpuInfo.totalMemoryMB ?? 0;
+
+  if (gpuMemoryMB === 0) {
+    // No GPU memory info available - use conservative CPU settings
+    return {
+      settings: cpuSettings,
+      isGpuConstrained: false,
+      constraintReason: 'GPU memory info unavailable - using system RAM recommendations'
+    };
+  }
+
+  const gpuSettings = getGpuRecommendedBatchSizes(gpuMemoryMB);
+
+  // Compare GPU vs CPU recommendations and use the more conservative one
+  // GPU is typically the limiting factor for embedding operations
+  const isGpuMoreConstrained = gpuSettings.embeddingBatch < cpuSettings.embeddingBatch;
+
+  if (isGpuMoreConstrained) {
+    return {
+      settings: gpuSettings,
+      isGpuConstrained: true,
+      constraintReason: `GPU VRAM (${Math.round(gpuMemoryMB / 1024 * 10) / 10}GB) is the limiting factor - using GPU-optimized batch sizes`
+    };
+  } else {
+    return {
+      settings: cpuSettings,
+      isGpuConstrained: false,
+      constraintReason: `System RAM (${Math.round(systemMemoryMB / 1024 * 10) / 10}GB) is the limiting factor - GPU has sufficient VRAM`
+    };
+  }
+}
+
+/**
+ * GPU memory tier labels for display.
+ */
+export function getGpuMemoryTierLabel(vramMB: number): string {
+  if (vramMB < 4096) return 'Low VRAM (< 4GB)';
+  if (vramMB < 8192) return 'Medium VRAM (4-8GB)';
+  if (vramMB < 16384) return 'High VRAM (8-16GB)';
+  return 'Very High VRAM (> 16GB)';
+}
+
+/**
+ * GPU memory tier CSS class.
+ */
+export function getGpuMemoryTierClass(vramMB: number): string {
+  if (vramMB < 4096) return 'vram-low';
+  if (vramMB < 8192) return 'vram-medium';
+  if (vramMB < 16384) return 'vram-high';
+  return 'vram-very-high';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1888,6 +2478,36 @@ export interface AgentProvider {
 
   /** Description of the agent */
   description: string;
+
+  /** Agent type: CLI (subprocess) or API (OpenAI-compatible endpoint) */
+  agentType?: 'CLI' | 'API';
+
+  /** API endpoint URL (API agents only) */
+  endpointUrl?: string;
+
+  /** API key (masked when returned from server) */
+  apiKey?: string;
+
+  /** Model name for the API endpoint */
+  modelName?: string;
+
+  /** Temperature for generation */
+  temperature?: number;
+
+  /** Max tokens for generation */
+  maxTokens?: number;
+}
+
+/** Request body for creating/updating API agent configurations */
+export interface ApiAgentConfigRequest {
+  name?: string;
+  displayName?: string;
+  endpointUrl?: string;
+  apiKey?: string;
+  modelName?: string;
+  temperature?: number;
+  maxTokens?: number;
+  description?: string;
 }
 
 /**
@@ -2110,6 +2730,15 @@ export interface LocalAgentMessage {
 
   /** Retrieved sources from RAG (for footnotes) */
   sources?: RetrievedSource[];
+
+  /** Token throughput metrics from LLM streaming */
+  tokenMetrics?: {
+    outputTokens: number;
+    inputTokens: number;
+    totalGenerationMs: number;
+    tokensPerSecond: number;
+    model?: string;
+  };
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // BRANCHING/FORK FIELDS
@@ -2777,7 +3406,16 @@ export type IngestEventType =
   | 'ERROR'
   | 'COMPLETED'
   | 'FAILED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  // Restart-related event types
+  | 'RESTART_SCHEDULED'
+  | 'RESTART_ATTEMPTED'
+  | 'RESTART_SUCCEEDED'
+  | 'RESTART_FAILED'
+  | 'MEMORY_ANALYSIS'
+  | 'HEAP_ADJUSTED'
+  | 'THREADS_REDUCED'
+  | 'MANUAL_RESTART';
 
 /**
  * Ingest event log entry.
@@ -2833,6 +3471,43 @@ export interface IngestEvent {
 
   /** ND4J environment configuration snapshot captured at job start (JSON) */
   nd4jEnvironmentSnapshot?: string;
+
+  // Restart-related fields
+  /** Current restart attempt number (0 = first run) */
+  restartAttempt?: number;
+
+  /** Maximum restart attempts allowed */
+  maxRestartAttempts?: number;
+
+  /** Heap size string (e.g., "4g", "2g") */
+  heapSize?: string;
+
+  /** Whether heap was increased from previous attempt */
+  heapIncreased?: boolean;
+
+  /** OMP_NUM_THREADS setting */
+  ompThreads?: number;
+
+  /** OPENBLAS_NUM_THREADS setting */
+  blasThreads?: number;
+
+  /** Batch size setting */
+  batchSize?: number;
+
+  /** Memory analysis reason/explanation */
+  memoryAnalysisReason?: string;
+
+  /** System RAM total bytes */
+  systemRamTotal?: number;
+
+  /** System RAM free bytes */
+  systemRamFree?: number;
+
+  /** Next restart scheduled time (ISO string) */
+  nextRestartTime?: string;
+
+  /** Backoff delay in milliseconds */
+  backoffMs?: number;
 }
 
 /**
@@ -3002,12 +3677,20 @@ export function getEventSeverity(eventType: IngestEventType): EventSeverity {
   switch (eventType) {
     case 'COMPLETED':
     case 'PHASE_COMPLETED':
+    case 'RESTART_SUCCEEDED':
       return 'success';
     case 'WARNING':
+    case 'RESTART_SCHEDULED':
+    case 'RESTART_ATTEMPTED':
+    case 'MEMORY_ANALYSIS':
+    case 'HEAP_ADJUSTED':
+    case 'THREADS_REDUCED':
+    case 'MANUAL_RESTART':
       return 'warning';
     case 'ERROR':
     case 'FAILED':
     case 'CANCELLED':
+    case 'RESTART_FAILED':
       return 'error';
     default:
       return 'info';
@@ -3028,7 +3711,16 @@ export function getEventTypeDisplayName(eventType: IngestEventType): string {
     'ERROR': 'Error',
     'COMPLETED': 'Completed',
     'FAILED': 'Failed',
-    'CANCELLED': 'Cancelled'
+    'CANCELLED': 'Cancelled',
+    // Restart-related events
+    'RESTART_SCHEDULED': 'Restart Scheduled',
+    'RESTART_ATTEMPTED': 'Restart Attempted',
+    'RESTART_SUCCEEDED': 'Restart Succeeded',
+    'RESTART_FAILED': 'Restart Failed',
+    'MEMORY_ANALYSIS': 'Memory Analysis',
+    'HEAP_ADJUSTED': 'Heap Adjusted',
+    'THREADS_REDUCED': 'Threads Reduced',
+    'MANUAL_RESTART': 'Manual Restart'
   };
   return displayNames[eventType] || eventType;
 }
@@ -3047,7 +3739,16 @@ export function getEventTypeIcon(eventType: IngestEventType): string {
     'ERROR': 'error',
     'COMPLETED': 'done_all',
     'FAILED': 'cancel',
-    'CANCELLED': 'block'
+    'CANCELLED': 'block',
+    // Restart-related events
+    'RESTART_SCHEDULED': 'schedule_send',
+    'RESTART_ATTEMPTED': 'autorenew',
+    'RESTART_SUCCEEDED': 'check_circle',
+    'RESTART_FAILED': 'error',
+    'MEMORY_ANALYSIS': 'memory',
+    'HEAP_ADJUSTED': 'tune',
+    'THREADS_REDUCED': 'speed',
+    'MANUAL_RESTART': 'touch_app'
   };
   return icons[eventType] || 'info';
 }
@@ -3060,8 +3761,10 @@ export function getPhaseDisplayName(phase: IngestPhase): string {
     'QUEUED': 'Queued',
     'UPLOADING': 'Uploading',
     'LOADING': 'Loading',
+    'OCR_PROCESSING': 'OCR Processing',
     'CONVERTING': 'Converting',
     'CHUNKING': 'Chunking',
+    'INDEXING_AND_EMBEDDING': 'Indexing + Embedding',
     'EMBEDDING': 'Embedding',
     'INDEXING': 'Indexing',
     'COMPLETED': 'Completed',
@@ -3078,8 +3781,10 @@ export function getPhaseIcon(phase: IngestPhase): string {
     'QUEUED': 'schedule',
     'UPLOADING': 'cloud_upload',
     'LOADING': 'folder_open',
+    'OCR_PROCESSING': 'document_scanner',
     'CONVERTING': 'transform',
     'CHUNKING': 'content_cut',
+    'INDEXING_AND_EMBEDDING': 'sync',
     'EMBEDDING': 'memory',
     'INDEXING': 'storage',
     'COMPLETED': 'check_circle',
@@ -3394,6 +4099,47 @@ export interface SystemResourcesResponse {
 }
 
 /**
+ * Model status update from WebSocket.
+ * Provides real-time embedding and staging connection status.
+ */
+export interface ModelStatusUpdate {
+  timestamp: number;
+  ready: boolean;
+  embedding: EmbeddingStatusInfo;
+  staging: StagingStatusInfo;
+}
+
+export interface EmbeddingStatusInfo {
+  available: boolean;
+  modelId?: string;
+  loading: boolean;
+  loadingPhase?: string;
+  loadingMessage?: string;
+  loadingElapsedMs?: number;
+  source?: string;
+  initialized: boolean;
+  dimensions?: number;
+  optimalBatchSize?: number;
+  error?: string;
+  canRetry?: boolean;
+}
+
+export interface StagingStatusInfo {
+  available: boolean;
+  connected: boolean;
+  attempted: boolean;
+  endpointUrl?: string;
+  canRetry: boolean;
+  consecutiveFailures: number;
+  lastError?: string;
+  lastAttemptTimeMs?: number;
+  timeSinceLastAttemptMs?: number;
+  activeConfigId?: number;
+  activeConfigName?: string;
+  verified?: boolean;
+}
+
+/**
  * Devices response from system resource monitoring.
  */
 export interface DevicesResponse {
@@ -3407,6 +4153,18 @@ export interface DevicesResponse {
 }
 
 /**
+ * Graph building settings for entity/relationship extraction.
+ */
+export interface GraphBuildingSettings {
+  /** Enable entity extraction during indexing */
+  enabled: boolean;
+  /** Batch size for entity extraction (chunks per LLM call) */
+  batchSize: number;
+  /** Schema enforcement mode: NONE, LENIENT, STRICT */
+  schemaEnforcement?: string;
+}
+
+/**
  * Complete pipeline configuration.
  */
 export interface PipelineConfig {
@@ -3415,6 +4173,7 @@ export interface PipelineConfig {
   chunking: ChunkingSettings;
   embedding: EmbeddingSettings;
   indexing: IndexingSettings;
+  graphBuilding: GraphBuildingSettings;
   queues: QueueSettings;
   system: SystemResourceInfo;
 }
@@ -3464,6 +4223,7 @@ export interface StageMetricsResponse {
   chunking: StageMetrics;
   embedding: StageMetrics;
   indexing: StageMetrics;
+  graphBuilding?: StageMetrics;
 }
 
 /**
@@ -3476,6 +4236,7 @@ export interface PipelineSettingsRequest {
   chunking?: Partial<ChunkingSettings>;
   embedding?: Partial<EmbeddingSettings>;
   indexing?: Partial<IndexingSettings>;
+  graphBuilding?: Partial<GraphBuildingSettings>;
   queues?: Partial<QueueSettings>;
 }
 
@@ -3671,8 +4432,8 @@ export interface IngestLogEntry {
   /** Log level: DEBUG, INFO, WARN, ERROR */
   level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
-  /** Source of the log: STDOUT, STDERR, SYSTEM */
-  source: 'STDOUT' | 'STDERR' | 'SYSTEM';
+  /** Source of the log: STDOUT, STDERR, SYSTEM, EMBEDDING */
+  source: 'STDOUT' | 'STDERR' | 'SYSTEM' | 'EMBEDDING';
 
   /** Log message content */
   message: string;
@@ -3786,6 +4547,8 @@ export interface VectorPopulationEmbeddingBatchMetrics {
   paddingTimeMs?: number;
   tensorCreationTimeMs?: number;
   extractionTimeMs?: number;
+  // Per-passage token counts
+  passageTokenCounts?: number[];
 }
 
 /**
@@ -3797,6 +4560,9 @@ export interface VectorPopulationStats {
   chunksEmbedded: number;
   chunksIndexed: number;
   totalDocuments: number;
+  // Token counts for tracking total tokens processed
+  tokensProcessed: number;
+  totalTokensInIndex: number;
   elapsedTimeMs: number;
   throughputDocsPerSec: number;
   memoryUsagePercent: number;
@@ -3806,6 +4572,13 @@ export interface VectorPopulationStats {
   workerStatuses?: VectorPopulationWorkerStatus[];
   queueStatus?: VectorPopulationQueueStatus;
   currentEmbeddingBatch?: VectorPopulationEmbeddingBatchMetrics;
+  // Batch history - last N completed batches for UI visibility
+  batchHistory?: BatchHistoryEntry[];
+  // Resume/restart info - shows where this run was resumed from
+  resumedFromChunkCount?: number;     // Chunks already processed from previous run
+  resumedFromEmbeddedCount?: number;  // Embeddings already done from previous run
+  resumedFromIndexedCount?: number;   // Documents already indexed from previous run
+  isResumedRun?: boolean;             // True if this is a resumed run from checkpoint
 }
 
 /**
@@ -4089,6 +4862,14 @@ export interface FactSheet {
   /** Archive ID if embeddingModelSource is 'archive' */
   embeddingArchiveId: string | null;
 
+  // ==================== Model Tracking ====================
+  /** The embedding model that was actually used when indexing documents */
+  indexedWithModel: string | null;
+  /** Timestamp when the vector store was last populated/indexed */
+  indexedAt: string | null;
+  /** Whether this fact sheet needs reindexing due to model mismatch */
+  needsReindex: boolean;
+
   // ==================== Reranking Configuration ====================
   /** Whether reranking is enabled for this fact sheet */
   rerankingEnabled: boolean;
@@ -4104,6 +4885,16 @@ export interface FactSheet {
   rerankTopK: number | null;
   /** MMR lambda parameter (diversity vs relevance trade-off) */
   mmrLambda: number | null;
+
+  // ==================== Knowledge Graph Configuration ====================
+  /** Whether knowledge graph building is enabled for this fact sheet */
+  enableGraphBuilding: boolean;
+  /** Type of graph builder: 'manual', 'llm', 'pattern', 'hybrid' */
+  graphBuilderType: string | null;
+  /** JSON configuration for the graph builder */
+  graphBuilderConfigJson: string | null;
+  /** Storage type for accepted graph data: 'jpa' or 'neo4j' */
+  graphStorageType: string | null;
 
   // ==================== Stats ====================
   /** Number of facts in this sheet */
@@ -4225,6 +5016,11 @@ export interface UpdateFactSheetRequest {
   crossEncoderArchiveId?: string;
   rerankTopK?: number;
   mmrLambda?: number;
+  // Knowledge graph configuration
+  enableGraphBuilding?: boolean;
+  graphBuilderType?: string;
+  graphBuilderConfigJson?: string;
+  graphStorageType?: string;
 }
 
 /**
@@ -4294,6 +5090,88 @@ export interface FactForIndexing {
   extension: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMBEDDING MODEL MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Detailed information about a fact sheet's embedding model configuration and status.
+ */
+export interface EmbeddingModelInfo {
+  /** The configured embedding model ID */
+  configuredModel: string | null;
+  /** Source of the model: 'default', 'registry', 'archive' */
+  modelSource: string | null;
+  /** Archive ID if source is 'archive' */
+  archiveId: string | null;
+  /** The model that was actually used for indexing */
+  indexedWithModel: string | null;
+  /** When the vector store was last indexed */
+  indexedAt: string | null;
+  /** Number of indexed facts */
+  indexedFactCount: number;
+  /** Total number of facts */
+  totalFactCount: number;
+  /** Whether reindexing is needed due to model mismatch */
+  needsReindex: boolean;
+  /** Whether there's a mismatch between configured and indexed model */
+  hasModelMismatch: boolean;
+  /** Percentage of facts that are indexed */
+  indexedPercentage: number;
+}
+
+/**
+ * Request to update a fact sheet's embedding model.
+ */
+export interface UpdateEmbeddingModelRequest {
+  modelId: string;
+  modelSource?: string;
+  archiveId?: string;
+  forceReindex?: boolean;
+}
+
+/**
+ * Response from updating a fact sheet's embedding model.
+ */
+export interface EmbeddingModelUpdateResponse {
+  success: boolean;
+  message: string | null;
+  previousModel: string | null;
+  newModel: string | null;
+  modelChanged: boolean;
+  reindexRequired: boolean;
+  affectedFactCount: number;
+  error: string | null;
+}
+
+/**
+ * Request to check what would happen if embedding model is changed.
+ */
+export interface CheckEmbeddingModelChangeRequest {
+  newModelId: string;
+}
+
+/**
+ * Response from checking an embedding model change.
+ */
+export interface EmbeddingModelChangeCheck {
+  currentModel: string | null;
+  proposedModel: string | null;
+  indexedWithModel: string | null;
+  indexedFactCount: number;
+  totalFactCount: number;
+  modelDiffers: boolean;
+  wouldRequireReindex: boolean;
+  warningMessage: string | null;
+}
+
+/**
+ * Request to record which model was used for indexing.
+ */
+export interface SetIndexedModelRequest {
+  modelId: string;
 }
 
 /**
@@ -4437,6 +5315,11 @@ export interface IndexedDocumentDetail {
 }
 
 /**
+ * Content type for passages.
+ */
+export type PassageContentType = 'text' | 'table' | 'code' | 'image';
+
+/**
  * Single indexed passage item.
  */
 export interface IndexedPassageItem {
@@ -4449,6 +5332,34 @@ export interface IndexedPassageItem {
   graphStatus: IndexStatus;
   vectorId: string | null;
   graphNodeId: string | null;
+  // Content type and table metadata
+  contentType?: PassageContentType;
+  fullContent?: string | null;
+  tableRowCount?: number | null;
+  tableColumnCount?: number | null;
+  tableHeaders?: string | null;
+  tableType?: string | null;
+  tablePageNumber?: number | null;
+}
+
+/**
+ * Parsed table data for rendering.
+ */
+export interface ParsedTable {
+  headers: string[];
+  rows: string[][];
+  rowCount: number;
+  columnCount: number;
+  tableType: string;
+  rawMarkdown: string;
+}
+
+/**
+ * Table passage with parsed data.
+ */
+export interface TablePassage extends IndexedPassageItem {
+  contentType: 'table';
+  parsedTable?: ParsedTable;
 }
 
 /**
@@ -4634,6 +5545,19 @@ export interface ModelMetadata {
   description?: string;
   vocabSize?: number;
   version?: string;
+
+  // === Provenance fields for version tracking ===
+
+  /** Version of the staging registry when this model was pulled */
+  stagingRegistryVersion?: string;
+  /** Archive ID if this model was installed from an archive */
+  sourceArchiveId?: string;
+  /** Archive version if this model was installed from an archive */
+  sourceArchiveVersion?: string;
+  /** How the model was installed: 'staging' | 'archive' | 'builtin' | 'manual' */
+  installedFrom?: string;
+  /** ISO 8601 timestamp when the model was installed */
+  installedAt?: string;
 }
 
 /**
@@ -4660,8 +5584,22 @@ export interface ModelRegistryEntry {
   checksum: string;
   status: ModelRegistryStatus;
   promotedAt?: string;
+  version?: string;
   metadata: ModelMetadata;
   tokenizer: TokenizerConfig;
+}
+
+/**
+ * Information about an installed archive.
+ */
+export interface ArchiveInstallInfo {
+  archiveId: string;
+  archiveName: string;
+  version: string;
+  installedAt: string;
+  sourceUrl?: string;
+  checksum?: string;
+  modelIds: string[];
 }
 
 /**
@@ -4671,6 +5609,19 @@ export interface ModelRegistry {
   version: string;
   updatedAt: string;
   models: { [modelId: string]: ModelRegistryEntry };
+  installedArchives?: { [archiveId: string]: ArchiveInstallInfo };
+}
+
+/**
+ * Version and provenance summary for the registry.
+ */
+export interface VersionInfoResponse {
+  registryVersion: string;
+  updatedAt: string;
+  totalModels: number;
+  activeModels: number;
+  modelsBySource: { [source: string]: number };
+  installedArchives: ArchiveInstallInfo[];
 }
 
 /**
@@ -5066,4 +6017,87 @@ export interface StagingArchiveExportResponse {
   archiveSize?: number;
   checksum?: string;
   error?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BACKUP MANAGEMENT TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Status of the backup service.
+ */
+export interface BackupStatus {
+  enabled: boolean;
+  inProgress: boolean;
+  lastBackupTime?: string;
+  backupPath: string;
+  retentionDays: number;
+  format: 'COMPRESSED' | 'DIRECTORY';
+  intervalHours: number;
+  lastResult?: BackupResult;
+  status: string;
+}
+
+/**
+ * Result of a backup operation.
+ */
+export interface BackupResult {
+  success: boolean;
+  message: string;
+  backupPath?: string;
+  fileCount: number;
+  totalMB: number;
+  durationMs: number;
+  errors?: string[];
+  status?: string;
+}
+
+/**
+ * Information about a single backup.
+ */
+export interface BackupInfo {
+  name: string;
+  path: string;
+  createdAt: string;
+  sizeMB: number;
+  format: string;
+}
+
+/**
+ * Response from listing backups.
+ */
+export interface BackupListResponse {
+  backups: BackupInfo[];
+  count: number;
+  totalSizeMB: number;
+  status: string;
+}
+
+/**
+ * Result of a restore operation.
+ */
+export interface RestoreResult {
+  success: boolean;
+  message: string;
+  durationMs: number;
+  errors?: string[];
+  status: string;
+}
+
+/**
+ * Response from backup cleanup operation.
+ */
+export interface BackupCleanupResponse {
+  deletedCount: number;
+  message: string;
+  status: string;
+}
+
+/**
+ * Response from delete backup operation.
+ */
+export interface DeleteBackupResponse {
+  deleted: string;
+  message: string;
+  status: string;
 }

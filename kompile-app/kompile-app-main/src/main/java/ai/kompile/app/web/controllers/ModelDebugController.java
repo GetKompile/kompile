@@ -17,9 +17,13 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.services.EmbeddingStatusBroadcaster;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
+import ai.kompile.app.subprocess.model.ModelInitSubprocessLauncher;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.llm.LanguageModel;
+import ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl;
+import ai.kompile.embedding.anserini.config.AnseriniEmbeddingStartupInitializer;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.VariableType;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -42,6 +46,7 @@ import java.util.*;
  * - Embedding models and their configurations
  * - Language models and their metadata
  * - Model variables, operations, and graph structure
+ * - Model initialization status (including subprocess mode)
  */
 @RestController
 @RequestMapping("/api/models")
@@ -60,6 +65,15 @@ public class ModelDebugController {
 
     @Autowired(required = false)
     private Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
+
+    @Autowired(required = false)
+    private AnseriniEmbeddingStartupInitializer startupInitializer;
+
+    @Autowired(required = false)
+    private ModelInitSubprocessLauncher subprocessLauncher;
+
+    @Autowired(required = false)
+    private EmbeddingStatusBroadcaster embeddingStatusBroadcaster;
 
     /**
      * Quick status check for embedding model availability and configuration.
@@ -119,6 +133,117 @@ public class ModelDebugController {
         memory.put("totalMB", runtime.totalMemory() / (1024 * 1024));
         memory.put("freeMB", runtime.freeMemory() / (1024 * 1024));
         memory.put("usedMB", (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024));
+        memory.put("usagePercent", ((runtime.totalMemory() - runtime.freeMemory()) * 100.0) / runtime.maxMemory());
+        status.put("memory", memory);
+
+        // Model initialization status (subprocess mode)
+        Map<String, Object> initStatus = new LinkedHashMap<>();
+        if (startupInitializer != null) {
+            initStatus.put("subprocessModeEnabled", startupInitializer.isSubprocessInitEnabled());
+            initStatus.put("subprocessStatus", startupInitializer.getSubprocessStatus().name());
+            initStatus.put("subprocessProgress", startupInitializer.getSubprocessProgressPercent());
+            initStatus.put("subprocessMessage", startupInitializer.getSubprocessStatusMessage());
+            initStatus.put("pollingActive", startupInitializer.isPollingActive());
+        }
+        if (subprocessLauncher != null) {
+            var launcherStatus = subprocessLauncher.getCurrentStatus();
+            initStatus.put("launcherStatus", launcherStatus.status().name());
+            initStatus.put("launcherTaskId", launcherStatus.taskId());
+            initStatus.put("launcherModelId", launcherStatus.modelId());
+            initStatus.put("launcherPhase", launcherStatus.phase() != null ? launcherStatus.phase().name() : null);
+            initStatus.put("launcherProgress", launcherStatus.progressPercent());
+            initStatus.put("launcherMessage", launcherStatus.message());
+            initStatus.put("launcherIsRunning", subprocessLauncher.isInitializationRunning());
+        }
+        status.put("initialization", initStatus);
+
+        return ResponseEntity.ok(status);
+    }
+
+    /**
+     * Get detailed model initialization status for UI polling.
+     * This endpoint provides comprehensive information about model initialization
+     * including subprocess status when subprocess mode is enabled.
+     */
+    @GetMapping("/init-status")
+    public ResponseEntity<Map<String, Object>> getInitializationStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+
+        // Get primary embedding model status
+        AnseriniEmbeddingModelImpl anseriniModel = null;
+        if (embeddingModels != null) {
+            for (EmbeddingModel model : embeddingModels) {
+                if (model instanceof AnseriniEmbeddingModelImpl) {
+                    anseriniModel = (AnseriniEmbeddingModelImpl) model;
+                    break;
+                }
+            }
+        }
+
+        if (anseriniModel != null) {
+            status.put("modelId", anseriniModel.getModelIdentifier());
+            status.put("initialized", anseriniModel.isInitialized());
+            status.put("loading", anseriniModel.isLoading());
+            status.put("loadingPhase", anseriniModel.getLoadingPhase());
+            status.put("loadingMessage", anseriniModel.getLoadingMessage());
+            status.put("modelSource", anseriniModel.getModelSource().name());
+            status.put("encoderType", anseriniModel.getEncoderType() != null ? anseriniModel.getEncoderType() : null);
+            status.put("dimensions", anseriniModel.dimensions());
+            status.put("initializationError", anseriniModel.getInitializationError());
+        }
+
+        // Subprocess mode status
+        Map<String, Object> subprocess = new LinkedHashMap<>();
+        if (startupInitializer != null) {
+            subprocess.put("enabled", startupInitializer.isSubprocessInitEnabled());
+            subprocess.put("status", startupInitializer.getSubprocessStatus().name());
+            subprocess.put("progress", startupInitializer.getSubprocessProgressPercent());
+            subprocess.put("message", startupInitializer.getSubprocessStatusMessage());
+
+            // Map phase to user-friendly description
+            String phaseDescription = switch (startupInitializer.getSubprocessStatus()) {
+                case IDLE -> "Waiting to start";
+                case STARTING -> "Starting subprocess JVM";
+                case INITIALIZING_ND4J -> "Initializing ND4J backend";
+                case CONFIGURING_SOURCE -> "Configuring model source";
+                case LOOKING_UP_REGISTRY -> "Looking up model in registry";
+                case LOADING_MODEL -> "Loading model files";
+                case CREATING_ENCODER -> "Creating encoder (building neural network graph)";
+                case VALIDATING -> "Validating model output";
+                case COMPLETED -> "Model initialization complete";
+                case FAILED -> "Initialization failed";
+            };
+            subprocess.put("phaseDescription", phaseDescription);
+        }
+
+        // Launcher status (if using subprocess)
+        if (subprocessLauncher != null) {
+            var launcherStatus = subprocessLauncher.getCurrentStatus();
+            subprocess.put("launcherStatus", launcherStatus.status().name());
+            subprocess.put("launcherTaskId", launcherStatus.taskId());
+            subprocess.put("launcherPhase", launcherStatus.phase() != null ? launcherStatus.phase().name() : null);
+            subprocess.put("launcherProgress", launcherStatus.progressPercent());
+            subprocess.put("launcherMessage", launcherStatus.message());
+            subprocess.put("launcherRunning", subprocessLauncher.isInitializationRunning());
+
+            if (launcherStatus.embeddingDimensions() != null) {
+                subprocess.put("resultDimensions", launcherStatus.embeddingDimensions());
+            }
+            if (launcherStatus.encoderType() != null) {
+                subprocess.put("resultEncoderType", launcherStatus.encoderType());
+            }
+            if (launcherStatus.errorMessage() != null) {
+                subprocess.put("error", launcherStatus.errorMessage());
+                subprocess.put("errorRetriable", launcherStatus.errorRetriable());
+            }
+        }
+        status.put("subprocess", subprocess);
+
+        // Memory status
+        Runtime runtime = Runtime.getRuntime();
+        Map<String, Object> memory = new LinkedHashMap<>();
+        memory.put("usedMB", (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024));
+        memory.put("maxMB", runtime.maxMemory() / (1024 * 1024));
         memory.put("usagePercent", ((runtime.totalMemory() - runtime.freeMemory()) * 100.0) / runtime.maxMemory());
         status.put("memory", memory);
 
@@ -787,28 +912,86 @@ public class ModelDebugController {
             }
             response.put("variableTypeBreakdown", typeBreakdown);
 
-            // Operations (with pagination)
+            // Operations (with pagination) - enhanced with graph edges and execution order
             if (includeOperations) {
-                List<Map<String, String>> operations = new ArrayList<>();
+                List<Map<String, Object>> operations = new ArrayList<>();
+                List<Map<String, Object>> graphEdges = new ArrayList<>();
+                Map<String, Integer> variableExecutionOrder = new LinkedHashMap<>();
                 org.nd4j.autodiff.functions.DifferentialFunction[] ops = sd.ops();
                 int limit = maxOperations <= 0 ? Integer.MAX_VALUE : maxOperations;
                 int opCount = 0;
+                int executionStep = 0;
 
                 for (org.nd4j.autodiff.functions.DifferentialFunction op : ops) {
                     if (opCount >= limit) {
                         break;
                     }
-                    opCount++;
 
-                    Map<String, String> opInfo = new LinkedHashMap<>();
-                    opInfo.put("name", op.getOwnName() != null ? op.getOwnName() : "unnamed");
+                    Map<String, Object> opInfo = new LinkedHashMap<>();
+                    String opName = op.getOwnName() != null ? op.getOwnName() : "op_" + opCount;
+                    opInfo.put("name", opName);
                     opInfo.put("opType", op.opName());
                     opInfo.put("opClass", op.getClass().getSimpleName());
+                    opInfo.put("executionOrder", executionStep);
+                    opCount++;
+                    executionStep++;
+
+                    // Get input variable names for graph edges
+                    List<String> inputVarNames = new ArrayList<>();
+                    try {
+                        org.nd4j.autodiff.samediff.SDVariable[] args = op.args();
+                        if (args != null) {
+                            for (org.nd4j.autodiff.samediff.SDVariable arg : args) {
+                                if (arg != null && arg.name() != null) {
+                                    inputVarNames.add(arg.name());
+                                    // Create edge: variable -> operation
+                                    Map<String, Object> edge = new LinkedHashMap<>();
+                                    edge.put("source", arg.name());
+                                    edge.put("target", opName);
+                                    edge.put("type", "input");
+                                    edge.put("targetExecutionOrder", executionStep - 1);
+                                    graphEdges.add(edge);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not get input args for op: " + opName, e);
+                    }
+                    opInfo.put("inputs", inputVarNames);
+
+                    // Get output variable names for graph edges
+                    List<String> outputVarNames = new ArrayList<>();
+                    try {
+                        org.nd4j.autodiff.samediff.SDVariable[] outputs = op.outputVariables();
+                        if (outputs != null) {
+                            for (org.nd4j.autodiff.samediff.SDVariable out : outputs) {
+                                if (out != null && out.name() != null) {
+                                    outputVarNames.add(out.name());
+                                    // Track when this variable is produced
+                                    variableExecutionOrder.put(out.name(), executionStep - 1);
+                                    // Create edge: operation -> variable
+                                    Map<String, Object> edge = new LinkedHashMap<>();
+                                    edge.put("source", opName);
+                                    edge.put("target", out.name());
+                                    edge.put("type", "output");
+                                    edge.put("sourceExecutionOrder", executionStep - 1);
+                                    graphEdges.add(edge);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not get output vars for op: " + opName, e);
+                    }
+                    opInfo.put("outputs", outputVarNames);
+
                     operations.add(opInfo);
                 }
                 response.put("operations", operations);
                 response.put("operationCount", operations.size());
                 response.put("operationsTruncated", ops.length > operations.size());
+                response.put("graphEdges", graphEdges);
+                response.put("variableExecutionOrder", variableExecutionOrder);
+                response.put("totalExecutionSteps", executionStep);
             }
 
             // Training config
@@ -2789,6 +2972,83 @@ public class ModelDebugController {
 
         } catch (Exception e) {
             logger.error("Error getting thread dump", e);
+            response.put("status", "error");
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    // ========== Subprocess Logs Endpoint ==========
+
+    /**
+     * Get recent subprocess logs for the embedding model initialization.
+     * This provides historical log data for clients that connect after events were broadcast.
+     *
+     * @param limit Maximum number of log entries to return (default 100)
+     * @return List of subprocess log entries with event type, model ID, timestamp, and data
+     */
+    @GetMapping("/subprocess/logs")
+    public ResponseEntity<Map<String, Object>> getSubprocessLogs(
+            @RequestParam(defaultValue = "100") int limit) {
+        Map<String, Object> response = new LinkedHashMap<>();
+
+        try {
+            if (embeddingStatusBroadcaster == null) {
+                response.put("status", "error");
+                response.put("message", "EmbeddingStatusBroadcaster not available");
+                response.put("logs", Collections.emptyList());
+                return ResponseEntity.ok(response);
+            }
+
+            List<Map<String, Object>> logs = embeddingStatusBroadcaster.getRecentSubprocessLogs(limit);
+
+            response.put("status", "success");
+            response.put("count", logs.size());
+            response.put("limit", limit);
+            response.put("logs", logs);
+
+            // Add summary of event types
+            Map<String, Long> eventTypeCounts = logs.stream()
+                    .filter(log -> log.get("eventType") != null)
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            log -> (String) log.get("eventType"),
+                            java.util.stream.Collectors.counting()));
+            response.put("eventTypeCounts", eventTypeCounts);
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error getting subprocess logs", e);
+            response.put("status", "error");
+            response.put("message", e.getMessage());
+            response.put("logs", Collections.emptyList());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+
+    /**
+     * Clear subprocess logs.
+     * Useful for resetting log history after debugging.
+     */
+    @DeleteMapping("/subprocess/logs")
+    public ResponseEntity<Map<String, Object>> clearSubprocessLogs() {
+        Map<String, Object> response = new LinkedHashMap<>();
+
+        try {
+            if (embeddingStatusBroadcaster == null) {
+                response.put("status", "error");
+                response.put("message", "EmbeddingStatusBroadcaster not available");
+                return ResponseEntity.ok(response);
+            }
+
+            embeddingStatusBroadcaster.clearSubprocessLogs();
+            response.put("status", "success");
+            response.put("message", "Subprocess logs cleared");
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error clearing subprocess logs", e);
             response.put("status", "error");
             response.put("message", e.getMessage());
             return ResponseEntity.internalServerError().body(response);

@@ -16,7 +16,7 @@
 
 package ai.kompile.staging.cli;
 
-import ai.kompile.staging.registry.*;
+import ai.kompile.modelmanager.registry.*;
 import ai.kompile.staging.staging.StagingModelInfo;
 import ai.kompile.staging.staging.StagingService;
 import org.springframework.beans.factory.annotation.Autowired;

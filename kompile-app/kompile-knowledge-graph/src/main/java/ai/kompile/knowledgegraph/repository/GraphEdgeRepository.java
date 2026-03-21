@@ -144,6 +144,18 @@ public interface GraphEdgeRepository extends JpaRepository<GraphEdge, Long> {
     long countByEdgeType(EdgeType edgeType);
 
     /**
+     * Search edges by description
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE LOWER(e.description) LIKE :query " +
+           "AND (:edgeType IS NULL OR e.edgeType = :edgeType) " +
+           "ORDER BY e.weight DESC")
+    List<GraphEdge> searchByDescription(
+        @Param("query") String query,
+        @Param("edgeType") EdgeType edgeType,
+        Pageable pageable
+    );
+
+    /**
      * Find all hierarchical edges from a source
      */
     @Query("SELECT e FROM GraphEdge e WHERE e.sourceNode.nodeId = :sourceId AND e.edgeType = 'HIERARCHICAL'")
@@ -230,4 +242,66 @@ public interface GraphEdgeRepository extends JpaRepository<GraphEdge, Long> {
         @Param("factSheetId") Long factSheetId,
         Pageable pageable
     );
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KG EMBEDDING QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find edges with KG relation embeddings in a fact sheet
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND e.kgRelationEmbedding IS NOT NULL")
+    List<GraphEdge> findByFactSheetIdAndKgRelationEmbeddingNotNull(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Find edges with KG embeddings by version
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND e.kgEmbeddingVersion = :version")
+    List<GraphEdge> findByFactSheetIdAndKgEmbeddingVersion(
+        @Param("factSheetId") Long factSheetId,
+        @Param("version") Long version
+    );
+
+    /**
+     * Get distinct edge types in a fact sheet (for relation embedding)
+     */
+    @Query("SELECT DISTINCT e.edgeType FROM GraphEdge e WHERE e.factSheetId = :factSheetId")
+    List<EdgeType> findDistinctEdgeTypesByFactSheet(@Param("factSheetId") Long factSheetId);
+
+    /**
+     * Count edges with KG embeddings in a fact sheet
+     */
+    @Query("SELECT COUNT(e) FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND e.kgRelationEmbedding IS NOT NULL")
+    long countByFactSheetIdAndKgRelationEmbeddingNotNull(@Param("factSheetId") Long factSheetId);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GRAPHRAG RETRIEVAL QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Find outgoing edges by source node title within a fact sheet.
+     * Used by KGEmbeddingRetriever for graph expansion.
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND e.sourceNode.title = :title")
+    List<GraphEdge> findBySourceNodeTitleAndFactSheetId(
+        @Param("title") String sourceNodeTitle,
+        @Param("factSheetId") Long factSheetId
+    );
+
+    /**
+     * Find incoming edges by target node title within a fact sheet.
+     * Used by KGEmbeddingRetriever for graph expansion.
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.factSheetId = :factSheetId AND e.targetNode.title = :title")
+    List<GraphEdge> findByTargetNodeTitleAndFactSheetId(
+        @Param("title") String targetNodeTitle,
+        @Param("factSheetId") Long factSheetId
+    );
+
+    /**
+     * Find all edges connected to a node by its database ID (either as source or target).
+     * Used by KGEmbeddingRetriever for building entity context.
+     */
+    @Query("SELECT e FROM GraphEdge e WHERE e.sourceNode.id = :nodeId OR e.targetNode.id = :nodeId")
+    List<GraphEdge> findBySourceNodeIdOrTargetNodeId(@Param("nodeId") Long nodeId);
 }

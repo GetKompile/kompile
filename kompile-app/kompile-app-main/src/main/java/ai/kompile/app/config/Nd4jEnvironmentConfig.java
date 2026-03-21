@@ -80,6 +80,8 @@ public record Nd4jEnvironmentConfig(
         // Advanced debugging - other
         @JsonProperty("logNativeNDArrayCreation") Boolean logNativeNDArrayCreation,
         @JsonProperty("logNDArrayEvents") Boolean logNDArrayEvents,
+        @JsonProperty("truncateNDArrayLogStrings") Boolean truncateNDArrayLogStrings,
+        @JsonProperty("numWorkspaceEventsToKeep") Integer numWorkspaceEventsToKeep,
         @JsonProperty("checkInputChange") Boolean checkInputChange,
         @JsonProperty("checkOutputChange") Boolean checkOutputChange,
         @JsonProperty("trackWorkspaceOpenClose") Boolean trackWorkspaceOpenClose,
@@ -94,7 +96,51 @@ public record Nd4jEnvironmentConfig(
 
         // BLAS configuration (new in ND4J)
         @JsonProperty("blasSerializationEnabled") Boolean blasSerializationEnabled,
-        @JsonProperty("openBlasThreads") Integer openBlasThreads
+        @JsonProperty("openBlasThreads") Integer openBlasThreads,
+
+        // OpenMP thread configuration
+        @JsonProperty("ompNumThreads") Integer ompNumThreads,
+
+        // CUDA configuration
+        @JsonProperty("cudaCurrentDevice") Integer cudaCurrentDevice,
+        @JsonProperty("cudaMemoryPinned") Boolean cudaMemoryPinned,
+        @JsonProperty("cudaUseManagedMemory") Boolean cudaUseManagedMemory,
+        @JsonProperty("cudaMemoryPoolSize") Integer cudaMemoryPoolSize,
+        @JsonProperty("cudaForceP2P") Boolean cudaForceP2P,
+        @JsonProperty("cudaAllocatorEnabled") Boolean cudaAllocatorEnabled,
+        @JsonProperty("cudaMaxBlocks") Integer cudaMaxBlocks,
+        @JsonProperty("cudaMaxThreadsPerBlock") Integer cudaMaxThreadsPerBlock,
+        @JsonProperty("cudaAsyncExecution") Boolean cudaAsyncExecution,
+        @JsonProperty("cudaStreamLimit") Integer cudaStreamLimit,
+        @JsonProperty("cudaUseDeviceHost") Boolean cudaUseDeviceHost,
+        @JsonProperty("cudaEventLimit") Integer cudaEventLimit,
+        @JsonProperty("cudaCachingAllocatorLimit") Integer cudaCachingAllocatorLimit,
+        @JsonProperty("cudaUseUnifiedMemory") Boolean cudaUseUnifiedMemory,
+        @JsonProperty("cudaPrefetchSize") Integer cudaPrefetchSize,
+        @JsonProperty("cudaGraphOptimization") Boolean cudaGraphOptimization,
+        @JsonProperty("cudaTensorCoreEnabled") Boolean cudaTensorCoreEnabled,
+        @JsonProperty("cudaBlockingSync") Integer cudaBlockingSync,
+        @JsonProperty("cudaDeviceSchedule") Integer cudaDeviceSchedule,
+        @JsonProperty("cudaStackSize") Long cudaStackSize,
+        @JsonProperty("cudaMallocHeapSize") Long cudaMallocHeapSize,
+        @JsonProperty("cudaPrintfFifoSize") Long cudaPrintfFifoSize,
+        @JsonProperty("cudaDevRuntimeSyncDepth") Long cudaDevRuntimeSyncDepth,
+        @JsonProperty("cudaDevRuntimePendingLaunchCount") Long cudaDevRuntimePendingLaunchCount,
+        @JsonProperty("cudaMaxL2FetchGranularity") Long cudaMaxL2FetchGranularity,
+        @JsonProperty("cudaPersistingL2CacheSize") Long cudaPersistingL2CacheSize,
+
+        // Triton compiler configuration
+        @JsonProperty("tritonBuildThreads") Integer tritonBuildThreads,
+        @JsonProperty("tritonCacheEnabled") Boolean tritonCacheEnabled,
+        @JsonProperty("tritonVerbose") Boolean tritonVerbose,
+        @JsonProperty("tritonAlwaysCompile") Boolean tritonAlwaysCompile,
+        @JsonProperty("tritonNumWarps") Integer tritonNumWarps,
+        @JsonProperty("tritonNumStages") Integer tritonNumStages,
+        @JsonProperty("tritonNumCTAs") Integer tritonNumCTAs,
+        @JsonProperty("tritonEnableFpFusion") Boolean tritonEnableFpFusion,
+        @JsonProperty("tritonCacheDir") String tritonCacheDir,
+        @JsonProperty("tritonDumpDir") String tritonDumpDir,
+        @JsonProperty("tritonOverrideArch") String tritonOverrideArch
 ) {
 
     /**
@@ -134,6 +180,8 @@ public record Nd4jEnvironmentConfig(
                 false,  // funcTracePrintJavaOnly
                 false,  // logNativeNDArrayCreation
                 false,  // logNDArrayEvents
+                false,  // truncateNDArrayLogStrings
+                -1,     // numWorkspaceEventsToKeep (-1 = unlimited)
                 false,  // checkInputChange
                 false,  // checkOutputChange
                 false,  // trackWorkspaceOpenClose
@@ -144,7 +192,47 @@ public record Nd4jEnvironmentConfig(
                 true,   // javacppLoggerDebug
                 true,   // javacppPathsFirst
                 true,   // blasSerializationEnabled - serialize BLAS calls for thread safety (default: true)
-                1       // openBlasThreads - OpenBLAS internal threads (default: 1 for safety)
+                1,      // openBlasThreads - OpenBLAS internal threads (default: 1 for safety)
+                4,      // ompNumThreads - OpenMP threads (default: 4)
+                // CUDA defaults (null = use CUDA defaults)
+                null,   // cudaCurrentDevice
+                null,   // cudaMemoryPinned
+                null,   // cudaUseManagedMemory
+                null,   // cudaMemoryPoolSize
+                null,   // cudaForceP2P
+                null,   // cudaAllocatorEnabled
+                null,   // cudaMaxBlocks
+                null,   // cudaMaxThreadsPerBlock
+                null,   // cudaAsyncExecution
+                null,   // cudaStreamLimit
+                null,   // cudaUseDeviceHost
+                null,   // cudaEventLimit
+                null,   // cudaCachingAllocatorLimit
+                null,   // cudaUseUnifiedMemory
+                null,   // cudaPrefetchSize
+                null,   // cudaGraphOptimization
+                null,   // cudaTensorCoreEnabled
+                null,   // cudaBlockingSync
+                null,   // cudaDeviceSchedule
+                null,   // cudaStackSize
+                null,   // cudaMallocHeapSize
+                null,   // cudaPrintfFifoSize
+                null,   // cudaDevRuntimeSyncDepth
+                null,   // cudaDevRuntimePendingLaunchCount
+                null,   // cudaMaxL2FetchGranularity
+                null,   // cudaPersistingL2CacheSize
+                // Triton defaults (null = use Triton defaults)
+                null,   // tritonBuildThreads
+                null,   // tritonCacheEnabled
+                null,   // tritonVerbose
+                null,   // tritonAlwaysCompile
+                null,   // tritonNumWarps
+                null,   // tritonNumStages
+                null,   // tritonNumCTAs
+                null,   // tritonEnableFpFusion
+                null,   // tritonCacheDir
+                null,   // tritonDumpDir
+                null    // tritonOverrideArch
         );
     }
 
@@ -188,6 +276,8 @@ public record Nd4jEnvironmentConfig(
                 other.funcTracePrintJavaOnly() != null ? other.funcTracePrintJavaOnly() : this.funcTracePrintJavaOnly(),
                 other.logNativeNDArrayCreation() != null ? other.logNativeNDArrayCreation() : this.logNativeNDArrayCreation(),
                 other.logNDArrayEvents() != null ? other.logNDArrayEvents() : this.logNDArrayEvents(),
+                other.truncateNDArrayLogStrings() != null ? other.truncateNDArrayLogStrings() : this.truncateNDArrayLogStrings(),
+                other.numWorkspaceEventsToKeep() != null ? other.numWorkspaceEventsToKeep() : this.numWorkspaceEventsToKeep(),
                 other.checkInputChange() != null ? other.checkInputChange() : this.checkInputChange(),
                 other.checkOutputChange() != null ? other.checkOutputChange() : this.checkOutputChange(),
                 other.trackWorkspaceOpenClose() != null ? other.trackWorkspaceOpenClose() : this.trackWorkspaceOpenClose(),
@@ -198,7 +288,47 @@ public record Nd4jEnvironmentConfig(
                 other.javacppLoggerDebug() != null ? other.javacppLoggerDebug() : this.javacppLoggerDebug(),
                 other.javacppPathsFirst() != null ? other.javacppPathsFirst() : this.javacppPathsFirst(),
                 other.blasSerializationEnabled() != null ? other.blasSerializationEnabled() : this.blasSerializationEnabled(),
-                other.openBlasThreads() != null ? other.openBlasThreads() : this.openBlasThreads()
+                other.openBlasThreads() != null ? other.openBlasThreads() : this.openBlasThreads(),
+                other.ompNumThreads() != null ? other.ompNumThreads() : this.ompNumThreads(),
+                // CUDA settings
+                other.cudaCurrentDevice() != null ? other.cudaCurrentDevice() : this.cudaCurrentDevice(),
+                other.cudaMemoryPinned() != null ? other.cudaMemoryPinned() : this.cudaMemoryPinned(),
+                other.cudaUseManagedMemory() != null ? other.cudaUseManagedMemory() : this.cudaUseManagedMemory(),
+                other.cudaMemoryPoolSize() != null ? other.cudaMemoryPoolSize() : this.cudaMemoryPoolSize(),
+                other.cudaForceP2P() != null ? other.cudaForceP2P() : this.cudaForceP2P(),
+                other.cudaAllocatorEnabled() != null ? other.cudaAllocatorEnabled() : this.cudaAllocatorEnabled(),
+                other.cudaMaxBlocks() != null ? other.cudaMaxBlocks() : this.cudaMaxBlocks(),
+                other.cudaMaxThreadsPerBlock() != null ? other.cudaMaxThreadsPerBlock() : this.cudaMaxThreadsPerBlock(),
+                other.cudaAsyncExecution() != null ? other.cudaAsyncExecution() : this.cudaAsyncExecution(),
+                other.cudaStreamLimit() != null ? other.cudaStreamLimit() : this.cudaStreamLimit(),
+                other.cudaUseDeviceHost() != null ? other.cudaUseDeviceHost() : this.cudaUseDeviceHost(),
+                other.cudaEventLimit() != null ? other.cudaEventLimit() : this.cudaEventLimit(),
+                other.cudaCachingAllocatorLimit() != null ? other.cudaCachingAllocatorLimit() : this.cudaCachingAllocatorLimit(),
+                other.cudaUseUnifiedMemory() != null ? other.cudaUseUnifiedMemory() : this.cudaUseUnifiedMemory(),
+                other.cudaPrefetchSize() != null ? other.cudaPrefetchSize() : this.cudaPrefetchSize(),
+                other.cudaGraphOptimization() != null ? other.cudaGraphOptimization() : this.cudaGraphOptimization(),
+                other.cudaTensorCoreEnabled() != null ? other.cudaTensorCoreEnabled() : this.cudaTensorCoreEnabled(),
+                other.cudaBlockingSync() != null ? other.cudaBlockingSync() : this.cudaBlockingSync(),
+                other.cudaDeviceSchedule() != null ? other.cudaDeviceSchedule() : this.cudaDeviceSchedule(),
+                other.cudaStackSize() != null ? other.cudaStackSize() : this.cudaStackSize(),
+                other.cudaMallocHeapSize() != null ? other.cudaMallocHeapSize() : this.cudaMallocHeapSize(),
+                other.cudaPrintfFifoSize() != null ? other.cudaPrintfFifoSize() : this.cudaPrintfFifoSize(),
+                other.cudaDevRuntimeSyncDepth() != null ? other.cudaDevRuntimeSyncDepth() : this.cudaDevRuntimeSyncDepth(),
+                other.cudaDevRuntimePendingLaunchCount() != null ? other.cudaDevRuntimePendingLaunchCount() : this.cudaDevRuntimePendingLaunchCount(),
+                other.cudaMaxL2FetchGranularity() != null ? other.cudaMaxL2FetchGranularity() : this.cudaMaxL2FetchGranularity(),
+                other.cudaPersistingL2CacheSize() != null ? other.cudaPersistingL2CacheSize() : this.cudaPersistingL2CacheSize(),
+                // Triton settings
+                other.tritonBuildThreads() != null ? other.tritonBuildThreads() : this.tritonBuildThreads(),
+                other.tritonCacheEnabled() != null ? other.tritonCacheEnabled() : this.tritonCacheEnabled(),
+                other.tritonVerbose() != null ? other.tritonVerbose() : this.tritonVerbose(),
+                other.tritonAlwaysCompile() != null ? other.tritonAlwaysCompile() : this.tritonAlwaysCompile(),
+                other.tritonNumWarps() != null ? other.tritonNumWarps() : this.tritonNumWarps(),
+                other.tritonNumStages() != null ? other.tritonNumStages() : this.tritonNumStages(),
+                other.tritonNumCTAs() != null ? other.tritonNumCTAs() : this.tritonNumCTAs(),
+                other.tritonEnableFpFusion() != null ? other.tritonEnableFpFusion() : this.tritonEnableFpFusion(),
+                other.tritonCacheDir() != null ? other.tritonCacheDir() : this.tritonCacheDir(),
+                other.tritonDumpDir() != null ? other.tritonDumpDir() : this.tritonDumpDir(),
+                other.tritonOverrideArch() != null ? other.tritonOverrideArch() : this.tritonOverrideArch()
         );
     }
 
@@ -241,6 +371,8 @@ public record Nd4jEnvironmentConfig(
         private Boolean funcTracePrintJavaOnly;
         private Boolean logNativeNDArrayCreation;
         private Boolean logNDArrayEvents;
+        private Boolean truncateNDArrayLogStrings;
+        private Integer numWorkspaceEventsToKeep;
         private Boolean checkInputChange;
         private Boolean checkOutputChange;
         private Boolean trackWorkspaceOpenClose;
@@ -252,6 +384,46 @@ public record Nd4jEnvironmentConfig(
         private Boolean javacppPathsFirst;
         private Boolean blasSerializationEnabled;
         private Integer openBlasThreads;
+        private Integer ompNumThreads;
+        // CUDA fields
+        private Integer cudaCurrentDevice;
+        private Boolean cudaMemoryPinned;
+        private Boolean cudaUseManagedMemory;
+        private Integer cudaMemoryPoolSize;
+        private Boolean cudaForceP2P;
+        private Boolean cudaAllocatorEnabled;
+        private Integer cudaMaxBlocks;
+        private Integer cudaMaxThreadsPerBlock;
+        private Boolean cudaAsyncExecution;
+        private Integer cudaStreamLimit;
+        private Boolean cudaUseDeviceHost;
+        private Integer cudaEventLimit;
+        private Integer cudaCachingAllocatorLimit;
+        private Boolean cudaUseUnifiedMemory;
+        private Integer cudaPrefetchSize;
+        private Boolean cudaGraphOptimization;
+        private Boolean cudaTensorCoreEnabled;
+        private Integer cudaBlockingSync;
+        private Integer cudaDeviceSchedule;
+        private Long cudaStackSize;
+        private Long cudaMallocHeapSize;
+        private Long cudaPrintfFifoSize;
+        private Long cudaDevRuntimeSyncDepth;
+        private Long cudaDevRuntimePendingLaunchCount;
+        private Long cudaMaxL2FetchGranularity;
+        private Long cudaPersistingL2CacheSize;
+        // Triton fields
+        private Integer tritonBuildThreads;
+        private Boolean tritonCacheEnabled;
+        private Boolean tritonVerbose;
+        private Boolean tritonAlwaysCompile;
+        private Integer tritonNumWarps;
+        private Integer tritonNumStages;
+        private Integer tritonNumCTAs;
+        private Boolean tritonEnableFpFusion;
+        private String tritonCacheDir;
+        private String tritonDumpDir;
+        private String tritonOverrideArch;
 
         public Builder maxThreads(Integer maxThreads) { this.maxThreads = maxThreads; return this; }
         public Builder maxMasterThreads(Integer maxMasterThreads) { this.maxMasterThreads = maxMasterThreads; return this; }
@@ -284,6 +456,8 @@ public record Nd4jEnvironmentConfig(
         public Builder funcTracePrintJavaOnly(Boolean funcTracePrintJavaOnly) { this.funcTracePrintJavaOnly = funcTracePrintJavaOnly; return this; }
         public Builder logNativeNDArrayCreation(Boolean logNativeNDArrayCreation) { this.logNativeNDArrayCreation = logNativeNDArrayCreation; return this; }
         public Builder logNDArrayEvents(Boolean logNDArrayEvents) { this.logNDArrayEvents = logNDArrayEvents; return this; }
+        public Builder truncateNDArrayLogStrings(Boolean truncateNDArrayLogStrings) { this.truncateNDArrayLogStrings = truncateNDArrayLogStrings; return this; }
+        public Builder numWorkspaceEventsToKeep(Integer numWorkspaceEventsToKeep) { this.numWorkspaceEventsToKeep = numWorkspaceEventsToKeep; return this; }
         public Builder checkInputChange(Boolean checkInputChange) { this.checkInputChange = checkInputChange; return this; }
         public Builder checkOutputChange(Boolean checkOutputChange) { this.checkOutputChange = checkOutputChange; return this; }
         public Builder trackWorkspaceOpenClose(Boolean trackWorkspaceOpenClose) { this.trackWorkspaceOpenClose = trackWorkspaceOpenClose; return this; }
@@ -295,6 +469,46 @@ public record Nd4jEnvironmentConfig(
         public Builder javacppPathsFirst(Boolean javacppPathsFirst) { this.javacppPathsFirst = javacppPathsFirst; return this; }
         public Builder blasSerializationEnabled(Boolean blasSerializationEnabled) { this.blasSerializationEnabled = blasSerializationEnabled; return this; }
         public Builder openBlasThreads(Integer openBlasThreads) { this.openBlasThreads = openBlasThreads; return this; }
+        public Builder ompNumThreads(Integer ompNumThreads) { this.ompNumThreads = ompNumThreads; return this; }
+        // CUDA builder methods
+        public Builder cudaCurrentDevice(Integer cudaCurrentDevice) { this.cudaCurrentDevice = cudaCurrentDevice; return this; }
+        public Builder cudaMemoryPinned(Boolean cudaMemoryPinned) { this.cudaMemoryPinned = cudaMemoryPinned; return this; }
+        public Builder cudaUseManagedMemory(Boolean cudaUseManagedMemory) { this.cudaUseManagedMemory = cudaUseManagedMemory; return this; }
+        public Builder cudaMemoryPoolSize(Integer cudaMemoryPoolSize) { this.cudaMemoryPoolSize = cudaMemoryPoolSize; return this; }
+        public Builder cudaForceP2P(Boolean cudaForceP2P) { this.cudaForceP2P = cudaForceP2P; return this; }
+        public Builder cudaAllocatorEnabled(Boolean cudaAllocatorEnabled) { this.cudaAllocatorEnabled = cudaAllocatorEnabled; return this; }
+        public Builder cudaMaxBlocks(Integer cudaMaxBlocks) { this.cudaMaxBlocks = cudaMaxBlocks; return this; }
+        public Builder cudaMaxThreadsPerBlock(Integer cudaMaxThreadsPerBlock) { this.cudaMaxThreadsPerBlock = cudaMaxThreadsPerBlock; return this; }
+        public Builder cudaAsyncExecution(Boolean cudaAsyncExecution) { this.cudaAsyncExecution = cudaAsyncExecution; return this; }
+        public Builder cudaStreamLimit(Integer cudaStreamLimit) { this.cudaStreamLimit = cudaStreamLimit; return this; }
+        public Builder cudaUseDeviceHost(Boolean cudaUseDeviceHost) { this.cudaUseDeviceHost = cudaUseDeviceHost; return this; }
+        public Builder cudaEventLimit(Integer cudaEventLimit) { this.cudaEventLimit = cudaEventLimit; return this; }
+        public Builder cudaCachingAllocatorLimit(Integer cudaCachingAllocatorLimit) { this.cudaCachingAllocatorLimit = cudaCachingAllocatorLimit; return this; }
+        public Builder cudaUseUnifiedMemory(Boolean cudaUseUnifiedMemory) { this.cudaUseUnifiedMemory = cudaUseUnifiedMemory; return this; }
+        public Builder cudaPrefetchSize(Integer cudaPrefetchSize) { this.cudaPrefetchSize = cudaPrefetchSize; return this; }
+        public Builder cudaGraphOptimization(Boolean cudaGraphOptimization) { this.cudaGraphOptimization = cudaGraphOptimization; return this; }
+        public Builder cudaTensorCoreEnabled(Boolean cudaTensorCoreEnabled) { this.cudaTensorCoreEnabled = cudaTensorCoreEnabled; return this; }
+        public Builder cudaBlockingSync(Integer cudaBlockingSync) { this.cudaBlockingSync = cudaBlockingSync; return this; }
+        public Builder cudaDeviceSchedule(Integer cudaDeviceSchedule) { this.cudaDeviceSchedule = cudaDeviceSchedule; return this; }
+        public Builder cudaStackSize(Long cudaStackSize) { this.cudaStackSize = cudaStackSize; return this; }
+        public Builder cudaMallocHeapSize(Long cudaMallocHeapSize) { this.cudaMallocHeapSize = cudaMallocHeapSize; return this; }
+        public Builder cudaPrintfFifoSize(Long cudaPrintfFifoSize) { this.cudaPrintfFifoSize = cudaPrintfFifoSize; return this; }
+        public Builder cudaDevRuntimeSyncDepth(Long cudaDevRuntimeSyncDepth) { this.cudaDevRuntimeSyncDepth = cudaDevRuntimeSyncDepth; return this; }
+        public Builder cudaDevRuntimePendingLaunchCount(Long cudaDevRuntimePendingLaunchCount) { this.cudaDevRuntimePendingLaunchCount = cudaDevRuntimePendingLaunchCount; return this; }
+        public Builder cudaMaxL2FetchGranularity(Long cudaMaxL2FetchGranularity) { this.cudaMaxL2FetchGranularity = cudaMaxL2FetchGranularity; return this; }
+        public Builder cudaPersistingL2CacheSize(Long cudaPersistingL2CacheSize) { this.cudaPersistingL2CacheSize = cudaPersistingL2CacheSize; return this; }
+        // Triton builder methods
+        public Builder tritonBuildThreads(Integer tritonBuildThreads) { this.tritonBuildThreads = tritonBuildThreads; return this; }
+        public Builder tritonCacheEnabled(Boolean tritonCacheEnabled) { this.tritonCacheEnabled = tritonCacheEnabled; return this; }
+        public Builder tritonVerbose(Boolean tritonVerbose) { this.tritonVerbose = tritonVerbose; return this; }
+        public Builder tritonAlwaysCompile(Boolean tritonAlwaysCompile) { this.tritonAlwaysCompile = tritonAlwaysCompile; return this; }
+        public Builder tritonNumWarps(Integer tritonNumWarps) { this.tritonNumWarps = tritonNumWarps; return this; }
+        public Builder tritonNumStages(Integer tritonNumStages) { this.tritonNumStages = tritonNumStages; return this; }
+        public Builder tritonNumCTAs(Integer tritonNumCTAs) { this.tritonNumCTAs = tritonNumCTAs; return this; }
+        public Builder tritonEnableFpFusion(Boolean tritonEnableFpFusion) { this.tritonEnableFpFusion = tritonEnableFpFusion; return this; }
+        public Builder tritonCacheDir(String tritonCacheDir) { this.tritonCacheDir = tritonCacheDir; return this; }
+        public Builder tritonDumpDir(String tritonDumpDir) { this.tritonDumpDir = tritonDumpDir; return this; }
+        public Builder tritonOverrideArch(String tritonOverrideArch) { this.tritonOverrideArch = tritonOverrideArch; return this; }
 
         public Nd4jEnvironmentConfig build() {
             return new Nd4jEnvironmentConfig(
@@ -306,10 +520,22 @@ public record Nd4jEnvironmentConfig(
                     stackDepth, reportInterval, maxDeletionHistory,
                     ndArrayTracking, dataBufferTracking, tadCacheTracking, shapeCacheTracking, opContextTracking,
                     funcTracePrintAllocate, funcTracePrintDeallocate, funcTracePrintJavaOnly,
-                    logNativeNDArrayCreation, logNDArrayEvents, checkInputChange, checkOutputChange,
+                    logNativeNDArrayCreation, logNDArrayEvents, truncateNDArrayLogStrings, numWorkspaceEventsToKeep,
+                    checkInputChange, checkOutputChange,
                     trackWorkspaceOpenClose, deleteShapeInfo, deletePrimary, deleteSpecial, variableTracingEnabled,
                     javacppLoggerDebug, javacppPathsFirst,
-                    blasSerializationEnabled, openBlasThreads
+                    blasSerializationEnabled, openBlasThreads, ompNumThreads,
+                    // CUDA settings
+                    cudaCurrentDevice, cudaMemoryPinned, cudaUseManagedMemory, cudaMemoryPoolSize, cudaForceP2P,
+                    cudaAllocatorEnabled, cudaMaxBlocks, cudaMaxThreadsPerBlock, cudaAsyncExecution, cudaStreamLimit,
+                    cudaUseDeviceHost, cudaEventLimit, cudaCachingAllocatorLimit, cudaUseUnifiedMemory, cudaPrefetchSize,
+                    cudaGraphOptimization, cudaTensorCoreEnabled, cudaBlockingSync, cudaDeviceSchedule, cudaStackSize,
+                    cudaMallocHeapSize, cudaPrintfFifoSize, cudaDevRuntimeSyncDepth, cudaDevRuntimePendingLaunchCount,
+                    cudaMaxL2FetchGranularity, cudaPersistingL2CacheSize,
+                    // Triton settings
+                    tritonBuildThreads, tritonCacheEnabled, tritonVerbose, tritonAlwaysCompile,
+                    tritonNumWarps, tritonNumStages, tritonNumCTAs, tritonEnableFpFusion,
+                    tritonCacheDir, tritonDumpDir, tritonOverrideArch
             );
         }
     }

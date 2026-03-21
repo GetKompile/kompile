@@ -17,13 +17,19 @@
 package ai.kompile.app.services.agent;
 
 import ai.kompile.core.agent.AgentProvider;
+import ai.kompile.core.agent.AgentType;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -34,15 +40,21 @@ import java.util.concurrent.TimeUnit;
 /**
  * Service for managing available AI agent providers.
  * <p>
- * Supports CLI-based agents like Claude Code, Codex CLI, and Gemini CLI.
- * Performs availability checks to determine which agents are installed.
+ * Supports CLI-based agents (Claude Code, Codex CLI, Gemini CLI) and
+ * API-based agents (OpenAI-compatible endpoints).
+ * API agent configurations are persisted to ~/.kompile/config/api-agents.json.
  */
 @Service
 public class AgentRegistryService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentRegistryService.class);
+    private static final String API_AGENTS_CONFIG_FILE = "api-agents.json";
 
     private final Map<String, AgentProvider> agents = new ConcurrentHashMap<>();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Autowired(required = false)
+    private ApiAgentChatExecutor apiAgentChatExecutor;
 
     @PostConstruct
     public void initialize() {
@@ -90,10 +102,13 @@ public class AgentRegistryService {
                 .build();
         agents.put(gemini.getName(), gemini);
 
-        log.info("Agent registry initialized with {} agents, checking availability...", agents.size());
+        log.info("Agent registry initialized with {} CLI agents, checking availability...", agents.size());
 
-        // Check actual availability of all agents on startup
+        // Check actual availability of CLI agents on startup
         checkAllAgentsAvailability();
+
+        // Load persisted API agent configurations
+        loadApiAgentsFromConfig();
 
         int availableCount = getAvailableAgentCount();
         log.info("Agent availability check complete: {} of {} agents available", availableCount, agents.size());
@@ -104,13 +119,20 @@ public class AgentRegistryService {
      */
     public void checkAllAgentsAvailability() {
         for (AgentProvider agent : agents.values()) {
-            boolean available = checkAgentAvailability(agent);
-            agent.setAvailable(available);
-            log.info("Agent '{}' availability: {}", agent.getName(), available);
+            if (agent.isApiAgent()) {
+                // API agents: check endpoint reachability
+                boolean available = checkApiAgentAvailability(agent);
+                agent.setAvailable(available);
+                log.info("API agent '{}' availability: {}", agent.getName(), available);
+            } else {
+                boolean available = checkAgentAvailability(agent);
+                agent.setAvailable(available);
+                log.info("CLI agent '{}' availability: {}", agent.getName(), available);
 
-            // If available, parse --help to detect MCP support
-            if (available) {
-                parseAgentHelpForMcpSupport(agent);
+                // If available, parse --help to detect MCP support
+                if (available) {
+                    parseAgentHelpForMcpSupport(agent);
+                }
             }
         }
     }
@@ -306,10 +328,46 @@ public class AgentRegistryService {
      * Register a custom agent provider.
      */
     public void registerAgent(AgentProvider agent) {
-        boolean available = checkAgentAvailability(agent);
+        if (agent.isApiAgent()) {
+            boolean available = checkApiAgentAvailability(agent);
+            agent.setAvailable(available);
+        } else {
+            boolean available = checkAgentAvailability(agent);
+            agent.setAvailable(available);
+        }
+        agents.put(agent.getName(), agent);
+        log.info("Registered custom agent '{}' ({}), available: {}",
+                agent.getName(), agent.getAgentType(), agent.isAvailable());
+    }
+
+    /**
+     * Register an API agent and persist to config.
+     */
+    public void registerApiAgent(AgentProvider agent) {
+        agent.setAgentType(AgentType.API);
+        boolean available = checkApiAgentAvailability(agent);
         agent.setAvailable(available);
         agents.put(agent.getName(), agent);
-        log.info("Registered custom agent '{}', available: {}", agent.getName(), available);
+        saveApiAgentsToConfig();
+        log.info("Registered API agent '{}' (endpoint: {}), available: {}",
+                agent.getName(), agent.getEndpointUrl(), available);
+    }
+
+    /**
+     * Update an existing API agent configuration.
+     */
+    public boolean updateApiAgent(String name, AgentProvider updated) {
+        AgentProvider existing = agents.get(name);
+        if (existing == null || !existing.isApiAgent()) {
+            return false;
+        }
+        updated.setAgentType(AgentType.API);
+        updated.setName(name);
+        boolean available = checkApiAgentAvailability(updated);
+        updated.setAvailable(available);
+        agents.put(name, updated);
+        saveApiAgentsToConfig();
+        return true;
     }
 
     /**
@@ -319,9 +377,33 @@ public class AgentRegistryService {
         AgentProvider removed = agents.remove(name);
         if (removed != null) {
             log.info("Unregistered agent '{}'", name);
+            if (removed.isApiAgent()) {
+                saveApiAgentsToConfig();
+            }
             return true;
         }
         return false;
+    }
+
+    /**
+     * Check availability of an API agent by hitting its /models endpoint.
+     */
+    private boolean checkApiAgentAvailability(AgentProvider agent) {
+        if (agent.getEndpointUrl() == null || agent.getEndpointUrl().isEmpty()) {
+            return false;
+        }
+        if (apiAgentChatExecutor != null) {
+            try {
+                Map<String, Object> result = apiAgentChatExecutor.testEndpoint(
+                        agent.getEndpointUrl(), agent.getApiKey());
+                return Boolean.TRUE.equals(result.get("reachable"));
+            } catch (Exception e) {
+                log.debug("API agent '{}' availability check failed: {}", agent.getName(), e.getMessage());
+                return false;
+            }
+        }
+        // If executor not available, mark as available (will fail on actual use)
+        return true;
     }
 
     /**
@@ -338,5 +420,108 @@ public class AgentRegistryService {
      */
     public boolean hasAvailableAgents() {
         return agents.values().stream().anyMatch(AgentProvider::isAvailable);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // API AGENT PERSISTENCE
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    private Path getConfigDir() {
+        return Path.of(System.getProperty("user.home"), ".kompile", "config");
+    }
+
+    private Path getApiAgentsConfigPath() {
+        return getConfigDir().resolve(API_AGENTS_CONFIG_FILE);
+    }
+
+    /**
+     * Load API agent configurations from ~/.kompile/config/api-agents.json.
+     */
+    private void loadApiAgentsFromConfig() {
+        Path configPath = getApiAgentsConfigPath();
+        if (!Files.exists(configPath)) {
+            log.debug("No API agents config file found at {}", configPath);
+            return;
+        }
+
+        try {
+            List<ApiAgentConfig> configs = objectMapper.readValue(
+                    configPath.toFile(),
+                    new TypeReference<List<ApiAgentConfig>>() {});
+
+            for (ApiAgentConfig config : configs) {
+                AgentProvider agent = AgentProvider.builder()
+                        .name(config.name)
+                        .displayName(config.displayName)
+                        .agentType(AgentType.API)
+                        .endpointUrl(config.endpointUrl)
+                        .apiKey(config.apiKey)
+                        .modelName(config.modelName)
+                        .temperature(config.temperature)
+                        .maxTokens(config.maxTokens)
+                        .description(config.description != null ? config.description : "OpenAI-compatible API endpoint")
+                        .available(false)
+                        .isDefault(config.isDefault)
+                        .build();
+
+                boolean available = checkApiAgentAvailability(agent);
+                agent.setAvailable(available);
+                agents.put(agent.getName(), agent);
+                log.info("Loaded API agent '{}' from config, available: {}", agent.getName(), available);
+            }
+
+            log.info("Loaded {} API agents from config", configs.size());
+        } catch (Exception e) {
+            log.error("Failed to load API agents config: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Save all API agent configurations to ~/.kompile/config/api-agents.json.
+     */
+    private void saveApiAgentsToConfig() {
+        try {
+            Path configDir = getConfigDir();
+            Files.createDirectories(configDir);
+
+            List<ApiAgentConfig> configs = agents.values().stream()
+                    .filter(AgentProvider::isApiAgent)
+                    .map(agent -> {
+                        ApiAgentConfig config = new ApiAgentConfig();
+                        config.name = agent.getName();
+                        config.displayName = agent.getDisplayName();
+                        config.endpointUrl = agent.getEndpointUrl();
+                        config.apiKey = agent.getApiKey();
+                        config.modelName = agent.getModelName();
+                        config.temperature = agent.getTemperature();
+                        config.maxTokens = agent.getMaxTokens();
+                        config.description = agent.getDescription();
+                        config.isDefault = agent.isDefault();
+                        return config;
+                    })
+                    .toList();
+
+            objectMapper.writerWithDefaultPrettyPrinter()
+                    .writeValue(getApiAgentsConfigPath().toFile(), configs);
+
+            log.info("Saved {} API agents to config", configs.size());
+        } catch (Exception e) {
+            log.error("Failed to save API agents config: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Internal config representation for JSON persistence.
+     */
+    private static class ApiAgentConfig {
+        public String name;
+        public String displayName;
+        public String endpointUrl;
+        public String apiKey;
+        public String modelName;
+        public double temperature = 0.7;
+        public int maxTokens = 4096;
+        public String description;
+        public boolean isDefault;
     }
 }

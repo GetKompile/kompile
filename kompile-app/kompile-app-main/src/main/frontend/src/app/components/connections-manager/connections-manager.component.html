@@ -158,10 +158,18 @@
           </button>
         </ng-container>
 
-        <!-- Not Configured -->
-        <button mat-button disabled *ngIf="!provider.configured">
+        <!-- Not Configured - Show Configure Button -->
+        <button mat-raised-button color="primary" *ngIf="!provider.configured"
+                (click)="openSettingsDialog(provider)">
           <mat-icon>settings</mat-icon>
-          Configuration Required
+          Configure
+        </button>
+
+        <!-- Configure Button for Configured Providers -->
+        <button mat-button *ngIf="provider.configured" (click)="openSettingsDialog(provider)"
+                matTooltip="Update OAuth credentials">
+          <mat-icon>settings</mat-icon>
+          Settings
         </button>
       </mat-card-actions>
     </mat-card>
@@ -178,65 +186,88 @@
 
   <!-- Setup Instructions -->
   <section class="setup-instructions">
-    <h2>Setup Instructions</h2>
-    <p>To enable OAuth connections, you need to configure the client credentials for each provider:</p>
+    <div class="setup-header">
+      <div class="setup-title">
+        <mat-icon>integration_instructions</mat-icon>
+        <h2>Quick Setup Guide</h2>
+      </div>
+      <p class="setup-subtitle">Configure OAuth credentials to connect your external services. Click on any provider card above to open the configuration dialog.</p>
+    </div>
 
-    <div class="instruction-grid">
-      <div class="instruction-card">
-        <h3><mat-icon>google</mat-icon> Google</h3>
-        <ol>
-          <li>Go to <a href="https://console.cloud.google.com" target="_blank">Google Cloud Console</a></li>
-          <li>Create a new project or select existing</li>
-          <li>Enable Drive API</li>
-          <li>Create OAuth 2.0 credentials</li>
-          <li>Add redirect URI: <code>/api/oauth/google/callback</code></li>
-          <li>Set <code>kompile.oauth.google.client-id</code> and <code>kompile.oauth.google.client-secret</code></li>
-        </ol>
+    <div class="setup-steps-overview">
+      <div class="step-card">
+        <div class="step-number">1</div>
+        <div class="step-content">
+          <h4>Create OAuth App</h4>
+          <p>Go to the provider's developer console and create a new OAuth 2.0 application</p>
+        </div>
       </div>
 
-      <div class="instruction-card">
-        <h3><mat-icon>microsoft</mat-icon> Microsoft</h3>
-        <ol>
-          <li>Go to <a href="https://portal.azure.com" target="_blank">Azure Portal</a></li>
-          <li>Register a new application</li>
-          <li>Add API permissions (Files.Read, User.Read)</li>
-          <li>Create client secret</li>
-          <li>Add redirect URI: <code>/api/oauth/microsoft/callback</code></li>
-          <li>Set <code>kompile.oauth.microsoft.client-id</code> and <code>kompile.oauth.microsoft.client-secret</code></li>
-        </ol>
+      <div class="step-arrow">
+        <mat-icon>arrow_forward</mat-icon>
       </div>
 
-      <div class="instruction-card">
-        <h3><mat-icon>link</mat-icon> Atlassian</h3>
-        <ol>
-          <li>Go to <a href="https://developer.atlassian.com/console/myapps/" target="_blank">Atlassian Developer Console</a></li>
-          <li>Create a new OAuth 2.0 app</li>
-          <li>Add Confluence and Jira scopes</li>
-          <li>Add redirect URI: <code>/api/oauth/atlassian/callback</code></li>
-          <li>Set <code>kompile.oauth.atlassian.client-id</code> and <code>kompile.oauth.atlassian.client-secret</code></li>
-        </ol>
+      <div class="step-card">
+        <div class="step-number">2</div>
+        <div class="step-content">
+          <h4>Add Redirect URI</h4>
+          <p>Copy the callback URL from the configuration dialog and add it to your OAuth app</p>
+        </div>
       </div>
 
-      <div class="instruction-card">
-        <h3><mat-icon>auto_stories</mat-icon> Notion</h3>
-        <ol>
-          <li>Go to <a href="https://www.notion.so/my-integrations" target="_blank">Notion Integrations</a></li>
-          <li>Create a new integration</li>
-          <li>Select OAuth type</li>
-          <li>Add redirect URI: <code>/api/oauth/notion/callback</code></li>
-          <li>Set <code>kompile.oauth.notion.client-id</code> and <code>kompile.oauth.notion.client-secret</code></li>
-        </ol>
+      <div class="step-arrow">
+        <mat-icon>arrow_forward</mat-icon>
       </div>
 
-      <div class="instruction-card">
-        <h3><mat-icon>tag</mat-icon> Slack</h3>
-        <ol>
-          <li>Go to <a href="https://api.slack.com/apps" target="_blank">Slack App Directory</a></li>
-          <li>Create a new app</li>
-          <li>Add OAuth scopes (channels:history, channels:read)</li>
-          <li>Add redirect URI: <code>/api/oauth/slack/callback</code></li>
-          <li>Set <code>kompile.oauth.slack.client-id</code> and <code>kompile.oauth.slack.client-secret</code></li>
-        </ol>
+      <div class="step-card">
+        <div class="step-number">3</div>
+        <div class="step-content">
+          <h4>Enter Credentials</h4>
+          <p>Copy the Client ID and Client Secret from your OAuth app into Kompile</p>
+        </div>
+      </div>
+
+      <div class="step-arrow">
+        <mat-icon>arrow_forward</mat-icon>
+      </div>
+
+      <div class="step-card">
+        <div class="step-number">4</div>
+        <div class="step-content">
+          <h4>Connect</h4>
+          <p>Click the Connect button to authorize Kompile to access your data</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="provider-links">
+      <h3>Developer Consoles</h3>
+      <div class="links-grid">
+        <a href="https://console.cloud.google.com" target="_blank" class="provider-link google">
+          <mat-icon>google</mat-icon>
+          <span>Google Cloud Console</span>
+          <mat-icon class="external-icon">open_in_new</mat-icon>
+        </a>
+        <a href="https://portal.azure.com" target="_blank" class="provider-link microsoft">
+          <mat-icon>window</mat-icon>
+          <span>Azure Portal</span>
+          <mat-icon class="external-icon">open_in_new</mat-icon>
+        </a>
+        <a href="https://developer.atlassian.com/console/myapps/" target="_blank" class="provider-link atlassian">
+          <mat-icon>link</mat-icon>
+          <span>Atlassian Developer</span>
+          <mat-icon class="external-icon">open_in_new</mat-icon>
+        </a>
+        <a href="https://www.notion.so/my-integrations" target="_blank" class="provider-link notion">
+          <mat-icon>auto_stories</mat-icon>
+          <span>Notion Integrations</span>
+          <mat-icon class="external-icon">open_in_new</mat-icon>
+        </a>
+        <a href="https://api.slack.com/apps" target="_blank" class="provider-link slack">
+          <mat-icon>tag</mat-icon>
+          <span>Slack API Apps</span>
+          <mat-icon class="external-icon">open_in_new</mat-icon>
+        </a>
       </div>
     </div>
   </section>

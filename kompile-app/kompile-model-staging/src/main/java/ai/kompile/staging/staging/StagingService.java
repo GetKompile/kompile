@@ -19,7 +19,7 @@ package ai.kompile.staging.staging;
 import ai.kompile.staging.conversion.ConversionResult;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.*;
-import ai.kompile.staging.registry.*;
+import ai.kompile.modelmanager.registry.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -370,6 +370,76 @@ public class StagingService {
             log.error("Failed to cleanup failed staging", e);
             return 0;
         }
+    }
+
+    /**
+     * Repair staged models by checking for missing vocab files and attempting to fix issues.
+     * Returns a map of model IDs to whether they were successfully repaired.
+     */
+    public Map<String, Boolean> repairStagedModels() {
+        Map<String, Boolean> results = new LinkedHashMap<>();
+        ModelRegistry registry = registryService.loadRegistry();
+
+        for (Map.Entry<String, ModelEntry> entry : registry.getAllModels().entrySet()) {
+            String modelId = entry.getKey();
+            ModelEntry model = entry.getValue();
+
+            if (model.getPath() == null) continue;
+
+            Path modelPath = modelsDir.resolve(model.getPath());
+            if (!Files.exists(modelPath)) {
+                results.put(modelId, false);
+                continue;
+            }
+
+            // Check for vocab file
+            Path vocabPath = modelsDir.resolve(model.getVocabFilePath());
+            if (!Files.exists(vocabPath)) {
+                // Try to find any vocab file in the model directory
+                try {
+                    Path found = findFile(modelPath, "vocab.txt", "tokenizer.json", "sentencepiece.model");
+                    if (found != null) {
+                        model.setVocabFile(found.getFileName().toString());
+                        registryService.addModel(model);
+                        results.put(modelId, true);
+                        log.info("Repaired vocab path for model {}: {}", modelId, found.getFileName());
+                    } else {
+                        results.put(modelId, false);
+                        log.warn("No vocab file found for model {}", modelId);
+                    }
+                } catch (IOException e) {
+                    results.put(modelId, false);
+                    log.warn("Error repairing model {}: {}", modelId, e.getMessage());
+                }
+            } else {
+                // Model is fine
+                results.put(modelId, true);
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Get list of staged model IDs that are missing vocab files.
+     */
+    public List<String> getStagedModelsMissingVocab() {
+        List<String> missing = new ArrayList<>();
+        ModelRegistry registry = registryService.loadRegistry();
+
+        for (Map.Entry<String, ModelEntry> entry : registry.getAllModels().entrySet()) {
+            String modelId = entry.getKey();
+            ModelEntry model = entry.getValue();
+
+            if (model.getPath() == null) continue;
+
+            Path vocabPath = modelsDir.resolve(model.getVocabFilePath());
+            if (!Files.exists(vocabPath)) {
+                missing.add(modelId);
+            }
+        }
+
+        return missing;
     }
 
     // Helper methods

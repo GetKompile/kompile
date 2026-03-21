@@ -111,6 +111,53 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Model Manager (shared registry classes) -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+        </dependency>
+
+        <!-- Spring AI for @Tool annotation -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-model</artifactId>
+        </dependency>
+
+        <!-- SameDiff LLM, VLM, and Pipeline for model execution -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-llm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-vlm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-pipeline-core</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
+        <!-- MCP SDK for server transport -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>0.10.0</version>
+        </dependency>
+
+        <!-- Reactor for MCP transport -->
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-core</artifactId>
+        </dependency>
+
+        <!-- Tokenizers for LLM/VLM -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>tokenizers-native-preset</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

@@ -175,6 +175,21 @@ public class GraphPipeline implements Pipeline {
                             "': switchFunctionClassName is null or empty.");
                 }
             }
+            else if (nodeConfig instanceof LoopNodeConfig) {
+                LoopNodeConfig lc = (LoopNodeConfig) nodeConfig;
+                if (lc.getBodyStepName() == null || lc.getBodyStepName().trim().isEmpty()) {
+                    throw new IllegalStateException("GraphPipeline '" + this.id + "', LOOP Node '" + nodeName +
+                            "': bodyStepName is null or empty.");
+                }
+                if (!graphNodes.containsKey(lc.getBodyStepName())) {
+                    throw new IllegalStateException("GraphPipeline '" + this.id + "', LOOP Node '" + nodeName +
+                            "': bodyStepName '" + lc.getBodyStepName() + "' is not defined in the graph nodes.");
+                }
+                if (lc.getConditionClassName() == null || lc.getConditionClassName().trim().isEmpty()) {
+                    throw new IllegalStateException("GraphPipeline '" + this.id + "', LOOP Node '" + nodeName +
+                            "': conditionClassName is null or empty.");
+                }
+            }
             // Add similar checks for CombineNodeConfig, etc.
         }
 

@@ -23,6 +23,8 @@ import ai.kompile.cli.main.build.simplified.BuildHostedLlmRagApp;
 import ai.kompile.cli.main.build.simplified.BuildSameDiffApp;
 import ai.kompile.cli.main.config.ConfigMain;
 import ai.kompile.cli.main.install.InstallMain;
+import ai.kompile.cli.main.pipeline.PipelineMain;
+import ai.kompile.cli.main.sdk.SdkMain;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,7 +44,9 @@ import java.util.concurrent.Callable;
                 BuildHostedLlmRagApp.class,
                 BuildSameDiffApp.class,
                 InstallMain.class,
-                UnInstallMain.class
+                UnInstallMain.class,
+                SdkMain.class,
+                PipelineMain.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,

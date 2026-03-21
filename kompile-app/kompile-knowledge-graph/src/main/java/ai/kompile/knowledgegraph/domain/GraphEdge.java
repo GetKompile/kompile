@@ -15,8 +15,11 @@
  */
 package ai.kompile.knowledgegraph.domain;
 
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
+import ai.kompile.knowledgegraph.embedding.util.INDArrayConverter;
 import jakarta.persistence.*;
 import lombok.*;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -133,6 +136,33 @@ public class GraphEdge {
      */
     @Column(name = "fact_sheet_id")
     private Long factSheetId;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KNOWLEDGE GRAPH EMBEDDINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Knowledge graph embedding vector for this relation type.
+     * Trained using TransE, RotatE, or other KG embedding algorithms.
+     * Note: Relations of the same type share the same embedding, but we store
+     * it per edge for query convenience.
+     */
+    @Column(name = "kg_relation_embedding", columnDefinition = "BLOB")
+    @Convert(converter = INDArrayConverter.class)
+    private INDArray kgRelationEmbedding;
+
+    /**
+     * Algorithm used to generate the KG embedding.
+     */
+    @Column(name = "kg_embedding_algorithm", length = 32)
+    @Enumerated(EnumType.STRING)
+    private KGEmbeddingAlgorithm kgEmbeddingAlgorithm;
+
+    /**
+     * Version/timestamp of the training run that produced this embedding.
+     */
+    @Column(name = "kg_embedding_version")
+    private Long kgEmbeddingVersion;
 
     @PrePersist
     protected void onCreate() {

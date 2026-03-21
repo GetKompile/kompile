@@ -120,22 +120,32 @@ public class IngestConfiguration {
 
     /**
      * Default chunk size in characters.
-     * ~512 tokens for most embedding models (BGE, Arctic, etc.)
-     * Larger chunks = fewer chunks = faster indexing, but less granular retrieval.
+     *
+     * <p>Chunk size affects both retrieval granularity and embedding efficiency:</p>
+     * <ul>
+     *   <li>1000 chars ≈ 200-250 tokens → allows 20-30 items per forward pass</li>
+     *   <li>1500 chars ≈ 300-375 tokens → allows 8-16 items per forward pass</li>
+     *   <li>2000 chars ≈ 400-500 tokens → allows 4-8 items per forward pass</li>
+     * </ul>
+     *
+     * <p>Smaller chunks enable larger batch sizes with less padding waste,
+     * improving embedding throughput. Default: 1000 chars for good balance
+     * between retrieval granularity and batch efficiency.</p>
      */
-    private int defaultChunkSize = 2000;
+    private int defaultChunkSize = 1000;
 
     /**
      * Default overlap between chunks in characters.
      * 10% of chunk size is recommended for context preservation.
      */
-    private int defaultChunkOverlap = 200;
+    private int defaultChunkOverlap = 100;
 
     /**
      * Default chunking strategy.
-     * Options: recursive-character, sentence, markdown, token
+     * Options: table-aware (recommended), recursive-character, sentence, markdown, token
+     * table-aware preserves table boundaries while chunking text normally.
      */
-    private String defaultChunker = "recursive-character";
+    private String defaultChunker = "table-aware";
 
     // ========== Large Document Processing Settings ==========
 
@@ -172,10 +182,9 @@ public class IngestConfiguration {
     private int chunkingThreads = Math.min(Runtime.getRuntime().availableProcessors() / 2, 16);
 
     /**
-     * Number of threads for embedding operations.
-     * NOTE: For OpenMP-based models (SameDiff), set to 1 - OpenMP handles internal parallelism.
-     * For non-OpenMP models, can be increased.
-     * Default: 1 for OpenMP compatibility.
+     * Number of embedding workers.
+     * Use 1 worker - parallelism comes from OpenMP/BLAS internally.
+     * Multiple workers cause thread contention with OpenMP.
      */
     private int embeddingThreads = 1;
 

@@ -14,9 +14,15 @@
   ~ limitations under the License.
   -->
 
+<!-- Index Status Banner - shown when no indices are loaded -->
+<app-index-status-banner (navigateToTab)="handleBannerNavigation($event)"></app-index-status-banner>
+
 <div class="app-container">
   <header>
     <h1>{{ title }}</h1>
+
+    <!-- Model Status Indicator -->
+    <app-model-status-indicator (openStaging)="openModelStaging()"></app-model-status-indicator>
 
     <!-- Fact Sheet Selector -->
     <div class="fact-sheet-selector">
@@ -53,11 +59,11 @@
       <h2>Create New Fact Sheet</h2>
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Name</mat-label>
-        <input matInput [(ngModel)]="newFactSheetName" placeholder="My Fact Sheet">
+        <input matInput [(ngModel)]="newFactSheetName" [ngModelOptions]="{standalone: true}" placeholder="My Fact Sheet">
       </mat-form-field>
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Description (optional)</mat-label>
-        <textarea matInput [(ngModel)]="newFactSheetDescription" rows="2" placeholder="What is this fact sheet for?"></textarea>
+        <textarea matInput [(ngModel)]="newFactSheetDescription" [ngModelOptions]="{standalone: true}" rows="2" placeholder="What is this fact sheet for?"></textarea>
       </mat-form-field>
       <div class="dialog-actions">
         <button mat-button (click)="closeCreateFactSheetDialog()">Cancel</button>
@@ -72,29 +78,21 @@
     <a mat-tab-link (click)="activeTab = 'unifiedChat'" [active]="activeTab === 'unifiedChat'">
       Chat
     </a>
-    <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'">
+    <a mat-tab-link (click)="activeTab = 'sources'" [active]="activeTab === 'sources'" class="fact-sheets-tab">
       Fact Sheets
+      <span class="active-jobs-badge" *ngIf="activeJobsCount > 0" [title]="getActiveJobsSummary()">
+        <span class="badge-pulse"></span>
+        {{ activeJobsCount }}
+      </span>
     </a>
-    <a mat-tab-link (click)="activeTab = 'mcp'" [active]="activeTab === 'mcp'">
-      MCP
-    </a>
-    <a mat-tab-link (click)="activeTab = 'orchestrator'" [active]="activeTab === 'orchestrator'">
-      Orchestrator
+    <a mat-tab-link (click)="activeTab = 'tools'" [active]="activeTab === 'tools'">
+      Tools
     </a>
     <a mat-tab-link (click)="activeTab = 'developer'" [active]="activeTab === 'developer'">
       Developer
     </a>
-    <a mat-tab-link (click)="activeTab = 'graph'" [active]="activeTab === 'graph'">
-      Knowledge Graph
-    </a>
-    <a mat-tab-link (click)="activeTab = 'connections'" [active]="activeTab === 'connections'">
-      Connections
-    </a>
-    <a mat-tab-link (click)="activeTab = 'stagingConfig'" [active]="activeTab === 'stagingConfig'">
-      Model Staging
-    </a>
-    <a mat-tab-link (click)="activeTab = 'archiveAssembly'" [active]="activeTab === 'archiveAssembly'">
-      Archive Assembly
+    <a mat-tab-link (click)="activeTab = 'openclaw'" [active]="activeTab === 'openclaw'">
+      OpenClaw
     </a>
   </nav>
   <mat-tab-nav-panel #tabPanel></mat-tab-nav-panel>
@@ -104,28 +102,16 @@
       <app-unified-chat></app-unified-chat>
     </div>
     <div *ngIf="activeTab === 'sources'">
-      <app-fact-sheet-manager></app-fact-sheet-manager>
+      <app-fact-sheet-manager (openModelStaging)="openModelStaging()"></app-fact-sheet-manager>
     </div>
-    <div *ngIf="activeTab === 'mcp'">
-      <app-mcp-hub></app-mcp-hub>
-    </div>
-    <div *ngIf="activeTab === 'orchestrator'">
-      <app-orchestrator-hub></app-orchestrator-hub>
+    <div *ngIf="activeTab === 'tools'">
+      <app-tools-hub></app-tools-hub>
     </div>
     <div *ngIf="activeTab === 'developer'">
       <app-developer-hub></app-developer-hub>
     </div>
-    <div *ngIf="activeTab === 'graph'" class="graph-container">
-      <app-graph-visualizer></app-graph-visualizer>
-    </div>
-    <div *ngIf="activeTab === 'connections'">
-      <app-connections-manager></app-connections-manager>
-    </div>
-    <div *ngIf="activeTab === 'stagingConfig'">
-      <app-staging-config></app-staging-config>
-    </div>
-    <div *ngIf="activeTab === 'archiveAssembly'">
-      <app-archive-assembly></app-archive-assembly>
+    <div *ngIf="activeTab === 'openclaw'">
+      <app-openclaw-hub></app-openclaw-hub>
     </div>
 
   </main>

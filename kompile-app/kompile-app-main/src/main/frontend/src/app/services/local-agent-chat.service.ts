@@ -37,6 +37,28 @@ import {
 } from '../models/api-models';
 
 /**
+ * Token metrics from LLM streaming responses.
+ */
+export interface TokenMetrics {
+  outputTokens: number;
+  inputTokens: number;
+  totalGenerationMs: number;
+  tokensPerSecond: number;
+  model?: string;
+}
+
+/**
+ * Chat statistics from agent response.
+ */
+export interface ChatStats {
+  durationMs: number;
+  costUsd: number;
+  numTurns: number;
+  isError: boolean;
+  tokenMetrics?: TokenMetrics;
+}
+
+/**
  * Service for local agent chat with streaming support.
  *
  * Features:
@@ -63,6 +85,7 @@ export class LocalAgentChatService extends BaseService {
   private result$ = new Subject<ResultEvent>();
   private filesModified$ = new Subject<string[]>();
   private sources$ = new Subject<RetrievedSource[]>();
+  private chatStats$ = new Subject<ChatStats>();
 
   // Array buffer for efficient string accumulation
   private contentChunks: string[] = [];
@@ -345,6 +368,15 @@ export class LocalAgentChatService extends BaseService {
                 this.sources$.next(sources);
                 if (this.currentStreamingMessage) {
                   this.currentStreamingMessage.sources = sources;
+                }
+                break;
+
+              case 'stats':
+                console.log('[LocalAgentChat] Stats received:', parsed);
+                const stats = parsed as ChatStats;
+                this.chatStats$.next(stats);
+                if (this.currentStreamingMessage && stats.tokenMetrics) {
+                  this.currentStreamingMessage.tokenMetrics = stats.tokenMetrics;
                 }
                 break;
 
@@ -904,6 +936,10 @@ export class LocalAgentChatService extends BaseService {
 
   getSources(): Observable<RetrievedSource[]> {
     return this.sources$.asObservable();
+  }
+
+  getChatStats(): Observable<ChatStats> {
+    return this.chatStats$.asObservable();
   }
 
   // Synchronous getters

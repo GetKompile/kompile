@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, Optional } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, RouterModule } from '@angular/router';
 import { MatCardModule } from '@angular/material/card';
@@ -25,11 +25,14 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 
 import { OAuthConnectionService } from '../../services/oauth-connection.service';
+import { OAuthSettingsService, ProviderSetupInfo } from '../../services/oauth-settings.service';
 import { OAuthProviderInfo, OAuthConnection, PROVIDER_METADATA } from '../../models/oauth-models';
+import { OAuthSettingsDialogComponent, DialogData } from '../oauth-settings-dialog/oauth-settings-dialog.component';
 
 @Component({
   selector: 'app-connections-manager',
@@ -44,7 +47,8 @@ import { OAuthProviderInfo, OAuthConnection, PROVIDER_METADATA } from '../../mod
     MatTooltipModule,
     MatSnackBarModule,
     MatChipsModule,
-    MatDividerModule
+    MatDividerModule,
+    MatDialogModule
   ],
   templateUrl: './connections-manager.component.html',
   styleUrls: ['./connections-manager.component.css']
@@ -52,6 +56,7 @@ import { OAuthProviderInfo, OAuthConnection, PROVIDER_METADATA } from '../../mod
 export class ConnectionsManagerComponent implements OnInit, OnDestroy {
   providers: OAuthProviderInfo[] = [];
   connections: Map<string, OAuthConnection> = new Map();
+  setupInfoMap: Map<string, ProviderSetupInfo> = new Map();
   loading = false;
   connectingProvider: string | null = null;
   private destroy$ = new Subject<void>();
@@ -60,8 +65,10 @@ export class ConnectionsManagerComponent implements OnInit, OnDestroy {
 
   constructor(
     private oauthService: OAuthConnectionService,
+    private settingsService: OAuthSettingsService,
     private snackBar: MatSnackBar,
-    private route: ActivatedRoute
+    private dialog: MatDialog,
+    @Optional() private route: ActivatedRoute | null
   ) {}
 
   ngOnInit(): void {
@@ -91,29 +98,37 @@ export class ConnectionsManagerComponent implements OnInit, OnDestroy {
     this.oauthService.loadProviders().subscribe();
     this.oauthService.loadConnections().subscribe();
 
-    // Handle callback query params
-    this.route.queryParams.pipe(
-      takeUntil(this.destroy$)
-    ).subscribe(params => {
-      if (params['success'] === 'true') {
-        const provider = params['provider'];
-        this.snackBar.open(
-          `Successfully connected to ${provider}!`,
-          'Close',
-          { duration: 5000, panelClass: 'success-snackbar' }
-        );
-        // Refresh connections
-        this.oauthService.loadConnections().subscribe();
-      } else if (params['error']) {
-        const error = params['error'];
-        const description = params['error_description'] || '';
-        this.snackBar.open(
-          `Connection failed: ${error}${description ? ' - ' + description : ''}`,
-          'Close',
-          { duration: 8000, panelClass: 'error-snackbar' }
-        );
-      }
+    // Load setup info and settings
+    this.settingsService.loadSetupInfo().subscribe(info => {
+      info.forEach(i => this.setupInfoMap.set(i.providerId, i));
     });
+    this.settingsService.loadSettings().subscribe();
+
+    // Handle callback query params (only if route is available - when navigated via router)
+    if (this.route) {
+      this.route.queryParams.pipe(
+        takeUntil(this.destroy$)
+      ).subscribe(params => {
+        if (params['success'] === 'true') {
+          const provider = params['provider'];
+          this.snackBar.open(
+            `Successfully connected to ${provider}!`,
+            'Close',
+            { duration: 5000, panelClass: 'success-snackbar' }
+          );
+          // Refresh connections
+          this.oauthService.loadConnections().subscribe();
+        } else if (params['error']) {
+          const error = params['error'];
+          const description = params['error_description'] || '';
+          this.snackBar.open(
+            `Connection failed: ${error}${description ? ' - ' + description : ''}`,
+            'Close',
+            { duration: 8000, panelClass: 'error-snackbar' }
+          );
+        }
+      });
+    }
   }
 
   ngOnDestroy(): void {
@@ -234,5 +249,34 @@ export class ConnectionsManagerComponent implements OnInit, OnDestroy {
 
   refresh(): void {
     this.oauthService.refresh();
+  }
+
+  openSettingsDialog(provider: OAuthProviderInfo): void {
+    const setupInfo = this.setupInfoMap.get(provider.providerId);
+    const settings = this.settingsService.getCachedSettings(provider.providerId);
+
+    const dialogData: DialogData = {
+      providerId: provider.providerId,
+      displayName: provider.displayName,
+      icon: provider.icon,
+      color: this.getProviderColor(provider.providerId),
+      settings: settings,
+      setupInfo: setupInfo
+    };
+
+    const dialogRef = this.dialog.open(OAuthSettingsDialogComponent, {
+      width: '600px',
+      maxWidth: '95vw',
+      disableClose: false,
+      data: dialogData
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result?.saved || result?.deleted) {
+        // Reload providers to get updated configuration status
+        this.oauthService.loadProviders().subscribe();
+        this.settingsService.loadSettings().subscribe();
+      }
+    });
   }
 }

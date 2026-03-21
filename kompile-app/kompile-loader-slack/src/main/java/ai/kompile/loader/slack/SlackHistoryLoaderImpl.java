@@ -32,7 +32,6 @@ import com.slack.api.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -45,6 +44,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Document loader for ingesting historical Slack messages.
  * Supports loading message history with date ranges, including threads.
+ *
+ * <p>Configuration is per-request via metadata in the source descriptor:</p>
+ * <ul>
+ *   <li>slackToken - Slack API token</li>
+ *   <li>includeThreads - Whether to include thread replies (default: true)</li>
+ *   <li>daysBack - Number of days of history to load (default: 30)</li>
+ * </ul>
  */
 @Component
 public class SlackHistoryLoaderImpl implements DocumentLoader {
@@ -54,14 +60,10 @@ public class SlackHistoryLoaderImpl implements DocumentLoader {
     private final Slack slack = Slack.getInstance();
     private final Map<String, String> userCache = new ConcurrentHashMap<>();
 
-    @Value("${kompile.slack.token:}")
-    private String slackToken;
-
-    @Value("${kompile.slack.history.include-threads:true}")
-    private boolean includeThreads;
-
-    @Value("${kompile.slack.history.default-days:30}")
-    private int defaultDays;
+    // Runtime configurable defaults (set via UI/API)
+    private String slackToken = "";
+    private boolean includeThreads = true;
+    private int defaultDays = 30;
 
     @Override
     public String getName() {
@@ -488,5 +490,49 @@ public class SlackHistoryLoaderImpl implements DocumentLoader {
         if (sourceDescriptor.getSourceId() != null) {
             metadata.put("source_id", sourceDescriptor.getSourceId());
         }
+    }
+
+    // Configuration methods for UI/API
+
+    /**
+     * Sets the default Slack API token. Can be overridden per-request via metadata.
+     */
+    public void setSlackToken(String slackToken) {
+        this.slackToken = slackToken;
+    }
+
+    /**
+     * Gets the current default Slack API token.
+     */
+    public String getSlackToken() {
+        return slackToken;
+    }
+
+    /**
+     * Sets whether to include thread replies by default.
+     */
+    public void setIncludeThreads(boolean includeThreads) {
+        this.includeThreads = includeThreads;
+    }
+
+    /**
+     * Gets whether thread replies are included by default.
+     */
+    public boolean isIncludeThreads() {
+        return includeThreads;
+    }
+
+    /**
+     * Sets the default number of days of history to load.
+     */
+    public void setDefaultDays(int defaultDays) {
+        this.defaultDays = defaultDays;
+    }
+
+    /**
+     * Gets the default number of days of history to load.
+     */
+    public int getDefaultDays() {
+        return defaultDays;
     }
 }

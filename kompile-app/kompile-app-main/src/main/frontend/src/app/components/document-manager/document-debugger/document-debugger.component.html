@@ -20,6 +20,70 @@
     <p class="subtitle">Upload a file to analyze its content and chunking.</p>
   </div>
 
+  <!-- OCR Status Banner -->
+  <div class="ocr-status-banner" [ngClass]="getOcrStatusColorClass()">
+    <div class="ocr-status-header" (click)="toggleOcrStatusDetails()">
+      <div class="ocr-status-info">
+        <mat-icon [ngClass]="getOcrStatusColorClass()">{{ getOcrStatusIcon() }}</mat-icon>
+        <span class="ocr-status-text">{{ getOcrStatusText() }}</span>
+        <span *ngIf="ocrModels.length > 0" class="ocr-model-count">
+          ({{ getLoadedOcrModelCount() }}/{{ ocrModels.length }} models loaded)
+        </span>
+      </div>
+      <div class="ocr-status-actions">
+        <button mat-icon-button
+                matTooltip="Refresh OCR status"
+                (click)="refreshOcrStatus(); $event.stopPropagation()"
+                [disabled]="isLoadingOcrStatus">
+          <mat-icon [class.spinning]="isLoadingOcrStatus">refresh</mat-icon>
+        </button>
+        <mat-icon class="expand-indicator">{{ showOcrStatusDetails ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </div>
+    </div>
+
+    <!-- OCR Status Details (Expandable) -->
+    <div *ngIf="showOcrStatusDetails" class="ocr-status-details">
+      <mat-divider></mat-divider>
+      <div class="ocr-details-grid">
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.ocrEnabled">{{ ocrStatus?.ocrEnabled ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>OCR Enabled</span>
+        </div>
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.pipelineReady">{{ ocrStatus?.pipelineReady ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>Pipeline Ready</span>
+        </div>
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.postProcessorAvailable">{{ ocrStatus?.postProcessorAvailable ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>Post-Processor</span>
+        </div>
+        <div class="ocr-detail-item" *ngIf="ocrConfig?.useVlm !== undefined">
+          <mat-icon [class.active]="ocrConfig?.useVlm">{{ ocrConfig?.useVlm ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>VLM Mode</span>
+        </div>
+      </div>
+
+      <!-- Model List -->
+      <div *ngIf="ocrModels.length > 0" class="ocr-models-section">
+        <h4>Available Models</h4>
+        <div class="ocr-models-list">
+          <div *ngFor="let model of ocrModels" class="ocr-model-item" [class.loaded]="model.isLoaded">
+            <mat-icon [color]="model.isLoaded ? 'primary' : 'warn'">
+              {{ model.isLoaded ? 'check_circle' : 'radio_button_unchecked' }}
+            </mat-icon>
+            <span class="model-name">{{ model.name }}</span>
+            <mat-chip class="model-type-chip">{{ model.type }}</mat-chip>
+          </div>
+        </div>
+      </div>
+
+      <p *ngIf="ocrStatusError" class="ocr-error-detail">
+        <mat-icon color="warn">error</mat-icon>
+        {{ ocrStatusError }}
+      </p>
+    </div>
+  </div>
+
   <mat-card class="file-upload-card">
     <mat-card-header>
       <mat-card-title>📁 Upload File</mat-card-title>
@@ -54,6 +118,20 @@
         <mat-icon>info_outline</mat-icon>
         Please upload a file. Once uploaded, its name will appear here, and you can start the analysis.
       </p>
+
+      <!-- OCR Warning for selected/uploaded files -->
+      <div *ngIf="shouldShowOcrWarning()" class="ocr-warning-message">
+        <mat-icon color="warn">warning</mat-icon>
+        <div class="ocr-warning-content">
+          <strong>⚠️ OCR Required</strong>
+          <p>{{ getOcrWarningMessage() }}</p>
+          <p class="ocr-warning-hint">
+            <mat-icon>info</mat-icon>
+            Processing may fail or return empty content without OCR. Visit the
+            <a routerLink="/ocr-debug">OCR Debug</a> page to configure OCR models.
+          </p>
+        </div>
+      </div>
     </mat-card-content>
   </mat-card>
 
@@ -121,7 +199,18 @@
             <ng-container matColumnDef="chunkIndex">
               <th mat-header-cell *matHeaderCellDef mat-sort-header>Index</th>
               <td mat-cell *matCellDef="let chunk">
-                <mat-chip color="accent" selected>{{ chunk.chunkIndex }}</mat-chip>
+                <div class="chunk-index-cell">
+                  <mat-chip color="accent" selected>{{ chunk.chunkIndex }}</mat-chip>
+                  <!-- Content type indicator -->
+                  <mat-chip *ngIf="isTableChunk(chunk)" color="primary" class="type-chip">
+                    <mat-icon>table_chart</mat-icon>
+                    Table
+                  </mat-chip>
+                  <mat-chip *ngIf="!isTableChunk(chunk)" class="type-chip">
+                    <mat-icon>notes</mat-icon>
+                    Text
+                  </mat-chip>
+                </div>
               </td>
             </ng-container>
 
@@ -129,6 +218,10 @@
               <th mat-header-cell *matHeaderCellDef mat-sort-header>Length</th>
               <td mat-cell *matCellDef="let chunk">
                 <span class="content-length">{{ chunk.contentLength }} chars</span>
+                <!-- Table dimensions if applicable -->
+                <div *ngIf="isTableChunk(chunk) && chunk.tableRowCount" class="table-dimensions">
+                  {{ chunk.tableRowCount }} rows × {{ chunk.tableColumnCount }} cols
+                </div>
               </td>
             </ng-container>
 
@@ -136,7 +229,20 @@
               <th mat-header-cell *matHeaderCellDef>Content Preview</th>
               <td mat-cell *matCellDef="let chunk; let i = index">
                 <div class="chunk-preview">
-                  <div class="preview-text">{{ getContentPreview(chunk.content, 100) }}</div>
+                  <!-- Table preview summary -->
+                  <div *ngIf="isTableChunk(chunk)" class="table-preview-summary">
+                    <mat-icon color="primary">table_chart</mat-icon>
+                    <span *ngIf="chunk.tableHeaders">
+                      Columns: {{ chunk.tableHeaders }}
+                    </span>
+                    <span *ngIf="!chunk.tableHeaders">
+                      {{ getContentPreview(chunk.content, 100) }}
+                    </span>
+                  </div>
+                  <!-- Text preview -->
+                  <div *ngIf="!isTableChunk(chunk)" class="preview-text">
+                    {{ getContentPreview(chunk.content, 100) }}
+                  </div>
                   <div class="chunk-actions">
                     <button mat-icon-button (click)="toggleChunkContent(i)"
                             [matTooltip]="expandedChunkIndex === i ? 'Hide full content' : 'Show full content'">
@@ -147,10 +253,28 @@
                     </button>
                   </div>
                 </div>
+
+                <!-- Expanded Content -->
                 <div class="expanded-content" *ngIf="expandedChunkIndex === i">
                   <mat-divider></mat-divider>
-                  <h4>Full Chunk Content (Chunk {{chunk.chunkIndex}})</h4>
-                  <mat-form-field appearance="outline" class="expanded-textarea">
+                  <h4>
+                    <mat-icon *ngIf="isTableChunk(chunk)">table_chart</mat-icon>
+                    <mat-icon *ngIf="!isTableChunk(chunk)">article</mat-icon>
+                    Full Chunk Content (Chunk {{chunk.chunkIndex}})
+                  </h4>
+
+                  <!-- Table Renderer for table chunks -->
+                  <div *ngIf="isTableChunk(chunk)" class="table-content-wrapper">
+                    <app-table-renderer
+                      [markdownContent]="getTableContent(chunk)"
+                      [showMetadata]="true"
+                      [showExport]="true"
+                      [compact]="false">
+                    </app-table-renderer>
+                  </div>
+
+                  <!-- Text area for non-table chunks -->
+                  <mat-form-field *ngIf="!isTableChunk(chunk)" appearance="outline" class="expanded-textarea">
                     <mat-label>Chunk {{ chunk.chunkIndex }} Content</mat-label>
                     <textarea matInput
                               [value]="chunk.content"
@@ -165,7 +289,8 @@
 
             <tr mat-header-row *matHeaderRowDef="chunksColumns"></tr>
             <tr mat-row *matRowDef="let row; columns: chunksColumns;"
-                [class.expanded-row]="expandedChunkIndex === chunksDataSource.data.indexOf(row)"></tr>
+                [class.expanded-row]="expandedChunkIndex === chunksDataSource.data.indexOf(row)"
+                [class.table-chunk-row]="isTableChunk(row)"></tr>
           </table>
           <mat-paginator #chunksPaginator [pageSizeOptions]="[5, 10, 25]" showFirstLastButtons></mat-paginator>
         </div>

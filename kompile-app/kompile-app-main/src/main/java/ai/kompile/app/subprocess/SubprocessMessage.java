@@ -108,6 +108,8 @@ public sealed interface SubprocessMessage
             int chunksCreated,
             int chunksEmbedded,
             int documentsIndexed,
+            long tokensProcessed,
+            long totalTokensInIndex,
             long totalDurationMs,
             String indexPath,
             Map<String, Long> phaseDurations // Duration per phase in ms
@@ -316,6 +318,8 @@ public sealed interface SubprocessMessage
             int chunksCreated,
             int chunksEmbedded,
             int documentsIndexed,
+            long tokensProcessed,
+            long totalTokensInIndex,
 
             // Timing
             long totalProcessingTimeMs,
@@ -349,7 +353,68 @@ public sealed interface SubprocessMessage
             java.util.List<WorkerStatusSnapshot> workerStatuses,
 
             // Runtime info (optional, sent periodically)
-            RuntimeInfo runtimeInfo) {
+            RuntimeInfo runtimeInfo,
+
+            // ========== EMBEDDING BATCH METRICS ==========
+            // These fields capture the actual tensor shapes and timing from the encoder
+            // during SameDiff inference, updated with each batch
+
+            // Batch identification
+            Integer currentBatchNumber,      // Current batch number (1-indexed)
+            Integer totalBatches,            // Total expected batches
+
+            // Input metrics
+            Integer inputTexts,              // Number of text chunks in this batch
+            Integer maxSequenceLength,       // Max sequence length after padding
+
+            // Output metrics
+            Integer embeddingDimension,      // Dimension of each embedding vector (e.g., 768, 1024)
+
+            // Tensor shapes (as human-readable strings from encoder)
+            String actualInputShape,         // Actual input tensor shape, e.g., "[3 x 512 x 768]"
+            String actualOutputShape,        // Actual output tensor shape, e.g., "[3 x 768]"
+
+            // Current step tracking
+            String currentStep,              // Current inference step: TOKENIZING, PADDING, TENSOR_CREATION, FORWARD_PASS, EXTRACTION
+
+            // Detailed timing from encoder (milliseconds)
+            Long tokenizationTimeMs,         // Time spent tokenizing
+            Long paddingTimeMs,              // Time spent padding sequences
+            Long tensorCreationTimeMs,       // Time spent creating input tensors (INDArray)
+            Long forwardPassTimeMs,          // Time spent in actual neural network forward pass
+            Long extractionTimeMs,           // Time spent extracting embeddings from output
+
+            // Batch history - last N completed batches for UI visibility
+            java.util.List<BatchHistoryEntry> batchHistory,
+
+            // Per-passage token counts for the current batch
+            int[] passageTokenCounts,
+
+            // ========== RESUME/RESTART INFO ==========
+            // Tracks progress from previous runs for restart/resume scenarios
+            Integer resumedFromChunkCount,    // Number of chunks already processed from previous run (null if fresh start)
+            Integer resumedFromEmbeddedCount, // Number of embeddings already done from previous run
+            Integer resumedFromIndexedCount,  // Number already indexed from previous run
+            Boolean isResumedRun              // True if this is a resumed run from checkpoint
+    ) {
+    }
+
+    /**
+     * Simplified batch history entry for UI display.
+     * Contains key metrics from completed batches.
+     */
+    record BatchHistoryEntry(
+            int batchNumber,
+            int inputTexts,
+            int maxSequenceLength,
+            int embeddingDimension,
+            String actualInputShape,
+            String actualOutputShape,
+            long totalBatchTimeMs,
+            String currentStep,
+            double tokensPerSecond,
+            int[] passageTokenCounts
+    ) {
     }
 
     /**
@@ -417,10 +482,11 @@ public sealed interface SubprocessMessage
      */
     static Completed completed(String taskId, int docsLoaded, int chunksCreated,
             int chunksEmbedded, int docsIndexed,
+            long tokensProcessed, long totalTokensInIndex,
             long totalDurationMs, String indexPath,
             Map<String, Long> phaseDurations) {
         return new Completed(taskId, docsLoaded, chunksCreated, chunksEmbedded,
-                docsIndexed, totalDurationMs, indexPath, phaseDurations);
+                docsIndexed, tokensProcessed, totalTokensInIndex, totalDurationMs, indexPath, phaseDurations);
     }
 
     /**
