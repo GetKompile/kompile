@@ -18,6 +18,9 @@ package ai.kompile.app.services;
 
 import ai.kompile.app.config.AppIndexConfig;
 import ai.kompile.app.config.IngestConfiguration;
+import ai.kompile.app.ingest.domain.IndexingJobHistory;
+import ai.kompile.app.ingest.domain.IngestEvent;
+import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.services.pipeline.ParallelIngestPipeline;
 import ai.kompile.app.services.pipeline.PipelineProgress;
 import ai.kompile.app.services.pipeline.PipelineResult;
@@ -57,7 +60,8 @@ import java.util.function.Consumer;
 
 /**
  * Service for populating vector store from existing Lucene keyword index.
- * Uses the full ingest pipeline infrastructure (embedding + indexing) but skips chunking
+ * Uses the full ingest pipeline infrastructure (embedding + indexing) but skips
+ * chunking
  * since documents in Lucene are already chunked.
  */
 @Service
@@ -73,24 +77,28 @@ public class VectorStorePopulationService implements org.springframework.beans.f
     private final IngestConfiguration ingestConfiguration;
     private final AppIndexConfigService appIndexConfigService;
     private final VectorPopulationSubprocessLauncher subprocessLauncher;
-
-    @Value("${anserini.indexPath:${anserini.index.path:#{null}}}")
-    private String anseriniIndexPath;
+    private final IngestProgressTracker ingestProgressTracker;
+    private final IndexingJobHistoryService jobHistoryService;
 
     @Value("${kompile.vectorpopulation.subprocess.enabled:true}")
     private boolean subprocessModeEnabled;
-
-    @Value("${kompile.vectorstore.anserini.index-path:${user.home}/.kompile/anserini-vector-index}")
-    private String vectorIndexPath;
 
     // Track active population tasks
     private final Map<String, PopulationTaskStatus> activeTasks = new ConcurrentHashMap<>();
     private final Set<String> cancelledTasks = ConcurrentHashMap.newKeySet();
     private final Map<String, ParallelIngestPipeline> activePipelines = new ConcurrentHashMap<>();
+    private final Map<String, String> taskDisplayNames = new ConcurrentHashMap<>();
+    private final Map<String, IngestPhase> taskLastPhases = new ConcurrentHashMap<>();
 
     // Progress update throttling
     private static final long PROGRESS_UPDATE_INTERVAL_MS = 100;
     private final AtomicLong lastProgressUpdateTime = new AtomicLong(0);
+
+    // Vector store verification throttling (check every 2 seconds)
+    private final AtomicLong lastVectorStoreCheckTime = new AtomicLong(0);
+    private final AtomicLong cachedVectorStoreCount = new AtomicLong(-1);
+
+    private static final String VECTOR_POPULATION_CONTENT_TYPE = "vector-population";
 
     // Async WebSocket executor
     private final ExecutorService webSocketExecutor = Executors.newFixedThreadPool(2, r -> {
@@ -108,12 +116,16 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             @Autowired(required = false) List<VectorStore> vectorStores,
             @Autowired(required = false) AppIndexConfigService appIndexConfigService,
             @Autowired(required = false) VectorPopulationSubprocessLauncher subprocessLauncher,
+            @Autowired(required = false) IngestProgressTracker ingestProgressTracker,
+            @Autowired(required = false) IndexingJobHistoryService jobHistoryService,
             IngestConfiguration ingestConfiguration) {
         this.messagingTemplate = messagingTemplate;
         this.documentLoaders = documentLoaders;
         this.ingestConfiguration = ingestConfiguration;
         this.appIndexConfigService = appIndexConfigService;
         this.subprocessLauncher = subprocessLauncher;
+        this.ingestProgressTracker = ingestProgressTracker;
+        this.jobHistoryService = jobHistoryService;
 
         // Select best indexer (prefer non-NoOp)
         IndexerService selected = null;
@@ -155,7 +167,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
         }
         this.vectorStore = selectedVectorStore;
 
-        logger.info("VectorStorePopulationService initialized: indexer={}, embeddingModel={}, vectorStore={}, subprocessLauncher={}",
+        logger.info(
+                "VectorStorePopulationService initialized: indexer={}, embeddingModel={}, vectorStore={}, subprocessLauncher={}",
                 indexerService.getClass().getSimpleName(),
                 embeddingModel != null ? embeddingModel.getModelName() : "none",
                 vectorStore != null ? vectorStore.getClass().getSimpleName() : "none",
@@ -226,15 +239,19 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             }
 
             // Build options
+            // NOTE: Do NOT set embeddingBatchSize here - let it fall through to
+            // AnseriniEmbeddingProperties which is controlled by the UI batch size settings
             Map<String, Object> options = new HashMap<>();
-            options.put("embeddingBatchSize", ingestConfiguration.getEmbeddingTargetBatchSize());
             options.put("parallelIndexing", true);
             options.put("indexingWorkers", 4);
 
             // Launch subprocess
+            final String finalVectorPath = vectorPath;
             return subprocessLauncher.launchVectorPopulation(taskId, keywordPath, vectorPath, options)
                     .thenApply(result -> {
                         if (result.success()) {
+                            // Ensure main app's VectorStore is pointing to the correct path and refreshed
+                            ensureVectorStoreAtPath(finalVectorPath);
                             return new PopulationResult(taskId, true,
                                     result.documentsIndexed(),
                                     result.totalDurationMs(),
@@ -260,20 +277,16 @@ public class VectorStorePopulationService implements org.springframework.beans.f
      * Resolve the keyword index path from available sources.
      */
     private String resolveKeywordIndexPath() {
-        // Try config service first
+        // 1. Try AppIndexConfigService stored config (not getActualConfiguration which queries live services)
         if (appIndexConfigService != null) {
             AppIndexConfig config = appIndexConfigService.getConfiguration();
             if (config != null && config.getKeywordIndexPath() != null && !config.getKeywordIndexPath().isBlank()) {
+                logger.info("Resolved keyword index path from stored config: {}", config.getKeywordIndexPath());
                 return config.getKeywordIndexPath();
             }
         }
 
-        // Fall back to property
-        if (anseriniIndexPath != null && !anseriniIndexPath.isBlank()) {
-            return anseriniIndexPath;
-        }
-
-        // Try indexer service
+        // 2. Try indexer service
         if (indexerService != null) {
             try {
                 return indexerService.getIndexPath();
@@ -287,18 +300,77 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
     /**
      * Resolve the vector index path from available sources.
+     * Uses a fallback chain to ensure a path is always returned:
+     * 1. AppIndexConfigService (FactSheet-aware consolidated config)
+     * 2. Current VectorStore instance path
+     * 3. Default path based on user home
      */
     private String resolveVectorIndexPath() {
-        // Try config service first
+        // 1. Try AppIndexConfigService stored config (not getActualConfiguration which queries live services)
+        // This ensures we use the configured path from app-index-config.json, not the VectorStore's current state
         if (appIndexConfigService != null) {
             AppIndexConfig config = appIndexConfigService.getConfiguration();
             if (config != null && config.getVectorStorePath() != null && !config.getVectorStorePath().isBlank()) {
+                logger.info("Resolved vector index path from stored config: {}", config.getVectorStorePath());
                 return config.getVectorStorePath();
             }
         }
 
-        // Fall back to property
-        return vectorIndexPath;
+        // 2. Try actual VectorStore instance path (fallback if config not available)
+        if (vectorStore != null) {
+            String storePath = vectorStore.getVectorStorePath();
+            if (storePath != null && !storePath.isBlank() && !"N/A".equals(storePath)) {
+                logger.info("Resolved vector index path from VectorStore instance: {}", storePath);
+                return storePath;
+            }
+            // Also try getIndexPath() if available
+            String indexPath = vectorStore.getIndexPath();
+            if (indexPath != null && !indexPath.isBlank()) {
+                logger.info("Resolved vector index path from VectorStore.getIndexPath(): {}", indexPath);
+                return indexPath;
+            }
+        }
+
+        // 3. Default fallback path
+        String defaultPath = System.getProperty("user.home") + "/.kompile/models/anserini/indexes/vector_index";
+        logger.warn("Could not resolve vector index path from config or VectorStore, using default: {}", defaultPath);
+        return defaultPath;
+    }
+
+    /**
+     * Ensures the main app's VectorStore is pointing to the correct path and refreshed.
+     * This is called after subprocess completion to ensure the main app can read the new data.
+     */
+    private void ensureVectorStoreAtPath(String targetPath) {
+        if (vectorStore == null || targetPath == null) {
+            logger.warn("Cannot ensure VectorStore at path: vectorStore={}, targetPath={}",
+                    vectorStore != null ? "present" : "null", targetPath);
+            return;
+        }
+
+        try {
+            String currentPath = vectorStore.getIndexPath();
+            logger.info("Ensuring VectorStore at path: target={}, current={}", targetPath, currentPath);
+
+            // Switch path if different
+            if (!targetPath.equals(currentPath)) {
+                logger.info("Switching VectorStore from {} to {}", currentPath, targetPath);
+                boolean switched = vectorStore.switchIndexPath(targetPath);
+                if (switched) {
+                    logger.info("Successfully switched VectorStore to {}", targetPath);
+                } else {
+                    logger.error("Failed to switch VectorStore to {}", targetPath);
+                }
+            }
+
+            // Always refresh reader to see newly written data
+            vectorStore.refreshReader();
+            long count = vectorStore.getApproxVectorCount();
+            logger.info("VectorStore at {} now has {} vectors", targetPath, count);
+
+        } catch (Exception e) {
+            logger.error("Error ensuring VectorStore at path {}: {}", targetPath, e.getMessage(), e);
+        }
     }
 
     /**
@@ -309,8 +381,9 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             taskId = UUID.randomUUID().toString();
         }
 
-        // Try to get keyword index path from config service first, then fall back to property
         String indexPath = null;
+        // Try to get keyword index path from config service first, then fall back to
+        // property
         if (appIndexConfigService != null) {
             AppIndexConfig config = appIndexConfigService.getConfiguration();
             if (config != null && config.getKeywordIndexPath() != null && !config.getKeywordIndexPath().isBlank()) {
@@ -320,8 +393,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
         }
 
         // Fall back to property if not set in config
-        if (indexPath == null || indexPath.isBlank()) {
-            indexPath = anseriniIndexPath;
+        if (indexPath == null) {
+            indexPath = resolveKeywordIndexPath();
         }
 
         // Also try to get from indexer service directly
@@ -335,7 +408,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
         }
 
         if (indexPath == null || indexPath.isBlank()) {
-            throw new IOException("Keyword index path is not configured. Please configure the keyword index path in Settings.");
+            throw new IOException(
+                    "Keyword index path is not configured. Please configure the keyword index path in Settings.");
         }
 
         Path indexDir = Paths.get(indexPath);
@@ -343,50 +417,62 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             throw new IOException("Anserini index directory does not exist: " + indexPath);
         }
 
-        logger.info("Starting vector store population from Lucene index: {} (taskId={}) - VECTOR-ONLY mode (skipping keyword re-indexing)", indexPath, taskId);
+        logger.info(
+                "Starting vector store population from Lucene index: {} (taskId={}) - VECTOR-ONLY mode (skipping keyword re-indexing)",
+                indexPath, taskId);
 
-        // Find LuceneIndexLoader
-        DocumentLoader luceneLoader = documentLoaders.stream()
-                .filter(l -> l.getClass().getSimpleName().contains("LuceneIndex"))
-                .findFirst()
-                .orElseThrow(() -> new IOException("LuceneIndexLoader not found"));
+        String vectorPath = resolveVectorIndexPath();
+        startIngestTracking(taskId, indexPath, vectorPath);
 
-        // Get total document count
-        long totalDocs = indexerService.getApproxTotalDocCount(null);
-        logger.info("Found {} documents in Lucene index", totalDocs);
-
-        // Initialize task status
-        PopulationTaskStatus status = new PopulationTaskStatus(taskId, totalDocs);
-        activeTasks.put(taskId, status);
-
-        // Broadcast initial status
-        broadcastProgress(taskId, IngestPhase.LOADING, 0, "Starting vector population...",
-                0, 0, 0, totalDocs, 0.0);
-
-        // Create pipeline (null chunker = skip chunking)
-        // IMPORTANT: Use vectorOnlyMode=true to skip keyword indexing since documents are already in the keyword index
-        int batchSize = ingestConfiguration.getEmbeddingTargetBatchSize();
-        ParallelIngestPipeline pipeline = new ParallelIngestPipeline(
-                null, // No chunker - documents are already chunked
-                embeddingModel,
-                indexerService,
-                null, // No chunking options
-                batchSize,
-                true,  // Enable parallel indexing (for vector store only)
-                true   // vectorOnlyMode - skip keyword index since we're populating from it
-        );
-        activePipelines.put(taskId, pipeline);
-
-        // Set up progress callback
-        final String finalTaskId = taskId;
-        pipeline.setProgressCallback(progress -> handlePipelineProgress(finalTaskId, progress, totalDocs));
+        long totalDocs = 0;
+        PopulationTaskStatus status = null;
+        ParallelIngestPipeline pipeline = null;
 
         try {
+            // Find LuceneIndexLoader
+            DocumentLoader luceneLoader = documentLoaders.stream()
+                    .filter(l -> l.getClass().getSimpleName().contains("LuceneIndex"))
+                    .findFirst()
+                    .orElseThrow(() -> new IOException("LuceneIndexLoader not found"));
+
+            // Get total document count
+            totalDocs = indexerService.getApproxTotalDocCount(null);
+            logger.info("Found {} documents in Lucene index", totalDocs);
+
+            // Initialize task status
+            status = new PopulationTaskStatus(taskId, totalDocs);
+            activeTasks.put(taskId, status);
+
+            // Broadcast initial status
+            broadcastProgress(taskId, IngestPhase.LOADING, 0, "Starting vector population...",
+                    0, 0, 0, totalDocs, 0.0);
+
+            // Create pipeline (null chunker = skip chunking)
+            // IMPORTANT: Use vectorOnlyMode=true to skip keyword indexing since documents
+            // are already in the keyword index
+            int batchSize = ingestConfiguration.getEmbeddingTargetBatchSize();
+            pipeline = new ParallelIngestPipeline(
+                    null, // No chunker - documents are already chunked
+                    embeddingModel,
+                    indexerService,
+                    null, // No chunking options
+                    batchSize,
+                    true, // Enable parallel indexing (for vector store only)
+                    true // vectorOnlyMode - skip keyword index since we're populating from it
+            );
+            activePipelines.put(taskId, pipeline);
+
+            // Set up progress callback
+            final String finalTaskId = taskId;
+            long finalTotalDocs = totalDocs;
+            pipeline.setProgressCallback(progress -> handlePipelineProgress(finalTaskId, progress, finalTotalDocs));
+
             // Load documents from Lucene and process through pipeline
             List<RetrievedDoc> chunks = loadDocumentsFromLucene(luceneLoader, indexPath, taskId, totalDocs);
 
             if (cancelledTasks.contains(taskId)) {
                 logger.info("Vector population cancelled: {}", taskId);
+                cancelIngestTracking(taskId, "Cancelled");
                 return new PopulationResult(taskId, false, 0, 0, "Cancelled");
             }
 
@@ -405,21 +491,32 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             }
 
             // Log the reported vs actual counts
-            logger.info("Vector population complete: reported={} indexed, actual vector store count={}, duration={}ms ({} docs/sec)",
+            logger.info(
+                    "Vector population complete: reported={} indexed, actual vector store count={}, duration={}ms ({} docs/sec)",
                     result.chunksIndexed(), actualVectorCount, duration, String.format("%.1f", rate));
 
-            // Warn if there's a significant discrepancy (>1% or more than 10 docs difference)
+            // Warn if there's a significant discrepancy (>1% or more than 10 docs
+            // difference)
             if (actualVectorCount >= 0 && result.chunksIndexed() > 0) {
                 long discrepancy = Math.abs(actualVectorCount - result.chunksIndexed());
                 double discrepancyPercent = (discrepancy * 100.0) / result.chunksIndexed();
                 if (discrepancy > 10 && discrepancyPercent > 1.0) {
-                    logger.warn("VECTOR STORE COUNT DISCREPANCY: reported {} indexed but actual count is {} (discrepancy: {} = {:.1f}%)",
-                            result.chunksIndexed(), actualVectorCount, discrepancy, discrepancyPercent);
+                    logger.warn(
+                            "VECTOR STORE COUNT DISCREPANCY: reported {} indexed but actual count is {} (discrepancy: {} = {}%)",
+                            result.chunksIndexed(), actualVectorCount, discrepancy, String.format("%.1f", discrepancyPercent));
                 }
             }
 
             // Use the actual vector store count if available, otherwise use reported count
             int confirmedIndexed = actualVectorCount >= 0 ? (int) actualVectorCount : result.chunksIndexed();
+            Long actualKeywordCount = null;
+            if (indexerService != null) {
+                try {
+                    actualKeywordCount = indexerService.getApproxTotalDocCount(null);
+                } catch (Exception e) {
+                    logger.trace("Could not fetch actual keyword index count: {}", e.getMessage());
+                }
+            }
 
             // Broadcast completion with verified count
             broadcastProgress(taskId, IngestPhase.COMPLETED, 100,
@@ -428,24 +525,46 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                     totalDocs, rate);
 
             status.complete(confirmedIndexed, duration);
+            IngestStats finalStats = IngestStats.builder()
+                    .documentsLoaded(result.documentsProcessed())
+                    .chunksCreated(result.chunksCreated())
+                    .chunksEmbedded(result.chunksIndexed())
+                    .chunksIndexed(confirmedIndexed)
+                    .documentsIndexed(confirmedIndexed)
+                    .actualKeywordIndexCount(actualKeywordCount)
+                    .actualVectorStoreCount(actualVectorCount >= 0 ? actualVectorCount : null)
+                    .totalProcessingTimeMs(duration)
+                    .docsPerSecond(rate)
+                    .build();
+            completeIngestTracking(taskId, finalStats);
 
             return new PopulationResult(taskId, true, confirmedIndexed, duration, null);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             logger.warn("Vector population interrupted: {}", taskId);
+            if (cancelledTasks.contains(taskId)) {
+                cancelIngestTracking(taskId, "Cancelled");
+                return new PopulationResult(taskId, false, 0, 0, "Cancelled");
+            }
             broadcastProgress(taskId, IngestPhase.FAILED, 0, "Interrupted", 0, 0, 0, totalDocs, 0.0);
+            IngestPhase lastPhase = taskLastPhases.getOrDefault(taskId, IngestPhase.LOADING);
+            failIngestTracking(taskId, lastPhase, "Interrupted");
             return new PopulationResult(taskId, false, 0, 0, "Interrupted");
         } catch (Exception e) {
             logger.error("Vector population failed: {}", e.getMessage(), e);
             broadcastProgress(taskId, IngestPhase.FAILED, 0, "Error: " + e.getMessage(), 0, 0, 0, totalDocs, 0.0);
+            IngestPhase lastPhase = taskLastPhases.getOrDefault(taskId, IngestPhase.LOADING);
+            failIngestTracking(taskId, lastPhase, e.getMessage());
             return new PopulationResult(taskId, false, 0, 0, e.getMessage());
         } finally {
             activePipelines.remove(taskId);
-            try {
-                pipeline.close();
-            } catch (Exception e) {
-                logger.debug("Error closing pipeline: {}", e.getMessage());
+            if (pipeline != null) {
+                try {
+                    pipeline.close();
+                } catch (Exception e) {
+                    logger.debug("Error closing pipeline: {}", e.getMessage());
+                }
             }
         }
     }
@@ -529,8 +648,10 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
         // Map pipeline phase to ingest phase
         IngestPhase phase = mapPhase(progress.phase());
+        taskLastPhases.put(taskId, phase);
 
-        // Calculate overall progress (loading=0-25%, embedding=25-75%, indexing=75-99%, complete=100%)
+        // Calculate overall progress (loading=0-25%, embedding=25-75%, indexing=75-99%,
+        // complete=100%)
         int overallPercent;
         if ("complete".equals(progress.phase())) {
             overallPercent = 100;
@@ -562,8 +683,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
      * Broadcast detailed progress update via WebSocket including worker statuses.
      */
     private void broadcastDetailedProgress(String taskId, IngestPhase phase, int progressPercent,
-                                           PipelineProgress progress, long totalDocs,
-                                           double rate, long elapsedMs) {
+            PipelineProgress progress, long totalDocs,
+            double rate, long elapsedMs) {
         // Throttle updates
         long now = System.currentTimeMillis();
         long last = lastProgressUpdateTime.get();
@@ -572,8 +693,23 @@ public class VectorStorePopulationService implements org.springframework.beans.f
         }
         lastProgressUpdateTime.set(now);
 
-        if (messagingTemplate == null) {
-            return;
+        // Check vector store count periodically (e.g. every 2 seconds) to show live
+        // updates in UI
+        long lastCheck = lastVectorStoreCheckTime.get();
+        if (now - lastCheck > 2000) {
+            if (vectorStore != null) {
+                // Use CAS to ensure only one thread performs the refresh
+                if (lastVectorStoreCheckTime.compareAndSet(lastCheck, now)) {
+                    try {
+                        vectorStore.refreshReader();
+                        long count = vectorStore.getApproxVectorCount();
+                        cachedVectorStoreCount.set(count);
+                        logger.debug("Refreshed vector store count: {}", count);
+                    } catch (Exception e) {
+                        logger.warn("Failed to refresh vector store reader for live update: {}", e.getMessage());
+                    }
+                }
+            }
         }
 
         // Build stats with worker details
@@ -581,10 +717,11 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 .documentsLoaded((int) totalDocs)
                 .docsPerSecond(rate)
                 .totalProcessingTimeMs(elapsedMs)
-                .documentsLoaded(progress.documentsProcessed())
                 .chunksCreated(progress.chunksCreated())
                 .chunksIndexed(progress.chunksIndexed())
-                .chunksEmbedded(progress.chunksEmbedded());
+                .chunksEmbedded(progress.chunksEmbedded())
+                .documentsIndexed(progress.chunksIndexed())
+                .actualVectorStoreCount(cachedVectorStoreCount.get() >= 0 ? cachedVectorStoreCount.get() : null);
 
         // Add worker statuses if available
         if (progress.workerStatuses() != null && !progress.workerStatuses().isEmpty()) {
@@ -632,15 +769,20 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                     .inputTensorShape(batch.inputTensorShape())
                     .outputTensorShape(batch.outputTensorShape())
                     .batchThroughput(batch.batchThroughput())
+                    .passageTokenCounts(batch.passageTokenCounts())
                     .build());
         }
 
         IngestStats stats = statsBuilder.build();
+        if (phase != IngestPhase.COMPLETED && phase != IngestPhase.FAILED) {
+            recordIngestProgress(taskId, phase, progressPercent, progress.phase(), progress.message(), stats);
+        }
 
         // Build progress update using factory method
+        String displayName = getTaskDisplayName(taskId);
         IngestProgressUpdate update = IngestProgressUpdate.progress(
                 taskId,
-                null, // fileName not applicable for vector population
+                displayName,
                 phase,
                 progressPercent,
                 progress.phase(),
@@ -648,24 +790,28 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 stats);
 
         // Send async to avoid blocking pipeline
-        webSocketExecutor.submit(() -> {
-            try {
-                messagingTemplate.convertAndSend("/topic/vector-population/progress", update);
-            } catch (Exception e) {
-                logger.trace("Failed to send WebSocket update: {}", e.getMessage());
-            }
-        });
+        if (messagingTemplate != null) {
+            webSocketExecutor.submit(() -> {
+                try {
+                    messagingTemplate.convertAndSend("/topic/vector-population/progress", update);
+                } catch (Exception e) {
+                    logger.trace("Failed to send WebSocket update: {}", e.getMessage());
+                }
+            });
+        }
     }
 
     /**
      * Map pipeline phase string to IngestPhase enum.
      */
     private IngestPhase mapPhase(String phase) {
-        if (phase == null) return IngestPhase.LOADING;
+        if (phase == null)
+            return IngestPhase.LOADING;
         return switch (phase.toLowerCase()) {
             case "starting", "queueing" -> IngestPhase.LOADING;
             case "embedding" -> IngestPhase.EMBEDDING;
             case "indexing" -> IngestPhase.INDEXING;
+            case "indexing+embedding", "indexing_and_embedding" -> IngestPhase.INDEXING_AND_EMBEDDING;
             case "complete", "completed" -> IngestPhase.COMPLETED;
             default -> IngestPhase.LOADING;
         };
@@ -675,8 +821,8 @@ public class VectorStorePopulationService implements org.springframework.beans.f
      * Broadcast progress update via WebSocket.
      */
     private void broadcastProgress(String taskId, IngestPhase phase, int progressPercent,
-                                   String message, long documents, long chunks,
-                                   long indexed, long total, double rate) {
+            String message, long documents, long chunks,
+            long indexed, long total, double rate) {
         // Throttle updates
         long now = System.currentTimeMillis();
         long last = lastProgressUpdateTime.get();
@@ -684,10 +830,6 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             return;
         }
         lastProgressUpdateTime.set(now);
-
-        if (messagingTemplate == null) {
-            return;
-        }
 
         // Fetch actual index counts periodically (every ~1 second during indexing)
         Long actualKeywordCount = null;
@@ -712,15 +854,21 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 .documentsLoaded((int) documents)
                 .chunksCreated((int) chunks)
                 .chunksIndexed((int) indexed)
+                .documentsIndexed((int) indexed)
                 .actualKeywordIndexCount(actualKeywordCount)
                 .actualVectorStoreCount(actualVectorCount)
                 .docsPerSecond(rate)
                 .build();
 
+        if (phase != IngestPhase.COMPLETED && phase != IngestPhase.FAILED) {
+            recordIngestProgress(taskId, phase, progressPercent, phase.name(), message, stats);
+        }
+
         // Build progress update using factory method
+        String displayName = getTaskDisplayName(taskId);
         IngestProgressUpdate update = IngestProgressUpdate.progress(
                 taskId,
-                null, // fileName not applicable for vector population
+                displayName,
                 phase,
                 progressPercent,
                 phase.name(),
@@ -728,13 +876,185 @@ public class VectorStorePopulationService implements org.springframework.beans.f
                 stats);
 
         // Send async to avoid blocking pipeline
-        webSocketExecutor.submit(() -> {
+        if (messagingTemplate != null) {
+            webSocketExecutor.submit(() -> {
+                try {
+                    messagingTemplate.convertAndSend("/topic/vector-population/progress", update);
+                } catch (Exception e) {
+                    logger.trace("Failed to send WebSocket update: {}", e.getMessage());
+                }
+            });
+        }
+    }
+
+    private String buildTaskDisplayName(String keywordIndexPath) {
+        if (keywordIndexPath == null || keywordIndexPath.isBlank()) {
+            return "Vector Population";
+        }
+        return "Vector Population: " + keywordIndexPath;
+    }
+
+    private String getTaskDisplayName(String taskId) {
+        String displayName = taskDisplayNames.get(taskId);
+        return displayName != null ? displayName : "Vector Population";
+    }
+
+    private void startIngestTracking(String taskId, String keywordIndexPath, String vectorIndexPath) {
+        String displayName = buildTaskDisplayName(keywordIndexPath);
+        taskDisplayNames.put(taskId, displayName);
+
+        if (ingestProgressTracker != null) {
+            ingestProgressTracker.startTask(taskId, displayName);
+        }
+
+        if (jobHistoryService != null) {
             try {
-                messagingTemplate.convertAndSend("/topic/vector-population/progress", update);
+                IndexingJobHistory job = jobHistoryService.createJobWithEnvironment(
+                        taskId,
+                        displayName,
+                        null,
+                        null,
+                        VECTOR_POPULATION_CONTENT_TYPE);
+                if (job != null) {
+                    jobHistoryService.markJobRunning(taskId);
+                    if (vectorIndexPath != null && !vectorIndexPath.isBlank()) {
+                        jobHistoryService.setIndexPath(taskId, vectorIndexPath);
+                    }
+                }
             } catch (Exception e) {
-                logger.trace("Failed to send WebSocket update: {}", e.getMessage());
+                logger.warn("[VectorPop {}] Failed to persist job history: {}", taskId, e.getMessage());
             }
-        });
+        }
+    }
+
+    private void recordIngestProgress(String taskId, IngestPhase phase, int progressPercent,
+            String currentStep, String message, IngestStats stats) {
+        taskLastPhases.put(taskId, phase);
+
+        if (ingestProgressTracker != null) {
+            String displayName = getTaskDisplayName(taskId);
+            ingestProgressTracker.updateProgress(taskId, displayName, phase, progressPercent, currentStep, message,
+                    stats);
+        }
+
+        updateJobHistory(taskId, phase, progressPercent, stats);
+    }
+
+    private void completeIngestTracking(String taskId, IngestStats finalStats) {
+        if (ingestProgressTracker != null) {
+            String displayName = getTaskDisplayName(taskId);
+            ingestProgressTracker.completeTask(taskId, displayName,
+                    finalStats != null ? finalStats : IngestStats.empty());
+        }
+
+        if (jobHistoryService != null) {
+            try {
+                updateJobHistory(taskId, IngestPhase.COMPLETED, 100, finalStats);
+                jobHistoryService.markJobCompleted(taskId);
+            } catch (Exception e) {
+                logger.warn("[VectorPop {}] Failed to mark job completed: {}", taskId, e.getMessage());
+            }
+        }
+
+        cleanupTaskTracking(taskId);
+    }
+
+    private void failIngestTracking(String taskId, IngestPhase failedPhase, String errorMessage) {
+        if (ingestProgressTracker != null) {
+            String displayName = getTaskDisplayName(taskId);
+            ingestProgressTracker.failTask(taskId, displayName, failedPhase, errorMessage);
+        }
+
+        if (jobHistoryService != null) {
+            try {
+                jobHistoryService.markJobFailed(taskId, mapPhaseToEventPhase(failedPhase), errorMessage, null,
+                        IndexingJobHistory.FailureReason.UNKNOWN);
+            } catch (Exception e) {
+                logger.warn("[VectorPop {}] Failed to mark job failed: {}", taskId, e.getMessage());
+            }
+        }
+
+        cleanupTaskTracking(taskId);
+    }
+
+    private void cancelIngestTracking(String taskId, String reason) {
+        IngestPhase lastPhase = taskLastPhases.getOrDefault(taskId, IngestPhase.LOADING);
+        long elapsedMs = 0;
+        PopulationTaskStatus status = activeTasks.get(taskId);
+        if (status != null) {
+            elapsedMs = status.getElapsedMs();
+        }
+        IngestStats stats = IngestStats.builder().totalProcessingTimeMs(elapsedMs).build();
+
+        if (ingestProgressTracker != null) {
+            String displayName = getTaskDisplayName(taskId);
+            ingestProgressTracker.cancelTask(taskId, displayName, lastPhase, reason, stats);
+        }
+
+        if (jobHistoryService != null) {
+            try {
+                jobHistoryService.markJobCancelled(taskId, mapPhaseToEventPhase(lastPhase), reason);
+            } catch (Exception e) {
+                logger.warn("[VectorPop {}] Failed to mark job cancelled: {}", taskId, e.getMessage());
+            }
+        }
+
+        cleanupTaskTracking(taskId);
+    }
+
+    private void cleanupTaskTracking(String taskId) {
+        taskDisplayNames.remove(taskId);
+        taskLastPhases.remove(taskId);
+        cancelledTasks.remove(taskId);
+        activeTasks.remove(taskId);
+    }
+
+    private void updateJobHistory(String taskId, IngestPhase phase, int progressPercent, IngestStats stats) {
+        if (jobHistoryService == null) {
+            return;
+        }
+
+        try {
+            jobHistoryService.updateJobProgress(taskId, mapPhaseToEventPhase(phase), progressPercent);
+            if (stats != null) {
+                Integer docsLoaded = stats.documentsLoaded() != null ? stats.documentsLoaded() : 0;
+                Integer chunksCreated = stats.chunksCreated() != null ? stats.chunksCreated() : 0;
+                Integer chunksEmbedded = stats.chunksEmbedded() != null ? stats.chunksEmbedded() : 0;
+                Integer chunksIndexed = stats.chunksIndexed();
+                if (chunksIndexed == null && stats.documentsIndexed() != null) {
+                    chunksIndexed = stats.documentsIndexed();
+                }
+                if (chunksIndexed == null) {
+                    chunksIndexed = 0;
+                }
+                jobHistoryService.updateJobStats(taskId, docsLoaded, chunksCreated, chunksEmbedded, chunksIndexed);
+
+                if (stats.memoryUsagePercent() != null && stats.memoryUsagePercent() > 0) {
+                    jobHistoryService.updateMemoryUsage(taskId, stats.memoryUsagePercent());
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("[VectorPop {}] Failed to update job history: {}", taskId, e.getMessage());
+        }
+    }
+
+    private IngestEvent.IngestPhase mapPhaseToEventPhase(IngestPhase phase) {
+        if (phase == null) {
+            return IngestEvent.IngestPhase.LOADING;
+        }
+        return switch (phase) {
+            case QUEUED -> IngestEvent.IngestPhase.QUEUED;
+            case UPLOADING, LOADING -> IngestEvent.IngestPhase.LOADING;
+            case OCR_PROCESSING -> IngestEvent.IngestPhase.OCR_PROCESSING;
+            case CONVERTING -> IngestEvent.IngestPhase.CONVERTING;
+            case CHUNKING -> IngestEvent.IngestPhase.CHUNKING;
+            case EXTRACTION -> IngestEvent.IngestPhase.EXTRACTION;
+            case INDEXING_AND_EMBEDDING -> IngestEvent.IngestPhase.INDEXING_AND_EMBEDDING;
+            case EMBEDDING -> IngestEvent.IngestPhase.EMBEDDING;
+            case INDEXING -> IngestEvent.IngestPhase.INDEXING;
+            case COMPLETED -> IngestEvent.IngestPhase.COMPLETED;
+            case FAILED -> IngestEvent.IngestPhase.FAILED;
+        };
     }
 
     /**
@@ -793,13 +1113,42 @@ public class VectorStorePopulationService implements org.springframework.beans.f
 
     // ========== Result/Status classes ==========
 
-    public record PopulationResult(
-            String taskId,
-            boolean success,
-            long documentsIndexed,
-            long durationMs,
-            String errorMessage
-    ) {}
+    public static class PopulationResult {
+        private final String taskId;
+        private final boolean success;
+        private final long documentsIndexed;
+        private final long durationMs;
+        private final String errorMessage;
+
+        public PopulationResult(String taskId, boolean success, long documentsIndexed, long durationMs,
+                String errorMessage) {
+            this.taskId = taskId;
+            this.success = success;
+            this.documentsIndexed = documentsIndexed;
+            this.durationMs = durationMs;
+            this.errorMessage = errorMessage;
+        }
+
+        public String taskId() {
+            return taskId;
+        }
+
+        public boolean success() {
+            return success;
+        }
+
+        public long documentsIndexed() {
+            return documentsIndexed;
+        }
+
+        public long durationMs() {
+            return durationMs;
+        }
+
+        public String errorMessage() {
+            return errorMessage;
+        }
+    }
 
     public static class PopulationTaskStatus {
         private final String taskId;
@@ -828,13 +1177,34 @@ public class VectorStorePopulationService implements org.springframework.beans.f
             this.endTime = startTime + durationMs;
         }
 
-        public String getTaskId() { return taskId; }
-        public long getTotalDocuments() { return totalDocuments; }
-        public long getStartTime() { return startTime; }
-        public long getDocumentsIndexed() { return documentsIndexed; }
-        public int getProgressPercent() { return progressPercent; }
-        public boolean isComplete() { return complete; }
-        public long getEndTime() { return endTime; }
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public long getTotalDocuments() {
+            return totalDocuments;
+        }
+
+        public long getStartTime() {
+            return startTime;
+        }
+
+        public long getDocumentsIndexed() {
+            return documentsIndexed;
+        }
+
+        public int getProgressPercent() {
+            return progressPercent;
+        }
+
+        public boolean isComplete() {
+            return complete;
+        }
+
+        public long getEndTime() {
+            return endTime;
+        }
+
         public long getElapsedMs() {
             return complete ? endTime - startTime : System.currentTimeMillis() - startTime;
         }

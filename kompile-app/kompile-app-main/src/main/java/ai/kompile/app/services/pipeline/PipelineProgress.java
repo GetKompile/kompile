@@ -43,13 +43,15 @@ public record PipelineProgress(
         int chunksCreated,
         int chunksEmbedded,
         int chunksIndexed,
+        long tokensProcessed,  // Total tokens processed during tokenization
         double chunksPerSecond,
         double memoryUsagePercent,
         int chunkingWorkers,
         int embeddingWorkers,
         List<WorkerStatus> workerStatuses,
         QueueStatus queueStatus,
-        EmbeddingBatchMetrics currentEmbeddingBatch
+        EmbeddingBatchMetrics currentEmbeddingBatch,
+        List<EmbeddingBatchMetrics> batchHistory  // Last N completed batches (most recent first)
 ) {
 
     /**
@@ -255,12 +257,15 @@ public record PipelineProgress(
 
             // Processing status
             String statusLevel,        // RUNNING, PROCESSING, SLOW, VERY_SLOW, EXTREMELY_SLOW
-            String etaMessage          // Estimated time remaining message
+            String etaMessage,         // Estimated time remaining message
+
+            // Per-passage token counts
+            int[] passageTokenCounts   // Token count for each passage in the batch
     ) {
         public static EmbeddingBatchMetrics empty() {
             return new EmbeddingBatchMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     null, 0, 0, false, 0, 0, 0, null, null, false,
-                    null, 0, null, null, null, null, null, null);
+                    null, 0, null, null, null, null, null, null, null);
         }
 
         public static Builder builder() {
@@ -303,6 +308,7 @@ public record PipelineProgress(
             private String actualOutputShape;
             private String statusLevel;
             private String etaMessage;
+            private int[] passageTokenCounts;
 
             public Builder batchNumber(int v) { this.batchNumber = v; return this; }
             public Builder totalBatches(int v) { this.totalBatches = v; return this; }
@@ -339,6 +345,7 @@ public record PipelineProgress(
             public Builder actualOutputShape(String v) { this.actualOutputShape = v; return this; }
             public Builder statusLevel(String v) { this.statusLevel = v; return this; }
             public Builder etaMessage(String v) { this.etaMessage = v; return this; }
+            public Builder passageTokenCounts(int[] v) { this.passageTokenCounts = v; return this; }
 
             public EmbeddingBatchMetrics build() {
                 return new EmbeddingBatchMetrics(
@@ -353,7 +360,7 @@ public record PipelineProgress(
                         sourceDocuments, sourceDocumentCount,
                         inputTensorShape, outputTensorShape,
                         actualInputShape, actualOutputShape,
-                        statusLevel, etaMessage
+                        statusLevel, etaMessage, passageTokenCounts
                 );
             }
         }
@@ -377,8 +384,8 @@ public record PipelineProgress(
      * Creates a simple progress update with minimal fields.
      */
     public static PipelineProgress simple(String phase, int percent, String message) {
-        return new PipelineProgress(phase, percent, message, 0, 0, 0, 0, 0, 0, 0, 0,
-                new ArrayList<>(), new QueueStatus(0, 0, 0, 0), null);
+        return new PipelineProgress(phase, percent, message, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                new ArrayList<>(), new QueueStatus(0, 0, 0, 0), null, null);
     }
 
     /**
@@ -396,6 +403,7 @@ public record PipelineProgress(
         private int chunksCreated = 0;
         private int chunksEmbedded = 0;
         private int chunksIndexed = 0;
+        private long tokensProcessed = 0;
         private double chunksPerSecond = 0;
         private double memoryUsagePercent = 0;
         private int chunkingWorkers = 0;
@@ -403,6 +411,7 @@ public record PipelineProgress(
         private List<WorkerStatus> workerStatuses = new ArrayList<>();
         private QueueStatus queueStatus = new QueueStatus(0, 0, 0, 0);
         private EmbeddingBatchMetrics currentEmbeddingBatch = null;
+        private List<EmbeddingBatchMetrics> batchHistory = null;
 
         public Builder phase(String phase) { this.phase = phase; return this; }
         public Builder percent(int percent) { this.percent = percent; return this; }
@@ -411,6 +420,7 @@ public record PipelineProgress(
         public Builder chunksCreated(int v) { this.chunksCreated = v; return this; }
         public Builder chunksEmbedded(int v) { this.chunksEmbedded = v; return this; }
         public Builder chunksIndexed(int v) { this.chunksIndexed = v; return this; }
+        public Builder tokensProcessed(long v) { this.tokensProcessed = v; return this; }
         public Builder chunksPerSecond(double v) { this.chunksPerSecond = v; return this; }
         public Builder memoryUsagePercent(double v) { this.memoryUsagePercent = v; return this; }
         public Builder chunkingWorkers(int v) { this.chunkingWorkers = v; return this; }
@@ -418,12 +428,13 @@ public record PipelineProgress(
         public Builder workerStatuses(List<WorkerStatus> v) { this.workerStatuses = v; return this; }
         public Builder queueStatus(QueueStatus v) { this.queueStatus = v; return this; }
         public Builder currentEmbeddingBatch(EmbeddingBatchMetrics v) { this.currentEmbeddingBatch = v; return this; }
+        public Builder batchHistory(List<EmbeddingBatchMetrics> v) { this.batchHistory = v; return this; }
 
         public PipelineProgress build() {
             return new PipelineProgress(phase, percent, message, documentsProcessed,
-                    chunksCreated, chunksEmbedded, chunksIndexed, chunksPerSecond,
-                    memoryUsagePercent, chunkingWorkers, embeddingWorkers,
-                    workerStatuses, queueStatus, currentEmbeddingBatch);
+                    chunksCreated, chunksEmbedded, chunksIndexed, tokensProcessed,
+                    chunksPerSecond, memoryUsagePercent, chunkingWorkers, embeddingWorkers,
+                    workerStatuses, queueStatus, currentEmbeddingBatch, batchHistory);
         }
     }
 }

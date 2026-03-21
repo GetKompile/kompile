@@ -26,6 +26,8 @@ import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SDZSerializer;
+import org.nd4j.autodiff.samediff.optimize.GraphOptimizer;
+import org.nd4j.autodiff.samediff.optimize.OptimizerSet;
 import org.nd4j.linalg.api.ops.executioner.OpExecutioner;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.profiler.ProfilerConfig;
@@ -78,10 +80,77 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
      */
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
+    // ========== FAIL-FAST ERROR HANDLING ==========
+    /**
+     * Global flag to control fail-fast behavior on encoding errors.
+     * When true, encoding errors will throw RuntimeException instead of returning null.
+     * This allows the pipeline to fail immediately and notify the user of the error.
+     * Default is true for production safety - errors should not be silently ignored.
+     */
+    private static volatile boolean failFastOnError = true;
+
+    /**
+     * Set fail-fast mode for all SameDiff encoders.
+     * @param failFast true to throw exceptions on errors, false to return null and continue
+     */
+    public static void setFailFastOnError(boolean failFast) {
+        failFastOnError = failFast;
+        LOG.info("SameDiff encoder fail-fast mode set to: {}", failFast);
+    }
+
+    /**
+     * Check if fail-fast mode is enabled.
+     * @return true if errors should throw exceptions
+     */
+    public static boolean isFailFastOnError() {
+        return failFastOnError;
+    }
+
+    /**
+     * Exception thrown when encoding fails in fail-fast mode.
+     * Contains details about the operation that failed.
+     */
+    public static class EncodingException extends RuntimeException {
+        private final String modelId;
+        private final String operation;
+
+        public EncodingException(String modelId, String operation, String message, Throwable cause) {
+            super(String.format("[%s] %s failed: %s", modelId, operation, message), cause);
+            this.modelId = modelId;
+            this.operation = operation;
+        }
+
+        public String getModelId() { return modelId; }
+        public String getOperation() { return operation; }
+    }
+
+    /**
+     * Exception thrown when model validation fails during initialization.
+     * This prevents indexing jobs from starting with a broken model.
+     */
+    public static class ModelValidationException extends RuntimeException {
+        private final String modelId;
+
+        public ModelValidationException(String modelId, String message) {
+            super(String.format("[%s] Model validation failed: %s", modelId, message));
+            this.modelId = modelId;
+        }
+
+        public ModelValidationException(String modelId, String message, Throwable cause) {
+            super(String.format("[%s] Model validation failed: %s", modelId, message), cause);
+            this.modelId = modelId;
+        }
+
+        public String getModelId() { return modelId; }
+    }
+
     // ========== BATCH INFO TRACKING ==========
     /**
      * Information about the current batch being processed.
-     * Updated during encoding for visibility into tensor shapes.
+     * Updated during encoding for visibility into tensor shapes AND timing.
+     *
+     * This is THE authoritative source for batch timing - it shows exactly what's
+     * happening inside the NDArray creation and forward pass.
      */
     public record BatchInfo(
             int numChunks,           // Number of text chunks in the batch
@@ -90,11 +159,86 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             int totalTokens,         // Total tokens across all chunks
             long[] inputShape,       // Actual input tensor shape [batch, seq_len]
             long[] outputShape,      // Actual output tensor shape [batch, embedding_dim]
-            String step,             // Current step: TOKENIZING, PADDING, FORWARD_PASS, EXTRACTING
-            long stepStartTimeMs     // When current step started
+            String step,             // Current step: TOKENIZING, PADDING, TENSOR_CREATION, FORWARD_PASS, EXTRACTING, COMPLETE
+            long stepStartTimeMs,    // When current step started
+            // ========== TIMING FIELDS ==========
+            long batchStartTimeMs,   // When this batch started processing
+            long tokenizeTimeMs,     // Time spent tokenizing all chunks
+            long paddingTimeMs,      // Time spent padding to max length
+            long tensorCreationTimeMs, // Time spent creating NDArrays
+            long forwardPassTimeMs,  // Time spent in model.output() - THE KEY METRIC
+            long extractionTimeMs,   // Time spent extracting embeddings from output
+            long totalTimeMs,        // Total time for this batch (when COMPLETE)
+            double tokensPerSecond,  // Throughput: tokens processed per second
+            double chunksPerSecond,  // Throughput: chunks processed per second
+            // ========== PER-PASSAGE TOKEN COUNTS ==========
+            int[] passageTokenCounts // Token count for each passage in the batch
     ) {
         public static BatchInfo empty() {
-            return new BatchInfo(0, 0, 0, 0, new long[0], new long[0], "IDLE", 0);
+            return new BatchInfo(0, 0, 0, 0, new long[0], new long[0], "IDLE", 0,
+                    0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, null);
+        }
+
+        /** Helper to format input tensor shape as string - uses ACTUAL shape array values */
+        public String inputShapeString() {
+            if (inputShape == null || inputShape.length == 0) {
+                // Fallback to computed values if actual shape not set
+                // Only return if BOTH dimensions are valid (non-zero)
+                if (numChunks > 0 && maxSeqLength > 0) {
+                    return "[" + numChunks + " x " + maxSeqLength + "]";
+                }
+                // Return null to signal "no valid shape" - UI will use its own fallback
+                return null;
+            }
+            // Validate shape array has no zero values
+            for (long dim : inputShape) {
+                if (dim <= 0) return null;
+            }
+            // Use actual shape array values
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < inputShape.length; i++) {
+                if (i > 0) sb.append(" x ");
+                sb.append(inputShape[i]);
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+
+        /** Helper to format output tensor shape as string - uses ACTUAL shape array values */
+        public String outputShapeString() {
+            if (outputShape == null || outputShape.length == 0) {
+                // Fallback to computed values if actual shape not set
+                // Only return if BOTH dimensions are valid (non-zero)
+                if (numChunks > 0 && embeddingDim > 0) {
+                    return "[" + numChunks + " x " + embeddingDim + "]";
+                }
+                // Return null to signal "no valid shape" - UI will use its own fallback
+                return null;
+            }
+            // Validate shape array has no zero values
+            for (long dim : outputShape) {
+                if (dim <= 0) return null;
+            }
+            // Use actual shape array values
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < outputShape.length; i++) {
+                if (i > 0) sb.append(" x ");
+                sb.append(outputShape[i]);
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+
+        /** Get elapsed time in current step */
+        public long stepElapsedMs() {
+            if (stepStartTimeMs == 0) return 0;
+            return System.currentTimeMillis() - stepStartTimeMs;
+        }
+
+        /** Get total elapsed time since batch started */
+        public long batchElapsedMs() {
+            if (batchStartTimeMs == 0) return 0;
+            return System.currentTimeMillis() - batchStartTimeMs;
         }
     }
 
@@ -105,7 +249,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
     /**
      * Gets information about the current batch being processed.
-     * @return BatchInfo with current batch details
+     * @return BatchInfo with current batch details, including real-time timing
      */
     public BatchInfo getCurrentBatchInfo() {
         return currentBatchInfo;
@@ -113,12 +257,68 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
     /**
      * Updates the current batch info - called by subclasses during encoding.
+     * This is the SIMPLE update for step changes (backward compatible).
+     * NOTE: Empty shape arrays preserve previous shapes (useful during TOKENIZING when shapes aren't known yet)
      */
     protected void updateBatchInfo(int numChunks, int maxSeqLength, int embeddingDim,
                                     int totalTokens, long[] inputShape, long[] outputShape, String step) {
+        updateBatchInfo(numChunks, maxSeqLength, embeddingDim, totalTokens, inputShape, outputShape, step, null);
+    }
+
+    protected void updateBatchInfo(int numChunks, int maxSeqLength, int embeddingDim,
+                                    int totalTokens, long[] inputShape, long[] outputShape, String step,
+                                    int[] passageTokenCounts) {
+        BatchInfo prev = this.currentBatchInfo;
+        // Preserve previous shapes if new ones are empty (e.g., during TOKENIZING)
+        long[] effectiveInputShape = (inputShape != null && inputShape.length > 0) ? inputShape : prev.inputShape();
+        long[] effectiveOutputShape = (outputShape != null && outputShape.length > 0) ? outputShape : prev.outputShape();
+        // Also preserve maxSeqLength and embeddingDim if current values are 0
+        int effectiveMaxSeqLength = maxSeqLength > 0 ? maxSeqLength : prev.maxSeqLength();
+        int effectiveEmbeddingDim = embeddingDim > 0 ? embeddingDim : prev.embeddingDim();
+        // Preserve previous token counts if not provided
+        int[] effectiveTokenCounts = passageTokenCounts != null ? passageTokenCounts : prev.passageTokenCounts();
+
+        this.currentBatchInfo = new BatchInfo(
+                numChunks, effectiveMaxSeqLength, effectiveEmbeddingDim, totalTokens,
+                effectiveInputShape, effectiveOutputShape, step, System.currentTimeMillis(),
+                prev.batchStartTimeMs() > 0 ? prev.batchStartTimeMs() : System.currentTimeMillis(),
+                prev.tokenizeTimeMs(), prev.paddingTimeMs(), prev.tensorCreationTimeMs(),
+                prev.forwardPassTimeMs(), prev.extractionTimeMs(), prev.totalTimeMs(),
+                prev.tokensPerSecond(), prev.chunksPerSecond(), effectiveTokenCounts
+        );
+    }
+
+    /**
+     * Updates batch info with full timing details - called at end of each phase.
+     */
+    protected void updateBatchInfoWithTiming(int numChunks, int maxSeqLength, int embeddingDim,
+                                              int totalTokens, long[] inputShape, long[] outputShape,
+                                              String step, long batchStartTimeMs,
+                                              long tokenizeTimeMs, long paddingTimeMs,
+                                              long tensorCreationTimeMs, long forwardPassTimeMs,
+                                              long extractionTimeMs, long totalTimeMs,
+                                              double tokensPerSecond, double chunksPerSecond) {
+        updateBatchInfoWithTiming(numChunks, maxSeqLength, embeddingDim, totalTokens, inputShape, outputShape,
+                step, batchStartTimeMs, tokenizeTimeMs, paddingTimeMs, tensorCreationTimeMs, forwardPassTimeMs,
+                extractionTimeMs, totalTimeMs, tokensPerSecond, chunksPerSecond, null);
+    }
+
+    protected void updateBatchInfoWithTiming(int numChunks, int maxSeqLength, int embeddingDim,
+                                              int totalTokens, long[] inputShape, long[] outputShape,
+                                              String step, long batchStartTimeMs,
+                                              long tokenizeTimeMs, long paddingTimeMs,
+                                              long tensorCreationTimeMs, long forwardPassTimeMs,
+                                              long extractionTimeMs, long totalTimeMs,
+                                              double tokensPerSecond, double chunksPerSecond,
+                                              int[] passageTokenCounts) {
+        // Preserve token counts from previous if not provided
+        int[] effectiveTokenCounts = passageTokenCounts != null ? passageTokenCounts : this.currentBatchInfo.passageTokenCounts();
         this.currentBatchInfo = new BatchInfo(
                 numChunks, maxSeqLength, embeddingDim, totalTokens,
-                inputShape, outputShape, step, System.currentTimeMillis()
+                inputShape, outputShape, step, System.currentTimeMillis(),
+                batchStartTimeMs, tokenizeTimeMs, paddingTimeMs, tensorCreationTimeMs,
+                forwardPassTimeMs, extractionTimeMs, totalTimeMs,
+                tokensPerSecond, chunksPerSecond, effectiveTokenCounts
         );
     }
 
@@ -127,6 +327,185 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
      */
     protected void clearBatchInfo() {
         this.currentBatchInfo = BatchInfo.empty();
+    }
+
+    // ========== MODEL VALIDATION ==========
+    /**
+     * Flag to enable/disable model validation at startup.
+     * Default is true - validate that the model produces non-zero embeddings.
+     */
+    private static volatile boolean validateOnInit = true;
+
+    /**
+     * Enable or disable model validation during encoder initialization.
+     * @param validate true to validate models produce non-zero output
+     */
+    public static void setValidateOnInit(boolean validate) {
+        validateOnInit = validate;
+        LOG.info("SameDiff encoder validation on init set to: {}", validate);
+    }
+
+    /**
+     * Check if model validation is enabled.
+     * @return true if models are validated during initialization
+     */
+    public static boolean isValidateOnInit() {
+        return validateOnInit;
+    }
+
+    // ========== GRAPH OPTIMIZATION ==========
+    /**
+     * Flag to enable/disable graph optimization at load time.
+     * When enabled, applies fusion optimizations (matmul+add -> xw_plus_b, etc.)
+     * to improve inference performance.
+     * Default is false - models are loaded as-is unless pre-optimized.
+     */
+    private static volatile boolean optimizeOnLoad = false;
+
+    /**
+     * Enable or disable graph optimization when loading models.
+     * When enabled, applies optimizations like:
+     * - matmul + add fusion into xw_plus_b
+     * - constant folding
+     * - dead code elimination
+     *
+     * @param optimize true to apply optimizations at load time
+     */
+    public static void setOptimizeOnLoad(boolean optimize) {
+        optimizeOnLoad = optimize;
+        LOG.info("SameDiff graph optimization on load set to: {}", optimize);
+    }
+
+    /**
+     * Check if graph optimization on load is enabled.
+     * @return true if models are optimized when loaded
+     */
+    public static boolean isOptimizeOnLoad() {
+        return optimizeOnLoad;
+    }
+
+    /**
+     * Validates that the model produces valid (non-zero) embeddings.
+     * This is called during initialization to detect broken models early,
+     * before any indexing job can start.
+     *
+     * @throws ModelValidationException if the model produces zero-magnitude vectors
+     */
+    protected void validateModelOutput() {
+        if (!validateOnInit) {
+            LOG.debug("[{}] Model validation disabled - skipping", modelIdentifier);
+            return;
+        }
+
+        LOG.info("[{}] Validating model output...", modelIdentifier);
+        long startTime = System.currentTimeMillis();
+
+        try {
+            // Use a simple, non-empty test text that should produce meaningful embeddings
+            String testText = "This is a validation test for the embedding model.";
+
+            // Tokenize the test text
+            SamediffBertTokenizerPreProcessor.BertEncoding encoding = tokenizerPreProcessor.encode(testText);
+
+            if (encoding == null || encoding.inputIds == null || encoding.inputIds.length == 0) {
+                throw new ModelValidationException(modelIdentifier,
+                        "Tokenizer failed to produce valid encoding for test text");
+            }
+
+            // Check tokenization produced meaningful tokens (not just special tokens)
+            int nonPadTokens = 0;
+            for (long tokenId : encoding.inputIds) {
+                if (tokenId != 0) nonPadTokens++;
+            }
+            if (nonPadTokens <= 2) {
+                throw new ModelValidationException(modelIdentifier,
+                        "Tokenizer produced only " + nonPadTokens + " non-padding tokens - vocabulary may be incompatible");
+            }
+
+            // Now run the actual model inference using encodeFromTokenized
+            // We need to acquire the lock since this may run concurrently with warmup
+            encodeLock.lock();
+            try {
+                Object result = encodeFromTokenized(testText, encoding);
+
+                // Check if encoding returned null (indicates failure)
+                if (result == null) {
+                    throw new ModelValidationException(modelIdentifier,
+                            "Model returned null embedding - inference failed silently");
+                }
+
+                // For float[] results, check for zero-magnitude vectors
+                if (result instanceof float[] floatResult) {
+                    validateFloatEmbedding(floatResult);
+                }
+                // For other result types (e.g., sparse encoders), skip magnitude check
+                // but validate non-null was sufficient
+
+            } finally {
+                encodeLock.unlock();
+            }
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            LOG.info("[{}] Model validation PASSED in {}ms - model produces valid embeddings",
+                    modelIdentifier, elapsed);
+
+        } catch (ModelValidationException e) {
+            // Re-throw validation exceptions as-is
+            throw e;
+        } catch (Exception e) {
+            throw new ModelValidationException(modelIdentifier,
+                    "Unexpected error during validation: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Validates that a float[] embedding is not zero-magnitude.
+     * @param embedding The embedding to validate
+     * @throws ModelValidationException if the embedding is all zeros
+     */
+    private void validateFloatEmbedding(float[] embedding) {
+        if (embedding == null || embedding.length == 0) {
+            throw new ModelValidationException(modelIdentifier,
+                    "Model produced null or empty embedding array");
+        }
+
+        // Check if the embedding is all zeros (zero-magnitude vector)
+        double sumSquares = 0.0;
+        double minVal = Double.MAX_VALUE;
+        double maxVal = Double.MIN_VALUE;
+
+        for (float v : embedding) {
+            sumSquares += (double) v * v;
+            if (v < minVal) minVal = v;
+            if (v > maxVal) maxVal = v;
+        }
+
+        double magnitude = Math.sqrt(sumSquares);
+
+        // Log the embedding stats for debugging
+        LOG.debug("[{}] Validation embedding: dims={}, min={}, max={}, magnitude={}",
+                modelIdentifier, embedding.length, minVal, maxVal, magnitude);
+
+        // Zero-magnitude check with small epsilon for floating point precision
+        if (magnitude < 1e-10) {
+            String errorMsg = String.format(
+                    "Model produced ZERO-MAGNITUDE vector (magnitude=%e). " +
+                    "This indicates the model forward pass is broken. " +
+                    "The embedding has %d dimensions, min=%f, max=%f. " +
+                    "Possible causes: (1) ONNX import error with Gather/Gemm operations, " +
+                    "(2) Model file corruption, (3) Incompatible model format. " +
+                    "DO NOT proceed with indexing - all documents would get identical (zero) embeddings.",
+                    magnitude, embedding.length, minVal, maxVal);
+
+            LOG.error("[{}] {}", modelIdentifier, errorMsg);
+            throw new ModelValidationException(modelIdentifier, errorMsg);
+        }
+
+        // Also warn if magnitude is suspiciously small (but not zero)
+        if (magnitude < 0.01) {
+            LOG.warn("[{}] Model produced very small embedding magnitude ({}) - this may indicate partial model failure",
+                    modelIdentifier, magnitude);
+        }
     }
 
     // ========== INSTRUCTION PREFIX SUPPORT ==========
@@ -242,10 +621,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             throw new IOException("Model has no outputs defined");
         }
 
-        // NOTE: NAN_PANIC mode was removed - it's a debugging feature that adds massive
-        // overhead by checking every operation for NaN/Inf. Use only for debugging specific issues.
-        // Nd4j.getExecutioner().setProfilingMode(OpExecutioner.ProfilingMode.NAN_PANIC);
-
+        // Validate that the model produces valid embeddings before use
+        validateModelOutput();
     }
 
     /**
@@ -355,10 +732,161 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
             }
             LOG.info("[{}] Successfully imported model to SameDiff from: {}", modelIdentifier, modelPath.toAbsolutePath());
 
+            // Apply graph optimization if enabled
+            if (optimizeOnLoad) {
+                applyGraphOptimization();
+            }
+
         } catch (Exception e) {
             LOG.error("[{}] Failed to import model to SameDiff from path {}", modelIdentifier, modelPath, e);
             throw new IOException("Failed to import model to SameDiff from " + modelPath + ": " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Apply graph optimizations to the loaded model.
+     * This fuses operations for better performance (e.g., matmul+add -> xw_plus_b).
+     */
+    private void applyGraphOptimization() {
+        if (this.sameDiffModel == null) {
+            LOG.warn("[{}] Cannot optimize null model", modelIdentifier);
+            return;
+        }
+
+        try {
+            List<String> outputs = this.sameDiffModel.outputs();
+            if (outputs.isEmpty()) {
+                LOG.warn("[{}] Model has no outputs, skipping optimization", modelIdentifier);
+                return;
+            }
+
+            int originalOps = this.sameDiffModel.getOps().size();
+            int originalVars = this.sameDiffModel.getVariables().size();
+
+            LOG.info("[{}] Applying graph optimizations (original: {} ops, {} variables)...",
+                    modelIdentifier, originalOps, originalVars);
+
+            long startTime = System.currentTimeMillis();
+
+            // Apply default optimizations
+            SameDiff optimized = GraphOptimizer.optimize(
+                    this.sameDiffModel,
+                    outputs,
+                    GraphOptimizer.defaultOptimizations()
+            );
+
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            int optimizedOps = optimized.getOps().size();
+            int optimizedVars = optimized.getVariables().size();
+
+            LOG.info("[{}] Graph optimization complete in {}ms: {} ops -> {} ops (reduced by {}), {} vars -> {} vars (reduced by {})",
+                    modelIdentifier, elapsed,
+                    originalOps, optimizedOps, originalOps - optimizedOps,
+                    originalVars, optimizedVars, originalVars - optimizedVars);
+
+            // Replace the model with optimized version
+            this.sameDiffModel = optimized;
+
+        } catch (Exception e) {
+            LOG.warn("[{}] Graph optimization failed, using original model: {}",
+                    modelIdentifier, e.getMessage());
+            // Keep the original model on failure
+        }
+    }
+
+    /**
+     * Save the current model with graph optimizations applied.
+     * This pre-optimizes the model for faster loading and inference.
+     *
+     * @param outputPath Path to save the optimized model (.sdz format)
+     * @throws IOException if saving fails
+     */
+    public void saveOptimized(Path outputPath) throws IOException {
+        if (this.sameDiffModel == null) {
+            throw new IOException("No model loaded to save");
+        }
+
+        List<String> outputs = this.sameDiffModel.outputs();
+        if (outputs.isEmpty()) {
+            throw new IOException("Model has no outputs defined");
+        }
+
+        LOG.info("[{}] Saving optimized model to: {}", modelIdentifier, outputPath);
+
+        SDZSerializer.saveOptimized(
+                this.sameDiffModel,
+                outputPath.toFile(),
+                false, // Don't save updater state for inference models
+                null,
+                outputs
+        );
+
+        LOG.info("[{}] Optimized model saved successfully", modelIdentifier);
+    }
+
+    /**
+     * Save the current model with graph optimizations and custom settings.
+     *
+     * @param outputPath       Path to save the optimized model
+     * @param saveUpdaterState Whether to save updater state
+     * @param metadata         Optional metadata to include
+     * @param requiredOutputs  Specific outputs to preserve (null = all outputs)
+     * @throws IOException if saving fails
+     */
+    public void saveOptimized(Path outputPath, boolean saveUpdaterState,
+                              Map<String, String> metadata, List<String> requiredOutputs) throws IOException {
+        if (this.sameDiffModel == null) {
+            throw new IOException("No model loaded to save");
+        }
+
+        List<String> outputs = requiredOutputs != null ? requiredOutputs : this.sameDiffModel.outputs();
+        if (outputs.isEmpty()) {
+            throw new IOException("No outputs specified for optimization");
+        }
+
+        LOG.info("[{}] Saving optimized model with {} outputs to: {}",
+                modelIdentifier, outputs.size(), outputPath);
+
+        SDZSerializer.saveOptimized(
+                this.sameDiffModel,
+                outputPath.toFile(),
+                saveUpdaterState,
+                metadata,
+                outputs
+        );
+
+        LOG.info("[{}] Optimized model saved successfully", modelIdentifier);
+    }
+
+    /**
+     * Static utility to pre-optimize a model file.
+     * Loads the model, applies optimizations, and saves to a new file.
+     *
+     * @param inputPath  Path to the input model (.sdz format)
+     * @param outputPath Path to save the optimized model
+     * @param outputs    The output variable names to preserve
+     * @throws IOException if loading or saving fails
+     */
+    public static void preOptimizeModel(Path inputPath, Path outputPath, List<String> outputs) throws IOException {
+        LOG.info("Pre-optimizing model: {} -> {}", inputPath, outputPath);
+
+        SameDiff model = SDZSerializer.load(inputPath.toFile(), true);
+        if (model == null) {
+            throw new IOException("Failed to load model from: " + inputPath);
+        }
+
+        List<String> targetOutputs = outputs;
+        if (targetOutputs == null || targetOutputs.isEmpty()) {
+            targetOutputs = model.outputs();
+        }
+
+        if (targetOutputs.isEmpty()) {
+            throw new IOException("Model has no outputs and none specified");
+        }
+
+        SDZSerializer.saveOptimized(model, outputPath.toFile(), false, null, targetOutputs);
+        LOG.info("Pre-optimization complete: {}", outputPath);
     }
 
     /**
@@ -418,6 +946,9 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
         if (this.outputTensorNamesFromModel.isEmpty()) {
             throw new IOException("Model has no outputs defined");
         }
+
+        // Validate that the model produces valid embeddings before use
+        validateModelOutput();
     }
 
     public SamediffBertTokenizerPreProcessor getTokenizerPreProcessor() {
@@ -728,8 +1259,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
                     if (count % progressChunk == 0) {
                         long elapsed = System.currentTimeMillis() - startTime;
                         double rate = elapsed > 0 ? (count * 1000.0 / elapsed) : 0;
-                        LOG.debug("[{}] Inference progress: {}/{} ({:.1f}/sec), queue: {}",
-                                modelIdentifier, count, numTexts, rate, workQueue.size());
+                        LOG.debug("[{}] Inference progress: {}/{} ({}/sec), queue: {}",
+                                modelIdentifier, count, numTexts, String.format("%.1f", rate), workQueue.size());
                     }
 
                 } catch (InterruptedException e) {
@@ -757,8 +1288,8 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
         long totalTime = System.currentTimeMillis() - startTime;
         double textsPerSec = totalTime > 0 ? (successCount.get() * 1000.0 / totalTime) : 0;
-        LOG.info("[{}] Pipelined encode complete: {}/{} texts in {}ms ({:.1f} texts/sec)",
-                modelIdentifier, successCount.get(), numTexts, totalTime, textsPerSec);
+        LOG.info("[{}] Pipelined encode complete: {}/{} texts in {}ms ({} texts/sec)",
+                modelIdentifier, successCount.get(), numTexts, totalTime, String.format("%.1f", textsPerSec));
 
         return results;
     }

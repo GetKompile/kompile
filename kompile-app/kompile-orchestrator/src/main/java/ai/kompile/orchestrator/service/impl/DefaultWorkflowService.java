@@ -528,7 +528,7 @@ public class DefaultWorkflowService implements WorkflowService {
 
     @Override
     public List<Workflow> getWorkflowHistory(String orchestratorInstanceId, int limit) {
-        return workflowRepository.findTopByOrchestratorInstanceIdOrderByCreatedAtDesc(
+        return workflowRepository.findTopByOrchestratorInstanceIdOrderByStartTimeDesc(
                 orchestratorInstanceId, org.springframework.data.domain.PageRequest.of(0, limit));
     }
 

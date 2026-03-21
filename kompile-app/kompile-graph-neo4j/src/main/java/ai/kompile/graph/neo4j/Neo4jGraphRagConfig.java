@@ -19,24 +19,24 @@ package ai.kompile.graph.neo4j;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
-@Configuration(proxyBeanMethods = false)
+/**
+ * Factory for creating Neo4j Driver instances.
+ * Bean registration is handled by Neo4jGraphBeans.
+ */
 public class Neo4jGraphRagConfig {
 
-    @Value("${neo4j.uri}")
-    private String uri;
+    private final String uri;
+    private final String username;
+    private final String password;
 
-    @Value("${neo4j.username}")
-    private String username;
+    public Neo4jGraphRagConfig(String uri, String username, String password) {
+        this.uri = uri;
+        this.username = username;
+        this.password = password;
+    }
 
-    @Value("${neo4j.password}")
-    private String password;
-
-    @Bean
-    public Driver neo4jDriver() {
+    public Driver createDriver() {
         return GraphDatabase.driver(uri, AuthTokens.basic(username, password));
     }
 }

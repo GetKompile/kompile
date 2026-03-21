@@ -16,6 +16,7 @@
 
 package ai.kompile.app.chunker.token;
 
+import ai.kompile.app.core.chunking.SentenceFilter;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import com.knuddels.jtokkit.api.EncodingType;
@@ -62,9 +63,11 @@ public class SpringTokenChunker implements TextChunker {
     public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
         // Validate document using the interface method
         validateDocument(document);
-        
+
         // Prepare options with defaults
         Map<String, Object> mergedOptions = prepareOptions(options);
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
 
         int chunkSize = (int) mergedOptions.getOrDefault(OPTION_CHUNK_SIZE_TOKENS, DEFAULT_CHUNK_SIZE_TOKENS);
         int minChunkSizeChars = (int) mergedOptions.getOrDefault(OPTION_MIN_CHUNK_SIZE_CHARS, DEFAULT_MIN_CHUNK_SIZE_CHARS);
@@ -89,7 +92,7 @@ public class SpringTokenChunker implements TextChunker {
         // Convert RetrievedDoc to Spring AI Document for the splitter
         Document springDoc = new Document(document.getId(), document.getText(), document.getMetadata());
         List<Document> sourceDocuments = Collections.singletonList(springDoc);
-        
+
         // The apply method in TextSplitter handles the conversion from List<Document> to List<String> for splitting,
         // then wraps the resulting strings back into Document objects.
         List<Document> splitDocumentsRaw = textSplitter.apply(sourceDocuments);
@@ -117,6 +120,12 @@ public class SpringTokenChunker implements TextChunker {
         log.debug("Split document {} into {} chunks using {}. Options: chunkSize={}, minChunkSizeChars={}, minChunkLengthToEmbed={}, maxNumChunks={}, keepSeparator={}. Tokenizer used: {}",
                 document.getId(), finalSplitDocuments.size(), getName(),
                 chunkSize, minChunkSizeChars, minChunkLengthToEmbed, maxNumChunks, keepSeparator, DEFAULT_TOKENIZER_NAME);
+
+        // Apply sentence filtering and garbage collection if enabled
+        if (collectGarbage) {
+            return SentenceFilter.filterAndCollectGarbage(finalSplitDocuments, document, getName(), includeGarbageChunk);
+        }
+
         return finalSplitDocuments;
     }
 
@@ -143,6 +152,9 @@ public class SpringTokenChunker implements TextChunker {
         defaults.put("chunkSize", DEFAULT_CHUNK_SIZE_TOKENS);
         defaults.put("overlap", 0); // Token chunker doesn't use overlap in the same way
         defaults.put("preserveParagraphs", DEFAULT_KEEP_SEPARATOR);
+        // Garbage collection options - disabled by default (see TextChunker interface)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
         return defaults;
     }
 }

@@ -35,9 +35,25 @@ public class Relationship {
     private String target;
 
     /**
+     * The relationship type (e.g., "WORKS_AT", "LOCATED_IN", "RELATED_TO").
+     * This is used for categorization and graph visualization.
+     */
+    private String type;
+
+    /**
      * A generated description of how the source and target entities are related.
      */
     private String description;
+
+    /**
+     * The strength/weight of the relationship (0.0 to 1.0).
+     */
+    private Double weight;
+
+    /**
+     * Confidence score for the relationship extraction (0.0 to 1.0).
+     */
+    private Double confidence;
 
     /**
      * Additional metadata associated with the relationship.

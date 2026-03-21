@@ -18,8 +18,10 @@ package ai.kompile.oauth.service.providers;
 
 import ai.kompile.oauth.dto.OAuthTokenResponse;
 import ai.kompile.oauth.dto.OAuthUserInfo;
+import ai.kompile.oauth.service.OAuthSettingsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
@@ -42,18 +44,56 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String AUTH_TEST_ENDPOINT = "https://slack.com/api/auth.test";
     private static final String USERS_INFO_ENDPOINT = "https://slack.com/api/users.info";
     private static final String REVOKE_ENDPOINT = "https://slack.com/api/auth.revoke";
+    private static final String DEFAULT_SCOPES = "channels:history channels:read users:read";
+
+    private OAuthSettingsService settingsService;
 
     @Value("${kompile.oauth.slack.client-id:}")
-    private String clientId;
+    private String defaultClientId;
 
     @Value("${kompile.oauth.slack.client-secret:}")
-    private String clientSecret;
+    private String defaultClientSecret;
 
-    @Value("${kompile.oauth.slack.scopes:channels:history channels:read users:read}")
-    private String scopes;
+    @Value("${kompile.oauth.slack.scopes:" + DEFAULT_SCOPES + "}")
+    private String defaultScopes;
 
     public SlackOAuthHandler(RestTemplate restTemplate, ObjectMapper objectMapper) {
         super(restTemplate, objectMapper);
+    }
+
+    @Autowired(required = false)
+    public void setSettingsService(OAuthSettingsService settingsService) {
+        this.settingsService = settingsService;
+    }
+
+    private String getEffectiveClientId() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientId(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientId;
+    }
+
+    private String getEffectiveClientSecret() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientSecret(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientSecret;
+    }
+
+    private String getEffectiveScopes() {
+        if (settingsService != null) {
+            String configured = settingsService.getScopes(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultScopes != null && !defaultScopes.isEmpty() ? defaultScopes : DEFAULT_SCOPES;
     }
 
     @Override
@@ -83,7 +123,7 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public List<String> getRequiredScopes() {
-        return List.of(scopes.split("\\s+"));
+        return List.of(getEffectiveScopes().split("\\s+"));
     }
 
     @Override
@@ -93,12 +133,12 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     protected String getClientId() {
-        return clientId;
+        return getEffectiveClientId();
     }
 
     @Override
     protected String getClientSecret() {
-        return clientSecret;
+        return getEffectiveClientSecret();
     }
 
     @Override
@@ -114,9 +154,9 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
     @Override
     public String buildAuthorizationUrl(String redirectUri, String state) {
         Map<String, String> params = new LinkedHashMap<>();
-        params.put("client_id", clientId);
+        params.put("client_id", getEffectiveClientId());
         params.put("redirect_uri", redirectUri);
-        params.put("scope", scopes);
+        params.put("scope", getEffectiveScopes());
         params.put("state", state);
 
         return AUTHORIZATION_ENDPOINT + "?" + buildQueryString(params);
@@ -130,8 +170,8 @@ public class SlackOAuthHandler extends AbstractOAuthProviderHandler {
 
             MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
             body.add("code", code);
-            body.add("client_id", clientId);
-            body.add("client_secret", clientSecret);
+            body.add("client_id", getEffectiveClientId());
+            body.add("client_secret", getEffectiveClientSecret());
             body.add("redirect_uri", redirectUri);
 
             HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);

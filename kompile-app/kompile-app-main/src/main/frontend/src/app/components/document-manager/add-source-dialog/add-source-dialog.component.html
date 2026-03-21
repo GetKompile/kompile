@@ -35,6 +35,207 @@
     </mat-select>
   </mat-form-field>
 
+  <!-- Composite PDF Loader Option -->
+  <div *ngIf="hasSelectedPdfFiles() && !addSourceForm.get('loaderSelect')?.value" class="composite-loader-section" @expandCollapse>
+    <div class="composite-loader-card">
+      <div class="composite-loader-header">
+        <mat-slide-toggle
+          [(ngModel)]="useCompositePdfLoader"
+          [ngModelOptions]="{standalone: true}"
+          [disabled]="isSubmitting"
+          color="primary"
+          class="composite-toggle">
+          <div class="toggle-content">
+            <mat-icon>compare_arrows</mat-icon>
+            <span class="toggle-label">Auto-Select Best PDF Loader</span>
+          </div>
+        </mat-slide-toggle>
+      </div>
+      <div class="composite-loader-description">
+        <mat-icon class="info-icon">info_outline</mat-icon>
+        <span>
+          Test multiple PDF loaders and automatically use the one that extracts the most content.
+          Recommended for scanned PDFs or documents with complex layouts.
+          <strong>({{ getSelectedPdfCount() }} PDF{{ getSelectedPdfCount() > 1 ? 's' : '' }} selected)</strong>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PDF Processing Configuration Section -->
+  <div *ngIf="hasSelectedPdfFiles()" class="pdf-processing-section">
+    <div class="section-header" (click)="togglePdfProcessingSection()">
+      <div class="section-header-left">
+        <mat-icon>picture_as_pdf</mat-icon>
+        <span class="section-title">PDF Processing Configuration</span>
+        <mat-chip class="preset-chip" *ngIf="!showPdfProcessingOptions">
+          {{ pdfProcessingConfig.processingMode }}
+        </mat-chip>
+      </div>
+      <mat-icon class="expand-icon">{{ showPdfProcessingOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+    </div>
+
+    <div class="pdf-processing-content" *ngIf="showPdfProcessingOptions" [@expandCollapse]>
+      <!-- Processing Mode Selection -->
+      <div class="processing-mode-section">
+        <label class="mode-label">Processing Mode</label>
+        <p class="mode-description-text">Choose how PDF content should be extracted</p>
+        <div class="pdf-mode-cards">
+          <div *ngFor="let mode of pdfProcessingModes" class="pdf-mode-card"
+            [class.mode-selected]="pdfProcessingConfig.processingMode === mode.id"
+            (click)="selectPdfProcessingMode(mode.id)"
+            [class.disabled]="isSubmitting">
+            <mat-icon class="mode-icon">{{ mode.icon }}</mat-icon>
+            <div class="mode-info">
+              <span class="mode-name">{{ mode.name }}</span>
+              <span class="mode-description">{{ mode.description }}</span>
+            </div>
+            <mat-icon class="check-icon" *ngIf="pdfProcessingConfig.processingMode === mode.id">check_circle</mat-icon>
+          </div>
+        </div>
+      </div>
+
+      <!-- Table Extraction Configuration -->
+      <div class="table-extraction-section">
+        <div class="table-extraction-header">
+          <mat-slide-toggle
+            [(ngModel)]="pdfProcessingConfig.extractTables"
+            [ngModelOptions]="{standalone: true}"
+            [disabled]="isSubmitting"
+            (change)="toggleTableExtraction()"
+            color="primary">
+            <div class="toggle-content">
+              <mat-icon>table_chart</mat-icon>
+              <span class="toggle-label">Extract Tables</span>
+            </div>
+          </mat-slide-toggle>
+        </div>
+
+        <div class="table-options" *ngIf="pdfProcessingConfig.extractTables">
+          <label class="options-label">Table Extraction Method</label>
+          <div class="table-method-cards">
+            <div *ngFor="let method of tableExtractionMethods" class="table-method-card"
+              [class.method-selected]="pdfProcessingConfig.tableExtractionMethod === method.id"
+              (click)="selectTableExtractionMethod(method.id)"
+              [class.disabled]="isSubmitting">
+              <mat-icon class="method-icon">{{ method.icon }}</mat-icon>
+              <div class="method-info">
+                <span class="method-name">{{ method.name }}</span>
+                <span class="method-description">{{ method.description }}</span>
+              </div>
+              <mat-icon class="check-icon" *ngIf="pdfProcessingConfig.tableExtractionMethod === method.id">check_circle</mat-icon>
+            </div>
+          </div>
+
+          <!-- Table Storage Mode -->
+          <div class="table-storage-options">
+            <label class="options-label">Table Storage</label>
+            <mat-button-toggle-group
+              [(ngModel)]="pdfProcessingConfig.tableStorageMode"
+              [ngModelOptions]="{standalone: true}"
+              [disabled]="isSubmitting"
+              class="table-storage-toggle">
+              <mat-button-toggle value="INLINE" matTooltip="Tables embedded inline in document text">Inline</mat-button-toggle>
+              <mat-button-toggle value="SEPARATE" matTooltip="Each table as a separate document">Separate</mat-button-toggle>
+              <mat-button-toggle value="BOTH" matTooltip="Both inline and separate documents">Both</mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+        </div>
+      </div>
+
+      <!-- VLM Configuration (shown when VLM or AUTO mode is selected) -->
+      <div class="vlm-config-section" *ngIf="shouldShowVlmOptions()">
+        <div class="vlm-header">
+          <mat-icon>smart_toy</mat-icon>
+          <span>Vision-Language Model (VLM) Settings</span>
+        </div>
+
+        <div class="vlm-options-grid">
+          <!-- VLM Model Selection -->
+          <mat-form-field appearance="outline" class="vlm-model-field">
+            <mat-label>VLM Model</mat-label>
+            <mat-select [(ngModel)]="pdfProcessingConfig.vlmModelId" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
+              <mat-option value="smoldocling-256m">SmolDocling 256M (Fast)</mat-option>
+              <mat-option value="smoldocling-512m">SmolDocling 512M (Balanced)</mat-option>
+              <mat-option value="smoldocling-1b">SmolDocling 1B (High Quality)</mat-option>
+            </mat-select>
+            <mat-hint>Choose model based on accuracy/speed tradeoff</mat-hint>
+          </mat-form-field>
+
+          <!-- VLM Output Format -->
+          <mat-form-field appearance="outline" class="vlm-format-field">
+            <mat-label>Output Format</mat-label>
+            <mat-select [(ngModel)]="pdfProcessingConfig.vlmOutputFormat" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
+              <mat-option value="MARKDOWN">Markdown (Recommended)</mat-option>
+              <mat-option value="DOCTAGS">DocTags (Structured)</mat-option>
+              <mat-option value="JSON">JSON</mat-option>
+              <mat-option value="TEXT">Plain Text</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- PDF Render DPI -->
+          <mat-form-field appearance="outline" class="vlm-dpi-field">
+            <mat-label>Render DPI</mat-label>
+            <input matInput type="number" [(ngModel)]="pdfProcessingConfig.pdfRenderDpi"
+              [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting" min="72" max="600">
+            <mat-hint>Higher DPI = better quality, slower processing</mat-hint>
+          </mat-form-field>
+
+          <!-- Max Tokens -->
+          <mat-form-field appearance="outline" class="vlm-tokens-field">
+            <mat-label>Max Tokens</mat-label>
+            <input matInput type="number" [(ngModel)]="pdfProcessingConfig.maxNewTokens"
+              [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting" min="256" max="16384">
+            <mat-hint>Maximum tokens per page extraction</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <!-- VLM Info Box -->
+        <div class="vlm-info-box">
+          <mat-icon>info</mat-icon>
+          <div class="info-content">
+            <strong>VLM Processing:</strong> Vision-Language Models are ideal for:
+            <ul>
+              <li>Scanned documents and images</li>
+              <li>Complex layouts with mixed content</li>
+              <li>Documents where OCR fails to extract properly</li>
+            </ul>
+            Note: VLM processing is slower but provides higher quality extraction for difficult documents.
+          </div>
+        </div>
+      </div>
+
+      <!-- Auto Mode Settings -->
+      <div class="auto-mode-section" *ngIf="pdfProcessingConfig.processingMode === 'AUTO'">
+        <div class="auto-mode-option">
+          <mat-form-field appearance="outline" class="auto-threshold-field">
+            <mat-label>Min Characters Threshold</mat-label>
+            <input matInput type="number" [(ngModel)]="pdfProcessingConfig.autoModeMinCharacters"
+              [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting" min="10" max="1000">
+            <mat-hint>Fall back to VLM if text extraction yields fewer characters</mat-hint>
+          </mat-form-field>
+        </div>
+        <div class="auto-mode-info">
+          <mat-icon>auto_awesome</mat-icon>
+          <span>Auto mode tries text extraction first. If the result contains fewer than {{ pdfProcessingConfig.autoModeMinCharacters }} characters, it automatically switches to VLM processing.</span>
+        </div>
+      </div>
+
+      <!-- Additional Extraction Options -->
+      <div class="extraction-options-section">
+        <label class="options-label">Additional Extraction Options</label>
+        <div class="extraction-toggles">
+          <mat-slide-toggle [(ngModel)]="pdfProcessingConfig.extractMetadata" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
+            <mat-icon>info</mat-icon> Extract Metadata
+          </mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="pdfProcessingConfig.extractByPage" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
+            <mat-icon>pages</mat-icon> Extract by Page
+          </mat-slide-toggle>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Source Type Selection Cards -->
   <div class="source-type-selector">
     <label class="source-type-label">Select Source Type</label>
@@ -781,12 +982,40 @@
         <div class="batch-rec-card">
           <div class="batch-rec-header">
             <mat-icon>developer_board</mat-icon>
-            <span>System Memory</span>
+            <span>System RAM</span>
           </div>
           <div class="batch-rec-value" [ngClass]="getMemoryTierClass()">
             {{ (systemMemoryMB / 1024).toFixed(1) }} GB
           </div>
           <div class="batch-rec-label">{{ getMemoryTierLabel() }}</div>
+        </div>
+
+        <!-- GPU Memory Info (only shown when using CUDA) -->
+        <div class="batch-rec-card" *ngIf="isGpuBackend" [class.gpu-constrained]="isGpuConstrained">
+          <div class="batch-rec-header">
+            <mat-icon>memory</mat-icon>
+            <span>GPU VRAM</span>
+            <span class="batch-type-badge gpu-badge" *ngIf="isGpuConstrained">Limiting</span>
+          </div>
+          <div class="batch-rec-value" [ngClass]="getGpuMemoryTierClass()">
+            {{ (gpuFreeMemoryMB / 1024).toFixed(1) }} / {{ (gpuTotalMemoryMB / 1024).toFixed(1) }} GB
+          </div>
+          <div class="batch-rec-label">{{ getGpuMemoryTierLabel() }}</div>
+          <div class="gpu-device-name" *ngIf="currentGpuDevice?.name">
+            {{ currentGpuDevice?.name }}
+          </div>
+        </div>
+
+        <!-- CPU Mode indicator (when not using GPU) -->
+        <div class="batch-rec-card" *ngIf="!isGpuBackend">
+          <div class="batch-rec-header">
+            <mat-icon>memory</mat-icon>
+            <span>Compute</span>
+          </div>
+          <div class="batch-rec-value cpu-mode">
+            CPU
+          </div>
+          <div class="batch-rec-label">CPU Backend Active</div>
         </div>
 
         <!-- Workload Assessment -->
@@ -811,6 +1040,9 @@
             {{ embeddingBatchSize }}
           </div>
           <div class="batch-rec-label">Embedding Batch Size</div>
+          <div class="constraint-info" *ngIf="isGpuBackend">
+            {{ isGpuConstrained ? 'GPU-constrained' : 'RAM-based' }}
+          </div>
         </div>
 
         <!-- Index Batch (from large doc config) -->
@@ -825,6 +1057,12 @@
           </div>
           <div class="batch-rec-label">Chunks per Lucene write</div>
         </div>
+      </div>
+
+      <!-- GPU Constraint Info Banner (when GPU is limiting factor) -->
+      <div class="gpu-constraint-banner" *ngIf="isGpuBackend && isGpuConstrained">
+        <mat-icon>info</mat-icon>
+        <span>{{ gpuConstraintReason }}</span>
       </div>
 
       <!-- Batch Size Reference Table -->
@@ -853,6 +1091,41 @@
             <span class="ref-memory">&gt;16GB</span>
             <span class="ref-embed">Embed: 32</span>
             <span class="ref-index">Index: 200</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- GPU VRAM Reference Table (only shown when using CUDA) -->
+      <div class="batch-reference-table gpu-reference" *ngIf="isGpuBackend">
+        <div class="batch-ref-header">
+          <mat-icon>memory</mat-icon>
+          <span>GPU VRAM-Based Recommendations</span>
+          <span class="batch-type-badge gpu-badge">CUDA</span>
+        </div>
+        <div class="gpu-ref-note">
+          <mat-icon>info_outline</mat-icon>
+          <span>GPU memory is typically more constrained. Batch sizes are reduced to leave room for model weights.</span>
+        </div>
+        <div class="batch-ref-grid">
+          <div class="batch-ref-item" [class.active]="isGpuBackend && gpuTotalMemoryMB > 0 && gpuTotalMemoryMB < 4096">
+            <span class="ref-memory">&lt;4GB VRAM</span>
+            <span class="ref-embed">Embed: 2</span>
+            <span class="ref-index">Index: 25</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="isGpuBackend && gpuTotalMemoryMB >= 4096 && gpuTotalMemoryMB < 8192">
+            <span class="ref-memory">4-8GB VRAM</span>
+            <span class="ref-embed">Embed: 4</span>
+            <span class="ref-index">Index: 50</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="isGpuBackend && gpuTotalMemoryMB >= 8192 && gpuTotalMemoryMB < 16384">
+            <span class="ref-memory">8-16GB VRAM</span>
+            <span class="ref-embed">Embed: 8</span>
+            <span class="ref-index">Index: 75</span>
+          </div>
+          <div class="batch-ref-item" [class.active]="isGpuBackend && gpuTotalMemoryMB >= 16384">
+            <span class="ref-memory">&gt;16GB VRAM</span>
+            <span class="ref-embed">Embed: 16</span>
+            <span class="ref-index">Index: 100</span>
           </div>
         </div>
       </div>
@@ -1122,6 +1395,55 @@
               (ngModelChange)="onChunkingOptionChange()">
               Split on Headings
             </mat-slide-toggle>
+          </div>
+
+          <!-- Boundary Preservation Options -->
+          <div class="boundary-options" *ngIf="chunkingConfig.strategy === 'boundary-aware' || showAdvancedOptions">
+            <label class="boundary-label">
+              <mat-icon>link</mat-icon>
+              Boundary Preservation
+              <span class="boundary-hint">(prevents splitting these patterns)</span>
+            </label>
+            <div class="boundary-toggles">
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveUrls" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep URLs intact (http://, https://, mailto:, etc.)">
+                <mat-icon>link</mat-icon> URLs
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveEmails" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep email addresses intact">
+                <mat-icon>email</mat-icon> Emails
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveFilePaths" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep file paths intact (/path/to/file, C:\path\to\file)">
+                <mat-icon>folder</mat-icon> File Paths
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveIpAddresses" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep IP addresses intact (IPv4 and IPv6)">
+                <mat-icon>dns</mat-icon> IP Addresses
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preservePhoneNumbers" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep phone numbers intact">
+                <mat-icon>phone</mat-icon> Phone Numbers
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveQuotedStrings" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep quoted strings intact">
+                <mat-icon>format_quote</mat-icon> Quoted Strings
+              </mat-slide-toggle>
+
+              <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveCodeIdentifiers" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting"
+                (ngModelChange)="onChunkingOptionChange()" matTooltip="Keep code identifiers intact (camelCase, snake_case, etc.)">
+                <mat-icon>code</mat-icon> Code Identifiers
+              </mat-slide-toggle>
+            </div>
+            <div class="boundary-info">
+              <mat-icon>info_outline</mat-icon>
+              <span>These options help prevent breaking URLs, emails, and other semantic patterns when chunking text. Enable the ones relevant to your documents.</span>
+            </div>
           </div>
 
           <!-- Language Selection (for OpenNLP) -->

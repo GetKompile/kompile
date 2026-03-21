@@ -37,12 +37,12 @@
     <module>kompile-app-core</module>
     <module>kompile-app-loaders-orchestrator</module>
     <module>kompile-loader-tika</module>
-    <module>kompile-loader-pdf</module>
     <!-- New specialized loader modules -->
     <module>kompile-loader-microsoft</module>
     <module>kompile-loader-mail</module>
     <module>kompile-loader-slack</module>
     <module>kompile-loader-pdf-extended</module>
+    <module>kompile-loader-pdf-tables</module>
     <module>kompile-loader-web</module>
     <module>kompile-app-anserini</module>
     <module>kompile-app-openai-llm</module>
@@ -54,6 +54,7 @@
     <module>kompile-embedding-sentence-transformer</module>
     <module>kompile-vectorstore-chroma</module>
     <module>kompile-vectorstore-pgvector</module>
+    <module>kompile-vectorstore-vespa</module>
     <module>kompile-tool-filesystem</module>
     <module>kompile-tool-rag</module>
     <module>kompile-app-main</module>
@@ -65,6 +66,7 @@
     <module>kompile-app-springai-llm</module>
     <module>kompile-chunker-markdown</module>
     <module>kompile-chunker-token</module>
+    <module>kompile-chunker-table-aware</module>
     <module>kompile-postgres-common</module>
     <module>kompile-graph-neo4j</module>
     <module>kompile-vectorstore-anserini</module>
@@ -82,6 +84,23 @@
     <module>kompile-source-email</module>
     <module>kompile-loader-email-imap</module>
     <module>kompile-model-staging</module>
+    <!-- Query transformation, guardrails, and evaluation modules -->
+    <module>kompile-query-transformer</module>
+    <module>kompile-guardrails</module>
+    <module>kompile-filter-chain</module>
+    <module>kompile-evaluation</module>
+    <!-- ReAct agent for multi-step reasoning -->
+    <module>kompile-react-agent</module>
+    <!-- OCR modules -->
+    <module>kompile-ocr-core</module>
+    <module>kompile-ocr-models</module>
+    <module>kompile-ocr-postprocess</module>
+    <module>kompile-ocr-integration</module>
+    <module>kompile-ocr-datapipeline</module>
+    <module>kompile-openclaw</module>
+    <module>kompile-pipeline-management</module>
+    <module>kompile-kvcache</module>
+    <module>kompile-tool-model-staging</module>
 
   </modules>
 
@@ -211,11 +230,6 @@
         <artifactId>kompile-loader-tika</artifactId>
         <version>${project.version}</version>
       </dependency>
-      <dependency>
-        <groupId>ai.kompile</groupId>
-        <artifactId>kompile-loader-pdf</artifactId>
-        <version>${project.version}</version>
-      </dependency>
       <!-- New specialized loader dependencies -->
       <dependency>
         <groupId>ai.kompile</groupId>
@@ -235,6 +249,16 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-loader-pdf-extended</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-pdf-tables</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chunker-table-aware</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -294,12 +318,22 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-vectorstore-vespa</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-tool-filesystem</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-tool-rag</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-tool-model-staging</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -369,6 +403,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-react-agent</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-oauth2-client</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -416,6 +455,63 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-model-staging</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- Query transformation, guardrails, and evaluation modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-query-transformer</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-guardrails</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-filter-chain</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-evaluation</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- OCR modules -->
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-ocr-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-ocr-models</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-ocr-postprocess</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-ocr-integration</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-openclaw</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-pipeline-management</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-kvcache</artifactId>
         <version>${project.version}</version>
       </dependency>
 
@@ -477,11 +573,19 @@
           <artifactId>maven-compiler-plugin</artifactId>
           <version>${maven-compiler-plugin.version}</version>
           <configuration>
+            <fork>true</fork>
             <release>${java.version}</release>
             <encoding>${project.build.sourceEncoding}</encoding>
             <compilerArgs>
               <arg>-Xlint:all,-serial,-processing</arg>
             </compilerArgs>
+            <annotationProcessorPaths>
+              <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+              </path>
+            </annotationProcessorPaths>
           </configuration>
         </plugin>
         <plugin>

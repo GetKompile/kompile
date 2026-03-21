@@ -46,6 +46,8 @@ import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatRadioModule } from '@angular/material/radio';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatStepperModule } from '@angular/material/stepper';
 
 // Components
 import { AppComponent } from './app.component';
@@ -59,6 +61,19 @@ import { DownloadModelComponent } from './components/download-model/download-mod
 import { ModelDetailsDialogComponent } from './components/model-details-dialog/model-details-dialog.component';
 import { ModelConverterComponent } from './components/model-converter/model-converter.component';
 import { ArchiveConfigComponent } from './components/archive-config/archive-config.component';
+import { AlignmentConfigComponent } from './components/alignment-config/alignment-config.component';
+import { DatasetManagerComponent } from './components/dataset-manager/dataset-manager.component';
+import { DistillationConfigComponent } from './components/distillation-config/distillation-config.component';
+import { DspCompilerComponent } from './components/dsp-compiler/dsp-compiler.component';
+import { EnvironmentDashboardComponent } from './components/environment-dashboard/environment-dashboard.component';
+import { EvaluationViewerComponent } from './components/evaluation-viewer/evaluation-viewer.component';
+import { LlmExecutionComponent } from './components/llm-execution/llm-execution.component';
+import { OptimizationWizardComponent } from './components/optimization-wizard/optimization-wizard.component';
+import { PeftConfigComponent } from './components/peft-config/peft-config.component';
+import { TrainingConfigComponent } from './components/training-config/training-config.component';
+import { TrainingDashboardComponent } from './components/training-dashboard/training-dashboard.component';
+import { TrainingMetricsComponent } from './components/training-metrics/training-metrics.component';
+import { VlmExecutionComponent } from './components/vlm-execution/vlm-execution.component';
 
 // Routes
 const routes: Routes = [
@@ -71,7 +86,20 @@ const routes: Routes = [
   { path: 'registry', component: RegistryBrowserComponent },
   { path: 'export-import', component: ExportImportComponent },
   { path: 'archives', component: ArchiveManagerComponent },
-  { path: 'config', component: ArchiveConfigComponent }
+  { path: 'config', component: ArchiveConfigComponent },
+  { path: 'alignment', component: AlignmentConfigComponent },
+  { path: 'datasets', component: DatasetManagerComponent },
+  { path: 'distillation', component: DistillationConfigComponent },
+  { path: 'dsp-compiler', component: DspCompilerComponent },
+  { path: 'environment', component: EnvironmentDashboardComponent },
+  { path: 'evaluation', component: EvaluationViewerComponent },
+  { path: 'llm', component: LlmExecutionComponent },
+  { path: 'optimization', component: OptimizationWizardComponent },
+  { path: 'peft', component: PeftConfigComponent },
+  { path: 'training', component: TrainingDashboardComponent },
+  { path: 'training/new', component: TrainingConfigComponent },
+  { path: 'training/:jobId/metrics', component: TrainingMetricsComponent },
+  { path: 'vlm', component: VlmExecutionComponent }
 ];
 
 @NgModule({
@@ -86,7 +114,20 @@ const routes: Routes = [
     DownloadModelComponent,
     ModelDetailsDialogComponent,
     ModelConverterComponent,
-    ArchiveConfigComponent
+    ArchiveConfigComponent,
+    AlignmentConfigComponent,
+    DatasetManagerComponent,
+    DistillationConfigComponent,
+    DspCompilerComponent,
+    EnvironmentDashboardComponent,
+    EvaluationViewerComponent,
+    LlmExecutionComponent,
+    OptimizationWizardComponent,
+    PeftConfigComponent,
+    TrainingConfigComponent,
+    TrainingDashboardComponent,
+    TrainingMetricsComponent,
+    VlmExecutionComponent
   ],
   imports: [
     BrowserModule,
@@ -119,7 +160,9 @@ const routes: Routes = [
     MatMenuModule,
     MatDividerModule,
     MatButtonToggleModule,
-    MatRadioModule
+    MatRadioModule,
+    MatSlideToggleModule,
+    MatStepperModule
   ],
   providers: [],
   bootstrap: [AppComponent]

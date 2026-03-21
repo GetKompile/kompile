@@ -21,7 +21,7 @@ import ai.kompile.core.graphrag.GraphRagService;
 import ai.kompile.core.graphrag.query.GraphRagQuery;
 import ai.kompile.core.graphrag.query.GraphRagResult;
 import ai.kompile.core.llm.chat.LLMChat;
-import ai.kompile.core.llm.memory.KompileChatMemory; // <-- IMPORT CHANGE
+import ai.kompile.core.llm.memory.KompileChatMemory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -32,13 +32,15 @@ import org.neo4j.driver.Values;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
-@Service
+/**
+ * Neo4j-based GraphRAG service implementation.
+ * Bean registration is handled by Neo4jGraphBeans.
+ */
 @RequiredArgsConstructor
 @Slf4j
 public class Neo4jGraphRagService implements GraphRagService {

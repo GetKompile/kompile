@@ -20,7 +20,12 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAVA_WRAPPER="/home/agibsonccc/Documents/GitHub/deeplearning4j/platform-tests/bin/java"
+# Use local wrapper if available, fallback to deeplearning4j platform-tests
+if [[ -x "${PROJECT_DIR}/bin/java" ]]; then
+    JAVA_WRAPPER="${PROJECT_DIR}/bin/java"
+else
+    JAVA_WRAPPER="/home/agibsonccc/Documents/GitHub/deeplearning4j/platform-tests/bin/java"
+fi
 
 # Configuration
 SNAPSHOT_INTERVAL=${SNAPSHOT_INTERVAL:-120}  # Seconds between leak check snapshots

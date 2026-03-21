@@ -48,6 +48,22 @@ public class AnseriniEmbeddingConfiguration {
         private boolean enabled = false;
 
         /**
+         * Whether to eagerly initialize the embedding model on application startup.
+         *
+         * <p>When enabled (default), the embedding model is initialized asynchronously
+         * when the application starts, so it's ready when users open the UI.
+         *
+         * <p>When disabled, the model uses lazy initialization and is only loaded
+         * when the first embedding operation is requested (e.g., when a user triggers
+         * a search or indexing operation).
+         *
+         * <p>Set to false if you prefer faster startup at the cost of delayed first use.
+         *
+         * Default: true
+         */
+        private boolean eagerInit = true;
+
+        /**
          * Model identifier for the embedding model.
          * Examples: "bge-base-en-v1.5-onnx", "arctic-embed-base-onnx"
          */
@@ -94,31 +110,39 @@ public class AnseriniEmbeddingConfiguration {
         private boolean normalizeOutput = true;
 
         // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
-        // These settings control how batch sizes are calculated based on sequence length.
-        // The encoder uses: batch_size = base_batch × (512/seqLen)² × memoryScale
+        // These settings control how many chunks are sent to the embedding model at once.
+        // The encoder internally uses dynamic sub-batching based on actual sequence lengths:
+        //   internal_batch = base_batch × (512/seqLen)² × memoryScale
+        //
+        // For typical document chunks (200-400 tokens), the encoder can handle larger batches
+        // than for full 512-token sequences. Setting higher pipeline batch sizes allows
+        // the encoder to optimize based on actual sequence lengths.
 
         /**
-         * Base optimal batch size for 512-token sequences.
-         * Actual batch size scales inversely with sequence length squared.
+         * Base optimal batch size - number of chunks to send to embedBatch().
          *
-         * <p>Recommended values by hardware:
+         * <p>The encoder will internally sub-batch if sequences are long (512 tokens).
+         * For typical document chunks (200-400 tokens), larger batches are efficient.</p>
+         *
+         * <p>Recommended values:
          * <ul>
-         *   <li>CPU (low memory): 4-8</li>
-         *   <li>CPU (high memory): 8-16</li>
-         *   <li>GPU: 32-64</li>
+         *   <li>CPU (low memory, 4GB): 16-32</li>
+         *   <li>CPU (medium memory, 8GB): 32-64</li>
+         *   <li>CPU (high memory, 16GB+): 64-128</li>
+         *   <li>GPU: 128-256</li>
          * </ul>
          *
-         * Default: 8 (conservative for CPU inference)
+         * Default: 32 (good balance for typical CPU inference)
          */
-        private int baseOptimalBatchSize = 8;
+        private int baseOptimalBatchSize = 32;
 
         /**
-         * Base maximum batch size for 512-token sequences.
-         * Actual maximum scales inversely with sequence length squared.
+         * Base maximum batch size - upper limit for chunk batching.
+         * The encoder handles internal sub-batching for long sequences.
          *
-         * Default: 16 (conservative for CPU inference)
+         * Default: 64 (allows efficient batching for shorter chunks)
          */
-        private int baseMaxBatchSize = 16;
+        private int baseMaxBatchSize = 64;
 
         /**
          * Memory scale factor for batch size calculation.
@@ -135,12 +159,55 @@ public class AnseriniEmbeddingConfiguration {
         private double memoryScaleFactor = -1.0;
 
         /**
-         * Absolute maximum batch size, regardless of sequence length.
-         * Prevents OOM on systems with very short sequences.
+         * Configured absolute maximum batch size (baseline).
+         * The actual max is computed dynamically based on available memory.
+         * Set to 0 or negative to use pure memory-based calculation.
          *
-         * Default: 128
+         * Default: 0 (memory-based)
          */
-        private int absoluteMaxBatchSize = 128;
+        private int absoluteMaxBatchSize = 0;
+
+        /**
+         * Gets the absolute maximum batch size, calculated based on available heap memory.
+         * This allows higher batch sizes on systems with more RAM.
+         *
+         * <p>Memory-based scaling:
+         * <ul>
+         *   <li>4GB heap → 512 max</li>
+         *   <li>8GB heap → 1024 max</li>
+         *   <li>16GB heap → 2048 max</li>
+         *   <li>32GB heap → 4096 max</li>
+         *   <li>64GB+ heap → 8192 max</li>
+         * </ul>
+         *
+         * @return computed absolute max batch size
+         */
+        public int getAbsoluteMaxBatchSize() {
+            // If explicitly configured, use that as a ceiling
+            if (absoluteMaxBatchSize > 0) {
+                return absoluteMaxBatchSize;
+            }
+
+            // Calculate based on available heap memory
+            Runtime runtime = Runtime.getRuntime();
+            long maxHeapMb = runtime.maxMemory() / (1024 * 1024);
+
+            if (maxHeapMb >= 64 * 1024) {      // 64GB+
+                return 8192;
+            } else if (maxHeapMb >= 32 * 1024) { // 32GB
+                return 4096;
+            } else if (maxHeapMb >= 16 * 1024) { // 16GB
+                return 2048;
+            } else if (maxHeapMb >= 8 * 1024) {  // 8GB
+                return 1024;
+            } else if (maxHeapMb >= 4 * 1024) {  // 4GB
+                return 512;
+            } else if (maxHeapMb >= 2 * 1024) {  // 2GB
+                return 256;
+            } else {
+                return 128; // Minimum safe default
+            }
+        }
 
         /**
          * Enable verbose logging for dynamic batch sizing decisions.
@@ -149,6 +216,58 @@ public class AnseriniEmbeddingConfiguration {
          * Default: false
          */
         private boolean verboseBatchSizing = false;
+
+        // ========== TIMEOUT CONFIGURATION ==========
+        // These settings control timeouts for subprocess operations.
+        // Set to 0 or negative value to disable timeout (wait indefinitely).
+
+        /**
+         * Timeout in seconds for loading a model in the subprocess.
+         * This timeout applies when the subprocess is started and the model is being loaded.
+         *
+         * <p>Set to 0 or negative to disable timeout (wait indefinitely).
+         *
+         * Default: 300 (5 minutes) - model loading can take a while but shouldn't hang forever
+         */
+        private long modelLoadTimeoutSeconds = 300;
+
+        /**
+         * Timeout in milliseconds for subprocess request operations.
+         * This is used by the subprocess launcher for general request/response handling.
+         *
+         * <p>Set to 0 or negative to disable timeout (wait indefinitely).
+         *
+         * Default: 60000 (60 seconds) - general requests should complete quickly
+         */
+        private long requestTimeoutMs = 60000;
+
+        /**
+         * Timeout in milliseconds for subprocess heartbeat detection.
+         * If no heartbeat is received within this time, the subprocess is considered unresponsive.
+         *
+         * <p>Set to 0 or negative to disable heartbeat timeout.
+         *
+         * Default: 60000 (60 seconds) - detect unresponsive subprocess
+         */
+        private long heartbeatTimeoutMs = 60000;
+
+        /**
+         * Timeout in seconds for single text embedding operations.
+         *
+         * <p>Set to 0 or negative to disable timeout (wait indefinitely).
+         *
+         * Default: 120 (2 minutes) - single embedding operations
+         */
+        private long embedTimeoutSeconds = 120;
+
+        /**
+         * Timeout in seconds for batch embedding operations.
+         *
+         * <p>Set to 0 or negative to disable timeout (wait indefinitely).
+         *
+         * Default: 300 (5 minutes) - batch operations can process many documents
+         */
+        private long embedBatchTimeoutSeconds = 300;
 
         // ========== RUNTIME OVERRIDE SUPPORT ==========
 
@@ -162,13 +281,15 @@ public class AnseriniEmbeddingConfiguration {
          * Gets the effective optimal batch size for a model.
          * Checks for per-model override first, then falls back to global setting.
          *
-         * @param modelId the model identifier
+         * @param modelId the model identifier (can be null for global)
          * @return effective optimal batch size
          */
         public int getEffectiveOptimalBatchSize(String modelId) {
-            BatchSizeOverride override = modelOverrides.get(modelId);
-            if (override != null && override.optimalBatchSize() != null) {
-                return override.optimalBatchSize();
+            if (modelId != null) {
+                BatchSizeOverride override = modelOverrides.get(modelId);
+                if (override != null && override.optimalBatchSize() != null) {
+                    return override.optimalBatchSize();
+                }
             }
             return baseOptimalBatchSize;
         }
@@ -177,13 +298,15 @@ public class AnseriniEmbeddingConfiguration {
          * Gets the effective max batch size for a model.
          * Checks for per-model override first, then falls back to global setting.
          *
-         * @param modelId the model identifier
+         * @param modelId the model identifier (can be null for global)
          * @return effective max batch size
          */
         public int getEffectiveMaxBatchSize(String modelId) {
-            BatchSizeOverride override = modelOverrides.get(modelId);
-            if (override != null && override.maxBatchSize() != null) {
-                return override.maxBatchSize();
+            if (modelId != null) {
+                BatchSizeOverride override = modelOverrides.get(modelId);
+                if (override != null && override.maxBatchSize() != null) {
+                    return override.maxBatchSize();
+                }
             }
             return baseMaxBatchSize;
         }
@@ -192,13 +315,15 @@ public class AnseriniEmbeddingConfiguration {
          * Gets the effective memory scale factor for a model.
          * Checks for per-model override first, then falls back to global setting.
          *
-         * @param modelId the model identifier
+         * @param modelId the model identifier (can be null for global)
          * @return effective memory scale factor
          */
         public double getEffectiveMemoryScaleFactor(String modelId) {
-            BatchSizeOverride override = modelOverrides.get(modelId);
-            if (override != null && override.memoryScaleFactor() != null) {
-                return override.memoryScaleFactor();
+            if (modelId != null) {
+                BatchSizeOverride override = modelOverrides.get(modelId);
+                if (override != null && override.memoryScaleFactor() != null) {
+                    return override.memoryScaleFactor();
+                }
             }
             return memoryScaleFactor;
         }
@@ -206,10 +331,13 @@ public class AnseriniEmbeddingConfiguration {
         /**
          * Sets a per-model batch size override.
          *
-         * @param modelId the model identifier
-         * @param override the override configuration
+         * @param modelId the model identifier (cannot be null)
+         * @param override the override configuration (null to remove)
          */
         public void setModelOverride(String modelId, BatchSizeOverride override) {
+            if (modelId == null) {
+                return; // Cannot set override for null modelId
+            }
             if (override == null) {
                 modelOverrides.remove(modelId);
             } else {
@@ -220,30 +348,34 @@ public class AnseriniEmbeddingConfiguration {
         /**
          * Gets a per-model batch size override.
          *
-         * @param modelId the model identifier
-         * @return the override, or null if none set
+         * @param modelId the model identifier (can be null)
+         * @return the override, or null if none set or modelId is null
          */
         public BatchSizeOverride getModelOverride(String modelId) {
+            if (modelId == null) return null;
             return modelOverrides.get(modelId);
         }
 
         /**
          * Checks if a model has a runtime override.
          *
-         * @param modelId the model identifier
-         * @return true if override exists
+         * @param modelId the model identifier (can be null)
+         * @return true if override exists, false if modelId is null
          */
         public boolean hasModelOverride(String modelId) {
+            if (modelId == null) return false;
             return modelOverrides.containsKey(modelId);
         }
 
         /**
          * Clears the override for a model.
          *
-         * @param modelId the model identifier
+         * @param modelId the model identifier (can be null, which is a no-op)
          */
         public void clearModelOverride(String modelId) {
-            modelOverrides.remove(modelId);
+            if (modelId != null) {
+                modelOverrides.remove(modelId);
+            }
         }
 
         /**

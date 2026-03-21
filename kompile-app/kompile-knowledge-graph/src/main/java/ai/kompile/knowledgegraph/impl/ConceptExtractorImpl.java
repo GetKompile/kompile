@@ -43,7 +43,7 @@ public class ConceptExtractorImpl implements ConceptExtractor {
         "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
         "than", "too", "very", "just", "also", "now", "here", "there", "then", "once",
         "any", "about", "above", "after", "again", "against", "between", "into", "through",
-        "during", "before", "after", "out", "over", "under", "further", "if", "because"
+        "during", "before", "out", "over", "under", "further", "if", "because"
     );
 
     // Pattern for extracting potential concepts (alphanumeric words)

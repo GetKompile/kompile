@@ -16,6 +16,7 @@
 
 package ai.kompile.app.chunker.sentence;
 
+import ai.kompile.app.core.chunking.SentenceFilter;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.modelmanager.KompileModelManager;
@@ -165,6 +166,8 @@ public class OpenNLPSentenceChunker implements TextChunker {
 
         // Prepare options with defaults
         Map<String, Object> mergedOptions = prepareOptions(options);
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
 
         String text = document.getText();
         String language = (String) mergedOptions.getOrDefault(OPTION_LANGUAGE, DEFAULT_LANGUAGE);
@@ -207,7 +210,16 @@ public class OpenNLPSentenceChunker implements TextChunker {
             reportProgress(progressCallback, "detecting", 10, 0, 0, totalChars,
                     "Detecting sentences in document (" + totalChars + " chars)");
 
-            String[] sentences = detector.sentDetect(text);
+            String[] sentences;
+            try {
+                sentences = detector.sentDetect(text);
+            } catch (IndexOutOfBoundsException e) {
+                // OpenNLP 2.5.4 has a bug where certain text can cause IndexOutOfBoundsException
+                // in sentPosDetect. Fall back to treating the entire text as one sentence.
+                log.warn("OpenNLP sentDetect failed with IndexOutOfBoundsException, " +
+                        "falling back to simple sentence splitting: {}", e.getMessage());
+                sentences = simpleSentenceSplit(text);
+            }
 
             reportProgress(progressCallback, "creating_chunks", 80, 0, totalChars, totalChars,
                     "Found " + sentences.length + " sentences, creating chunks");
@@ -247,7 +259,16 @@ public class OpenNLPSentenceChunker implements TextChunker {
                 int extendedEnd = Math.min(segmentEnd + SEGMENT_OVERLAP, text.length());
                 String segment = lastSentenceFragment + text.substring(processedChars, extendedEnd);
 
-                String[] sentences = detector.sentDetect(segment);
+                String[] sentences;
+                try {
+                    sentences = detector.sentDetect(segment);
+                } catch (IndexOutOfBoundsException e) {
+                    // OpenNLP 2.5.4 has a bug where certain text can cause IndexOutOfBoundsException
+                    // in sentPosDetect. Fall back to simple sentence splitting for this segment.
+                    log.warn("OpenNLP sentDetect failed with IndexOutOfBoundsException in segment {}, " +
+                            "falling back to simple sentence splitting: {}", segmentCount, e.getMessage());
+                    sentences = simpleSentenceSplit(segment);
+                }
 
                 // Process all sentences except potentially the last incomplete one
                 int sentencesToProcess = (extendedEnd < text.length()) ? sentences.length - 1 : sentences.length;
@@ -281,8 +302,8 @@ public class OpenNLPSentenceChunker implements TextChunker {
                 // Log progress for large documents
                 if (segmentCount % 10 == 0 || processedChars >= text.length()) {
                     double progress = (double) processedChars / text.length() * 100;
-                    log.debug("OpenNLP chunking progress: {}/{} segments ({:.1f}%), {} sentences found, {}ms elapsed",
-                            segmentCount, totalSegments, progress, chunks.size(), elapsed);
+                    log.debug("OpenNLP chunking progress: {}/{} segments ({}%), {} sentences found, {}ms elapsed",
+                            segmentCount, totalSegments, String.format("%.1f", progress), chunks.size(), elapsed);
                 }
             }
 
@@ -292,15 +313,34 @@ public class OpenNLPSentenceChunker implements TextChunker {
             }
 
             long totalTime = System.currentTimeMillis() - startTime;
-            log.info("Completed OpenNLP chunking of {} chars in {}ms ({} sentences, {:.1f} chars/ms)",
-                    text.length(), totalTime, chunks.size(), (double) text.length() / totalTime);
+            log.info("Completed OpenNLP chunking of {} chars in {}ms ({} sentences, {} chars/ms)",
+                    text.length(), totalTime, chunks.size(), String.format("%.1f", (double) text.length() / totalTime));
 
             reportProgress(progressCallback, "complete", 100, chunks.size(), totalChars, totalChars,
                     String.format("Created %d sentences in %dms", chunks.size(), totalTime));
         }
 
         log.debug("Split document {} into {} chunks using OpenNLP for language {}.", document.getId(), chunks.size(), language);
+
+        // Apply sentence filtering and garbage collection if enabled
+        if (collectGarbage) {
+            return SentenceFilter.filterAndCollectGarbage(chunks, document, getName(), includeGarbageChunk);
+        }
+
         return chunks;
+    }
+
+    /**
+     * Simple fallback sentence splitter when OpenNLP fails.
+     * Splits on common sentence-ending punctuation followed by whitespace.
+     */
+    private String[] simpleSentenceSplit(String text) {
+        if (text == null || text.isEmpty()) {
+            return new String[0];
+        }
+        // Split on sentence-ending punctuation followed by whitespace or end of string
+        // This regex handles: period, question mark, exclamation followed by whitespace
+        return text.split("(?<=[.!?])\\s+");
     }
 
     /**
@@ -348,6 +388,9 @@ public class OpenNLPSentenceChunker implements TextChunker {
         defaults.put("preserveParagraphs", false); // Sentence chunking doesn't preserve paragraphs by nature
         defaults.put("chunkSize", Integer.MAX_VALUE); // Sentence chunking doesn't use character limits
         defaults.put("overlap", 0); // Sentence chunking doesn't overlap by default
+        // Garbage collection options - disabled by default (see TextChunker interface)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
         return defaults;
     }
 

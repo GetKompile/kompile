@@ -62,7 +62,7 @@ public class BuildRagApp implements Callable<Integer> {
     // Original loaders (deprecated/heavy)
     @Option(names = {"--includeLoaderTika"}, description = "Include kompile-loader-tika module (deprecated - use specialized loaders instead)")
     private boolean includeLoaderTika = false;
-    @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf module")
+    @Option(names = {"--includeLoaderPdf"}, description = "Include kompile-loader-pdf-extended module (basic PDF loader removed)")
     private boolean includeLoaderPdf = false;
 
     // New specialized loader modules

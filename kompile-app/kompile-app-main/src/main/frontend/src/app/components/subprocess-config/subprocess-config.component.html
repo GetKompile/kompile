@@ -2,8 +2,7 @@
   <!-- Header -->
   <mat-toolbar color="primary" class="header-toolbar">
     <mat-icon>memory</mat-icon>
-    <span class="title">Subprocess Ingest Configuration</span>
-    <span class="subtitle">(Crash Isolation)</span>
+    <span class="title">Subprocess Configuration</span>
     <span class="spacer"></span>
     <button mat-icon-button (click)="loadConfiguration()" matTooltip="Refresh configuration">
       <mat-icon>refresh</mat-icon>
@@ -18,12 +17,12 @@
         <strong>{{ editEnabled ? 'Subprocess Mode (Recommended)' : 'In-Process Mode' }}</strong>
         <span class="banner-note">
           {{ editEnabled
-            ? 'Document ingestion runs in isolated JVM processes, protecting the main application from crashes and memory issues.'
+            ? 'Document ingestion and embeddings run in isolated JVM processes, protecting the main application from crashes and memory issues.'
             : 'Document ingestion runs in the main process. Crashes or OOM errors may affect the application.' }}
         </span>
       </div>
     </div>
-    <mat-slide-toggle [(ngModel)]="editEnabled" (change)="toggleEnabled()" class="mode-toggle">
+    <mat-slide-toggle [(ngModel)]="editEnabled" [ngModelOptions]="{standalone: true}" (change)="toggleEnabled()" class="mode-toggle">
       {{ editEnabled ? 'Enabled' : 'Disabled' }}
     </mat-slide-toggle>
   </div>
@@ -35,208 +34,1044 @@
       <span>Loading configuration...</span>
     </div>
 
-    <!-- Configuration Card -->
-    <mat-card class="config-card" *ngIf="!isLoading && config">
-      <mat-card-header>
-        <mat-card-title>Subprocess Settings</mat-card-title>
-        <mat-card-subtitle>
-          Server Port: {{ config.actualServerPort }}
-          <span class="callback-url">Callback URL: {{ config.callbackBaseUrl }}</span>
-        </mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-        <div class="config-grid">
-          <!-- Java Path -->
-          <div class="config-item full-width">
-            <label>Java Executable Path</label>
-            <div class="java-path-row">
-              <mat-form-field appearance="outline" class="java-path-input">
-                <mat-label>Java Path</mat-label>
-                <input matInput [(ngModel)]="editJavaPath" placeholder="java or /path/to/java">
-                <mat-hint>Path to Java executable (java, /usr/lib/jvm/java-17/bin/java)</mat-hint>
-              </mat-form-field>
-              <button mat-stroked-button (click)="validateJavaPath()" [disabled]="isValidating">
-                <mat-icon>{{ isValidating ? 'sync' : 'check_circle' }}</mat-icon>
-                {{ isValidating ? 'Validating...' : 'Validate' }}
-              </button>
-            </div>
-            <div *ngIf="javaPathValid !== null" class="validation-result" [class.valid]="javaPathValid" [class.invalid]="!javaPathValid">
-              <mat-icon>{{ javaPathValid ? 'check_circle' : 'error' }}</mat-icon>
-              <span>{{ javaVersionInfo }}</span>
-            </div>
-          </div>
+    <!-- Unified Tab Group -->
+    <mat-tab-group *ngIf="!isLoading && config" class="config-tab-group" animationDuration="200ms">
 
-          <!-- Heap Size -->
-          <div class="config-item">
-            <label>Subprocess Heap Size</label>
-            <mat-form-field appearance="outline">
-              <mat-label>Heap Size</mat-label>
-              <mat-select [(ngModel)]="editHeapSize">
-                <mat-option *ngFor="let size of heapSizeOptions" [value]="size">
-                  {{ size }}
-                  <span *ngIf="size === getRecommendedHeapSize()" class="recommended-tag">(Recommended)</span>
-                </mat-option>
-              </mat-select>
-              <mat-hint>Memory allocated to subprocess JVM</mat-hint>
-            </mat-form-field>
-          </div>
+      <!-- Tab 1: JVM & Process Settings -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>settings_applications</mat-icon>
+          <span>JVM & Process</span>
+        </ng-template>
 
-          <!-- Off-Heap Size -->
-          <div class="config-item">
-            <label>Off-Heap Max Bytes (JavaCPP)</label>
-            <mat-form-field appearance="outline">
-              <mat-label>Off-Heap Limit</mat-label>
-              <input matInput [(ngModel)]="editOffHeapMaxBytes" placeholder="e.g. 8g, 8192m, or bytes">
-              <mat-hint>Leave blank to auto-calculate (2x heap); sets JavaCPP maxbytes/maxphysicalbytes</mat-hint>
-            </mat-form-field>
-          </div>
+        <div class="tab-content">
+          <mat-card class="config-card">
+            <mat-card-header>
+              <mat-card-title>JVM & Process Settings</mat-card-title>
+              <mat-card-subtitle>
+                Server Port: {{ config.actualServerPort }}
+                <span class="callback-url">Callback URL: {{ config.callbackBaseUrl }}</span>
+              </mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <!-- Java Path -->
+                <div class="config-item full-width">
+                  <label>Java Executable Path</label>
+                  <div class="java-path-row">
+                    <mat-form-field appearance="outline" class="java-path-input">
+                      <mat-label>Java Path</mat-label>
+                      <input matInput [(ngModel)]="editJavaPath" [ngModelOptions]="{standalone: true}" placeholder="java or /path/to/java">
+                      <mat-hint>Path to Java executable (java, /usr/lib/jvm/java-17/bin/java)</mat-hint>
+                    </mat-form-field>
+                    <button mat-stroked-button (click)="validateJavaPath()" [disabled]="isValidating">
+                      <mat-icon>{{ isValidating ? 'sync' : 'check_circle' }}</mat-icon>
+                      {{ isValidating ? 'Validating...' : 'Validate' }}
+                    </button>
+                  </div>
+                  <div *ngIf="javaPathValid !== null" class="validation-result" [class.valid]="javaPathValid" [class.invalid]="!javaPathValid">
+                    <mat-icon>{{ javaPathValid ? 'check_circle' : 'error' }}</mat-icon>
+                    <span>{{ javaVersionInfo }}</span>
+                  </div>
+                </div>
 
-          <!-- Timeout -->
-          <div class="config-item">
-            <label>Job Timeout (minutes)</label>
-            <mat-form-field appearance="outline">
-              <mat-label>Timeout</mat-label>
-              <input matInput type="number" [(ngModel)]="editTimeoutMinutes" min="1" max="1440">
-              <mat-hint>Max time before job is terminated</mat-hint>
-            </mat-form-field>
-          </div>
+                <!-- Heap Size -->
+                <div class="config-item">
+                  <label>Subprocess Heap Size</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Heap Size</mat-label>
+                    <mat-select [(ngModel)]="editHeapSize" [ngModelOptions]="{standalone: true}">
+                      <mat-option *ngFor="let size of heapSizeOptions" [value]="size">
+                        {{ size }}
+                        <span *ngIf="size === getRecommendedHeapSize()" class="recommended-tag">(Recommended)</span>
+                      </mat-option>
+                    </mat-select>
+                    <mat-hint>Memory allocated to subprocess JVM</mat-hint>
+                  </mat-form-field>
+                </div>
 
-          <!-- Heartbeat Interval -->
-          <div class="config-item">
-            <label>Heartbeat Interval (seconds)</label>
-            <mat-form-field appearance="outline">
-              <mat-label>Heartbeat</mat-label>
-              <input matInput type="number" [(ngModel)]="editHeartbeatIntervalSeconds" min="5" max="60">
-              <mat-hint>How often subprocess reports liveness</mat-hint>
-            </mat-form-field>
-          </div>
+                <!-- Off-Heap Size -->
+                <div class="config-item">
+                  <label>Off-Heap Max Bytes (JavaCPP)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Off-Heap Limit</mat-label>
+                    <input matInput [(ngModel)]="editOffHeapMaxBytes" [ngModelOptions]="{standalone: true}" placeholder="e.g. 8g, 8192m, or bytes">
+                    <mat-hint>Leave blank to auto-calculate (2x heap)</mat-hint>
+                  </mat-form-field>
+                </div>
 
-          <!-- Stale Threshold -->
-          <div class="config-item">
-            <label>Stale Threshold (seconds)</label>
-            <mat-form-field appearance="outline">
-              <mat-label>Stale Threshold</mat-label>
-              <input matInput type="number" [(ngModel)]="editStaleThresholdSeconds" min="30" max="600">
-              <mat-hint>Time without heartbeat before force kill</mat-hint>
-            </mat-form-field>
-          </div>
+                <!-- Timeout -->
+                <div class="config-item">
+                  <label>Job Timeout (minutes)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Timeout</mat-label>
+                    <input matInput type="number" [(ngModel)]="editTimeoutMinutes" [ngModelOptions]="{standalone: true}" min="1" max="1440">
+                    <mat-hint>Max time before job is terminated</mat-hint>
+                  </mat-form-field>
+                </div>
 
-          <!-- System Info -->
-          <div class="system-info">
-            <div class="info-item">
-              <mat-icon>memory</mat-icon>
-              <span>System RAM: {{ getMemoryGb() }}GB</span>
-            </div>
-            <div class="info-item">
-              <mat-icon>developer_board</mat-icon>
-              <span>CPUs: {{ config.availableProcessors }}</span>
-            </div>
-            <div class="info-item">
-              <mat-icon>computer</mat-icon>
-              <span>{{ config.osName }}</span>
-            </div>
-            <div class="info-item">
-              <mat-icon>code</mat-icon>
-              <span>Java {{ config.javaVersion }}</span>
-            </div>
-          </div>
-        </div>
-      </mat-card-content>
-      <mat-card-actions>
-        <button mat-button (click)="resetConfiguration()" [disabled]="isSaving" matTooltip="Reset to system defaults">
-          <mat-icon>restore</mat-icon>
-          Reset to Defaults
-        </button>
-        <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving"
-                matTooltip="Save configuration (persists across restarts)">
-          <mat-icon>{{ isSaving ? 'sync' : 'save' }}</mat-icon>
-          {{ isSaving ? 'Saving...' : 'Save Configuration' }}
-        </button>
-      </mat-card-actions>
-      <div class="config-note">
-        <mat-icon>info</mat-icon>
-        <span>Configuration is saved to disk and persists across application restarts.</span>
-      </div>
-    </mat-card>
+                <!-- Heartbeat Interval -->
+                <div class="config-item">
+                  <label>Heartbeat Interval (seconds)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Heartbeat</mat-label>
+                    <input matInput type="number" [(ngModel)]="editHeartbeatIntervalSeconds" [ngModelOptions]="{standalone: true}" min="5" max="60">
+                    <mat-hint>How often subprocess reports liveness</mat-hint>
+                  </mat-form-field>
+                </div>
 
-    <!-- Active Processes Card -->
-    <mat-card class="processes-card" *ngIf="!isLoading">
-      <mat-card-header>
-        <mat-card-title>Active Subprocess Jobs</mat-card-title>
-        <mat-card-subtitle>
-          {{ activeProcesses.length }} active process(es)
-        </mat-card-subtitle>
-      </mat-card-header>
-      <mat-card-content>
-        <div *ngIf="activeProcesses.length === 0" class="no-processes">
-          <mat-icon>hourglass_empty</mat-icon>
-          <span>No active subprocess jobs</span>
-        </div>
+                <!-- Stale Threshold -->
+                <div class="config-item">
+                  <label>Stale Threshold (seconds)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Stale Threshold</mat-label>
+                    <input matInput type="number" [(ngModel)]="editStaleThresholdSeconds" [ngModelOptions]="{standalone: true}" min="30" max="600">
+                    <mat-hint>Time without heartbeat before force kill</mat-hint>
+                  </mat-form-field>
+                </div>
 
-        <table mat-table [dataSource]="activeProcesses" class="processes-table" *ngIf="activeProcesses.length > 0">
-          <!-- Task ID Column -->
-          <ng-container matColumnDef="taskId">
-            <th mat-header-cell *matHeaderCellDef>Task ID</th>
-            <td mat-cell *matCellDef="let row">
-              <span class="task-id">{{ row.taskId.substring(0, 8) }}...</span>
-              <span class="pid-badge" matTooltip="Process ID">PID: {{ row.pid }}</span>
-            </td>
-          </ng-container>
-
-          <!-- File Name Column -->
-          <ng-container matColumnDef="fileName">
-            <th mat-header-cell *matHeaderCellDef>File</th>
-            <td mat-cell *matCellDef="let row">{{ row.fileName }}</td>
-          </ng-container>
-
-          <!-- Phase Column -->
-          <ng-container matColumnDef="phase">
-            <th mat-header-cell *matHeaderCellDef>Phase</th>
-            <td mat-cell *matCellDef="let row">
-              <span class="phase-badge" [class]="'phase-' + row.currentPhase.toLowerCase()">
-                {{ row.currentPhase }}
-              </span>
-            </td>
-          </ng-container>
-
-          <!-- Progress Column -->
-          <ng-container matColumnDef="progress">
-            <th mat-header-cell *matHeaderCellDef>Progress</th>
-            <td mat-cell *matCellDef="let row">
-              <div class="progress-cell">
-                <mat-progress-bar mode="determinate" [value]="row.progressPercent"></mat-progress-bar>
-                <span class="progress-text">{{ row.progressPercent }}%</span>
+                <!-- System Info -->
+                <div class="system-info">
+                  <div class="info-item">
+                    <mat-icon>memory</mat-icon>
+                    <span>System RAM: {{ getMemoryGb() }}GB</span>
+                  </div>
+                  <div class="info-item">
+                    <mat-icon>developer_board</mat-icon>
+                    <span>CPUs: {{ config.availableProcessors }}</span>
+                  </div>
+                  <div class="info-item">
+                    <mat-icon>computer</mat-icon>
+                    <span>{{ config.osName }}</span>
+                  </div>
+                  <div class="info-item">
+                    <mat-icon>code</mat-icon>
+                    <span>Java {{ config.javaVersion }}</span>
+                  </div>
+                </div>
               </div>
-            </td>
-          </ng-container>
 
-          <!-- Elapsed Column -->
-          <ng-container matColumnDef="elapsed">
-            <th mat-header-cell *matHeaderCellDef>Elapsed</th>
-            <td mat-cell *matCellDef="let row">{{ getElapsedTime(row) }}</td>
-          </ng-container>
+              <!-- Native Executable Configuration Section -->
+              <h3 class="section-title">
+                <mat-icon>terminal</mat-icon>
+                Native Executable Configuration (GraalVM)
+              </h3>
 
-          <!-- Actions Column -->
-          <ng-container matColumnDef="actions">
-            <th mat-header-cell *matHeaderCellDef>Actions</th>
-            <td mat-cell *matCellDef="let row">
-              <button mat-icon-button color="warn" (click)="cancelProcess(row.taskId)"
-                      matTooltip="Cancel this job" [disabled]="row.cancelled">
-                <mat-icon>cancel</mat-icon>
+              <!-- Runtime Status Banner -->
+              <div class="native-status-banner" *ngIf="nativeImageInfo"
+                   [class.native-mode]="nativeImageInfo.runningInNativeImage"
+                   [class.jvm-mode]="!nativeImageInfo.runningInNativeImage">
+                <mat-icon>{{ nativeImageInfo.runningInNativeImage ? 'bolt' : 'code' }}</mat-icon>
+                <div class="status-text">
+                  <strong>Runtime Mode: {{ nativeImageInfo.runningInNativeImage ? 'Native Image' : 'JVM' }}</strong>
+                  <span class="status-details">
+                    Classpath Available: {{ nativeImageInfo.hasClasspath ? 'Yes' : 'No' }} |
+                    Recommended: {{ nativeImageInfo.recommendedLaunchMode }}
+                    <span *ngIf="config">| Resolved: {{ config.resolvedNativeMode ? 'Native' : 'JVM' }}</span>
+                  </span>
+                </div>
+              </div>
+
+              <div class="config-grid">
+                <!-- Native Mode Selection -->
+                <div class="config-item">
+                  <label>Subprocess Launch Mode</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Launch Mode</mat-label>
+                    <mat-select [(ngModel)]="editNativeExecutableMode" [ngModelOptions]="{standalone: true}">
+                      <mat-option *ngFor="let opt of nativeModeOptions" [value]="opt.value">
+                        {{ opt.label }}
+                        <span class="option-desc">- {{ opt.description }}</span>
+                      </mat-option>
+                    </mat-select>
+                    <mat-hint>How subprocess processes are launched</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Native Executable Path (Unified) -->
+                <div class="config-item full-width">
+                  <label>Native Executable Path (Unified)</label>
+                  <div class="java-path-row">
+                    <mat-form-field appearance="outline" class="java-path-input">
+                      <mat-label>Executable Path</mat-label>
+                      <input matInput [(ngModel)]="editNativeExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="/path/to/kompile-app">
+                      <mat-hint>Path to the unified native executable (uses --subprocess=TYPE flag)</mat-hint>
+                    </mat-form-field>
+                    <button mat-stroked-button (click)="validateNativeExecutable()" [disabled]="isValidatingNativeExecutable || !editNativeExecutablePath">
+                      <mat-icon>{{ isValidatingNativeExecutable ? 'sync' : 'check_circle' }}</mat-icon>
+                      {{ isValidatingNativeExecutable ? 'Validating...' : 'Validate' }}
+                    </button>
+                  </div>
+                  <div *ngIf="nativeExecutableValid !== null" class="validation-result" [class.valid]="nativeExecutableValid" [class.invalid]="!nativeExecutableValid">
+                    <mat-icon>{{ nativeExecutableValid ? 'check_circle' : 'error' }}</mat-icon>
+                    <span>{{ nativeExecutableVersionInfo }}</span>
+                  </div>
+                </div>
+
+                <!-- Subprocess Type Flag -->
+                <div class="config-item">
+                  <label>Subprocess Type Flag</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Flag Prefix</mat-label>
+                    <input matInput [(ngModel)]="editSubprocessTypeFlag" [ngModelOptions]="{standalone: true}" placeholder="--subprocess=">
+                    <mat-hint>Flag prefix for unified executable (default: --subprocess=)</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
+
+              <!-- Separate Executables Section (Collapsed) -->
+              <mat-expansion-panel class="separate-executables-panel">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    <mat-icon>folder_special</mat-icon>
+                    Separate Subprocess Executables (Optional)
+                  </mat-panel-title>
+                  <mat-panel-description>
+                    Override per subprocess type
+                  </mat-panel-description>
+                </mat-expansion-panel-header>
+
+                <div class="config-grid">
+                  <div class="config-item full-width">
+                    <label>Ingest Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>Ingest Executable</mat-label>
+                      <input matInput [(ngModel)]="editIngestExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for document ingestion (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <div class="config-item full-width">
+                    <label>Vector Population Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>Vector Population Executable</mat-label>
+                      <input matInput [(ngModel)]="editVectorPopulationExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for vector population (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <div class="config-item full-width">
+                    <label>Embedding Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>Embedding Executable</mat-label>
+                      <input matInput [(ngModel)]="editEmbeddingExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for embedding generation (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+
+                  <div class="config-item full-width">
+                    <label>Model Init Subprocess Executable</label>
+                    <mat-form-field appearance="outline" class="full-width-input">
+                      <mat-label>Model Init Executable</mat-label>
+                      <input matInput [(ngModel)]="editModelInitExecutablePath" [ngModelOptions]="{standalone: true}" placeholder="Leave empty to use unified executable">
+                      <mat-hint>Separate executable for model initialization (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-button (click)="resetConfiguration()" [disabled]="isSaving" matTooltip="Reset to system defaults">
+                <mat-icon>restore</mat-icon>
+                Reset to Defaults
               </button>
-            </td>
-          </ng-container>
+              <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving"
+                      matTooltip="Save configuration (persists across restarts)">
+                <mat-icon>{{ isSaving ? 'sync' : 'save' }}</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+      </mat-tab>
 
-          <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-          <tr mat-row *matRowDef="let row; columns: displayedColumns;"
-              [class.cancelled-row]="row.cancelled"
-              [class.oom-row]="row.oomDetected"></tr>
-        </table>
-      </mat-card-content>
-    </mat-card>
+      <!-- Tab 2: Pipeline Settings -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>tune</mat-icon>
+          <span>Pipeline</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <mat-card class="config-card">
+            <mat-card-header>
+              <mat-card-title>ND4J & Pipeline Settings</mat-card-title>
+              <mat-card-subtitle>Configure threading and indexing behavior</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <!-- Embedding Threads -->
+                <div class="config-item">
+                  <label>Embedding Threads</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Threads</mat-label>
+                    <input matInput type="number" [(ngModel)]="editEmbeddingThreads" [ngModelOptions]="{standalone: true}" min="1" max="8">
+                    <mat-hint>Embedding workers (1 recommended - ND4J uses OpenMP internally)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Queue Capacity -->
+                <div class="config-item">
+                  <label>Queue Capacity</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Capacity</mat-label>
+                    <input matInput type="number" [(ngModel)]="editQueueCapacity" [ngModelOptions]="{standalone: true}" min="100" max="10000">
+                    <mat-hint>Max chunks in embedding queue</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Indexing Workers -->
+                <div class="config-item">
+                  <label>Indexing Workers</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Workers</mat-label>
+                    <input matInput type="number" [(ngModel)]="editIndexingWorkers" [ngModelOptions]="{standalone: true}" min="1" max="16">
+                    <mat-hint>Lucene indexing threads</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Indexing Batch Accumulation -->
+                <div class="config-item">
+                  <label>Indexing Batch Accumulation</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Batches</mat-label>
+                    <input matInput type="number" [(ngModel)]="editIndexingBatchAccumulationSize" [ngModelOptions]="{standalone: true}" min="1" max="64">
+                    <mat-hint>Batches before bulk index write</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Parallel Indexing -->
+                <div class="config-item">
+                  <label>Parallel Indexing</label>
+                  <mat-slide-toggle [(ngModel)]="editParallelIndexing" [ngModelOptions]="{standalone: true}">
+                    {{ editParallelIndexing ? 'Enabled' : 'Disabled' }}
+                  </mat-slide-toggle>
+                  <span class="toggle-hint">Enable parallel keyword/vector indexing</span>
+                </div>
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving">
+                <mat-icon>{{ isSaving ? 'sync' : 'save' }}</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 3: Recovery Settings -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>healing</mat-icon>
+          <span>Recovery</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <mat-card class="config-card">
+            <mat-card-header>
+              <mat-card-title>Restart & Recovery Settings</mat-card-title>
+              <mat-card-subtitle>Configure auto-restart and stall detection</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <!-- Restart Settings -->
+              <h3 class="section-title">
+                <mat-icon>refresh</mat-icon>
+                Auto-Restart Configuration
+              </h3>
+              <div class="config-grid">
+                <!-- Restart Enabled -->
+                <div class="config-item">
+                  <label>Auto-Restart on OOM</label>
+                  <mat-slide-toggle [(ngModel)]="editRestartEnabled" [ngModelOptions]="{standalone: true}">
+                    {{ editRestartEnabled ? 'Enabled' : 'Disabled' }}
+                  </mat-slide-toggle>
+                  <span class="toggle-hint">Automatically restart on memory errors</span>
+                </div>
+
+                <!-- Max Restart Attempts -->
+                <div class="config-item">
+                  <label>Max Restart Attempts</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Attempts</mat-label>
+                    <input matInput type="number" [(ngModel)]="editMaxRestartAttempts" [ngModelOptions]="{standalone: true}" min="0" max="10">
+                    <mat-hint>Max OOM restarts before giving up</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Heap Increase Factor -->
+                <div class="config-item">
+                  <label>Heap Increase Factor</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Factor</mat-label>
+                    <input matInput type="number" [(ngModel)]="editHeapIncreaseFactor" [ngModelOptions]="{standalone: true}" min="1.0" max="2.0" step="0.05">
+                    <mat-hint>Multiply heap by this on OOM (e.g., 1.25 = +25%)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- System RAM Safety Margin -->
+                <div class="config-item">
+                  <label>System RAM Safety Margin</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Margin</mat-label>
+                    <input matInput type="number" [(ngModel)]="editSystemRamSafetyMargin" [ngModelOptions]="{standalone: true}" min="0.05" max="0.5" step="0.05">
+                    <mat-hint>Reserved system RAM fraction (e.g., 0.15 = 15%)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Initial Backoff -->
+                <div class="config-item">
+                  <label>Initial Backoff (ms)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Backoff</mat-label>
+                    <input matInput type="number" [(ngModel)]="editInitialBackoffMs" [ngModelOptions]="{standalone: true}" min="1000" max="60000">
+                    <mat-hint>Wait time before first restart</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Backoff Multiplier -->
+                <div class="config-item">
+                  <label>Backoff Multiplier</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Multiplier</mat-label>
+                    <input matInput type="number" [(ngModel)]="editBackoffMultiplier" [ngModelOptions]="{standalone: true}" min="1.0" max="4.0" step="0.5">
+                    <mat-hint>Multiply backoff after each failure</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
+
+              <!-- Stall Detection Settings -->
+              <h3 class="section-title">
+                <mat-icon>warning</mat-icon>
+                Stall / Deadlock Detection
+              </h3>
+              <div class="config-grid">
+                <!-- Restart on Stall -->
+                <div class="config-item">
+                  <label>Restart on Stall</label>
+                  <mat-slide-toggle [(ngModel)]="editRestartOnStall" [ngModelOptions]="{standalone: true}">
+                    {{ editRestartOnStall ? 'Enabled' : 'Disabled' }}
+                  </mat-slide-toggle>
+                  <span class="toggle-hint">Restart if process appears stalled</span>
+                </div>
+
+                <!-- Restart on Timeout -->
+                <div class="config-item">
+                  <label>Restart on Timeout</label>
+                  <mat-slide-toggle [(ngModel)]="editRestartOnTimeout" [ngModelOptions]="{standalone: true}">
+                    {{ editRestartOnTimeout ? 'Enabled' : 'Disabled' }}
+                  </mat-slide-toggle>
+                  <span class="toggle-hint">Restart if job exceeds timeout</span>
+                </div>
+
+                <!-- Stall Detection Threshold -->
+                <div class="config-item">
+                  <label>Stall Threshold (seconds)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Threshold</mat-label>
+                    <input matInput type="number" [(ngModel)]="editStallDetectionThresholdSeconds" [ngModelOptions]="{standalone: true}" min="60" max="1800">
+                    <mat-hint>No progress for this long triggers restart</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Progress Stall Warning -->
+                <div class="config-item">
+                  <label>Progress Warning (seconds)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Warning</mat-label>
+                    <input matInput type="number" [(ngModel)]="editProgressStallWarningSeconds" [ngModelOptions]="{standalone: true}" min="30" max="300">
+                    <mat-hint>Log warning after this much inactivity</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving">
+                <mat-icon>{{ isSaving ? 'sync' : 'save' }}</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 4: Environment & Debug -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>bug_report</mat-icon>
+          <span>Environment & Debug</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <!-- Environment Variables Card -->
+          <mat-card class="config-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>settings</mat-icon>
+                Environment Variables
+              </mat-card-title>
+              <mat-card-subtitle>Configure environment variables passed to all subprocesses</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <!-- Custom Environment Variables -->
+              <div class="env-section">
+                <h4 class="section-subtitle">
+                  <mat-icon>add_circle</mat-icon>
+                  Custom System Properties
+                </h4>
+                <div class="env-var-hint">
+                  <mat-icon>info</mat-icon>
+                  <span>
+                    Add custom ND4J or system properties to pass to subprocesses.
+                    These will be set as system properties before subprocesses are started.
+                  </span>
+                </div>
+
+                <div class="env-var-list">
+                  <div class="env-var-row" *ngFor="let env of customEnvVars; let i = index">
+                    <mat-form-field appearance="outline" class="env-key-field">
+                      <mat-label>Property Name</mat-label>
+                      <input matInput [(ngModel)]="env.key" [ngModelOptions]="{standalone: true}" placeholder="e.g., org.nd4j.linalg.defaultbackend">
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="env-value-field">
+                      <mat-label>Value</mat-label>
+                      <input matInput [(ngModel)]="env.value" [ngModelOptions]="{standalone: true}" placeholder="Value">
+                    </mat-form-field>
+                    <button mat-icon-button color="warn" (click)="removeEnvVar(i)" matTooltip="Remove">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                  <button mat-stroked-button (click)="addEnvVar()" class="add-env-button">
+                    <mat-icon>add</mat-icon>
+                    Add Variable
+                  </button>
+                </div>
+              </div>
+
+              <!-- ND4J Environment Preview -->
+              <mat-expansion-panel class="nd4j-env-panel" *ngIf="nd4jEnvironment">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    <mat-icon>visibility</mat-icon>
+                    Current ND4J Environment
+                  </mat-panel-title>
+                  <mat-panel-description>
+                    Properties that will be passed to subprocess
+                  </mat-panel-description>
+                </mat-expansion-panel-header>
+
+                <div class="nd4j-env-content">
+                  <h4>System Properties (org.nd4j.*, etc.)</h4>
+                  <div class="env-properties" *ngIf="nd4jEnvironment.systemProperties">
+                    <div class="property-row" *ngFor="let prop of getEnvPropsArray(nd4jEnvironment.systemProperties)">
+                      <span class="prop-key">{{ prop.key }}</span>
+                      <span class="prop-value">{{ prop.value }}</span>
+                    </div>
+                    <div *ngIf="!hasEnvProps(nd4jEnvironment.systemProperties)" class="no-props">
+                      No ND4J system properties set
+                    </div>
+                  </div>
+
+                  <h4>ND4J Runtime State</h4>
+                  <div class="env-properties" *ngIf="nd4jEnvironment.nd4jEnvironment">
+                    <div class="property-row" *ngFor="let prop of getEnvPropsArray(nd4jEnvironment.nd4jEnvironment)">
+                      <span class="prop-key">{{ prop.key }}</span>
+                      <span class="prop-value">{{ prop.value }}</span>
+                    </div>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-button (click)="loadNd4jEnvironment()" [disabled]="isLoadingNd4jEnvironment"
+                      matTooltip="Load ND4J environment preview">
+                <mat-icon>visibility</mat-icon>
+                Preview Environment
+              </button>
+            </mat-card-actions>
+          </mat-card>
+
+          <!-- Debug Tools Card -->
+          <mat-card class="config-card debug-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>bug_report</mat-icon>
+                Debug Tools Configuration
+              </mat-card-title>
+              <mat-card-subtitle>Restart subprocess with debugging tools (valgrind, compute-sanitizer, etc.)</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="debug-tools-hint">
+                <mat-icon>info</mat-icon>
+                <span>
+                  Configure debugging tools to diagnose CUDA issues, memory leaks, and native library problems.
+                  The subprocess will be restarted with the selected debug tool wrapping the JVM.
+                  Multiple additive options can be combined, but only one tool mode can be active at a time.
+                </span>
+              </div>
+
+              <!-- Tool Mode Selection -->
+              <div class="debug-section">
+                <h4>
+                  <mat-icon>build</mat-icon>
+                  Tool Mode (Mutually Exclusive)
+                </h4>
+                <div class="debug-config-grid">
+                  <div class="debug-config-item full-width">
+                    <label>Debug Tool</label>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Select Debug Tool</mat-label>
+                      <mat-select [(ngModel)]="selectedToolMode" [ngModelOptions]="{standalone: true}">
+                        <mat-option *ngFor="let mode of availableToolModes" [value]="mode.value">
+                          {{ mode.name }}
+                          <span class="debug-mode-desc" *ngIf="mode.requiresCuda"> (CUDA)</span>
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint>{{ getSelectedToolModeDescription() }}</mat-hint>
+                    </mat-form-field>
+                    <div *ngIf="isSelectedToolModeCudaRequired()" class="cuda-warning">
+                      <mat-icon>warning</mat-icon>
+                      <span>This mode requires CUDA toolkit to be installed</span>
+                    </div>
+                  </div>
+
+                  <!-- Log Directory -->
+                  <div class="debug-config-item">
+                    <label>Debug Log Directory</label>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Log Directory</mat-label>
+                      <input matInput [(ngModel)]="debugLogDirectory" [ngModelOptions]="{standalone: true}" placeholder="./logs/debug">
+                      <mat-hint>Directory where debug logs will be written</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Valgrind Settings (shown when valgrind is selected) -->
+              <div class="debug-section valgrind-section" *ngIf="isValgrindSelected()">
+                <h4>
+                  <mat-icon>memory</mat-icon>
+                  Valgrind Suppression Settings
+                </h4>
+                <div class="valgrind-info">
+                  <mat-icon>info</mat-icon>
+                  <span>
+                    Valgrind will automatically generate suppression files at runtime for libjvm.so.
+                  </span>
+                </div>
+                <div class="debug-config-grid">
+                  <div class="debug-config-item">
+                    <label>Generate Dynamic Suppressions</label>
+                    <mat-slide-toggle [(ngModel)]="debugGenerateValgrindSuppressions" [ngModelOptions]="{standalone: true}">
+                      {{ debugGenerateValgrindSuppressions ? 'Enabled' : 'Disabled' }}
+                    </mat-slide-toggle>
+                    <span class="toggle-hint">Generate runtime suppression file for libjvm.so</span>
+                  </div>
+                  <div class="debug-config-item full-width">
+                    <label>libnd4j Suppression File (Optional)</label>
+                    <mat-form-field appearance="outline">
+                      <mat-label>Path to libnd4j suppression file</mat-label>
+                      <input matInput [(ngModel)]="debugLibnd4jSuppressionFile" [ngModelOptions]="{standalone: true}"
+                             placeholder="/path/to/valgrind_libnd4j.supp">
+                      <mat-hint>Additional suppression file for libnd4j (optional)</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Additive JVM Options -->
+              <div class="debug-section">
+                <h4>
+                  <mat-icon>tune</mat-icon>
+                  Additive JVM Options (Can Combine Multiple)
+                </h4>
+                <div class="additive-options-grid">
+                  <div class="additive-option">
+                    <mat-slide-toggle [(ngModel)]="debugVerboseJni" [ngModelOptions]="{standalone: true}">
+                      Verbose JNI
+                    </mat-slide-toggle>
+                    <span class="option-hint">-verbose:jni - Log JNI native method calls</span>
+                  </div>
+                  <div class="additive-option">
+                    <mat-slide-toggle [(ngModel)]="debugNativeMemoryTracking" [ngModelOptions]="{standalone: true}">
+                      Native Memory Tracking
+                    </mat-slide-toggle>
+                    <span class="option-hint">-XX:NativeMemoryTracking=detail</span>
+                  </div>
+                  <div class="additive-option">
+                    <mat-slide-toggle [(ngModel)]="debugExtensiveErrorReports" [ngModelOptions]="{standalone: true}">
+                      Extensive Error Reports
+                    </mat-slide-toggle>
+                    <span class="option-hint">-XX:+ExtensiveErrorReports</span>
+                  </div>
+                  <div class="additive-option">
+                    <mat-slide-toggle [(ngModel)]="debugDisableJit" [ngModelOptions]="{standalone: true}">
+                      Disable JIT
+                    </mat-slide-toggle>
+                    <span class="option-hint">-Djava.compiler=NONE</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Extra JVM Arguments -->
+              <div class="debug-section">
+                <h4>
+                  <mat-icon>code</mat-icon>
+                  Extra JVM Arguments
+                </h4>
+                <div class="jvm-arg-list">
+                  <div class="jvm-arg-chip" *ngFor="let arg of debugExtraJvmArgs; let i = index">
+                    <span>{{ arg }}</span>
+                    <button mat-icon-button (click)="removeDebugJvmArg(i)" matTooltip="Remove">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
+                </div>
+                <div class="add-jvm-arg-row">
+                  <mat-form-field appearance="outline" class="jvm-arg-input">
+                    <mat-label>New JVM Argument</mat-label>
+                    <input matInput [(ngModel)]="newJvmArg" [ngModelOptions]="{standalone: true}" placeholder="-XX:+HeapDumpOnOutOfMemoryError"
+                           (keyup.enter)="addDebugJvmArg()">
+                  </mat-form-field>
+                  <button mat-stroked-button (click)="addDebugJvmArg()" [disabled]="!newJvmArg">
+                    <mat-icon>add</mat-icon>
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              <!-- System Environment Variables -->
+              <div class="debug-section">
+                <h4>
+                  <mat-icon>settings_applications</mat-icon>
+                  System Environment Variables
+                </h4>
+                <div class="env-var-hint">
+                  <mat-icon>info</mat-icon>
+                  <span>
+                    Set system-level environment variables like LD_PRELOAD, MALLOC_CHECK_, ASAN_OPTIONS,
+                    CUDA_VISIBLE_DEVICES. These are passed directly to the subprocess environment.
+                  </span>
+                </div>
+                <div class="env-var-list">
+                  <div class="env-var-row" *ngFor="let env of debugSystemEnvVars; let i = index">
+                    <mat-form-field appearance="outline" class="env-key-field">
+                      <mat-label>Variable Name</mat-label>
+                      <input matInput [(ngModel)]="env.key" [ngModelOptions]="{standalone: true}" placeholder="e.g., LD_PRELOAD, MALLOC_CHECK_">
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="env-value-field">
+                      <mat-label>Value</mat-label>
+                      <input matInput [(ngModel)]="env.value" [ngModelOptions]="{standalone: true}" placeholder="Value">
+                    </mat-form-field>
+                    <button mat-icon-button color="warn" (click)="removeDebugSystemEnvVar(i)" matTooltip="Remove">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                  <button mat-stroked-button (click)="addDebugSystemEnvVar()" class="add-env-button">
+                    <mat-icon>add</mat-icon>
+                    Add System Environment Variable
+                  </button>
+                </div>
+              </div>
+
+              <!-- ND4J Environment Configuration -->
+              <div class="debug-section">
+                <h4>
+                  <mat-icon>memory</mat-icon>
+                  ND4J Environment Configuration
+                </h4>
+                <div class="env-var-hint">
+                  <mat-icon>info</mat-icon>
+                  <span>
+                    Configure ND4J runtime environment settings (Nd4j.getEnvironment()).
+                    Common settings: maxThreads, maxMasterThreads, debug, verbose, profiling.
+                  </span>
+                </div>
+                <div class="env-var-list">
+                  <div class="env-var-row" *ngFor="let env of debugNd4jEnvConfig; let i = index">
+                    <mat-form-field appearance="outline" class="env-key-field">
+                      <mat-label>ND4J Setting</mat-label>
+                      <input matInput [(ngModel)]="env.key" [ngModelOptions]="{standalone: true}" placeholder="e.g., maxThreads, debug, verbose">
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="env-value-field">
+                      <mat-label>Value</mat-label>
+                      <input matInput [(ngModel)]="env.value" [ngModelOptions]="{standalone: true}" placeholder="e.g., 4, true, false">
+                    </mat-form-field>
+                    <button mat-icon-button color="warn" (click)="removeDebugNd4jEnvConfig(i)" matTooltip="Remove">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                  <button mat-stroked-button (click)="addDebugNd4jEnvConfig()" class="add-env-button">
+                    <mat-icon>add</mat-icon>
+                    Add ND4J Environment Setting
+                  </button>
+                </div>
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-button (click)="clearDebugConfig()" matTooltip="Reset debug configuration">
+                <mat-icon>clear</mat-icon>
+                Clear All
+              </button>
+              <span class="spacer"></span>
+              <button mat-raised-button color="accent" (click)="restartWithDebugMode()"
+                      [disabled]="isRestartingWithDebug"
+                      matTooltip="Restart subprocess with the selected debug configuration">
+                <mat-icon>{{ isRestartingWithDebug ? 'sync' : 'bug_report' }}</mat-icon>
+                {{ isRestartingWithDebug ? 'Restarting...' : 'Restart with Debug Configuration' }}
+              </button>
+            </mat-card-actions>
+
+            <!-- Debug Restart Result -->
+            <div class="debug-restart-result" *ngIf="lastDebugRestartResult">
+              <div class="result-header" [class.success]="lastDebugRestartResult.success" [class.error]="!lastDebugRestartResult.success">
+                <mat-icon>{{ lastDebugRestartResult.success ? 'check_circle' : 'error' }}</mat-icon>
+                <span>{{ lastDebugRestartResult.message || lastDebugRestartResult.error || 'Debug restart completed' }}</span>
+              </div>
+
+              <!-- Valgrind Suppression Info -->
+              <div class="valgrind-suppression-info" *ngIf="getValgrindSuppressionInfo()">
+                <mat-expansion-panel class="suppression-panel">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon>description</mat-icon>
+                      Generated Valgrind Suppressions
+                    </mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <div class="suppression-details">
+                    <div class="detail-row" *ngIf="getValgrindSuppressionInfo()?.dynamicSuppressionFile">
+                      <span class="label">Dynamic Suppression File:</span>
+                      <code class="value">{{ getValgrindSuppressionInfo()?.dynamicSuppressionFile }}</code>
+                    </div>
+                    <div class="detail-row" *ngIf="getValgrindSuppressionInfo()?.libjvmPath">
+                      <span class="label">libjvm.so Path:</span>
+                      <code class="value">{{ getValgrindSuppressionInfo()?.libjvmPath }}</code>
+                    </div>
+                    <div class="detail-row" *ngIf="getValgrindSuppressionInfo()?.suppressedErrorTypes?.length">
+                      <span class="label">Suppressed Error Types:</span>
+                      <div class="chip-list">
+                        <span class="chip" *ngFor="let errorType of getValgrindSuppressionInfo()?.suppressedErrorTypes">
+                          {{ errorType }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+              </div>
+
+              <div class="result-details" *ngIf="lastDebugRestartResult.commandPrefix && lastDebugRestartResult.commandPrefix.length > 0">
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>Command Details</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <div class="command-details">
+                    <div class="detail-row" *ngIf="lastDebugRestartResult.commandPrefix">
+                      <span class="label">Command Prefix:</span>
+                      <code class="value">{{ lastDebugRestartResult.commandPrefix.join(' ') }}</code>
+                    </div>
+                    <div class="detail-row" *ngIf="lastDebugRestartResult.jvmArgs && lastDebugRestartResult.jvmArgs.length > 0">
+                      <span class="label">JVM Args:</span>
+                      <code class="value">{{ lastDebugRestartResult.jvmArgs.join(' ') }}</code>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+              </div>
+            </div>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 5: Status & Jobs -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>monitor_heart</mat-icon>
+          <span>Status & Jobs</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <!-- Embedding Subprocess Status Card -->
+          <mat-card class="config-card status-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>memory</mat-icon>
+                Embedding Subprocess Status
+              </mat-card-title>
+              <mat-card-subtitle>Monitor and control the embedding subprocess</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <!-- Current Status -->
+              <div class="subprocess-status" *ngIf="embeddingSubprocessStatus">
+                <div class="status-header">
+                  <mat-icon [class.running]="embeddingSubprocessStatus.subprocessRunning"
+                            [class.stopped]="!embeddingSubprocessStatus.subprocessRunning">
+                    {{ embeddingSubprocessStatus.subprocessRunning ? 'play_circle' : 'stop_circle' }}
+                  </mat-icon>
+                  <span class="status-label">
+                    {{ embeddingSubprocessStatus.subprocessRunning ? 'Running' : 'Stopped' }}
+                    <span *ngIf="embeddingSubprocessStatus.subprocessModelLoaded" class="model-loaded-badge">
+                      Model Loaded: {{ embeddingSubprocessStatus.modelId }}
+                    </span>
+                  </span>
+                </div>
+                <div class="status-details-grid" *ngIf="embeddingSubprocessStatus.available">
+                  <div class="status-item">
+                    <span class="label">Launch Mode:</span>
+                    <span class="value">{{ embeddingSubprocessStatus.launchMode || 'Unknown' }}</span>
+                  </div>
+                  <div class="status-item">
+                    <span class="label">Encoder Type:</span>
+                    <span class="value">{{ embeddingSubprocessStatus.subprocessEncoderType || 'None' }}</span>
+                  </div>
+                  <div class="status-item">
+                    <span class="label">Dimensions:</span>
+                    <span class="value">{{ embeddingSubprocessStatus.subprocessDimensions || '-' }}</span>
+                  </div>
+                  <div class="status-item">
+                    <span class="label">Embeddings Processed:</span>
+                    <span class="value">{{ embeddingSubprocessStatus.totalEmbeddingsProcessed || 0 }}</span>
+                  </div>
+                  <div class="status-item" *ngIf="embeddingSubprocessStatus.lastCrashReason">
+                    <span class="label">Last Crash:</span>
+                    <span class="value error-text">{{ embeddingSubprocessStatus.lastCrashReason }}</span>
+                  </div>
+                </div>
+                <div class="status-unavailable" *ngIf="!embeddingSubprocessStatus.available">
+                  <mat-icon>warning</mat-icon>
+                  <span>{{ embeddingSubprocessStatus.error || 'Embedding model not available' }}</span>
+                </div>
+              </div>
+
+              <!-- Loading State -->
+              <div *ngIf="isLoadingSubprocessStatus" class="loading-status">
+                <mat-spinner diameter="24"></mat-spinner>
+                <span>Loading subprocess status...</span>
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-button (click)="loadEmbeddingSubprocessStatus()" [disabled]="isLoadingSubprocessStatus"
+                      matTooltip="Refresh subprocess status">
+                <mat-icon>refresh</mat-icon>
+                Refresh Status
+              </button>
+              <span class="spacer"></span>
+              <button mat-stroked-button color="warn" (click)="stopEmbeddingSubprocess()"
+                      [disabled]="isRestartingSubprocess || !embeddingSubprocessStatus?.subprocessRunning"
+                      matTooltip="Stop the embedding subprocess">
+                <mat-icon>stop</mat-icon>
+                Stop Subprocess
+              </button>
+              <button mat-raised-button color="primary" (click)="restartEmbeddingSubprocess()"
+                      [disabled]="isRestartingSubprocess"
+                      matTooltip="Restart subprocess with current configuration">
+                <mat-icon>{{ isRestartingSubprocess ? 'sync' : 'restart_alt' }}</mat-icon>
+                {{ isRestartingSubprocess ? 'Restarting...' : 'Restart Subprocess' }}
+              </button>
+            </mat-card-actions>
+
+            <!-- Last Restart Result -->
+            <div class="restart-result" *ngIf="lastRestartResult">
+              <div class="result-header" [class.success]="lastRestartResult.success" [class.error]="!lastRestartResult.success">
+                <mat-icon>{{ lastRestartResult.success ? 'check_circle' : 'error' }}</mat-icon>
+                <span>{{ lastRestartResult.message || lastRestartResult.error || 'Restart completed' }}</span>
+              </div>
+              <div class="result-details" *ngIf="lastRestartResult.appliedEnvironmentVariables">
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>Applied Environment Variables</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <div class="applied-vars">
+                    <div *ngFor="let prop of getEnvPropsArray(lastRestartResult.appliedEnvironmentVariables)" class="property-row">
+                      <span class="prop-key">{{ prop.key }}</span>
+                      <span class="prop-value">{{ prop.value }}</span>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+              </div>
+            </div>
+          </mat-card>
+
+          <!-- Active Processes Card -->
+          <mat-card class="config-card processes-card">
+            <mat-card-header>
+              <mat-card-title>Active Subprocess Jobs</mat-card-title>
+              <mat-card-subtitle>
+                {{ activeProcesses.length }} active process(es)
+              </mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div *ngIf="activeProcesses.length === 0" class="no-processes">
+                <mat-icon>hourglass_empty</mat-icon>
+                <span>No active subprocess jobs</span>
+              </div>
+
+              <table mat-table [dataSource]="activeProcesses" class="processes-table" *ngIf="activeProcesses.length > 0">
+                <!-- Task ID Column -->
+                <ng-container matColumnDef="taskId">
+                  <th mat-header-cell *matHeaderCellDef>Task ID</th>
+                  <td mat-cell *matCellDef="let row">
+                    <span class="task-id">{{ row.taskId.substring(0, 8) }}...</span>
+                    <span class="pid-badge" matTooltip="Process ID">PID: {{ row.pid }}</span>
+                  </td>
+                </ng-container>
+
+                <!-- File Name Column -->
+                <ng-container matColumnDef="fileName">
+                  <th mat-header-cell *matHeaderCellDef>File</th>
+                  <td mat-cell *matCellDef="let row">{{ row.fileName }}</td>
+                </ng-container>
+
+                <!-- Phase Column -->
+                <ng-container matColumnDef="phase">
+                  <th mat-header-cell *matHeaderCellDef>Phase</th>
+                  <td mat-cell *matCellDef="let row">
+                    <span class="phase-badge" [class]="'phase-' + row.currentPhase.toLowerCase()">
+                      {{ row.currentPhase }}
+                    </span>
+                  </td>
+                </ng-container>
+
+                <!-- Progress Column -->
+                <ng-container matColumnDef="progress">
+                  <th mat-header-cell *matHeaderCellDef>Progress</th>
+                  <td mat-cell *matCellDef="let row">
+                    <div class="progress-cell">
+                      <mat-progress-bar mode="determinate" [value]="row.progressPercent"></mat-progress-bar>
+                      <span class="progress-text">{{ row.progressPercent }}%</span>
+                    </div>
+                  </td>
+                </ng-container>
+
+                <!-- Elapsed Column -->
+                <ng-container matColumnDef="elapsed">
+                  <th mat-header-cell *matHeaderCellDef>Elapsed</th>
+                  <td mat-cell *matCellDef="let row">{{ getElapsedTime(row) }}</td>
+                </ng-container>
+
+                <!-- Actions Column -->
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let row">
+                    <button mat-icon-button color="warn" (click)="cancelProcess(row.taskId)"
+                            matTooltip="Cancel this job" [disabled]="row.cancelled">
+                      <mat-icon>cancel</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: displayedColumns;"
+                    [class.cancelled-row]="row.cancelled"
+                    [class.oom-row]="row.oomDetected"></tr>
+              </table>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+    </mat-tab-group>
 
     <!-- System Info Expansion Panel -->
-    <mat-expansion-panel *ngIf="systemInfo" class="system-panel">
+    <mat-expansion-panel *ngIf="systemInfo && !isLoading" class="system-panel">
       <mat-expansion-panel-header>
         <mat-panel-title>
           <mat-icon>info_outline</mat-icon>
@@ -274,5 +1109,11 @@
         </div>
       </div>
     </mat-expansion-panel>
+
+    <!-- Configuration Note -->
+    <div class="config-note" *ngIf="!isLoading">
+      <mat-icon>info</mat-icon>
+      <span>Configuration is saved to disk and persists across application restarts.</span>
+    </div>
   </div>
 </div>

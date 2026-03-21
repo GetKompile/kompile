@@ -91,7 +91,7 @@
     <div class="filters">
       <mat-form-field appearance="outline" class="search-field">
         <mat-label>Search files</mat-label>
-        <input matInput [(ngModel)]="searchQuery" (keyup.enter)="onSearch()" placeholder="Search by filename...">
+        <input matInput [(ngModel)]="searchQuery" [ngModelOptions]="{standalone: true}" (keyup.enter)="onSearch()" placeholder="Search by filename...">
         <button mat-icon-button matSuffix (click)="onSearch()">
           <mat-icon>search</mat-icon>
         </button>

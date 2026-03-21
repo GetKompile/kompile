@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.loaders.CompositePdfLoader;
 import ai.kompile.core.loaders.DocumentLoader;
 import ai.kompile.core.loaders.DocumentSourceDescriptor;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -120,8 +121,27 @@ public class DocumentDebuggerController {
             ChunkerDebugInfo selectedChunker,
             List<ChunkDebugInfo> chunks,
             Map<String, Object> processingStats,
-            String errorMessage
-    ) {}
+            String errorMessage,
+            Map<String, Object> compositeLoaderComparison
+    ) {
+        // Constructor without compositeLoaderComparison for backward compatibility
+        public DebugAnalysisResult(
+                String fileName,
+                String filePath,
+                long fileSize,
+                List<LoaderDebugInfo> availableLoaders,
+                LoaderDebugInfo selectedLoader,
+                List<RetrievedDocDebugInfo> loadedDocuments,
+                List<ChunkerDebugInfo> availableChunkers,
+                ChunkerDebugInfo selectedChunker,
+                List<ChunkDebugInfo> chunks,
+                Map<String, Object> processingStats,
+                String errorMessage) {
+            this(fileName, filePath, fileSize, availableLoaders, selectedLoader,
+                 loadedDocuments, availableChunkers, selectedChunker, chunks,
+                 processingStats, errorMessage, null);
+        }
+    }
 
     /**
      * Converts a Spring AI Document to a RetrievedDoc
@@ -372,7 +392,10 @@ public class DocumentDebuggerController {
     public ResponseEntity<DebugAnalysisResult> analyzeFile(
             @RequestParam("fileName") String fileName,
             @RequestParam(name = "loaderName", required = false) String loaderName,
-            @RequestParam(name = "chunkerName", required = false) String chunkerName) {
+            @RequestParam(name = "chunkerName", required = false) String chunkerName,
+            @RequestParam(name = "chunkSize", required = false, defaultValue = "1000") Integer chunkSize,
+            @RequestParam(name = "overlap", required = false, defaultValue = "200") Integer overlap,
+            @RequestParam(name = "useCompositePdfLoader", required = false, defaultValue = "false") Boolean useCompositePdfLoader) {
 
         try {
             if (this.uploadsPath == null || "error_uploads_path_not_configured".equals(this.uploadsPath.getFileName().toString())) {
@@ -442,8 +465,76 @@ public class DocumentDebuggerController {
 
             LoaderDebugInfo selectedLoaderInfo = null;
             List<RetrievedDocDebugInfo> documentInfos = new ArrayList<>();
+            Map<String, Object> compositeLoaderComparison = null;
 
-            if (selectedLoader != null) {
+            // Check if we should use composite PDF loader
+            boolean isPdfFile = fileName.toLowerCase().endsWith(".pdf");
+            boolean shouldUseComposite = isPdfFile && useCompositePdfLoader && loaderName == null;
+
+            if (shouldUseComposite) {
+                // Collect all PDF-supporting loaders for composite loading
+                List<DocumentLoader> pdfLoaders = documentLoaders.stream()
+                        .filter(l -> l.supports(sourceDescriptor))
+                        .filter(l -> !isNoOpLoader(l))
+                        .collect(Collectors.toList());
+
+                if (pdfLoaders.size() > 1) {
+                    logger.info("Using composite PDF loader with {} loaders for file: {}",
+                               pdfLoaders.size(), fileName);
+
+                    CompositePdfLoader compositePdfLoader = new CompositePdfLoader(pdfLoaders, true);
+                    try {
+                        CompositePdfLoader.LoaderComparisonResult comparisonResult =
+                                compositePdfLoader.loadWithComparison(sourceDescriptor);
+
+                        selectedLoader = comparisonResult.getSelectedLoader();
+                        List<Document> documents = comparisonResult.getDocuments();
+
+                        // Convert to RetrievedDocs for consistent handling
+                        for (Document doc : documents) {
+                            RetrievedDoc retrievedDoc = convertToRetrievedDoc(doc);
+                            RetrievedDocDebugInfo debugInfo = convertToRetrievedDocDebugInfo(retrievedDoc);
+                            documentInfos.add(debugInfo);
+                        }
+
+                        // Build comparison info for response
+                        compositeLoaderComparison = new LinkedHashMap<>();
+                        compositeLoaderComparison.put("compositeLoaderUsed", true);
+                        compositeLoaderComparison.put("selectedLoader", selectedLoader.getName());
+                        compositeLoaderComparison.put("selectionReason", comparisonResult.getSelectionReason());
+                        compositeLoaderComparison.put("loadersCompared", comparisonResult.getLoaderStats().size());
+
+                        // Add per-loader stats
+                        Map<String, Object> loaderStatsMap = new LinkedHashMap<>();
+                        for (Map.Entry<String, CompositePdfLoader.LoaderStats> entry :
+                                comparisonResult.getLoaderStats().entrySet()) {
+                            loaderStatsMap.put(entry.getKey(), entry.getValue().toMap());
+                        }
+                        compositeLoaderComparison.put("loaderStats", loaderStatsMap);
+
+                        selectedLoaderInfo = new LoaderDebugInfo(
+                                selectedLoader.getName() + " (via Composite Loader)",
+                                selectedLoader.getClass().getName(),
+                                isNoOpLoader(selectedLoader),
+                                true,
+                                "Auto-selected best PDF loader: " + comparisonResult.getSelectionReason()
+                        );
+
+                    } catch (Exception e) {
+                        logger.error("Composite PDF loading failed, falling back to single loader: {}",
+                                    e.getMessage(), e);
+                        // Fall back to single loader mode
+                        shouldUseComposite = false;
+                    }
+                } else {
+                    // Only one PDF loader available, no need for composite
+                    shouldUseComposite = false;
+                    logger.debug("Only {} PDF loader(s) available, skipping composite mode", pdfLoaders.size());
+                }
+            }
+
+            // Standard single-loader path (used when composite is not applicable or as fallback)
+            if (!shouldUseComposite && selectedLoader != null && documentInfos.isEmpty()) {
                 selectedLoaderInfo = new LoaderDebugInfo(
                         selectedLoader.getName(),
                         selectedLoader.getClass().getName(),
@@ -523,9 +614,9 @@ public class DocumentDebuggerController {
                             .build();
 
                     Map<String, Object> chunkingOptions = new HashMap<>();
-                    // These options are examples; actual values might come from configuration or request
-                    chunkingOptions.put("chunkSize", 1000);
-                    chunkingOptions.put("overlap", 200);
+                    // Use chunk size and overlap from request parameters
+                    chunkingOptions.put("chunkSize", chunkSize);
+                    chunkingOptions.put("overlap", overlap);
 
                     // selectedChunker is of type ai.kompile.app.core.chunking.TextChunker
                     // Its chunk method takes RetrievedDoc and returns List<RetrievedDoc>
@@ -560,6 +651,13 @@ public class DocumentDebuggerController {
             processingStats.put("avgChunkSize",
                     chunkInfos.isEmpty() ? 0 :
                             chunkInfos.stream().mapToInt(ChunkDebugInfo::contentLength).average().orElse(0));
+            processingStats.put("configuredChunkSize", chunkSize);
+            processingStats.put("configuredOverlap", overlap);
+
+            // Add composite loader info to processing stats if used
+            if (compositeLoaderComparison != null) {
+                processingStats.put("compositeLoaderUsed", true);
+            }
 
             return ResponseEntity.ok(new DebugAnalysisResult(
                     fileName,
@@ -572,7 +670,8 @@ public class DocumentDebuggerController {
                     selectedChunkerInfo,
                     chunkInfos,
                     processingStats,
-                    null
+                    null,
+                    compositeLoaderComparison
             ));
 
         } catch (Exception e) {

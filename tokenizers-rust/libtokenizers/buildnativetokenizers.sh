@@ -72,6 +72,11 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Ensure Rust/Cargo is on PATH (needed when invoked from Maven reactor without login shell)
+if [[ -f "$HOME/.cargo/env" ]]; then
+    source "$HOME/.cargo/env"
+fi
+
 # Check dependencies
 echo "Checking dependencies..."
 

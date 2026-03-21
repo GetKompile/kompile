@@ -23,7 +23,6 @@ import ai.kompile.orchestrator.web.dto.StartWorkflowRequest;
 import ai.kompile.orchestrator.web.dto.WorkflowStepFeedbackRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -38,7 +37,6 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/orchestrator/{instanceId}/workflows")
 @RequiredArgsConstructor
-@ConditionalOnProperty(prefix = "kompile.orchestrator", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class WorkflowController {
 
     private final OrchestratorService orchestratorService;
@@ -49,7 +47,7 @@ public class WorkflowController {
      */
     @PostMapping
     public ResponseEntity<Workflow> startWorkflow(
-            @PathVariable String instanceId,
+            @PathVariable("instanceId") String instanceId,
             @RequestBody StartWorkflowRequest request) {
         log.info("Starting workflow {} for orchestrator: {}", request.getName(), instanceId);
 
@@ -68,8 +66,8 @@ public class WorkflowController {
      */
     @GetMapping("/{workflowId}")
     public ResponseEntity<Workflow> getWorkflow(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId) {
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId) {
         return workflowService.getWorkflow(workflowId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -79,7 +77,7 @@ public class WorkflowController {
      * Get active workflows for an orchestrator.
      */
     @GetMapping("/active")
-    public ResponseEntity<List<Workflow>> getActiveWorkflows(@PathVariable String instanceId) {
+    public ResponseEntity<List<Workflow>> getActiveWorkflows(@PathVariable("instanceId") String instanceId) {
         return ResponseEntity.ok(workflowService.getActiveWorkflows(instanceId));
     }
 
@@ -87,7 +85,7 @@ public class WorkflowController {
      * Get all workflows for an orchestrator.
      */
     @GetMapping
-    public ResponseEntity<List<Workflow>> getWorkflows(@PathVariable String instanceId) {
+    public ResponseEntity<List<Workflow>> getWorkflows(@PathVariable("instanceId") String instanceId) {
         return ResponseEntity.ok(workflowService.getWorkflowHistory(instanceId, 100));
     }
 
@@ -96,8 +94,8 @@ public class WorkflowController {
      */
     @PostMapping("/{workflowId}/advance")
     public ResponseEntity<Map<String, Object>> advanceWorkflow(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId) {
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId) {
         log.info("Advancing workflow {} for orchestrator: {}", workflowId, instanceId);
         orchestratorService.advanceWorkflow(workflowId);
         return ResponseEntity.ok(Map.of(
@@ -110,9 +108,9 @@ public class WorkflowController {
      */
     @PostMapping("/{workflowId}/steps/{stepNumber}/approve")
     public ResponseEntity<Map<String, Object>> approveStep(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId,
-            @PathVariable Integer stepNumber) {
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId,
+            @PathVariable("stepNumber") Integer stepNumber) {
         log.info("Approving step {} of workflow {} for orchestrator: {}", stepNumber, workflowId, instanceId);
         orchestratorService.approveWorkflowStep(workflowId, stepNumber);
         return ResponseEntity.ok(Map.of(
@@ -126,9 +124,9 @@ public class WorkflowController {
      */
     @PostMapping("/{workflowId}/steps/{stepNumber}/reject")
     public ResponseEntity<Map<String, Object>> rejectStep(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId,
-            @PathVariable Integer stepNumber,
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId,
+            @PathVariable("stepNumber") Integer stepNumber,
             @RequestBody WorkflowStepFeedbackRequest request) {
         log.info("Rejecting step {} of workflow {} for orchestrator: {}", stepNumber, workflowId, instanceId);
         orchestratorService.rejectWorkflowStep(workflowId, stepNumber, request.getFeedback());
@@ -143,8 +141,8 @@ public class WorkflowController {
      */
     @PostMapping("/{workflowId}/cancel")
     public ResponseEntity<Map<String, Object>> cancelWorkflow(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId) {
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId) {
         log.info("Cancelling workflow {} for orchestrator: {}", workflowId, instanceId);
         orchestratorService.cancelWorkflow(workflowId);
         return ResponseEntity.ok(Map.of(
@@ -157,8 +155,8 @@ public class WorkflowController {
      */
     @GetMapping("/{workflowId}/steps")
     public ResponseEntity<List<WorkflowStep>> getWorkflowSteps(
-            @PathVariable String instanceId,
-            @PathVariable Long workflowId) {
+            @PathVariable("instanceId") String instanceId,
+            @PathVariable("workflowId") Long workflowId) {
         return ResponseEntity.ok(workflowService.getSteps(workflowId));
     }
 }

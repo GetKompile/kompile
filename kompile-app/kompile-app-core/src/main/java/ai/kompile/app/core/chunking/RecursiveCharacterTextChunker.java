@@ -88,22 +88,39 @@ public class RecursiveCharacterTextChunker implements TextChunker {
         Map<String, Object> mergedOptions = prepareOptions(options);
         int chunkSize = (Integer) mergedOptions.get("chunkSize");
         int overlap = (Integer) mergedOptions.get("overlap");
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
 
         String text = document.getText();
         if (text.length() <= chunkSize) {
-            // Document is already small enough, return as single chunk
+            // Document is already small enough, check if it's valid content
+            if (collectGarbage && SentenceFilter.isGarbage(text)) {
+                if (includeGarbageChunk) {
+                    return List.of(SentenceFilter.createGarbageChunk(
+                        document, List.of(text.trim()), getName(), 0, 1));
+                }
+                return List.of();
+            }
             return createSingleChunk(document, 0, 1);
         }
 
         // Split text into chunks
         List<String> chunks = splitTextOptimized(text, chunkSize, overlap);
 
-        // For large documents, create chunk documents in parallel
+        // Create chunk documents
+        List<RetrievedDoc> chunkDocs;
         if (text.length() > PARALLEL_THRESHOLD && chunks.size() > 10) {
-            return createChunkedDocumentsParallel(document, chunks);
+            chunkDocs = createChunkedDocumentsParallel(document, chunks);
+        } else {
+            chunkDocs = createChunkedDocuments(document, chunks);
         }
 
-        return createChunkedDocuments(document, chunks);
+        // Apply sentence filtering and garbage collection if enabled
+        if (collectGarbage) {
+            return SentenceFilter.filterAndCollectGarbage(chunkDocs, document, getName(), includeGarbageChunk);
+        }
+
+        return chunkDocs;
     }
 
     /**
@@ -420,6 +437,9 @@ public class RecursiveCharacterTextChunker implements TextChunker {
         // Reduces memory overhead and indexing time by ~50% vs 20% overlap
         defaults.put("overlap", 200);
         defaults.put("preserveParagraphs", true);
+        // Garbage collection options - disabled by default (see TextChunker interface)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
         return defaults;
     }
 }

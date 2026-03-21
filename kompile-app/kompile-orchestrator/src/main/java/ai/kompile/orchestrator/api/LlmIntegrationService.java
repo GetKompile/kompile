@@ -248,6 +248,18 @@ public interface LlmIntegrationService {
     List<String> getAvailableProviders();
 
     /**
+     * Get available models for a specific provider.
+     *
+     * @param providerId The provider ID
+     * @return List of available models, empty if provider not found or doesn't support model listing
+     */
+    default List<LlmProvider.ModelInfo> getModelsForProvider(String providerId) {
+        return getProvider(providerId)
+                .map(LlmProvider::getAvailableModels)
+                .orElse(List.of());
+    }
+
+    /**
      * Get session history for an orchestrator.
      *
      * @param orchestratorInstanceId The orchestrator instance ID

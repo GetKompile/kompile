@@ -250,3 +250,65 @@ header {
   gap: 8px;
   margin-top: 16px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* ACTIVE JOBS NOTIFICATION BADGE                                                   */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+.fact-sheets-tab {
+  position: relative;
+}
+
+.active-jobs-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  margin-left: 8px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #ff5722;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 2px 4px rgba(255, 87, 34, 0.4);
+  cursor: pointer;
+}
+
+.badge-pulse {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 10px;
+  background: #ff5722;
+  animation: badgePulse 2s ease-in-out infinite;
+  z-index: -1;
+}
+
+@keyframes badgePulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0;
+  }
+}
+
+/* Hover effect for badge */
+.active-jobs-badge:hover {
+  background: #e64a19;
+  transform: scale(1.1);
+  transition: all 0.2s ease;
+}
+
+/* Style for when there are many active jobs */
+.active-jobs-badge.many-jobs {
+  background: #d32f2f;
+}

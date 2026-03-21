@@ -73,7 +73,15 @@ public enum GraphStepType {
      * Not a processing step itself, but a marker for graph exit points.
      * A graph typically has one designated output step that provides the "PIPELINE_OUTPUT".
      */
-    GRAPH_OUTPUT; // May not be needed if output is simply the result of a specific named step
+    GRAPH_OUTPUT, // May not be needed if output is simply the result of a specific named step
+
+    /**
+     * A loop operation that repeatedly executes a body step until a condition is met.
+     * Used for autoregressive decoding in VLM pipelines where the decoder runs
+     * iteratively, feeding output tokens back as input until an EOS token is generated.
+     * The loop manages feedback keys (e.g., kv_cache, next_token_id) between iterations.
+     */
+    LOOP;
 
     private static final Map<String, GraphStepType> NAME_MAP = new HashMap<>();
 

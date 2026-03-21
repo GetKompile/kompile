@@ -16,6 +16,10 @@
 
 package ai.kompile.app.web.controllers;
 
+import ai.kompile.app.staging.domain.StagingServiceConfig;
+import ai.kompile.app.staging.service.StagingClientService;
+import ai.kompile.app.staging.service.StagingServiceConfigService;
+import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.embeddings.NoOpVectorStoreImpl;
 import ai.kompile.core.embeddings.VectorStore;
 import ai.kompile.core.indexers.IndexerService;
@@ -35,6 +39,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @RestController
@@ -46,11 +51,20 @@ public class IndexBrowserController {
     private IndexerService indexerService;
     private DocumentRetriever documentRetriever;
     private VectorStore vectorStore;
+    private final StagingClientService stagingClientService;
+    private final StagingServiceConfigService stagingConfigService;
+    private final EmbeddingModel embeddingModel;
 
     @Autowired
     public IndexBrowserController(List<IndexerService> indexerService,
             List<DocumentRetriever> documentRetriever,
-            List<VectorStore> vectorStores) {
+            List<VectorStore> vectorStores,
+            @Autowired(required = false) StagingClientService stagingClientService,
+            @Autowired(required = false) StagingServiceConfigService stagingConfigService,
+            @Autowired(required = false) EmbeddingModel embeddingModel) {
+        this.stagingClientService = stagingClientService;
+        this.stagingConfigService = stagingConfigService;
+        this.embeddingModel = embeddingModel;
         // Select non-NoOp indexer if available
         if (indexerService.size() > 1) {
             for (IndexerService indexerService1 : indexerService) {
@@ -179,6 +193,106 @@ public class IndexBrowserController {
             }
             if (warnings.length() > 0) {
                 status.put("warning", warnings.toString().trim());
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // ACTIVE MODEL STATUS (from Staging Manager)
+            // ═══════════════════════════════════════════════════════════════════════════
+
+            // Add local embedding model info if available
+            if (embeddingModel != null) {
+                status.put("activeEmbeddingModel", embeddingModel.getModelIdentifier());
+                status.put("embeddingModelName", embeddingModel.getModelName());
+
+                // Always include loading status - this does NOT trigger initialization
+                status.put("embeddingModelLoading", embeddingModel.isLoading());
+                status.put("embeddingModelLoadingPhase", embeddingModel.getLoadingPhase());
+                status.put("embeddingModelLoadingMessage", embeddingModel.getLoadingMessage());
+
+                // Get embedding model status - this triggers lazy initialization
+                try {
+                    int dimensions = embeddingModel.dimensions();
+                    status.put("embeddingDimensions", dimensions);
+
+                    // Check if the model is properly initialized
+                    if (dimensions <= 0) {
+                        status.put("embeddingModelInitialized", false);
+
+                        // If still loading, show loading message instead of warning
+                        if (embeddingModel.isLoading()) {
+                            String loadingMsg = embeddingModel.getLoadingMessage();
+                            status.put("embeddingModelWarning", loadingMsg != null ? loadingMsg : "Loading model...");
+                        } else {
+                            status.put("embeddingModelWarning",
+                                    "Embedding model not initialized. Configure a staging service or import a model archive.");
+                        }
+
+                        // Try to get more specific error info if available
+                        String initError = embeddingModel.getInitializationError();
+                        if (initError != null && !initError.isBlank()) {
+                            // Extract just the first line for the warning
+                            int newlineIdx = initError.indexOf('\n');
+                            String simpleError = newlineIdx > 0 ? initError.substring(0, newlineIdx) : initError;
+                            status.put("embeddingModelError", simpleError);
+                        }
+                    } else {
+                        status.put("embeddingModelInitialized", true);
+                    }
+                } catch (Exception e) {
+                    // Handle any unexpected errors gracefully
+                    logger.warn("Could not get embedding model dimensions: {}", e.getMessage());
+                    status.put("embeddingDimensions", -1);
+                    status.put("embeddingModelInitialized", false);
+                    status.put("embeddingModelWarning",
+                            "Failed to initialize embedding model: " + e.getMessage());
+                }
+            } else {
+                status.put("embeddingModelInitialized", false);
+                status.put("embeddingModelLoading", false);
+                status.put("embeddingModelWarning", "No embedding model configured.");
+            }
+
+            // Add staging service connection status and active models
+            if (stagingConfigService != null && stagingClientService != null) {
+                Optional<StagingServiceConfig> activeConfig = stagingConfigService.getActiveConfig();
+                if (activeConfig.isPresent()) {
+                    StagingServiceConfig config = activeConfig.get();
+                    status.put("stagingServiceConfigured", true);
+                    status.put("stagingServiceName", config.getName());
+                    status.put("stagingServiceUrl", config.getEndpointUrl());
+                    status.put("stagingServiceVerified", config.isVerified());
+
+                    // Get active models from the staging service
+                    try {
+                        Optional<Map<String, String>> activeModels = stagingClientService.getActiveModels();
+                        if (activeModels.isPresent()) {
+                            Map<String, String> models = activeModels.get();
+                            status.put("stagingConnected", true);
+                            status.put("activeModels", models);
+                            // Extract specific model types for easier access
+                            if (models.containsKey("encoder") || models.containsKey("dense_encoder")) {
+                                status.put("activeEncoder", models.getOrDefault("encoder", models.get("dense_encoder")));
+                            }
+                            if (models.containsKey("cross_encoder") || models.containsKey("reranker")) {
+                                status.put("activeCrossEncoder", models.getOrDefault("cross_encoder", models.get("reranker")));
+                            }
+                            if (models.containsKey("sparse_encoder")) {
+                                status.put("activeSparseEncoder", models.get("sparse_encoder"));
+                            }
+                        } else {
+                            status.put("stagingConnected", false);
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not fetch active models from staging service: {}", e.getMessage());
+                        status.put("stagingConnected", false);
+                    }
+                } else {
+                    status.put("stagingServiceConfigured", false);
+                    status.put("stagingConnected", false);
+                }
+            } else {
+                status.put("stagingServiceConfigured", false);
+                status.put("stagingConnected", false);
             }
 
             logger.info("Index Browser Status - Indexer: {}, Retriever: {}, VectorStore: {}, Index Available: {}",
@@ -350,6 +464,15 @@ public class IndexBrowserController {
             response.put("totalResults", searchResults.size());
             response.put("results", searchResults);
 
+            // Include total document count in the index for context
+            try {
+                long totalDocumentCount = indexerService.getApproxTotalDocCount(null);
+                response.put("totalDocumentCount", totalDocumentCount);
+            } catch (Exception e) {
+                logger.warn("Could not get total document count: {}", e.getMessage());
+                response.put("totalDocumentCount", -1);
+            }
+
             logger.debug("Search completed: found {} results for query '{}'", searchResults.size(), request.query());
             return ResponseEntity.ok(response);
 
@@ -481,10 +604,13 @@ public class IndexBrowserController {
             response.put("results", searchResults);
             response.put("searchType", "vector");
 
+            // Include total vector count for context
+            long vectorCount = vectorStore.getApproxVectorCount();
+            response.put("totalVectorCount", vectorCount);
+
             // Add helpful message if no results found
             if (searchResults.isEmpty()) {
                 // Check if vector store has any documents
-                long vectorCount = vectorStore.getApproxVectorCount();
                 if (vectorCount <= 0) {
                     response.put("message", "Vector store is empty. Run 'Populate Vector Store' from the Index Browser to enable semantic search.");
                     response.put("vectorStoreEmpty", true);

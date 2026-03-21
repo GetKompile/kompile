@@ -39,6 +39,7 @@
         <module>kompile-pipelines-steps-samediff</module>
         <module>kompile-pipline-steps-document-parser</module>
         <module>kompile-pipeline-steps-nd4j-common</module>
+        <module>kompile-pipelines-steps-vlm</module>
     </modules>
 
     <properties>

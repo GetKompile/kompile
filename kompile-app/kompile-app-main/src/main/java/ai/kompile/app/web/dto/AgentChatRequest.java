@@ -28,12 +28,18 @@ public class AgentChatRequest {
     private boolean skipPermissions = true;
     private String workingDirectory;
 
-    // RAG configuration
+    // RAG configuration (vector-based retrieval)
     private boolean enableRag = false;
     private int ragMaxResults = 5;
     private double ragSimilarityThreshold = 0.0;
     private boolean includeKeywordSearch = true;
     private boolean includeSemanticSearch = true;
+
+    // GraphRAG configuration (knowledge graph-based retrieval)
+    private boolean enableGraphRag = false;
+    private int graphRagMaxResults = 5;
+    private String graphRagSearchType = "LOCAL"; // LOCAL or GLOBAL
+    private String graphRagConversationId; // For conversation context
 
     // MCP tools injection - automatically adds --mcp-server flag if agent supports it
     private boolean injectMcpTools = true;
@@ -120,6 +126,38 @@ public class AgentChatRequest {
 
     public void setIncludeSemanticSearch(boolean includeSemanticSearch) {
         this.includeSemanticSearch = includeSemanticSearch;
+    }
+
+    public boolean isEnableGraphRag() {
+        return enableGraphRag;
+    }
+
+    public void setEnableGraphRag(boolean enableGraphRag) {
+        this.enableGraphRag = enableGraphRag;
+    }
+
+    public int getGraphRagMaxResults() {
+        return graphRagMaxResults;
+    }
+
+    public void setGraphRagMaxResults(int graphRagMaxResults) {
+        this.graphRagMaxResults = graphRagMaxResults;
+    }
+
+    public String getGraphRagSearchType() {
+        return graphRagSearchType;
+    }
+
+    public void setGraphRagSearchType(String graphRagSearchType) {
+        this.graphRagSearchType = graphRagSearchType;
+    }
+
+    public String getGraphRagConversationId() {
+        return graphRagConversationId;
+    }
+
+    public void setGraphRagConversationId(String graphRagConversationId) {
+        this.graphRagConversationId = graphRagConversationId;
     }
 
     public boolean isInjectMcpTools() {

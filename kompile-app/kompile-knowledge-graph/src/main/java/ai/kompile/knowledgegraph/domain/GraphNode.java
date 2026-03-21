@@ -15,9 +15,13 @@
  */
 package ai.kompile.knowledgegraph.domain;
 
+import ai.kompile.core.kgembedding.KGEmbeddingAlgorithm;
+import ai.kompile.knowledgegraph.embedding.util.INDArrayConverter;
 import jakarta.persistence.*;
 import lombok.*;
+import org.nd4j.linalg.api.ndarray.INDArray;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -154,6 +158,38 @@ public class GraphNode {
      */
     @Column(name = "fact_sheet_id")
     private Long factSheetId;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KNOWLEDGE GRAPH EMBEDDINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Knowledge graph embedding vector for this entity.
+     * Trained using TransE, RotatE, or other KG embedding algorithms.
+     */
+    @Column(name = "kg_embedding", columnDefinition = "BLOB")
+    @Convert(converter = INDArrayConverter.class)
+    private INDArray kgEmbedding;
+
+    /**
+     * Algorithm used to generate the KG embedding.
+     */
+    @Column(name = "kg_embedding_algorithm", length = 32)
+    @Enumerated(EnumType.STRING)
+    private KGEmbeddingAlgorithm kgEmbeddingAlgorithm;
+
+    /**
+     * Version/timestamp of the training run that produced this embedding.
+     * Used to track which embeddings are from the same training session.
+     */
+    @Column(name = "kg_embedding_version")
+    private Long kgEmbeddingVersion;
+
+    /**
+     * When the KG embedding was last updated.
+     */
+    @Column(name = "kg_embedding_updated_at")
+    private Instant kgEmbeddingUpdatedAt;
 
     @Column(nullable = false)
     private LocalDateTime createdAt;

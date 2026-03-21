@@ -139,16 +139,19 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         this.objectMapper = objectMapper;
         this.documentLoadingService = documentLoadingService;
         this.documentLoaders = documentLoaders;
-        if (vectorStore.size() > 1) {
-            for (VectorStore vectorStore1 : vectorStore) {
-                if (vectorStore1 instanceof NoOpVectorStoreImpl) {
-                    continue;
-                } else {
-                    this.vectorStore = vectorStore1;
-                }
+
+        // Select the best VectorStore (prefer non-NoOp)
+        for (VectorStore vectorStore1 : vectorStore) {
+            if (!(vectorStore1 instanceof NoOpVectorStoreImpl)) {
+                this.vectorStore = vectorStore1;
+                break;
             }
-        } else {
+        }
+        // Fallback to first if all are NoOp (shouldn't happen in prod)
+        if (this.vectorStore == null && !vectorStore.isEmpty()) {
             this.vectorStore = vectorStore.get(0);
+            logger.warn(
+                    "No functional VectorStore found, using NoOp implementation. Vector indexing will be disabled.");
         }
 
         // Select the best embedding model (prefer non-NoOp)
@@ -164,8 +167,9 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             }
         }
 
-        logger.info("AnseriniIndexerServiceImpl constructed. VectorStore available: {}. EmbeddingModel: {}. DocumentLoaders count: {}",
-                vectorStore != null,
+        logger.info(
+                "AnseriniIndexerServiceImpl constructed. VectorStore: {}. EmbeddingModel: {}. DocumentLoaders count: {}",
+                this.vectorStore != null ? this.vectorStore.getClass().getSimpleName() : "none",
                 this.embeddingModel != null ? this.embeddingModel.getModelName() : "none",
                 this.documentLoaders == null ? 0 : this.documentLoaders.size());
         if (CollectionUtils.isEmpty(this.documentLoaders)) {
@@ -240,9 +244,15 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
     @PostConstruct
     public void initialIndexOnStartup() {
+        String indexPath = anseriniConfig.getIndexPath();
+        if (indexPath == null || indexPath.isBlank()) {
+            logger.info("AnseriniIndexerService: No initial index path configured. Startup checks skipped.");
+            return;
+        }
+
         try {
             logger.info("AnseriniIndexerService PostConstruct: Checking Anserini keyword index at '{}'.",
-                    anseriniConfig.getIndexPath());
+                    indexPath);
             if (!isIndexAvailable()) {
                 logger.info(
                         "Anserini keyword index not available or invalid. Triggering full re-processing of configured sources.");
@@ -414,6 +424,20 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
      */
     @Override
     public void indexToKeywordIndexOnly(List<RetrievedDoc> documents) throws IOException {
+        indexToKeywordIndexOnly(documents, false);
+    }
+
+    /**
+     * Indexes documents to the keyword index only with option to skip embedding.
+     * This is the high-throughput path for deferred vector population.
+     *
+     * @param documents     The documents to index
+     * @param skipEmbedding If true, skip all embedding computation (keyword-only
+     *                      mode)
+     * @throws IOException if there is an error during indexing
+     */
+    @Override
+    public void indexToKeywordIndexOnly(List<RetrievedDoc> documents, boolean skipEmbedding) throws IOException {
         if (documents == null || documents.isEmpty()) {
             return;
         }
@@ -424,7 +448,11 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             return;
         }
 
-        logger.debug("Indexing {} documents to keyword index only", documents.size());
+        if (skipEmbedding) {
+            logger.debug("Indexing {} documents to keyword index only (SKIP EMBEDDING MODE)", documents.size());
+        } else {
+            logger.debug("Indexing {} documents to keyword index only", documents.size());
+        }
         addToKeywordIndex(documents);
     }
 
@@ -466,6 +494,10 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         // Index to vector store with pre-computed embeddings
         int actualIndexed = 0;
+        logger.info("indexToVectorStoreOnly: vectorStore={}, isNoOp={}, documents={}, hasEmbeddings={}",
+                vectorStore != null ? vectorStore.getClass().getSimpleName() : "NULL",
+                vectorStore instanceof NoOpVectorStoreImpl,
+                documents.size(), hasEmbeddings);
         if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
             try {
                 if (hasEmbeddings) {
@@ -484,6 +516,10 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 logger.error("Failed to index to Vector Store: {}", e.getMessage(), e);
                 throw new IOException("Vector store indexing failed", e);
             }
+        } else {
+            logger.warn("SKIPPING vector store write: vectorStore={}, isNoOp={}. Vectors will NOT be persisted!",
+                    vectorStore != null ? vectorStore.getClass().getSimpleName() : "NULL",
+                    vectorStore instanceof NoOpVectorStoreImpl);
         }
         return actualIndexed;
     }
@@ -494,7 +530,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
      *
      * @param documents  The documents to index
      * @param embeddings Pre-computed embeddings as float[] arrays
-     * @return A CompletableFuture that completes with the actual counts of documents indexed
+     * @return A CompletableFuture that completes with the actual counts of
+     *         documents indexed
      */
     @Override
     public java.util.concurrent.CompletableFuture<IndexingResult> indexDocumentsParallel(
@@ -1131,6 +1168,191 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
     }
 
     /**
+     * Deletes documents from the keyword index by their IDs.
+     * This method uses Lucene's term-based deletion to remove documents.
+     *
+     * @param documentIds List of document IDs to delete
+     * @return true if deletion was successful, false otherwise
+     */
+    public boolean deleteFromKeywordIndex(List<String> documentIds) {
+        if (CollectionUtils.isEmpty(documentIds)) {
+            return true;
+        }
+
+        if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
+            logger.warn("Cannot delete from keyword index: index path not configured");
+            return false;
+        }
+
+        synchronized (keywordWriterLock) {
+            try {
+                ensureKeywordWriterInitialized();
+
+                if (keywordIndexWriter == null || !keywordIndexWriter.isOpen()) {
+                    logger.error("Keyword index writer not available for deletion");
+                    return false;
+                }
+
+                int deletedCount = 0;
+                for (String docId : documentIds) {
+                    if (StringUtils.hasText(docId)) {
+                        keywordIndexWriter.deleteDocuments(new Term(Constants.ID, docId));
+                        deletedCount++;
+                    }
+                }
+
+                // Commit immediately to ensure deletions are persisted
+                keywordIndexWriter.commit();
+                logger.info("Deleted {} documents from keyword index", deletedCount);
+                return true;
+            } catch (IOException e) {
+                logger.error("Error deleting documents from keyword index: {}", e.getMessage(), e);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Deletes all documents from the keyword index.
+     *
+     * @return true if deletion was successful, false otherwise
+     */
+    public boolean deleteAllFromKeywordIndex() {
+        if (!StringUtils.hasText(anseriniConfig.getIndexPath())) {
+            logger.warn("Cannot delete all from keyword index: index path not configured");
+            return false;
+        }
+
+        synchronized (keywordWriterLock) {
+            try {
+                ensureKeywordWriterInitialized();
+
+                if (keywordIndexWriter == null || !keywordIndexWriter.isOpen()) {
+                    logger.error("Keyword index writer not available for deletion");
+                    return false;
+                }
+
+                keywordIndexWriter.deleteAll();
+                keywordIndexWriter.commit();
+                logger.info("Deleted all documents from keyword index");
+                return true;
+            } catch (IOException e) {
+                logger.error("Error deleting all documents from keyword index: {}", e.getMessage(), e);
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Gets document IDs from the keyword index that match a source ID.
+     *
+     * @param sourceId The source ID to filter by
+     * @return List of document IDs matching the source
+     */
+    public List<String> getKeywordDocumentIdsBySourceId(String sourceId) {
+        List<String> matchingIds = new ArrayList<>();
+        if (!StringUtils.hasText(sourceId) || !isIndexAvailable()) {
+            return matchingIds;
+        }
+
+        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+             DirectoryReader reader = DirectoryReader.open(dir)) {
+
+            for (int i = 0; i < reader.maxDoc(); i++) {
+                // Skip deleted documents
+                boolean isDeleted = false;
+                for (LeafReaderContext leafContext : reader.leaves()) {
+                    Bits liveDocs = leafContext.reader().getLiveDocs();
+                    if (i >= leafContext.docBase && i < (leafContext.docBase + leafContext.reader().maxDoc())) {
+                        if (liveDocs != null && !liveDocs.get(i - leafContext.docBase)) {
+                            isDeleted = true;
+                        }
+                        break;
+                    }
+                }
+                if (isDeleted) continue;
+
+                org.apache.lucene.document.Document luceneDoc = reader.storedFields().document(i);
+                if (luceneDoc == null) continue;
+
+                // Check metadata for source_id
+                String metadataJson = luceneDoc.get("metadata");
+                if (StringUtils.hasText(metadataJson)) {
+                    try {
+                        Map<String, Object> metadata = objectMapper.readValue(metadataJson, Map.class);
+                        Object docSourceId = metadata.get("source_id");
+                        if (docSourceId != null && sourceId.equals(docSourceId.toString())) {
+                            String docId = luceneDoc.get(Constants.ID);
+                            if (docId != null) {
+                                matchingIds.add(docId);
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not parse metadata for doc: {}", e.getMessage());
+                    }
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Error getting document IDs by source from keyword index: {}", e.getMessage(), e);
+        }
+
+        return matchingIds;
+    }
+
+    /**
+     * Gets unique source IDs from the keyword index.
+     *
+     * @return List of unique source IDs
+     */
+    public List<String> getKeywordUniqueSourceIds() {
+        java.util.Set<String> sourceIds = new java.util.TreeSet<>();
+        if (!isIndexAvailable()) {
+            return new ArrayList<>();
+        }
+
+        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+             DirectoryReader reader = DirectoryReader.open(dir)) {
+
+            for (int i = 0; i < reader.maxDoc(); i++) {
+                // Skip deleted documents
+                boolean isDeleted = false;
+                for (LeafReaderContext leafContext : reader.leaves()) {
+                    Bits liveDocs = leafContext.reader().getLiveDocs();
+                    if (i >= leafContext.docBase && i < (leafContext.docBase + leafContext.reader().maxDoc())) {
+                        if (liveDocs != null && !liveDocs.get(i - leafContext.docBase)) {
+                            isDeleted = true;
+                        }
+                        break;
+                    }
+                }
+                if (isDeleted) continue;
+
+                org.apache.lucene.document.Document luceneDoc = reader.storedFields().document(i);
+                if (luceneDoc == null) continue;
+
+                String metadataJson = luceneDoc.get("metadata");
+                if (StringUtils.hasText(metadataJson)) {
+                    try {
+                        Map<String, Object> metadata = objectMapper.readValue(metadataJson, Map.class);
+                        Object sourceId = metadata.get("source_id");
+                        if (sourceId != null) {
+                            sourceIds.add(sourceId.toString());
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Could not parse metadata: {}", e.getMessage());
+                    }
+                }
+            }
+        } catch (IOException e) {
+            logger.error("Error getting unique source IDs from keyword index: {}", e.getMessage(), e);
+        }
+
+        return new ArrayList<>(sourceIds);
+    }
+
+    /**
      * Force a commit of the keyword index.
      * Call this at the end of bulk indexing to ensure all documents are persisted.
      */
@@ -1160,7 +1382,13 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             return;
         }
 
-        Path indexPath = Paths.get(anseriniConfig.getIndexPath());
+        String pathStr = anseriniConfig.getIndexPath();
+        if (pathStr == null || pathStr.isEmpty()) {
+            logger.debug("Skipping keyword index writer initialization: index path is null");
+            return;
+        }
+
+        Path indexPath = Paths.get(pathStr);
         if (!Files.exists(indexPath)) {
             Files.createDirectories(indexPath);
         }
@@ -1709,7 +1937,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         currentJobStatus = new JobStatus(JobState.RUNNING,
                 String.format("Starting parallel processing: %d docs, %d batches, %d workers",
-                        totalDocs, totalBatches, embeddingWorkers), 0, 0);
+                        totalDocs, totalBatches, embeddingWorkers),
+                0, 0);
 
         AtomicInteger documentsProcessed = new AtomicInteger(0);
         AtomicInteger batchesCompleted = new AtomicInteger(0);
@@ -1717,8 +1946,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
         // Use the loader's streaming capability
         if (luceneLoader instanceof ai.kompile.core.loaders.StreamingDocumentLoader) {
-            ai.kompile.core.loaders.StreamingDocumentLoader streamingLoader =
-                    (ai.kompile.core.loaders.StreamingDocumentLoader) luceneLoader;
+            ai.kompile.core.loaders.StreamingDocumentLoader streamingLoader = (ai.kompile.core.loaders.StreamingDocumentLoader) luceneLoader;
             try {
                 java.util.Iterator<Document> docIterator = streamingLoader.streamPages(descriptor, null);
 
@@ -1754,7 +1982,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 if (!vectorIndexJobCancelled) {
                     long totalTime = System.currentTimeMillis() - startTime;
                     double docsPerSec = totalTime > 0 ? (documentsProcessed.get() * 1000.0 / totalTime) : 0;
-                    logger.info("Completed PARALLEL indexing {} documents from Lucene to Vector Store in {}ms ({} docs/sec).",
+                    logger.info(
+                            "Completed PARALLEL indexing {} documents from Lucene to Vector Store in {}ms ({} docs/sec).",
                             documentsProcessed.get(), totalTime, String.format("%.1f", docsPerSec));
                     currentJobStatus = new JobStatus(JobState.RUNNING,
                             String.format("Finalizing... %d docs indexed at %.1f docs/sec.",
@@ -1783,7 +2012,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
                 // Process in batches with parallel embedding
                 for (int i = 0; i < retrievedDocs.size(); i += embeddingBatchSize) {
-                    if (vectorIndexJobCancelled || Thread.currentThread().isInterrupted()) break;
+                    if (vectorIndexJobCancelled || Thread.currentThread().isInterrupted())
+                        break;
 
                     int end = Math.min(i + embeddingBatchSize, retrievedDocs.size());
                     List<RetrievedDoc> batch = retrievedDocs.subList(i, end);
@@ -1802,8 +2032,10 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
 
     /**
      * Process a batch of documents with parallel embedding computation.
-     * This pre-computes embeddings using the EmbeddingModel before sending to vector store.
-     * Uses INDArray directly with addWithEmbeddings() to avoid float[] boxing overhead.
+     * This pre-computes embeddings using the EmbeddingModel before sending to
+     * vector store.
+     * Uses INDArray directly with addWithEmbeddings() to avoid float[] boxing
+     * overhead.
      */
     private void processBatchWithParallelEmbedding(
             List<RetrievedDoc> batch,
@@ -1841,7 +2073,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     doc.getMetadata() != null ? new HashMap<>(doc.getMetadata()) : new HashMap<>()));
         }
 
-        // PERFORMANCE: Pre-compute embeddings using EmbeddingModel and pass INDArray directly
+        // PERFORMANCE: Pre-compute embeddings using EmbeddingModel and pass INDArray
+        // directly
         INDArray embeddingMatrix = null;
         boolean embeddingsGenerated = false;
         if (embeddingModel != null && !(embeddingModel instanceof NoOpEmbeddingModelImpl)) {
@@ -1866,7 +2099,10 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 embeddingsGenerated = false;
                 // Close failed matrix
                 if (embeddingMatrix != null && !embeddingMatrix.wasClosed()) {
-                    try { embeddingMatrix.close(); } catch (Exception ignored) {}
+                    try {
+                        embeddingMatrix.close();
+                    } catch (Exception ignored) {
+                    }
                 }
                 embeddingMatrix = null;
             }
@@ -1878,7 +2114,8 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                         batchNumber, totalBatches, batchSize, etaStr),
                 progressPercent, documentsProcessed.get());
 
-        // PERFORMANCE: Index to vector store with INDArray directly (avoids float[] boxing)
+        // PERFORMANCE: Index to vector store with INDArray directly (avoids float[]
+        // boxing)
         try {
             if (vectorStore != null && !(vectorStore instanceof NoOpVectorStoreImpl)) {
                 if (embeddingsGenerated && embeddingMatrix != null) {
@@ -1935,21 +2172,21 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         double memoryUsagePercent = (usedMemory * 100.0) / maxMemory;
         long maxMemoryMb = maxMemory / (1024 * 1024);
 
-        // Base batch size on available memory
+        // Base batch size on available memory - minimum 32 to maintain throughput
         int baseBatchSize;
         if (maxMemoryMb >= 16384) { // 16GB+
             baseBatchSize = 128;
         } else if (maxMemoryMb >= 8192) { // 8GB+
             baseBatchSize = 64;
         } else if (maxMemoryMb >= 4096) { // 4GB+
-            baseBatchSize = 32;
+            baseBatchSize = 48;
         } else {
-            baseBatchSize = 16;
+            baseBatchSize = 32; // Raised from 16 for consistent minimum batch size
         }
 
-        // Reduce if memory is already under pressure
-        if (memoryUsagePercent > 70) {
-            baseBatchSize = Math.max(8, baseBatchSize / 2);
+        // Reduce if memory is already under pressure (raised threshold from 70% to 80%)
+        if (memoryUsagePercent > 80) {
+            baseBatchSize = Math.max(32, baseBatchSize / 2); // Raised minimum from 8 to 32
             logger.info("Memory pressure detected ({}%), reducing batch size to {}",
                     String.format("%.1f", memoryUsagePercent), baseBatchSize);
         }

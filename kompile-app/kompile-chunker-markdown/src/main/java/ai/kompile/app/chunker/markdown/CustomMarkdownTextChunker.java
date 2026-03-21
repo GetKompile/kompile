@@ -16,6 +16,7 @@
 
 package ai.kompile.app.chunker.markdown;
 
+import ai.kompile.app.core.chunking.SentenceFilter;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import lombok.extern.slf4j.Slf4j;
@@ -64,10 +65,12 @@ public class CustomMarkdownTextChunker implements TextChunker {
     public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
         // Validate document using the interface method
         validateDocument(document);
-        
+
         // Prepare options with defaults
         Map<String, Object> mergedOptions = prepareOptions(options);
-        
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
+
         String markdownContent = document.getText();
 
         boolean splitOnHeadings = (boolean) mergedOptions.getOrDefault(OPTION_SPLIT_ON_HEADINGS, true);
@@ -90,6 +93,12 @@ public class CustomMarkdownTextChunker implements TextChunker {
         visitor.finalizeChunk();
 
         log.debug("Split Markdown document {} into {} chunks using {}.", document.getId(), chunks.size(), getName());
+
+        // Apply sentence filtering and garbage collection if enabled
+        if (collectGarbage) {
+            return SentenceFilter.filterAndCollectGarbage(chunks, document, getName(), includeGarbageChunk);
+        }
+
         return chunks;
     }
 
@@ -106,6 +115,9 @@ public class CustomMarkdownTextChunker implements TextChunker {
         defaults.put("preserveParagraphs", true);
         defaults.put(OPTION_SPLIT_ON_HEADINGS, true);
         defaults.put(OPTION_MAX_CHARS_PER_CHUNK, DEFAULT_MAX_CHARS_PER_CHUNK);
+        // Garbage collection options - disabled by default (see TextChunker interface)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
         return defaults;
     }
 

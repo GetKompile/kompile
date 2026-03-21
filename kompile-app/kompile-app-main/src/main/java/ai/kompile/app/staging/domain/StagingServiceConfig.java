@@ -114,6 +114,16 @@ public class StagingServiceConfig {
     private int syncIntervalMinutes = 60;
 
     /**
+     * Retry poll interval in seconds for when the staging service is temporarily unavailable.
+     * When the embedding model fails to load because the staging service is unreachable,
+     * the application will poll at this interval until the service becomes available.
+     * Default is 30 seconds.
+     */
+    @Column(nullable = false, columnDefinition = "INTEGER DEFAULT 30")
+    @Builder.Default
+    private int retryPollIntervalSeconds = 30;
+
+    /**
      * Optional description or notes about this configuration.
      */
     @Column(length = 1024)

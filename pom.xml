@@ -29,21 +29,20 @@
   <modules>
     <!-- Base modules first -->
     <module>kompile-cli-plugin-api</module>
-    <module>anserini</module>
+    <module>tokenizers-rust</module>
 
     <!-- Model importers (dependencies) -->
     <module>kompile-model-importer-tensorflow</module>
     <module>kompile-model-importer-onnx</module>
     <module>kompile-model-importer-keras</module>
 
-    <!-- Utilities that depend on importers -->
-    <module>model-conversion-utility</module>
-
     <!-- Applications -->
     <module>kompile-pipelines-framework</module>
-    <module>kompile-cli</module>
+    <!-- kompile-app must come before anserini (anserini depends on kompile-model-manager) -->
     <module>kompile-app</module>
-    <module>tokenizers-rust</module>
+    <module>anserini</module>
+    <module>kompile-sdk-serving</module>
+    <module>kompile-cli</module>
   </modules>
 
   <properties>
@@ -60,8 +59,8 @@
     <jackson.version>2.15.3</jackson.version>
     <jackson.module.jsonschema.version>2.17.0</jackson.module.jsonschema.version>
     <pico.version>4.7.7</pico.version>
-    <picocli.version>4.7.6</picocli.version>
-    <lombok.version>1.18.38</lombok.version>
+    <picocli.version>4.7.7</picocli.version>
+    <lombok.version>1.18.42</lombok.version>
     <slf4j.version>2.0.9</slf4j.version>
     <logback.version>1.4.14</logback.version>
     <junit.jupiter.version>5.10.1</junit.jupiter.version>
@@ -225,9 +224,36 @@
         <artifactId>nd4j-api</artifactId>
         <version>${nd4j.version}</version>
       </dependency>
+
+      <!-- SameDiff Pipeline modules for HuggingFace model loading -->
       <dependency>
         <groupId>org.eclipse.deeplearning4j</groupId>
-        <artifactId>${nd4j.backend}</artifactId>
+        <artifactId>samediff-pipeline-core</artifactId>
+        <version>${nd4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.deeplearning4j</groupId>
+        <artifactId>samediff-pipeline-safetensors</artifactId>
+        <version>${nd4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.deeplearning4j</groupId>
+        <artifactId>samediff-pipeline-ggml</artifactId>
+        <version>${nd4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.deeplearning4j</groupId>
+        <artifactId>samediff-pipeline-onnx</artifactId>
+        <version>${nd4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.deeplearning4j</groupId>
+        <artifactId>samediff-llm</artifactId>
+        <version>${nd4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.deeplearning4j</groupId>
+        <artifactId>samediff-vlm</artifactId>
         <version>${nd4j.version}</version>
       </dependency>
 

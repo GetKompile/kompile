@@ -17,10 +17,14 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatDialog } from '@angular/material/dialog';
 import { interval, Subscription, Subject } from 'rxjs';
-import { takeUntil } from 'rxjs/operators';
+import { takeUntil, filter } from 'rxjs/operators';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { WebSocketService, WebSocketConnectionState } from '../../services/websocket.service';
 import { ArchiveService } from '../../services/archive.service';
+import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local-registry.service';
+import { ModelRegistryService } from '../../services/model-registry.service';
 import {
   CpuInfo,
   MemoryInfo,
@@ -111,6 +115,7 @@ export interface SameDiffSummary {
   operationsTruncated?: boolean;
   trainingConfig?: any;
   lossVariables?: string[];
+  graphEdges?: { source: string; target: string; type: 'input' | 'output' }[];
 }
 
 export interface Nd4jEnvironment {
@@ -326,6 +331,145 @@ export interface ThreadDumpEntry {
   nativeMethod?: string;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SERVICE STATE INTERFACES (from /api/services/state)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface ServiceStateResponse {
+  timestamp: string;
+  embeddingModel: EmbeddingModelStateInfo;
+  vectorStore: VectorStoreStateInfo;
+  reranker: RerankerStateInfo;
+  documentRetriever: DocumentRetrieverStateInfo;
+  summary: ServiceStateSummary;
+}
+
+export interface ServiceStateSummary {
+  allServicesLoaded: boolean;
+  embeddingModelLoaded: boolean;
+  vectorStoreLoaded: boolean;
+  rerankerLoaded: boolean;
+  documentRetrieverLoaded: boolean;
+}
+
+export interface EmbeddingModelStateInfo {
+  loaded: boolean;
+  reason?: string;
+  totalModels?: number;
+  primary?: {
+    class: string;
+    fullClass: string;
+    dimensions: number;
+    optimalBatchSize: number;
+    maxBatchSize: number;
+    modelIdentifier?: string;
+    activeModelId?: string;
+    encoderType?: string;
+    modelType?: string;
+    usesAutoModelManagement?: boolean;
+    isShuttingDown?: boolean;
+    modelInfo?: {
+      modelId?: string;
+      initialized?: boolean;
+      source?: string;
+      encoderType?: string;
+      dimensions?: number;
+      optimalBatchSize?: number;
+      maxBatchSize?: number;
+      modelType?: string;
+      subprocessMode?: boolean;
+      subprocessRunning?: boolean;
+      subprocessModelLoaded?: boolean;
+      subprocessDimensions?: number;
+      subprocessEncoderType?: string;
+    };
+    batchConfig?: {
+      optimal512Tokens: number;
+      max512Tokens: number;
+      optimalFor256Tokens: number;
+      optimalFor128Tokens: number;
+    };
+    currentBatch?: any;
+  };
+  allModels?: Array<{
+    index: number;
+    class: string;
+    isNoOp: boolean;
+    dimensions: number;
+    modelIdentifier?: string;
+    encoderType?: string;
+  }>;
+}
+
+export interface VectorStoreStateInfo {
+  loaded: boolean;
+  reason?: string;
+  totalStores?: number;
+  primary?: {
+    class: string;
+    fullClass: string;
+    isAvailable: boolean;
+    path: string;
+    indexPath?: string;
+    usingFallbackIndex?: boolean;
+    isDestroyed?: boolean;
+    rerankingAvailable?: boolean;
+    documentCount?: number;
+    indexPopulated?: boolean;
+    documentCountError?: string;
+    modelTracking?: {
+      encoderModelId: string;
+      rerankerModelId: string;
+      modelConfiguration: { [key: string]: string };
+    };
+    warnings?: string[];
+  };
+  allStores?: Array<{
+    index: number;
+    class: string;
+    isNoOp: boolean;
+    path: string;
+    encoderModelId?: string;
+    usingFallback?: boolean;
+  }>;
+}
+
+export interface RerankerStateInfo {
+  loaded: boolean;
+  reason?: string;
+  class?: string;
+  fullClass?: string;
+  supportedTypes?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    supported: boolean;
+  }>;
+  supportedTypeCount?: number;
+  defaultConfig?: {
+    type: string;
+    enabled: boolean;
+    fbDocs: number;
+    fbTerms: number;
+    topK: number;
+  };
+}
+
+export interface DocumentRetrieverStateInfo {
+  loaded: boolean;
+  reason?: string;
+  totalRetrievers?: number;
+  primary?: {
+    class: string;
+    fullClass: string;
+  };
+  allRetrievers?: Array<{
+    index: number;
+    class: string;
+    isNoOp: boolean;
+  }>;
+}
+
 @Component({
   selector: 'app-model-debug',
   standalone: false,
@@ -343,6 +487,7 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   selectedModelSummary: SameDiffSummary | null = null;
   selectedModelIndex: number | null = null;
   rawSummaryText: string | null = null;
+  showGraphView: boolean = false;
 
   // Embedding test
   testText = 'Hello world, this is a test sentence for embedding.';
@@ -357,6 +502,20 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   expandedEmbeddingIndex: number | null = null;
   expandedBeanIndex: number | null = null;
   showRawSummary = false;
+
+  // SDZ Upload state
+  showSdzUpload = false;
+  sdzUploadFile: File | null = null;
+  vocabUploadFile: File | null = null;
+  sdzUploadModelId = '';
+  sdzUploadModelType = 'dense_encoder';
+  sdzUploadVersion = '';
+  sdzUploadEmbeddingDim: number | null = null;
+  sdzUploadMaxSeqLen: number | null = null;
+  sdzUploadDescription = '';
+  sdzUploadOverwrite = false;
+  sdzUploading = false;
+  sdzUploadError: string | null = null;
 
   // Error state
   errorMessage: string | null = null;
@@ -408,6 +567,26 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   registryLoading = false;
   stagingServiceAvailable = false;
 
+  // Main RAG Service Status
+  ragServiceStatus: {
+    available: boolean;
+    embeddingModel: { className: string; available: boolean; dimensions?: number } | null;
+    vectorStore: { className: string; available: boolean } | null;
+    reranker: { className: string; available: boolean; supportedTypes: string[] } | null;
+    keywordRetriever: { className: string; available: boolean } | null;
+  } = {
+    available: false,
+    embeddingModel: null,
+    vectorStore: null,
+    reranker: null,
+    keywordRetriever: null
+  };
+  ragServiceLoading = false;
+
+  // Service State (comprehensive transparency)
+  serviceState: ServiceStateResponse | null = null;
+  serviceStateLoading = false;
+
   // Archive state
   availableArchives: ArchiveInfo[] = [];
   currentArchiveStatus: ArchiveStatus | null = null;
@@ -415,12 +594,18 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   isLoadingArchives = false;
   private destroy$ = new Subject<void>();
 
+  // Active embedding model status
+  activeEmbeddingStatus: EmbeddingModelStatus | null = null;
+
   constructor(
     private http: HttpClient,
     private snackBar: MatSnackBar,
     private cdr: ChangeDetectorRef,
+    private dialog: MatDialog,
     private webSocketService: WebSocketService,
-    private archiveService: ArchiveService
+    private archiveService: ArchiveService,
+    private localRegistryService: LocalRegistryService,
+    private modelRegistryService: ModelRegistryService
   ) {
     if (typeof window !== 'undefined' && window.location) {
       const protocol = window.location.protocol;
@@ -439,11 +624,40 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
     this.loadRerankerInfo();
     this.loadCrossEncoderModels();
     this.loadModelRegistry();
+    this.checkRagServiceStatus(); // Check main service status first
     this.checkStagingService();
     this.loadArchiveData();
+    this.loadServiceState(); // Load comprehensive service state
+    this.loadActiveEmbeddingStatus(); // Load active embedding model status
+
+    // Subscribe to model registry changes for real-time updates
+    this.modelRegistryService.changes$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(event => {
+        console.log('[ModelDebug] Model registry change:', event.type, event.modelId);
+        this.loadActiveEmbeddingStatus();
+        this.loadAllData();
+      });
 
     // Initialize WebSocket connection and monitor state
     this.initializeWebSocket();
+  }
+
+  /**
+   * Load the active embedding model status from the local registry service.
+   */
+  loadActiveEmbeddingStatus(): void {
+    this.localRegistryService.getEmbeddingStatus()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (status) => {
+          this.activeEmbeddingStatus = status;
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          console.warn('Could not load active embedding status:', err);
+        }
+      });
   }
 
   ngOnDestroy(): void {
@@ -547,14 +761,16 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
       this.selectedModelIndex = null;
       this.selectedModelSummary = null;
       this.rawSummaryText = null;
+      this.showGraphView = false;
       return;
     }
 
     this.selectedModelIndex = modelIndex;
     this.selectedModelSummary = null;
     this.rawSummaryText = null;
+    this.showGraphView = false;
 
-    this.http.get<SameDiffSummary>(`${this.backendUrl}/models/samediff-embeddings/${modelIndex}/summary`).subscribe({
+    this.http.get<SameDiffSummary>(`${this.backendUrl}/models/samediff-embeddings/${modelIndex}/summary?maxOperations=0&maxVariables=0`).subscribe({
       next: (response) => {
         this.selectedModelSummary = response;
         this.cdr.detectChanges();
@@ -564,6 +780,10 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
         this.selectedModelIndex = null;
       }
     });
+  }
+
+  toggleGraphView(): void {
+    this.showGraphView = !this.showGraphView;
   }
 
   // Load raw summary text
@@ -1184,29 +1404,41 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
    * Delete a cached cross-encoder model.
    */
   deleteCrossEncoderModel(modelId: string): void {
-    if (!confirm(`Are you sure you want to delete the cached model "${modelId}"?`)) {
-      return;
-    }
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Cached Model',
+      message: `Are you sure you want to delete the cached model "${modelId}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
 
-    this.deletingModelId = modelId;
-    this.http.delete<any>(`${this.backendUrl}/rag/test/cross-encoder-models/${modelId}`).subscribe({
-      next: (response) => {
-        this.deletingModelId = null;
-        if (response.success) {
-          this.showSnackbar(`Model ${modelId} cache deleted`);
-          // Refresh the list
-          this.loadCrossEncoderModels();
-        } else {
-          this.showSnackbar(`Failed to delete model: ${response.error}`, true);
-        }
-        this.cdr.detectChanges();
-      },
-      error: (err) => {
-        this.deletingModelId = null;
-        this.showSnackbar('Failed to delete model: ' + this.getErrorMessage(err), true);
-        this.cdr.detectChanges();
-      }
-    });
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.deletingModelId = modelId;
+        this.http.delete<any>(`${this.backendUrl}/rag/test/cross-encoder-models/${modelId}`).subscribe({
+          next: (response) => {
+            this.deletingModelId = null;
+            if (response.success) {
+              this.showSnackbar(`Model ${modelId} cache deleted`);
+              // Refresh the list
+              this.loadCrossEncoderModels();
+            } else {
+              this.showSnackbar(`Failed to delete model: ${response.error}`, true);
+            }
+            this.cdr.detectChanges();
+          },
+          error: (err) => {
+            this.deletingModelId = null;
+            this.showSnackbar('Failed to delete model: ' + this.getErrorMessage(err), true);
+            this.cdr.detectChanges();
+          }
+        });
+      });
   }
 
   /**
@@ -1632,6 +1864,173 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Check the main RAG service status by calling /api/rag/test/status.
+   * This indicates whether the Spring Boot app is running with models loaded.
+   */
+  checkRagServiceStatus(): void {
+    this.ragServiceLoading = true;
+    this.http.get<any>(`${this.backendUrl}/rag/test/status`).subscribe({
+      next: (response) => {
+        this.ragServiceLoading = false;
+
+        // Parse the response from RagTestController.getStatus()
+        const embeddingModel = response?.embeddingModel;
+        const vectorStore = response?.vectorStore;
+        const reranker = response?.reranker;
+        const keywordRetriever = response?.keywordRetriever;
+
+        this.ragServiceStatus = {
+          available: true,
+          embeddingModel: embeddingModel ? {
+            className: embeddingModel.class || embeddingModel.className || 'Unknown',
+            available: embeddingModel.available !== false,
+            dimensions: embeddingModel.dimensions
+          } : null,
+          vectorStore: vectorStore ? {
+            className: vectorStore.class || vectorStore.className || 'Unknown',
+            available: vectorStore.available !== false
+          } : null,
+          reranker: reranker ? {
+            className: reranker.class || reranker.className || 'Unknown',
+            available: reranker.available !== false,
+            supportedTypes: reranker.supportedTypes || []
+          } : null,
+          keywordRetriever: keywordRetriever ? {
+            className: keywordRetriever.class || keywordRetriever.className || 'Unknown',
+            available: keywordRetriever.available !== false
+          } : null
+        };
+
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        console.error('RAG service status check failed:', err);
+        this.ragServiceLoading = false;
+        this.ragServiceStatus = {
+          available: false,
+          embeddingModel: null,
+          vectorStore: null,
+          reranker: null,
+          keywordRetriever: null
+        };
+        this.cdr.detectChanges();
+      }
+    });
+  }
+
+  /**
+   * Refresh the RAG service status.
+   */
+  refreshRagServiceStatus(): void {
+    this.checkRagServiceStatus();
+    this.showSnackbar('RAG service status refreshed');
+  }
+
+  // ==================== Service State Methods (Comprehensive Transparency) ====================
+
+  /**
+   * Load comprehensive service state from /api/services/state.
+   * This provides detailed state information for all services including
+   * embedding model, vector store, reranker, and document retriever.
+   */
+  loadServiceState(): void {
+    this.serviceStateLoading = true;
+    this.http.get<ServiceStateResponse>(`${this.backendUrl}/services/state`).subscribe({
+      next: (response) => {
+        this.serviceState = response;
+        this.serviceStateLoading = false;
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        console.error('Failed to load service state:', err);
+        this.serviceStateLoading = false;
+        this.cdr.detectChanges();
+      }
+    });
+  }
+
+  /**
+   * Refresh the comprehensive service state.
+   */
+  refreshServiceState(): void {
+    this.loadServiceState();
+    this.showSnackbar('Service state refreshed');
+  }
+
+  /**
+   * Check if all services are loaded.
+   */
+  areAllServicesLoaded(): boolean {
+    return this.serviceState?.summary?.allServicesLoaded || false;
+  }
+
+  /**
+   * Get the count of loaded services.
+   */
+  getLoadedServiceCount(): number {
+    if (!this.serviceState?.summary) return 0;
+    const summary = this.serviceState.summary;
+    let count = 0;
+    if (summary.embeddingModelLoaded) count++;
+    if (summary.vectorStoreLoaded) count++;
+    if (summary.rerankerLoaded) count++;
+    if (summary.documentRetrieverLoaded) count++;
+    return count;
+  }
+
+  /**
+   * Get the total service count.
+   */
+  getTotalServiceCount(): number {
+    return 4; // embedding, vector store, reranker, document retriever
+  }
+
+  /**
+   * Get service state status icon.
+   */
+  getServiceStateIcon(loaded: boolean): string {
+    return loaded ? 'check_circle' : 'cancel';
+  }
+
+  /**
+   * Get service state status color class.
+   */
+  getServiceStateColorClass(loaded: boolean): string {
+    return loaded ? 'status-loaded' : 'status-not-loaded';
+  }
+
+  /**
+   * Check if the main RAG service is ready (has real models loaded, not NoOp).
+   */
+  isRagServiceReady(): boolean {
+    if (!this.ragServiceStatus.available) return false;
+    // Check if at least embedding model is available and not NoOp
+    const embedding = this.ragServiceStatus.embeddingModel;
+    return embedding !== null && embedding.available &&
+           !embedding.className?.includes('NoOp');
+  }
+
+  /**
+   * Get a display name for the embedding model.
+   */
+  getRagEmbeddingDisplayName(): string {
+    const model = this.ragServiceStatus.embeddingModel;
+    if (!model) return 'Not Available';
+    if (model.className?.includes('NoOp')) return 'Not Configured';
+    return model.className || 'Unknown';
+  }
+
+  /**
+   * Get a display name for the vector store.
+   */
+  getRagVectorStoreDisplayName(): string {
+    const store = this.ragServiceStatus.vectorStore;
+    if (!store) return 'Not Available';
+    if (store.className?.includes('NoOp')) return 'Not Configured';
+    return store.className || 'Unknown';
+  }
+
+  /**
    * Check if the staging service is available and get its status.
    */
   checkStagingService(): void {
@@ -1661,10 +2060,14 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
 
   /**
    * Get all models from the registry.
+   * Uses Object.entries to preserve the modelId from the key.
    */
   getRegistryModels(): ModelRegistryEntry[] {
     if (!this.modelRegistry?.models) return [];
-    return Object.values(this.modelRegistry.models);
+    return Object.entries(this.modelRegistry.models).map(([id, model]) => ({
+      ...model,
+      modelId: id
+    }));
   }
 
   /**
@@ -1740,22 +2143,28 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
 
   /**
    * Get human-readable display name for a model type.
+   * Handles both legacy and new naming conventions.
    */
   getModelTypeDisplayName(type: string): string {
     switch (type) {
-      case 'encoder': return 'Encoder';
+      case 'encoder':
+      case 'dense_encoder': return 'Dense Encoder';
+      case 'sparse_encoder': return 'Sparse Encoder';
       case 'cross_encoder': return 'Cross-Encoder';
       case 'reranker': return 'Reranker';
-      default: return type;
+      default: return type || 'Unknown';
     }
   }
 
   /**
    * Get icon for a model type.
+   * Handles both legacy and new naming conventions.
    */
   getModelTypeIcon(type: string): string {
     switch (type) {
-      case 'encoder': return 'transform';
+      case 'encoder':
+      case 'dense_encoder': return 'text_fields';
+      case 'sparse_encoder': return 'scatter_plot';
       case 'cross_encoder': return 'compare_arrows';
       case 'reranker': return 'sort';
       default: return 'memory';
@@ -1804,6 +2213,89 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
     } catch {
       return dateStr;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // VERSION & PROVENANCE DISPLAY
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get count of active models in the registry.
+   */
+  getActiveModelCount(): number {
+    if (!this.modelRegistry?.models) return 0;
+    return Object.values(this.modelRegistry.models)
+      .filter(m => m.status === 'active').length;
+  }
+
+  /**
+   * Get installed archives from the registry.
+   */
+  getInstalledArchives(): any[] {
+    if (!this.modelRegistry?.installedArchives) return [];
+    return Object.values(this.modelRegistry.installedArchives);
+  }
+
+  /**
+   * Format model source/provenance for display.
+   */
+  formatModelSource(model: ModelRegistryEntry): string {
+    const source = model.metadata?.installedFrom;
+    if (source === 'archive') {
+      const archiveId = model.metadata?.sourceArchiveId;
+      const version = model.metadata?.sourceArchiveVersion;
+      if (archiveId) {
+        return version ? `${archiveId} v${version}` : archiveId;
+      }
+      return version ? `Archive v${version}` : 'Archive';
+    }
+    if (source === 'staging') {
+      const version = model.metadata?.stagingRegistryVersion;
+      return version ? `Staging v${version}` : 'Staging';
+    }
+    if (source === 'builtin') return 'Built-in';
+    if (source === 'manual') return 'Manual Upload';
+    if (source === 'download') return 'Downloaded';
+    if (source === 'local') return 'Local';
+    // If no source but has path, try to infer
+    if (!source && model.path) {
+      if (model.path.includes('archive')) return 'Archive';
+      if (model.path.includes('builtin')) return 'Built-in';
+    }
+    return 'Registry';
+  }
+
+  /**
+   * Get icon for the source type.
+   */
+  getSourceIcon(model: ModelRegistryEntry): string {
+    const source = model.metadata?.installedFrom;
+    switch (source) {
+      case 'archive': return 'archive';
+      case 'staging': return 'cloud_download';
+      case 'builtin': return 'inventory_2';
+      case 'manual': return 'upload_file';
+      case 'download': return 'download';
+      case 'local': return 'folder';
+      default: return 'storage';
+    }
+  }
+
+  /**
+   * Get CSS class for source badge styling.
+   */
+  getSourceClass(model: ModelRegistryEntry): string {
+    const source = model.metadata?.installedFrom;
+    return `source-${source || 'unknown'}`;
+  }
+
+  /**
+   * Get the effective version of a model.
+   */
+  getModelVersion(model: ModelRegistryEntry): string | null {
+    if (model.version) return model.version;
+    if (model.metadata?.version) return model.metadata.version;
+    return null;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1942,5 +2434,138 @@ export class ModelDebugComponent implements OnInit, OnDestroy {
    */
   isArchiveLoaded(): boolean {
     return this.currentArchiveStatus?.loaded || false;
+  }
+
+  // ==================== SDZ Upload Methods ====================
+
+  /**
+   * Show the SDZ upload dialog.
+   */
+  showSdzUploadDialog(): void {
+    this.resetSdzUploadForm();
+    this.showSdzUpload = true;
+  }
+
+  /**
+   * Close the SDZ upload dialog.
+   */
+  closeSdzUpload(): void {
+    this.showSdzUpload = false;
+    this.resetSdzUploadForm();
+  }
+
+  /**
+   * Reset the SDZ upload form.
+   */
+  private resetSdzUploadForm(): void {
+    this.sdzUploadFile = null;
+    this.vocabUploadFile = null;
+    this.sdzUploadModelId = '';
+    this.sdzUploadModelType = 'dense_encoder';
+    this.sdzUploadVersion = '';
+    this.sdzUploadEmbeddingDim = null;
+    this.sdzUploadMaxSeqLen = null;
+    this.sdzUploadDescription = '';
+    this.sdzUploadOverwrite = false;
+    this.sdzUploading = false;
+    this.sdzUploadError = null;
+  }
+
+  /**
+   * Handle SDZ file selection.
+   */
+  onSdzFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      if (!file.name.toLowerCase().endsWith('.sdz')) {
+        this.sdzUploadError = 'Please select an .sdz file';
+        return;
+      }
+      this.sdzUploadFile = file;
+      this.sdzUploadError = null;
+
+      // Auto-populate model ID from filename if empty
+      if (!this.sdzUploadModelId) {
+        const nameWithoutExt = file.name.replace(/\.sdz$/i, '');
+        this.sdzUploadModelId = nameWithoutExt.replace(/[^a-zA-Z0-9-_]/g, '-');
+      }
+    }
+  }
+
+  /**
+   * Handle vocab file selection.
+   */
+  onVocabFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      this.vocabUploadFile = input.files[0];
+    }
+  }
+
+  /**
+   * Format file size for display.
+   */
+  formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Submit the SDZ upload.
+   */
+  submitSdzUpload(): void {
+    if (!this.sdzUploadFile || !this.sdzUploadModelId) {
+      this.sdzUploadError = 'Model file and Model ID are required';
+      return;
+    }
+
+    this.sdzUploading = true;
+    this.sdzUploadError = null;
+
+    const formData = new FormData();
+    formData.append('modelFile', this.sdzUploadFile);
+    if (this.vocabUploadFile) {
+      formData.append('vocabFile', this.vocabUploadFile);
+    }
+    formData.append('modelId', this.sdzUploadModelId);
+    formData.append('modelType', this.sdzUploadModelType);
+    if (this.sdzUploadVersion) {
+      formData.append('version', this.sdzUploadVersion);
+    }
+    if (this.sdzUploadEmbeddingDim) {
+      formData.append('embeddingDim', this.sdzUploadEmbeddingDim.toString());
+    }
+    if (this.sdzUploadMaxSeqLen) {
+      formData.append('maxSequenceLength', this.sdzUploadMaxSeqLen.toString());
+    }
+    if (this.sdzUploadDescription) {
+      formData.append('description', this.sdzUploadDescription);
+    }
+    formData.append('overwrite', this.sdzUploadOverwrite.toString());
+
+    this.http.post<any>(`${this.backendUrl}/staging-config/remote/upload-sdz`, formData)
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (response) => {
+          this.sdzUploading = false;
+          if (response.success) {
+            this.snackBar.open(`Model "${this.sdzUploadModelId}" registered successfully`, 'OK', { duration: 5000 });
+            this.closeSdzUpload();
+            this.refreshModelRegistry();
+          } else {
+            this.sdzUploadError = response.error || 'Upload failed';
+          }
+          this.cdr.markForCheck();
+        },
+        error: (err) => {
+          this.sdzUploading = false;
+          this.sdzUploadError = err.error?.error || err.message || 'Upload failed';
+          this.cdr.markForCheck();
+        }
+      });
   }
 }

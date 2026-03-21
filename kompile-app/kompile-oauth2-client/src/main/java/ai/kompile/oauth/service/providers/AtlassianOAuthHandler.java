@@ -18,8 +18,10 @@ package ai.kompile.oauth.service.providers;
 
 import ai.kompile.oauth.dto.OAuthTokenResponse;
 import ai.kompile.oauth.dto.OAuthUserInfo;
+import ai.kompile.oauth.service.OAuthSettingsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -38,18 +40,56 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String TOKEN_ENDPOINT = "https://auth.atlassian.com/oauth/token";
     private static final String USERINFO_ENDPOINT = "https://api.atlassian.com/me";
     private static final String ACCESSIBLE_RESOURCES_ENDPOINT = "https://api.atlassian.com/oauth/token/accessible-resources";
+    private static final String DEFAULT_SCOPES = "read:confluence-content.all read:confluence-space.summary read:jira-work read:jira-user offline_access";
+
+    private OAuthSettingsService settingsService;
 
     @Value("${kompile.oauth.atlassian.client-id:}")
-    private String clientId;
+    private String defaultClientId;
 
     @Value("${kompile.oauth.atlassian.client-secret:}")
-    private String clientSecret;
+    private String defaultClientSecret;
 
-    @Value("${kompile.oauth.atlassian.scopes:read:confluence-content.all read:confluence-space.summary read:jira-work read:jira-user offline_access}")
-    private String scopes;
+    @Value("${kompile.oauth.atlassian.scopes:" + DEFAULT_SCOPES + "}")
+    private String defaultScopes;
 
     public AtlassianOAuthHandler(RestTemplate restTemplate, ObjectMapper objectMapper) {
         super(restTemplate, objectMapper);
+    }
+
+    @Autowired(required = false)
+    public void setSettingsService(OAuthSettingsService settingsService) {
+        this.settingsService = settingsService;
+    }
+
+    private String getEffectiveClientId() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientId(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientId;
+    }
+
+    private String getEffectiveClientSecret() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientSecret(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientSecret;
+    }
+
+    private String getEffectiveScopes() {
+        if (settingsService != null) {
+            String configured = settingsService.getScopes(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultScopes != null && !defaultScopes.isEmpty() ? defaultScopes : DEFAULT_SCOPES;
     }
 
     @Override
@@ -79,7 +119,7 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public List<String> getRequiredScopes() {
-        return List.of(scopes.split("\\s+"));
+        return List.of(getEffectiveScopes().split("\\s+"));
     }
 
     @Override
@@ -89,12 +129,12 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     protected String getClientId() {
-        return clientId;
+        return getEffectiveClientId();
     }
 
     @Override
     protected String getClientSecret() {
-        return clientSecret;
+        return getEffectiveClientSecret();
     }
 
     @Override
@@ -111,10 +151,10 @@ public class AtlassianOAuthHandler extends AbstractOAuthProviderHandler {
     public String buildAuthorizationUrl(String redirectUri, String state) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("audience", "api.atlassian.com");
-        params.put("client_id", clientId);
+        params.put("client_id", getEffectiveClientId());
         params.put("redirect_uri", redirectUri);
         params.put("response_type", "code");
-        params.put("scope", scopes);
+        params.put("scope", getEffectiveScopes());
         params.put("state", state);
         params.put("prompt", "consent");
 

@@ -44,6 +44,6 @@ public interface LlmSessionRepository extends JpaRepository<LlmSession, Long> {
 
     List<LlmSession> findByWorkflowId(Long workflowId);
 
-    @Query("SELECT s FROM LlmSession s WHERE s.orchestratorInstanceId = :orchestratorInstanceId ORDER BY s.startedAt DESC")
-    List<LlmSession> findTopByOrchestratorInstanceIdOrderByStartedAtDesc(String orchestratorInstanceId, Pageable pageable);
+    @Query("SELECT s FROM LlmSession s WHERE s.orchestratorInstanceId = :orchestratorInstanceId ORDER BY s.startTime DESC")
+    List<LlmSession> findTopByOrchestratorInstanceIdOrderByStartTimeDesc(String orchestratorInstanceId, Pageable pageable);
 }

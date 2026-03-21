@@ -216,6 +216,111 @@ public class BatchSizeConfigController {
         }
     }
 
+    // ========== TIMEOUT CONFIGURATION ENDPOINTS ==========
+
+    /**
+     * Gets current timeout configuration.
+     *
+     * <p>Timeouts control how long the system waits for various subprocess operations.
+     * A value of 0 means no timeout (wait indefinitely).
+     *
+     * @return Current timeout configuration
+     */
+    @GetMapping("/timeouts")
+    public ResponseEntity<Map<String, Object>> getTimeoutConfig() {
+        try {
+            Map<String, Object> config = configService.getTimeoutConfiguration();
+            return ResponseEntity.ok(config);
+        } catch (Exception e) {
+            log.error("Error getting timeout config", e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Updates timeout configuration.
+     *
+     * <p>All timeout values are optional. Only provided values will be updated.
+     * Set a timeout to 0 to disable it (wait indefinitely).
+     *
+     * @param request Map containing timeout values to update:
+     *                - modelLoadTimeoutSeconds: Timeout for loading models (0 = no timeout)
+     *                - requestTimeoutMs: Timeout for subprocess requests (0 = no timeout)
+     *                - heartbeatTimeoutMs: Timeout for heartbeat detection (0 = no timeout)
+     *                - embedTimeoutSeconds: Timeout for single embed (0 = no timeout)
+     *                - embedBatchTimeoutSeconds: Timeout for batch embed (0 = no timeout)
+     * @return Updated timeout configuration
+     */
+    @PutMapping("/timeouts")
+    public ResponseEntity<?> updateTimeoutConfig(@RequestBody Map<String, Object> request) {
+        try {
+            Long modelLoadTimeoutSeconds = getAsLong(request, "modelLoadTimeoutSeconds");
+            Long requestTimeoutMs = getAsLong(request, "requestTimeoutMs");
+            Long heartbeatTimeoutMs = getAsLong(request, "heartbeatTimeoutMs");
+            Long embedTimeoutSeconds = getAsLong(request, "embedTimeoutSeconds");
+            Long embedBatchTimeoutSeconds = getAsLong(request, "embedBatchTimeoutSeconds");
+
+            Map<String, Object> config = configService.updateTimeoutConfiguration(
+                    modelLoadTimeoutSeconds,
+                    requestTimeoutMs,
+                    heartbeatTimeoutMs,
+                    embedTimeoutSeconds,
+                    embedBatchTimeoutSeconds);
+
+            log.info("Updated timeout config: modelLoad={}s, request={}ms, heartbeat={}ms, embed={}s, embedBatch={}s",
+                    modelLoadTimeoutSeconds, requestTimeoutMs, heartbeatTimeoutMs,
+                    embedTimeoutSeconds, embedBatchTimeoutSeconds);
+
+            return ResponseEntity.ok(config);
+        } catch (IllegalStateException e) {
+            log.warn("Cannot update timeout config: {}", e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error updating timeout config", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", "Update failed: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Resets timeout configuration to defaults (no timeouts).
+     *
+     * @return Reset timeout configuration
+     */
+    @PostMapping("/timeouts/reset")
+    public ResponseEntity<?> resetTimeoutConfig() {
+        try {
+            Map<String, Object> config = configService.resetTimeoutConfiguration();
+            log.info("Reset timeout config to defaults (no timeouts)");
+            return ResponseEntity.ok(config);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error resetting timeout config", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", "Reset failed: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Helper to safely extract Long values from request map.
+     */
+    private Long getAsLong(Map<String, Object> map, String key) {
+        Object value = map.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Long.parseLong((String) value);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     /**
      * Quick test endpoint to verify the controller is working.
      *

@@ -254,7 +254,7 @@
     <div class="json-editor-container">
       <mat-form-field appearance="outline" class="json-editor">
         <mat-label>Configuration (Claude Desktop format)</mat-label>
-        <textarea matInput [(ngModel)]="jsonConfig" rows="20" class="json-textarea" spellcheck="false"></textarea>
+        <textarea matInput [(ngModel)]="jsonConfig" [ngModelOptions]="{standalone: true}" rows="20" class="json-textarea" spellcheck="false"></textarea>
         <mat-hint>Edit the JSON configuration and click Apply to save changes</mat-hint>
       </mat-form-field>
 
@@ -274,7 +274,7 @@
         <!-- Common Fields -->
         <mat-form-field appearance="outline">
           <mat-label>Server ID</mat-label>
-          <input matInput [(ngModel)]="editingServer.id" placeholder="my-server" [disabled]="isEditing">
+          <input matInput [(ngModel)]="editingServer.id" [ngModelOptions]="{standalone: true}" placeholder="my-server" [disabled]="isEditing">
           <mat-hint>Unique identifier for this server (e.g., filesystem, github)</mat-hint>
         </mat-form-field>
 
@@ -294,13 +294,13 @@
         <ng-container *ngIf="isStdioServer(editingServer)">
           <mat-form-field appearance="outline">
             <mat-label>Command</mat-label>
-            <input matInput [(ngModel)]="editingServer.command" placeholder="npx">
+            <input matInput [(ngModel)]="editingServer.command" [ngModelOptions]="{standalone: true}" placeholder="npx">
             <mat-hint>The command to execute (e.g., npx, node, python, uvx)</mat-hint>
           </mat-form-field>
 
           <mat-form-field appearance="outline">
             <mat-label>Arguments (one per line)</mat-label>
-            <textarea matInput [ngModel]="getArgsString()" (ngModelChange)="setArgsFromString($event)" rows="4" placeholder="-y
+            <textarea matInput [ngModel]="getArgsString()" [ngModelOptions]="{standalone: true}" (ngModelChange)="setArgsFromString($event)" rows="4" placeholder="-y
 &#64;modelcontextprotocol/server-filesystem
 /path/to/files"></textarea>
             <mat-hint>Command arguments, one per line</mat-hint>
@@ -312,11 +312,11 @@
             <div class="env-row" *ngFor="let key of envKeys; let i = index">
               <mat-form-field appearance="outline">
                 <mat-label>Key</mat-label>
-                <input matInput [(ngModel)]="envKeys[i]" placeholder="API_KEY">
+                <input matInput [(ngModel)]="envKeys[i]" [ngModelOptions]="{standalone: true}" placeholder="API_KEY">
               </mat-form-field>
               <mat-form-field appearance="outline">
                 <mat-label>Value</mat-label>
-                <input matInput [(ngModel)]="envValues[i]" placeholder="your-api-key" type="password">
+                <input matInput [(ngModel)]="envValues[i]" [ngModelOptions]="{standalone: true}" placeholder="your-api-key" type="password">
               </mat-form-field>
               <button mat-icon-button color="warn" (click)="removeEnvVar(i)">
                 <mat-icon>delete</mat-icon>
@@ -330,7 +330,7 @@
         <ng-container *ngIf="!isStdioServer(editingServer)">
           <mat-form-field appearance="outline">
             <mat-label>Server URL</mat-label>
-            <input matInput [(ngModel)]="editingServer.url" placeholder="http://localhost:3000/mcp">
+            <input matInput [(ngModel)]="editingServer.url" [ngModelOptions]="{standalone: true}" placeholder="http://localhost:3000/mcp">
             <mat-hint>Base URL for the MCP server</mat-hint>
           </mat-form-field>
 
@@ -338,13 +338,13 @@
           <ng-container *ngIf="isSseServer(editingServer)">
             <mat-form-field appearance="outline">
               <mat-label>SSE Endpoint Path</mat-label>
-              <input matInput [(ngModel)]="editingServer.sseEndpoint" placeholder="/sse">
+              <input matInput [(ngModel)]="editingServer.sseEndpoint" [ngModelOptions]="{standalone: true}" placeholder="/sse">
               <mat-hint>Path for Server-Sent Events stream (default: /sse)</mat-hint>
             </mat-form-field>
 
             <mat-form-field appearance="outline">
               <mat-label>Messages Endpoint Path</mat-label>
-              <input matInput [(ngModel)]="editingServer.messagesEndpoint" placeholder="/message">
+              <input matInput [(ngModel)]="editingServer.messagesEndpoint" [ngModelOptions]="{standalone: true}" placeholder="/message">
               <mat-hint>Path for sending messages (default: /message)</mat-hint>
             </mat-form-field>
           </ng-container>
@@ -353,15 +353,15 @@
           <div class="timeout-row">
             <mat-form-field appearance="outline">
               <mat-label>Connection Timeout (ms)</mat-label>
-              <input matInput type="number" [(ngModel)]="editingServer.connectionTimeout" placeholder="30000">
+              <input matInput type="number" [(ngModel)]="editingServer.connectionTimeout" [ngModelOptions]="{standalone: true}" placeholder="30000">
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Request Timeout (ms)</mat-label>
-              <input matInput type="number" [(ngModel)]="editingServer.requestTimeout" placeholder="60000">
+              <input matInput type="number" [(ngModel)]="editingServer.requestTimeout" [ngModelOptions]="{standalone: true}" placeholder="60000">
             </mat-form-field>
           </div>
 
-          <mat-slide-toggle [(ngModel)]="editingServer.verifySsl">Verify SSL Certificates</mat-slide-toggle>
+          <mat-slide-toggle [(ngModel)]="editingServer.verifySsl" [ngModelOptions]="{standalone: true}">Verify SSL Certificates</mat-slide-toggle>
 
           <!-- HTTP Headers -->
           <div class="env-section">
@@ -369,11 +369,11 @@
             <div class="env-row" *ngFor="let key of headerKeys; let i = index">
               <mat-form-field appearance="outline">
                 <mat-label>Header Name</mat-label>
-                <input matInput [(ngModel)]="headerKeys[i]" placeholder="Authorization">
+                <input matInput [(ngModel)]="headerKeys[i]" [ngModelOptions]="{standalone: true}" placeholder="Authorization">
               </mat-form-field>
               <mat-form-field appearance="outline">
                 <mat-label>Header Value</mat-label>
-                <input matInput [(ngModel)]="headerValues[i]" placeholder="Bearer token..." type="password">
+                <input matInput [(ngModel)]="headerValues[i]" [ngModelOptions]="{standalone: true}" placeholder="Bearer token..." type="password">
               </mat-form-field>
               <button mat-icon-button color="warn" (click)="removeHeader(i)">
                 <mat-icon>delete</mat-icon>
@@ -386,10 +386,10 @@
         <!-- Common fields -->
         <mat-form-field appearance="outline">
           <mat-label>Description (optional)</mat-label>
-          <input matInput [(ngModel)]="editingServer.description" placeholder="Provides filesystem access">
+          <input matInput [(ngModel)]="editingServer.description" [ngModelOptions]="{standalone: true}" placeholder="Provides filesystem access">
         </mat-form-field>
 
-        <mat-slide-toggle [(ngModel)]="editingServer.enabled">Enabled</mat-slide-toggle>
+        <mat-slide-toggle [(ngModel)]="editingServer.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
       </div>
 
       <div class="dialog-actions">
@@ -408,7 +408,7 @@
         <p class="hint">Paste a Claude Desktop configuration JSON. Servers will be merged with existing configurations.</p>
         <mat-form-field appearance="outline" class="full-width">
           <mat-label>JSON Configuration</mat-label>
-          <textarea matInput [(ngModel)]="importJson" rows="15" placeholder='{
+          <textarea matInput [(ngModel)]="importJson" [ngModelOptions]="{standalone: true}" rows="15" placeholder='{
   "mcpServers": {
     "filesystem": {
       "command": "npx",

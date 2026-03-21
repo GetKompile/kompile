@@ -2,11 +2,9 @@ package ai.kompile.embedding.anserini;
 
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.embedding.anserini.config.AnseriniEmbeddingConfiguration.AnseriniEmbeddingProperties;
-import io.anserini.encoder.samediff.ArcticEmbedSameDiffEncoder;
-import io.anserini.encoder.samediff.BgeSameDiffEncoder;
-import io.anserini.encoder.samediff.CosDprDistilSameDiffEncoder;
-import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
-import io.anserini.encoder.samediff.SameDiffEncoder;
+import ai.kompile.embedding.anserini.event.EmbeddingSubprocessEvent;
+import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessLauncher;
+import ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMessage;
 import jakarta.annotation.PreDestroy;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -15,275 +13,637 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+/**
+ * Anserini embedding model implementation that delegates ALL embedding work to a subprocess.
+ *
+ * <p><b>CRITICAL:</b> This class NEVER loads SameDiff/ND4J models in the main JVM. All model
+ * loading and inference happens in an isolated subprocess via {@link EmbeddingSubprocessLauncher}.</p>
+ *
+ * <p>Benefits of subprocess isolation:
+ * <ul>
+ *   <li>Main JVM startup is fast (no model loading delay)</li>
+ *   <li>Native library conflicts are avoided</li>
+ *   <li>Memory management is isolated (subprocess can be killed/restarted on OOM)</li>
+ *   <li>Model crashes don't crash the main application</li>
+ * </ul>
+ * </p>
+ */
 @Service("anseriniEmbeddingModelImpl")
 @ConditionalOnProperty(value = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
-@org.springframework.context.annotation.Lazy  // Defer initialization until first use - allows UI to load faster
+@org.springframework.context.annotation.Lazy
+@org.springframework.context.annotation.Primary
 public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
     private static final Logger log = LoggerFactory.getLogger(AnseriniEmbeddingModelImpl.class);
 
     private static final String DEFAULT_MODEL_IDENTIFIER = "bge-base-en-v1.5";
 
-    // NOTE: Parallel embedding is NOT used for OpenMP-based transformers.
-    // OpenMP already parallelizes matrix operations across all CPU cores.
-    // Using multiple Java threads would only cause contention and DAG rebuild overhead.
-    // All batching is now handled directly via encoder.encodeBatch() which does
-    // TRUE batch inference (single forward pass for all texts).
-
-    private volatile SameDiffEncoder<float[]> encoder;
-    private volatile String modelIdentifier;
-    private volatile int embeddingDimensions;
-    private volatile AnseriniEncoderFactory.EncoderType encoderType;
-    private final Object switchLock = new Object();
-
-    /** No-arg for Spring AOT */
-    public AnseriniEmbeddingModelImpl() {
-        this(DEFAULT_MODEL_IDENTIFIER, DEFAULT_OPTIMAL_BATCH_512, DEFAULT_MAX_BATCH_512);
-    }
-
-    /** Main constructor: uses AnseriniEmbeddingProperties for persisted batch size configuration */
-    @Autowired
-    public AnseriniEmbeddingModelImpl(
-            @Autowired(required = false) AnseriniEmbeddingProperties embeddingProperties) {
-
-        // Get model identifier from properties or use default
-        String configuredModelId = (embeddingProperties != null && embeddingProperties.getModelIdentifier() != null
-                && !embeddingProperties.getModelIdentifier().isBlank())
-                ? embeddingProperties.getModelIdentifier()
-                : DEFAULT_MODEL_IDENTIFIER;
-
-        this.modelIdentifier = configuredModelId;
-
-        // Get batch sizes from persisted configuration (supports per-model overrides from benchmark)
-        int optimalBatchSize = embeddingProperties != null
-                ? embeddingProperties.getEffectiveOptimalBatchSize(modelIdentifier)
-                : DEFAULT_OPTIMAL_BATCH_512;
-        int maxBatchSize = embeddingProperties != null
-                ? embeddingProperties.getEffectiveMaxBatchSize(modelIdentifier)
-                : DEFAULT_MAX_BATCH_512;
-
-        // Configure batch sizes (ensure valid ranges)
-        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
-        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
-
-        this.encoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(this.modelIdentifier);
-
-        log.info("Initializing AnseriniEmbeddingModel with model: {} (type: {})",
-                this.modelIdentifier, encoderType);
-        log.info("Batch size configuration from persisted config: optimal={}, max={}",
-                configuredOptimalBatch, configuredMaxBatch);
-        logModelInfo();
-
-        try {
-            // pick the correct factory overload
-            if (AnseriniEncoderFactory.usesAutoModelManagement(this.modelIdentifier)) {
-                this.encoder = AnseriniEncoderFactory.createEncoder(this.modelIdentifier);
-            } else {
-                this.encoder = AnseriniEncoderFactory.createEncoder(encoderType, this.modelIdentifier);
-            }
-
-
-            float[] testEmbedding = this.encoder.encode("test");
-            this.embeddingDimensions = testEmbedding != null ? testEmbedding.length : -1;
-
-            if (this.embeddingDimensions <= 0) {
-                throw new IOException("Could not determine embedding dimensions for model: "
-                        + this.modelIdentifier);
-            }
-
-            log.info("Successfully initialized. Model: {}, Type: {}, Dimensions: {}, OptimalBatch: {}, MaxBatch: {}",
-                    this.modelIdentifier, encoderType, embeddingDimensions, configuredOptimalBatch, configuredMaxBatch);
-
-        } catch (IOException e) {
-            log.error("Failed to initialize AnseriniEmbeddingModel with model: {}",
-                    this.modelIdentifier, e);
-            throw new RuntimeException("Could not initialize Anserini embedding model: " + e.getMessage(), e);
-        }
-    }
-
-    /** Constructor with explicit batch sizes (for subprocess use) */
-    public AnseriniEmbeddingModelImpl(String modelIdentifier, int optimalBatchSize, int maxBatchSize) {
-        this.modelIdentifier = (modelIdentifier != null && !modelIdentifier.isBlank())
-                ? modelIdentifier : DEFAULT_MODEL_IDENTIFIER;
-
-        // Configure batch sizes (ensure valid ranges)
-        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
-        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
-
-        this.encoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(this.modelIdentifier);
-
-        log.info("Initializing AnseriniEmbeddingModel with model: {} (type: {})",
-                this.modelIdentifier, encoderType);
-        log.info("Batch size configuration (explicit): optimal={}, max={}", configuredOptimalBatch, configuredMaxBatch);
-        logModelInfo();
-
-        try {
-            // pick the correct factory overload
-            if (AnseriniEncoderFactory.usesAutoModelManagement(this.modelIdentifier)) {
-                this.encoder = AnseriniEncoderFactory.createEncoder(this.modelIdentifier);
-            } else {
-                this.encoder = AnseriniEncoderFactory.createEncoder(encoderType, this.modelIdentifier);
-            }
-
-            float[] testEmbedding = this.encoder.encode("test");
-            this.embeddingDimensions = testEmbedding != null ? testEmbedding.length : -1;
-
-            if (this.embeddingDimensions <= 0) {
-                throw new IOException("Could not determine embedding dimensions for model: "
-                        + this.modelIdentifier);
-            }
-
-            log.info("Successfully initialized. Model: {}, Type: {}, Dimensions: {}, OptimalBatch: {}, MaxBatch: {}",
-                    this.modelIdentifier, encoderType, embeddingDimensions, configuredOptimalBatch, configuredMaxBatch);
-
-        } catch (IOException e) {
-            log.error("Failed to initialize AnseriniEmbeddingModel with model: {}",
-                    this.modelIdentifier, e);
-            throw new RuntimeException("Could not initialize Anserini embedding model: " + e.getMessage(), e);
-        }
+    /**
+     * Enum indicating where the model was loaded from.
+     */
+    public enum ModelSource {
+        /** Model loaded in subprocess from registry */
+        REGISTRY,
+        /** Model not yet initialized */
+        NOT_INITIALIZED,
+        /** Model initialization failed - can retry later */
+        FAILED
     }
 
     /**
-     * Advanced, explicit-path constructor.
-     * Directly instantiates the right SameDiffEncoder subtype based on encoderType.
-     * Uses default batch sizes - for custom batch sizes use the other constructors.
+     * Enum indicating the current loading phase during lazy initialization.
      */
-    public AnseriniEmbeddingModelImpl(String modelIdentifier,
-                                      String modelPath,
-                                      String vocabPath,
-                                      List<String> inputTensorNames,
-                                      String outputTensorName,
-                                      boolean doLowerCase,
-                                      int maxSequenceLength,
-                                      boolean addSpecialTokens,
-                                      boolean normalizeOutput) throws IOException {
-
-        this.modelIdentifier = modelIdentifier;
-        this.encoderType     = AnseriniEncoderFactory.getEncoderTypeFromModelId(modelIdentifier);
-        this.configuredOptimalBatch = DEFAULT_OPTIMAL_BATCH_512;
-        this.configuredMaxBatch = DEFAULT_MAX_BATCH_512;
-
-        log.info("Advanced init: model={} type={}", modelIdentifier, encoderType);
-
-        // pick correct explicit-path constructor
-        switch (encoderType) {
-            case BGE:
-                // instruction=null, normalizeOutput on first arg, then lowercase, seqLen, specialTokens
-                this.encoder = new BgeSameDiffEncoder(
-                        modelIdentifier,
-                        modelPath,
-                        vocabPath,
-                        /*instruction=*/null,
-                        normalizeOutput,
-                        doLowerCase,
-                        maxSequenceLength,
-                        addSpecialTokens
-                );
-                break;
-
-            case ARCTIC_EMBED:
-                this.encoder = new ArcticEmbedSameDiffEncoder(
-                        modelIdentifier,
-                        modelPath,
-                        vocabPath,
-                        doLowerCase,
-                        maxSequenceLength,
-                        addSpecialTokens
-                );
-                break;
-
-            case COS_DPR_DISTIL:
-                this.encoder = new CosDprDistilSameDiffEncoder(
-                        modelIdentifier,
-                        modelPath,
-                        vocabPath,
-                        doLowerCase,
-                        maxSequenceLength,
-                        addSpecialTokens
-                );
-                break;
-
-            case SPLADE_PP_ED:
-            case SPLADE_PP_SD:
-            case GENERIC_DENSE:
-            default:
-                this.encoder = new GenericDenseSameDiffEncoder(
-                        modelIdentifier,
-                        modelPath,
-                        vocabPath,
-                        inputTensorNames,
-                        outputTensorName,
-                        doLowerCase,
-                        maxSequenceLength,
-                        addSpecialTokens,
-                        normalizeOutput
-                );
-                break;
-        }
-
-        // determine dimensions
-        float[] testEmbedding = this.encoder.encode("test");
-        this.embeddingDimensions = testEmbedding != null ? testEmbedding.length : -1;
-        if (this.embeddingDimensions <= 0) {
-            throw new IOException("Could not determine embedding dimensions for model: " + modelIdentifier);
-        }
-        log.info("Advanced init complete. Dimensions: {}", embeddingDimensions);
+    public enum LoadingPhase {
+        IDLE,
+        STARTING,
+        STARTING_SUBPROCESS,
+        LOADING_MODEL,
+        TESTING_ENCODER,
+        COMPLETE,
+        FAILED
     }
+
+    // Subprocess launcher - ALL embedding work goes through this
+    private volatile EmbeddingSubprocessLauncher subprocessLauncher;
+    private final Object launcherLock = new Object();
+
+    // Model state (mirrors subprocess state)
+    private volatile String modelIdentifier;
+    private volatile int embeddingDimensions = -1;
+    private volatile String encoderType = "UNKNOWN";
+    private volatile ModelSource modelSource = ModelSource.NOT_INITIALIZED;
+    private volatile boolean initialized = false;
+    private volatile String initializationError = null;
+    private volatile boolean initializationErrorRetriable = false;
+
+    // Loading progress tracking
+    private volatile boolean loading = false;
+    private volatile LoadingPhase loadingPhase = LoadingPhase.IDLE;
+    private volatile long loadingStartTime = 0;
+    private volatile String loadingMessage = null;
+
+    // Batch configuration
+    private static final int DEFAULT_OPTIMAL_BATCH = 32;
+    private static final int DEFAULT_MAX_BATCH = 64;
+    private final int configuredOptimalBatch;
+    private final int configuredMaxBatch;
+
+    // Properties for deferred resolution (timeouts are read dynamically from this)
+    private volatile AnseriniEmbeddingProperties storedEmbeddingProperties;
+
+    // Event publisher for broadcasting subprocess events to UI
+    private final ApplicationEventPublisher eventPublisher;
+
+    // Op timing state - stored so it can be applied when subprocess becomes available
+    private volatile boolean desiredOpTimingEnabled = false;
+    private volatile boolean desiredOpTimingDetailedMode = false;
+
+    // Device routing overrides - set by kompile-app-main to configure device routing
+    // before subprocess start
+    private volatile Integer deviceRoutingMaxThreads;
+    private volatile Integer deviceRoutingMaxMasterThreads;
+    private volatile Integer deviceRoutingCudaDevice;
+    private volatile Long deviceRoutingMaxDeviceMemory;
+    private volatile boolean deviceRoutingEnabled = false;
+
+    /** No-arg for Spring AOT */
+    public AnseriniEmbeddingModelImpl() {
+        this(DEFAULT_MODEL_IDENTIFIER, DEFAULT_OPTIMAL_BATCH, DEFAULT_MAX_BATCH, null);
+        // No-arg constructor sets default timeouts in the chained constructor
+    }
+
+    /**
+     * Set device routing overrides for the embedding subprocess.
+     * Called by kompile-app-main when device routing is enabled.
+     */
+    public void setDeviceRoutingOverrides(Integer maxThreads, Integer maxMasterThreads,
+                                          Integer cudaDevice, Long maxDeviceMemory) {
+        this.deviceRoutingMaxThreads = maxThreads;
+        this.deviceRoutingMaxMasterThreads = maxMasterThreads;
+        this.deviceRoutingCudaDevice = cudaDevice;
+        this.deviceRoutingMaxDeviceMemory = maxDeviceMemory;
+        this.deviceRoutingEnabled = true;
+
+        // Also update existing subprocess launcher if already running
+        EmbeddingSubprocessLauncher launcher = this.subprocessLauncher;
+        if (launcher != null) {
+            launcher.setDeviceRoutingOverrides(maxThreads, maxMasterThreads, cudaDevice, maxDeviceMemory);
+        }
+    }
+
+    /** Main constructor: uses AnseriniEmbeddingProperties for configuration */
+    @Autowired
+    public AnseriniEmbeddingModelImpl(
+            @Autowired(required = false) AnseriniEmbeddingProperties embeddingProperties,
+            @Autowired(required = false) ApplicationEventPublisher eventPublisher) {
+
+        this.storedEmbeddingProperties = embeddingProperties;
+        this.eventPublisher = eventPublisher;
+
+        this.modelIdentifier = embeddingProperties != null && embeddingProperties.getModelIdentifier() != null
+                && !embeddingProperties.getModelIdentifier().isBlank()
+                ? embeddingProperties.getModelIdentifier()
+                : DEFAULT_MODEL_IDENTIFIER;
+
+        int optimalBatchSize = embeddingProperties != null
+                ? embeddingProperties.getEffectiveOptimalBatchSize(modelIdentifier)
+                : DEFAULT_OPTIMAL_BATCH;
+        int maxBatchSize = embeddingProperties != null
+                ? embeddingProperties.getEffectiveMaxBatchSize(modelIdentifier)
+                : DEFAULT_MAX_BATCH;
+
+        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
+        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
+
+        log.info("Configured AnseriniEmbeddingModel (SUBPROCESS mode) - NO model loading in main JVM");
+        log.info("Model identifier: {} (will be loaded in subprocess on first use)", this.modelIdentifier);
+        log.info("Batch size configuration: optimal={}, max={}", configuredOptimalBatch, configuredMaxBatch);
+        log.info("Timeout configuration read dynamically from properties (0 = no timeout)");
+    }
+
+    // ========== Timeout getters (read dynamically from properties) ==========
+
+    private long getModelLoadTimeoutSeconds() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getModelLoadTimeoutSeconds() : 0;
+    }
+
+    private long getRequestTimeoutMs() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getRequestTimeoutMs() : 0;
+    }
+
+    private long getHeartbeatTimeoutMs() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getHeartbeatTimeoutMs() : 0;
+    }
+
+    private long getEmbedTimeoutSeconds() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getEmbedTimeoutSeconds() : 0;
+    }
+
+    private long getEmbedBatchTimeoutSeconds() {
+        return storedEmbeddingProperties != null ? storedEmbeddingProperties.getEmbedBatchTimeoutSeconds() : 0;
+    }
+
+    /** Constructor with explicit batch sizes */
+    public AnseriniEmbeddingModelImpl(String modelIdentifier, int optimalBatchSize, int maxBatchSize) {
+        this(modelIdentifier, optimalBatchSize, maxBatchSize, null);
+    }
+
+    /** Constructor with explicit batch sizes and event publisher */
+    public AnseriniEmbeddingModelImpl(String modelIdentifier, int optimalBatchSize, int maxBatchSize,
+                                      ApplicationEventPublisher eventPublisher) {
+        this.modelIdentifier = (modelIdentifier != null && !modelIdentifier.isBlank())
+                ? modelIdentifier : DEFAULT_MODEL_IDENTIFIER;
+        this.eventPublisher = eventPublisher;
+
+        this.configuredOptimalBatch = Math.max(1, Math.min(optimalBatchSize, 256));
+        this.configuredMaxBatch = Math.max(this.configuredOptimalBatch, Math.min(maxBatchSize, 512));
+
+        log.info("Configured AnseriniEmbeddingModel (SUBPROCESS mode) with model: {}", this.modelIdentifier);
+        log.info("Batch size configuration: optimal={}, max={}", configuredOptimalBatch, configuredMaxBatch);
+    }
+
+    /**
+     * Ensures the subprocess is started and model is loaded.
+     * Thread-safe - only one thread will perform initialization.
+     */
+    private void ensureInitialized() {
+        if (initialized) {
+            return;
+        }
+        if (modelSource == ModelSource.FAILED) {
+            return;
+        }
+
+        synchronized (launcherLock) {
+            if (initialized) {
+                return;
+            }
+            if (modelSource == ModelSource.FAILED) {
+                return;
+            }
+            if (loading) {
+                return;
+            }
+
+            loading = true;
+            loadingStartTime = System.currentTimeMillis();
+            loadingPhase = LoadingPhase.STARTING;
+            loadingMessage = "Starting embedding subprocess...";
+
+            try {
+                // Phase 1: Start subprocess
+                loadingPhase = LoadingPhase.STARTING_SUBPROCESS;
+                loadingMessage = "Starting embedding subprocess...";
+                log.info("Starting embedding subprocess for model: {}", modelIdentifier);
+
+                // Configure subprocess launcher with timeouts (0 = no timeout)
+                EmbeddingSubprocessLauncher.Builder launcherBuilder = EmbeddingSubprocessLauncher.builder()
+                        .maxHeapMb(4096)
+                        .progressCallback(this::handleProgress)
+                        .phaseTransitionCallback(this::handlePhaseTransition)
+                        .logCallback(this::handleLog)
+                        .errorCallback(this::handleError)
+                        .crashCallback(this::handleCrash);
+
+                // Only set timeouts if configured (> 0), otherwise leave as default (no timeout)
+                if (getRequestTimeoutMs() > 0) {
+                    launcherBuilder.requestTimeoutMs(getRequestTimeoutMs());
+                }
+                if (getHeartbeatTimeoutMs() > 0) {
+                    launcherBuilder.heartbeatTimeoutMs(getHeartbeatTimeoutMs());
+                }
+
+                subprocessLauncher = launcherBuilder.build();
+
+                // Apply device routing overrides if configured
+                if (deviceRoutingEnabled) {
+                    subprocessLauncher.setDeviceRoutingOverrides(
+                            deviceRoutingMaxThreads,
+                            deviceRoutingMaxMasterThreads,
+                            deviceRoutingCudaDevice,
+                            deviceRoutingMaxDeviceMemory);
+                }
+
+                // Configure restart policy callback for tracking restarts
+                subprocessLauncher.setRestartPolicyCallback(createRestartPolicyCallback());
+                subprocessLauncher.setRestartConfig(3, 5000, 2.0); // 3 attempts, 5s initial backoff, 2x multiplier
+
+                subprocessLauncher.start();
+                log.info("Embedding subprocess started");
+
+                // Publish SUBPROCESS_STARTED event for job history tracking
+                publishEvent(EmbeddingSubprocessEvent.subprocessStarted(this, modelIdentifier));
+
+                // Enable op timing in subprocess BEFORE model loads (if desired)
+                if (desiredOpTimingEnabled) {
+                    log.info("Enabling op timing in subprocess before model load: detailed={}",
+                            desiredOpTimingDetailedMode);
+                    try {
+                        subprocessLauncher.configureOpTiming(desiredOpTimingEnabled, desiredOpTimingDetailedMode)
+                                .get(10, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        log.warn("Failed to enable op timing before model load: {}", e.getMessage());
+                    }
+                }
+
+                // Phase 2: Load model in subprocess
+                loadingPhase = LoadingPhase.LOADING_MODEL;
+                loadingMessage = "Loading model in subprocess: " + modelIdentifier;
+                log.info("Loading model in subprocess: {}", modelIdentifier);
+
+                CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadFuture =
+                        subprocessLauncher.loadModel(modelIdentifier, configuredOptimalBatch, configuredMaxBatch);
+
+                // Use configurable timeout for model loading (0 = no timeout)
+                EmbeddingSubprocessMessage.LoadModelResponse response;
+                if (getModelLoadTimeoutSeconds() > 0) {
+                    response = loadFuture.get(getModelLoadTimeoutSeconds(), TimeUnit.SECONDS);
+                } else {
+                    response = loadFuture.get(); // No timeout - wait indefinitely
+                }
+
+                if (!response.success()) {
+                    throw new IOException("Subprocess failed to load model: " + response.error());
+                }
+
+                // Update state from response
+                this.embeddingDimensions = response.dimensions();
+                this.encoderType = response.encoderType();
+                this.modelSource = ModelSource.REGISTRY;
+                this.initialized = true;
+                this.initializationError = null;
+
+                loadingPhase = LoadingPhase.COMPLETE;
+                loadingMessage = "Model loaded successfully in subprocess";
+
+                long loadTimeMs = System.currentTimeMillis() - loadingStartTime;
+                log.info("Model loaded successfully in subprocess in {}ms: {} (dims={}, type={})",
+                        loadTimeMs, modelIdentifier, embeddingDimensions, encoderType);
+
+                // Publish MODEL_LOADED event for job history tracking
+                publishEvent(EmbeddingSubprocessEvent.modelLoaded(this, modelIdentifier,
+                        embeddingDimensions, encoderType));
+
+            } catch (Exception e) {
+                log.error("Failed to initialize embedding subprocess: {}", e.getMessage(), e);
+                this.initializationError = e.getMessage();
+                this.initializationErrorRetriable = isRetriableError(e);
+                loadingPhase = LoadingPhase.FAILED;
+                loadingMessage = "Error: " + e.getMessage();
+
+                // Try to capture any metadata from subprocess launcher before deciding to stop
+                if (subprocessLauncher != null) {
+                    // Check if subprocess actually loaded the model despite the error
+                    if (subprocessLauncher.isModelLoaded()) {
+                        int subDim = subprocessLauncher.getCurrentDimensions();
+                        String subEnc = subprocessLauncher.getEncoderType();
+                        if (subDim > 0) {
+                            this.embeddingDimensions = subDim;
+                            this.encoderType = subEnc;
+                            this.modelSource = ModelSource.REGISTRY;
+                            this.initialized = true;
+                            loadingPhase = LoadingPhase.COMPLETE;
+                            loadingMessage = "Model loaded (recovered from subprocess)";
+                            log.info("Recovered model metadata from subprocess: dims={}, type={}", subDim, subEnc);
+                            // Don't publish failed event, publish success instead
+                            publishEvent(EmbeddingSubprocessEvent.modelLoaded(this, modelIdentifier,
+                                    embeddingDimensions, encoderType));
+                            return; // Success!
+                        }
+                    }
+
+                    // Only stop subprocess on non-retriable errors
+                    if (!initializationErrorRetriable) {
+                        try {
+                            subprocessLauncher.stop();
+                        } catch (Exception ignored) {}
+                        subprocessLauncher = null;
+                    } else {
+                        log.info("Keeping subprocess alive for retry (retriable error: {})", e.getMessage());
+                    }
+                }
+
+                this.modelSource = ModelSource.FAILED;
+
+                // Publish MODEL_FAILED event for job history tracking
+                publishEvent(EmbeddingSubprocessEvent.modelFailed(this, modelIdentifier, e.getMessage()));
+            } finally {
+                loading = false;
+            }
+        }
+    }
+
+    private boolean isRetriableError(Exception e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String upper = msg.toUpperCase();
+        return upper.contains("TIMEOUT") || upper.contains("CONNECTION") || upper.contains("UNAVAILABLE");
+    }
+
+    // ========== Subprocess callbacks ==========
+
+    private void handleProgress(EmbeddingSubprocessMessage.Progress progress) {
+        log.debug("[subprocess] Progress: {} {}% - {}", progress.phase(), progress.progressPercent(), progress.message());
+        publishEvent(EmbeddingSubprocessEvent.progress(this, modelIdentifier,
+                progress.phase(), progress.progressPercent(), progress.message()));
+    }
+
+    private void handlePhaseTransition(EmbeddingSubprocessMessage.PhaseTransition transition) {
+        log.info("[subprocess] Phase: {} -> {} ({}ms)", transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs());
+        publishEvent(EmbeddingSubprocessEvent.phaseTransition(this, modelIdentifier,
+                transition.fromPhase(), transition.toPhase(), transition.phaseDurationMs()));
+    }
+
+    private void handleLog(EmbeddingSubprocessMessage.Log logMsg) {
+        switch (logMsg.level()) {
+            case "ERROR":
+                log.error("[subprocess:{}] {}", logMsg.source(), logMsg.message());
+                break;
+            case "WARN":
+                log.warn("[subprocess:{}] {}", logMsg.source(), logMsg.message());
+                break;
+            default:
+                log.info("[subprocess:{}] {}", logMsg.source(), logMsg.message());
+        }
+        publishEvent(EmbeddingSubprocessEvent.log(this, modelIdentifier,
+                logMsg.level(), logMsg.source(), logMsg.message()));
+    }
+
+    private void handleError(EmbeddingSubprocessMessage.Error error) {
+        log.error("[subprocess] Error in {}: {} - {}", error.phase(), error.errorType(), error.errorMessage());
+        publishEvent(EmbeddingSubprocessEvent.error(this, modelIdentifier,
+                error.errorMessage(), error.errorType(), error.phase()));
+    }
+
+    private void handleCrash(Exception e) {
+        log.error("[subprocess] CRASH: {}", e.getMessage());
+        publishEvent(EmbeddingSubprocessEvent.subprocessCrashed(this, modelIdentifier, e.getMessage()));
+        // Subprocess launcher will handle restart via RestartPolicyCallback
+    }
+
+    /**
+     * Create a RestartPolicyCallback implementation that publishes events and uses default restart logic.
+     */
+    private EmbeddingSubprocessLauncher.RestartPolicyCallback createRestartPolicyCallback() {
+        return new EmbeddingSubprocessLauncher.RestartPolicyCallback() {
+
+            @Override
+            public EmbeddingSubprocessLauncher.RestartConfiguration shouldRestart(
+                    String taskId, int exitCode, String crashReason, int attemptNumber) {
+                // Default restart policy: allow restarts for memory-related failures
+                int maxAttempts = subprocessLauncher != null ? subprocessLauncher.getMaxRestartAttempts() : 3;
+
+                if (attemptNumber > maxAttempts) {
+                    log.warn("Restart attempt {} exceeds max {} for task {}", attemptNumber, maxAttempts, taskId);
+                    return null; // Don't restart
+                }
+
+                // Calculate backoff with exponential increase
+                long backoffMs = (long) (5000 * Math.pow(2.0, attemptNumber - 1));
+
+                // Categorize failure and decide if restartable
+                boolean isRestartable = isRestartableFailure(exitCode, crashReason);
+                if (!isRestartable) {
+                    log.info("Failure not restartable (exit code: {}, reason: {})", exitCode, crashReason);
+                    return null;
+                }
+
+                String reason = categorizeFailureReason(exitCode, crashReason);
+
+                // Use current configuration (could be enhanced to adjust based on failure type)
+                long heapBytes = 4L * 1024 * 1024 * 1024; // 4GB default
+                int batchSize = configuredOptimalBatch;
+                int threads = Runtime.getRuntime().availableProcessors();
+
+                return new EmbeddingSubprocessLauncher.RestartConfiguration(
+                        backoffMs, heapBytes, batchSize, threads, reason);
+            }
+
+            @Override
+            public void onRestartAttempt(String taskId, String fileName, int attemptNumber, int maxAttempts,
+                                          String reason, EmbeddingSubprocessLauncher.RestartConfiguration config) {
+                log.info("Publishing restart attempt event: attempt {}/{} for model {} (reason: {})",
+                        attemptNumber, maxAttempts, modelIdentifier, reason);
+
+                long heapBytes = config != null ? config.newHeapBytes() : 0;
+                int batchSize = config != null ? config.newBatchSize() : 0;
+                int threads = config != null ? config.newThreadCount() : 0;
+                long backoffMs = config != null ? config.backoffMs() : 0;
+
+                publishEvent(EmbeddingSubprocessEvent.subprocessRestarting(
+                        AnseriniEmbeddingModelImpl.this, modelIdentifier,
+                        attemptNumber, maxAttempts, reason, backoffMs,
+                        heapBytes, batchSize, threads));
+            }
+
+            @Override
+            public void onRestartSuccess(String taskId, int attemptNumber) {
+                log.info("Publishing restart success event: attempt {} for model {}", attemptNumber, modelIdentifier);
+                publishEvent(EmbeddingSubprocessEvent.subprocessRestartSuccess(
+                        AnseriniEmbeddingModelImpl.this, modelIdentifier, attemptNumber));
+            }
+
+            @Override
+            public void onRestartExhausted(String taskId, int totalAttempts, String lastReason) {
+                log.warn("Publishing restart exhausted event: {} attempts for model {} (last reason: {})",
+                        totalAttempts, modelIdentifier, lastReason);
+                publishEvent(EmbeddingSubprocessEvent.subprocessRestartExhausted(
+                        AnseriniEmbeddingModelImpl.this, modelIdentifier, totalAttempts, lastReason));
+            }
+
+            private boolean isRestartableFailure(int exitCode, String crashReason) {
+                // Restart for OOM, native crashes, and stalls
+                return switch (exitCode) {
+                    case 137 -> true;  // OOM killed
+                    case 134, 136, 139 -> true;  // Native crashes
+                    case -1 -> true;  // Unknown (might be heartbeat timeout)
+                    case 130, 143 -> false;  // User cancelled (SIGINT, SIGTERM)
+                    case 0 -> false;  // Normal exit
+                    default -> crashReason != null &&
+                            (crashReason.contains("OutOfMemory") || crashReason.contains("heartbeat"));
+                };
+            }
+
+            private String categorizeFailureReason(int exitCode, String crashReason) {
+                if (crashReason != null && crashReason.contains("OutOfMemory")) {
+                    return "OUT_OF_MEMORY";
+                }
+                return switch (exitCode) {
+                    case 137 -> "OOM_KILLED";
+                    case 134, 136, 139 -> "NATIVE_CRASH";
+                    case 130, 143 -> "CANCELLED";
+                    case -1 -> crashReason != null && crashReason.contains("heartbeat") ?
+                            "STALLED_NO_HEARTBEAT" : "UNKNOWN";
+                    default -> "EXIT_" + exitCode;
+                };
+            }
+        };
+    }
+
+    /**
+     * Publish an event to the Spring ApplicationEventPublisher if available.
+     */
+    private void publishEvent(EmbeddingSubprocessEvent event) {
+        if (eventPublisher != null) {
+            try {
+                eventPublisher.publishEvent(event);
+            } catch (Exception e) {
+                log.debug("Failed to publish subprocess event: {}", e.getMessage());
+            }
+        }
+    }
+
+    // ========== EmbeddingModel interface ==========
 
     @Override
     public INDArray embed(String text) {
         if (text == null || text.isBlank()) return Nd4j.empty(DataType.FLOAT);
 
-        // Check for interrupt or shutdown before encoding
-        if (Thread.currentThread().isInterrupted() || encoder.isShuttingDown()) {
-            log.debug("Embed operation rejected - interrupt or shutdown in progress");
+        ensureInitialized();
+
+        if (!initialized || subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.debug("Embed called but subprocess not running");
             return Nd4j.empty(DataType.FLOAT);
         }
 
         try {
-            float[] emb = encoder.encode(text);
-            if (emb == null || emb.length == 0) {
-                log.debug("Encoder returned null or empty result, likely due to interrupt or shutdown");
+            // Use configurable timeout for single embed (0 = no timeout)
+            float[] embedding;
+            if (getEmbedTimeoutSeconds() > 0) {
+                embedding = subprocessLauncher.embed(text).get(getEmbedTimeoutSeconds(), TimeUnit.SECONDS);
+            } else {
+                embedding = subprocessLauncher.embed(text).get(); // No timeout - wait indefinitely
+            }
+            if (embedding == null || embedding.length == 0) {
                 return Nd4j.empty(DataType.FLOAT);
             }
-            // Validate embedding magnitude - zero vectors indicate model failure
-            double mag = 0.0;
-            for (float v : emb) mag += v * v;
-            if (mag < 1e-18) {
-                String textPreview = text.length() > 100 ? text.substring(0, 100) + "..." : text;
-                throw new IllegalArgumentException(String.format(
-                        "Embedding model '%s' (type=%s, dims=%d) produced zero-magnitude vector. " +
-                        "This indicates the model forward pass completed but output is all zeros. " +
-                        "Possible causes: (1) Model file corrupted or incompatible, (2) Input tokenization failed silently, " +
-                        "(3) Model requires different input format, (4) SameDiff graph execution error. " +
-                        "Input text length: %d chars, preview: '%s'",
-                        modelIdentifier, encoderType, embeddingDimensions, text.length(),
-                        textPreview.replace("\n", "\\n")));
-            }
-            return Nd4j.create(emb);
-        } catch (IllegalArgumentException e) {
-            // Validation errors should propagate
-            throw e;
-        } catch (IllegalStateException e) {
-            // Tokenizer shutdown - expected during graceful shutdown
-            log.debug("Embed operation rejected - encoder shutting down: {}", e.getMessage());
-            return Nd4j.empty(DataType.FLOAT);
+            return Nd4j.create(embedding);
         } catch (Exception e) {
-            if (Thread.currentThread().isInterrupted() || encoder.isShuttingDown()) {
-                log.debug("Embed operation interrupted/shutdown during encoding");
-                return Nd4j.empty(DataType.FLOAT);
-            }
-            log.error("Error embedding text", e);
+            log.error("Error embedding text via subprocess: {}", e.getMessage());
             return Nd4j.empty(DataType.FLOAT);
+        }
+    }
+
+    /**
+     * Result of embedding with detailed timing information.
+     * Tracks both total wall-clock time (including subprocess overhead) and actual inference time.
+     */
+    public record EmbedTimingResult(
+            INDArray embedding,
+            int dimensions,
+            long totalWallClockMs,      // Total time from request to response (includes subprocess IPC overhead)
+            long subprocessInferenceMs, // Actual time spent in subprocess doing inference
+            long subprocessOverheadMs,  // Difference: totalWallClockMs - subprocessInferenceMs
+            boolean success,
+            String error
+    ) {
+        public static EmbedTimingResult success(INDArray embedding, int dims, long wallClockMs, long inferenceMs) {
+            return new EmbedTimingResult(embedding, dims, wallClockMs, inferenceMs,
+                    wallClockMs - inferenceMs, true, null);
+        }
+
+        public static EmbedTimingResult failure(String error, long wallClockMs) {
+            return new EmbedTimingResult(Nd4j.empty(DataType.FLOAT), 0, wallClockMs, 0, wallClockMs, false, error);
+        }
+    }
+
+    /**
+     * Embed text and return detailed timing information.
+     * This allows callers to see both the total time (including subprocess IPC overhead)
+     * and the actual inference time within the subprocess.
+     */
+    public EmbedTimingResult embedWithTiming(String text) {
+        if (text == null || text.isBlank()) {
+            return EmbedTimingResult.failure("Empty text", 0);
+        }
+
+        ensureInitialized();
+
+        if (!initialized || subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.debug("embedWithTiming called but subprocess not running");
+            return EmbedTimingResult.failure("Subprocess not running", 0);
+        }
+
+        long startTime = System.currentTimeMillis();
+        try {
+            EmbeddingSubprocessMessage.EmbedResponse response;
+            if (getEmbedTimeoutSeconds() > 0) {
+                response = subprocessLauncher.embedWithTiming(text).get(getEmbedTimeoutSeconds(), TimeUnit.SECONDS);
+            } else {
+                response = subprocessLauncher.embedWithTiming(text).get();
+            }
+            long totalWallClockMs = System.currentTimeMillis() - startTime;
+
+            if (response == null || !response.success()) {
+                String error = response != null ? response.error() : "Null response";
+                return EmbedTimingResult.failure(error, totalWallClockMs);
+            }
+
+            float[] embedding = response.embedding();
+            if (embedding == null || embedding.length == 0) {
+                return EmbedTimingResult.failure("Empty embedding", totalWallClockMs);
+            }
+
+            INDArray result = Nd4j.create(embedding);
+            return EmbedTimingResult.success(result, embedding.length, totalWallClockMs, response.embedTimeMs());
+
+        } catch (Exception e) {
+            long totalWallClockMs = System.currentTimeMillis() - startTime;
+            log.error("Error in embedWithTiming: {}", e.getMessage());
+            return EmbedTimingResult.failure(e.getMessage(), totalWallClockMs);
         }
     }
 
@@ -291,183 +651,60 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     public INDArray embed(List<String> texts) {
         if (texts == null || texts.isEmpty()) return Nd4j.empty(DataType.FLOAT);
 
-        // Check for interrupt or shutdown before bulk encoding
-        if (Thread.currentThread().isInterrupted() || encoder.isShuttingDown()) {
-            log.debug("Bulk embed operation rejected - interrupt or shutdown in progress");
+        List<float[]> embeddings = embedBatch(texts);
+        if (embeddings == null || embeddings.isEmpty()) {
             return Nd4j.empty(DataType.FLOAT);
         }
 
-        // Use true batch encoding via encodeBatch, then assemble into matrix
-        try {
-            List<float[]> batchResults = encoder.encodeBatch(texts);
-            if (batchResults == null || batchResults.isEmpty()) {
-                return Nd4j.empty(DataType.FLOAT);
+        int dims = embeddingDimensions > 0 ? embeddingDimensions : embeddings.get(0).length;
+        float[] flatBuffer = new float[texts.size() * dims];
+        for (int i = 0; i < embeddings.size(); i++) {
+            float[] emb = embeddings.get(i);
+            if (emb != null) {
+                System.arraycopy(emb, 0, flatBuffer, i * dims, Math.min(emb.length, dims));
             }
-            return assembleEmbeddingMatrixFromList(texts, batchResults);
-        } catch (IllegalStateException e) {
-            // Tokenizer shutdown - expected during graceful shutdown
-            log.debug("Bulk embed operation rejected - encoder shutting down: {}", e.getMessage());
-            return Nd4j.empty(DataType.FLOAT);
         }
+        return Nd4j.create(flatBuffer, new int[]{texts.size(), dims}, 'c');
     }
 
-    /**
-     * DIRECT batch embedding - bypasses INDArray creation entirely.
-     * This is the most efficient path for pipeline embedding.
-     *
-     * <p>Calls encoder.encodeBatch() directly which performs TRUE batch inference
-     * (single forward pass for all texts) in BgeSameDiffEncoder.</p>
-     *
-     * <p><b>IMPORTANT:</b> This method returns an empty list (not null) on interrupt/shutdown
-     * to prevent downstream null pointer exceptions and pipeline inconsistency.</p>
-     */
     @Override
     public List<float[]> embedBatch(List<String> texts) {
         if (texts == null || texts.isEmpty()) {
-            log.debug("embedBatch called with null/empty texts, returning empty list");
             return List.of();
         }
 
-        // Check for interrupt or shutdown before batch encoding
-        if (Thread.currentThread().isInterrupted() || encoder.isShuttingDown()) {
-            log.info("embedBatch rejected - interrupt or shutdown in progress (texts={})", texts.size());
-            // Return empty list instead of null to prevent NPE in pipeline
+        ensureInitialized();
+
+        if (!initialized || subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.error("embedBatch called but subprocess not running (initialized={}, source={})",
+                    initialized, modelSource);
             return List.of();
         }
 
         try {
-            // Calculate character and approximate token stats for the batch
-            int totalChars = 0;
-            int minChars = Integer.MAX_VALUE;
-            int maxChars = 0;
-            for (String text : texts) {
-                int len = text.length();
-                totalChars += len;
-                if (len < minChars) minChars = len;
-                if (len > maxChars) maxChars = len;
-            }
-            double avgChars = texts.isEmpty() ? 0 : (double) totalChars / texts.size();
-
-            log.info("EMBED_BATCH_START: batch_size={}, total_chars={}, avg_chars={:.1f}, min_chars={}, max_chars={}, encoder={}",
-                    texts.size(), totalChars, avgChars, minChars == Integer.MAX_VALUE ? 0 : minChars, maxChars,
-                    encoder.getClass().getSimpleName());
-
-            // Direct call to encoder's batch method - no INDArray overhead
             long start = System.currentTimeMillis();
-            List<float[]> result = encoder.encodeBatch(texts);
+            // Use configurable timeout for batch embed (0 = no timeout)
+            List<float[]> result;
+            if (getEmbedBatchTimeoutSeconds() > 0) {
+                result = subprocessLauncher.embedBatch(texts).get(getEmbedBatchTimeoutSeconds(), TimeUnit.SECONDS);
+            } else {
+                result = subprocessLauncher.embedBatch(texts).get(); // No timeout - wait indefinitely
+            }
             long elapsed = System.currentTimeMillis() - start;
 
             if (result == null) {
-                log.warn("EMBED_BATCH_FAIL: encoder.encodeBatch returned null for {} texts after {}ms",
-                        texts.size(), elapsed);
+                log.error("Subprocess returned null for batch of {} texts", texts.size());
                 return List.of();
             }
 
-            // Calculate throughput metrics
-            double textsPerSec = elapsed > 0 ? (texts.size() * 1000.0 / elapsed) : 0;
-            double charsPerSec = elapsed > 0 ? (totalChars * 1000.0 / elapsed) : 0;
-            double msPerText = texts.size() > 0 ? (double) elapsed / texts.size() : 0;
-
-            log.info("EMBED_BATCH_DONE: batch_size={}, returned={}, elapsed={}ms, {:.2f}ms/text, {:.1f} texts/sec, {:.0f} chars/sec",
-                    texts.size(), result.size(), elapsed, msPerText, textsPerSec, charsPerSec);
-
-            // Validate embeddings - zero vectors indicate model failure
-            for (int i = 0; i < result.size(); i++) {
-                float[] emb = result.get(i);
-                if (emb != null) {
-                    double mag = 0.0;
-                    for (float v : emb) mag += v * v;
-                    if (mag < 1e-18) {
-                        String originalText = i < texts.size() ? texts.get(i) : "?";
-                        String textPreview = originalText.length() > 100
-                                ? originalText.substring(0, 100) + "..."
-                                : originalText;
-                        throw new IllegalArgumentException(String.format(
-                                "Embedding model '%s' (type=%s, dims=%d) produced zero-magnitude vector at batch index %d/%d. " +
-                                "This indicates the model forward pass completed but output is all zeros for this item. " +
-                                "Possible causes: (1) Model file corrupted or incompatible, (2) Input tokenization failed silently, " +
-                                "(3) Batch padding/attention mask issue, (4) SameDiff graph execution error. " +
-                                "Input text length: %d chars, preview: '%s'",
-                                modelIdentifier, encoderType, embeddingDimensions,
-                                i, result.size(), originalText.length(),
-                                textPreview.replace("\n", "\\n")));
-                    }
-                }
-            }
+            log.info("EMBED_BATCH_DONE: {} texts in {}ms ({} ms/text) via subprocess",
+                    texts.size(), elapsed, texts.isEmpty() ? 0 : elapsed / texts.size());
 
             return result;
-        } catch (IllegalArgumentException e) {
-            // Validation errors should propagate - don't silently index garbage
-            throw e;
-        } catch (IllegalStateException e) {
-            // Tokenizer shutdown - expected during graceful shutdown
-            log.info("embedBatch rejected - encoder shutting down: {}", e.getMessage());
-            // Return empty list instead of null to prevent NPE in pipeline
-            return List.of();
         } catch (Exception e) {
-            // Catch any other exception to prevent pipeline crash
-            log.error("embedBatch failed for {} texts: {}", texts.size(), e.getMessage(), e);
+            log.error("Error embedding batch via subprocess: {}", e.getMessage(), e);
             return List.of();
         }
-    }
-
-    /**
-     * Assembles the embedding matrix from a list of embeddings (from true batch encoding).
-     */
-    private INDArray assembleEmbeddingMatrixFromList(List<String> texts, List<float[]> embeddings) {
-        int dims = dimensions();
-        int numTexts = texts.size();
-
-        // Pre-allocate the output buffer
-        float[] flatBuffer = new float[numTexts * dims];
-        int validRows = 0;
-
-        for (int i = 0; i < Math.min(numTexts, embeddings.size()); i++) {
-            float[] emb = embeddings.get(i);
-            if (emb != null && emb.length > 0) {
-                int copyLen = Math.min(emb.length, dims);
-                System.arraycopy(emb, 0, flatBuffer, i * dims, copyLen);
-                validRows++;
-            }
-        }
-
-        if (validRows == 0) {
-            return Nd4j.empty(DataType.FLOAT);
-        }
-
-        return Nd4j.create(flatBuffer, new int[]{numTexts, dims}, 'c');
-    }
-
-    /**
-     * Assembles the embedding matrix from bulk encode results.
-     * @deprecated Use assembleEmbeddingMatrixFromList instead
-     */
-    @Deprecated
-    private INDArray assembleEmbeddingMatrix(List<String> texts, Map<String, float[]> bulk) {
-        int dims = dimensions();
-        int numTexts = texts.size();
-
-        float[] flatBuffer = new float[numTexts * dims];
-        int validRows = 0;
-
-        for (int i = 0; i < numTexts; i++) {
-            float[] result = bulk.get(texts.get(i));
-            if (result != null && result.length == dims) {
-                System.arraycopy(result, 0, flatBuffer, i * dims, dims);
-                validRows++;
-            } else if (result != null && result.length > 0) {
-                int copyLen = Math.min(result.length, dims);
-                System.arraycopy(result, 0, flatBuffer, i * dims, copyLen);
-                validRows++;
-            }
-        }
-
-        if (validRows == 0) {
-            log.warn("No valid embeddings generated from {} texts", numTexts);
-            return Nd4j.empty(DataType.FLOAT);
-        }
-
-        return Nd4j.create(flatBuffer, new int[]{numTexts, dims}, 'c');
     }
 
     @Override
@@ -482,178 +719,85 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
     @Override
     public int dimensions() {
-        return embeddingDimensions;
+        // Priority 1: Local state from successful initialization
+        if (initialized && embeddingDimensions > 0) {
+            return embeddingDimensions;
+        }
+        // Priority 2: Check subprocess launcher if running and has a loaded model
+        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
+            int subprocessDim = subprocessLauncher.getCurrentDimensions();
+            if (subprocessDim > 0) {
+                return subprocessDim;
+            }
+        }
+        // Priority 3: Use registry metadata - DON'T trigger subprocess start just for dimensions
+        Integer registryDim = AnseriniEncoderFactory.getEmbeddingDimension(modelIdentifier);
+        if (registryDim != null && registryDim > 0) {
+            return registryDim;
+        }
+        // Priority 4: Local state even if not initialized
+        if (embeddingDimensions > 0) {
+            return embeddingDimensions;
+        }
+        return -1;
     }
 
-    // ========== DYNAMIC BATCH SIZE CONFIGURATION ==========
-    // CPU inference is memory-bandwidth limited, not compute limited.
-    // Transformer attention is O(n²) in sequence length.
-    // For 512-token sequences on CPU, batch sizes should be conservative.
-    //
-    // Base batch sizes for 512-token sequences (configurable via properties):
-    // kompile.embedding.anserini.optimal-batch-size - optimal batch for 512 tokens
-    // kompile.embedding.anserini.max-batch-size - maximum batch for 512 tokens
-    private static final int DEFAULT_OPTIMAL_BATCH_512 = 8;   // Default for CPU
-    private static final int DEFAULT_MAX_BATCH_512 = 32;      // Default max for 512 tokens
-    private static final int REFERENCE_SEQ_LENGTH = 512;
-
-    // Configurable batch sizes (set via constructor or properties)
-    private final int configuredOptimalBatch;
-    private final int configuredMaxBatch;
-
-    /**
-     * Returns optimal batch size for embedding operations.
-     *
-     * <p><b>IMPORTANT:</b> The actual batch size used depends on sequence length.
-     * The encoder uses dynamic batch sizing based on the maximum sequence length
-     * in each batch. This method returns the configured value for 512-token sequences.</p>
-     *
-     * <p>Configure via property: kompile.embedding.anserini.optimal-batch-size</p>
-     *
-     * <p>For different sequence lengths (approximate scaling):
-     * <ul>
-     *   <li>512 tokens: uses configured optimal batch</li>
-     *   <li>256 tokens: ~4x configured optimal batch</li>
-     *   <li>128 tokens: ~16x configured optimal batch</li>
-     * </ul>
-     *
-     * @return Optimal batch size for 512-token sequences
-     */
     @Override
     public int getOptimalBatchSize() {
+        if (storedEmbeddingProperties != null) {
+            int dynamicOptimal = storedEmbeddingProperties.getEffectiveOptimalBatchSize(modelIdentifier);
+            if (dynamicOptimal > 0) {
+                return Math.max(1, Math.min(dynamicOptimal, 8192));
+            }
+        }
         return configuredOptimalBatch;
     }
 
-    /**
-     * Returns maximum batch size for embedding operations.
-     *
-     * <p>Configure via property: kompile.embedding.anserini.max-batch-size</p>
-     *
-     * <p>Like {@link #getOptimalBatchSize()}, the actual maximum depends on
-     * sequence length. This returns the configured maximum.</p>
-     *
-     * @return Maximum batch size for 512-token sequences
-     */
     @Override
     public int getMaxBatchSize() {
+        if (storedEmbeddingProperties != null) {
+            int dynamicMax = storedEmbeddingProperties.getEffectiveMaxBatchSize(modelIdentifier);
+            if (dynamicMax > 0) {
+                return Math.max(1, Math.min(dynamicMax, 8192));
+            }
+        }
         return configuredMaxBatch;
     }
 
-    /**
-     * Calculate optimal batch size for a specific sequence length.
-     *
-     * <p>Use this method when you know the approximate sequence length
-     * of your texts to get a more accurate batch size recommendation.</p>
-     *
-     * <p>Formula: batch = configured_optimal × (512/seqLen)²</p>
-     *
-     * @param maxSeqLength Maximum sequence length expected
-     * @return Optimal batch size for that sequence length
-     */
-    public int getOptimalBatchSizeForSeqLength(int maxSeqLength) {
-        return calculateBatchSizeForSeqLength(maxSeqLength, configuredOptimalBatch);
-    }
-
-    /**
-     * Calculate maximum batch size for a specific sequence length.
-     *
-     * @param maxSeqLength Maximum sequence length expected
-     * @return Maximum batch size for that sequence length
-     */
-    public int getMaxBatchSizeForSeqLength(int maxSeqLength) {
-        return calculateBatchSizeForSeqLength(maxSeqLength, configuredMaxBatch);
-    }
-
-    /**
-     * Calculate batch size based on sequence length.
-     * Scales inversely with sequence length squared (attention complexity).
-     */
-    private int calculateBatchSizeForSeqLength(int maxSeqLength, int baseBatch) {
-        if (maxSeqLength <= 0) {
-            maxSeqLength = REFERENCE_SEQ_LENGTH;
-        }
-        // Scale inversely with sequence length squared
-        double ratio = (double) REFERENCE_SEQ_LENGTH / maxSeqLength;
-        double scaleFactor = ratio * ratio;
-        int batch = (int) Math.round(baseBatch * scaleFactor);
-        return Math.max(1, Math.min(batch, configuredMaxBatch * 4)); // Clamp to reasonable range
-    }
-
-    public String getModelIdentifier() { return modelIdentifier; }
-    public AnseriniEncoderFactory.EncoderType getEncoderType() { return encoderType; }
-    public String getModelType() { return AnseriniEncoderFactory.getModelType(modelIdentifier); }
-    public Integer getEmbeddingDimension() { return AnseriniEncoderFactory.getEmbeddingDimension(modelIdentifier); }
-    public boolean usesAutoModelManagement() { return AnseriniEncoderFactory.usesAutoModelManagement(modelIdentifier); }
-    public String getModelInfo() { return AnseriniEncoderFactory.getModelInfo(modelIdentifier); }
-
-    /**
-     * Get the underlying SameDiffEncoder for debugging and inspection purposes.
-     * @return The SameDiffEncoder instance
-     */
-    public SameDiffEncoder<float[]> getEncoder() {
-        return encoder;
-    }
-
-    /**
-     * Gets information about the current batch being processed by the encoder.
-     * This provides visibility into actual tensor shapes during inference.
-     *
-     * @return BatchInfo with current batch details, or BatchInfo.empty() if no batch is processing
-     */
     @Override
     public BatchInfo getCurrentBatchInfo() {
-        if (encoder == null) {
-            return BatchInfo.empty();
+        // Could query subprocess for current batch info if needed
+        return BatchInfo.empty();
+    }
+
+    @Override
+    public boolean isLoading() {
+        return this.loading;
+    }
+
+    @Override
+    public String getLoadingPhase() {
+        return this.loadingPhase != null ? this.loadingPhase.name() : "IDLE";
+    }
+
+    @Override
+    public String getLoadingMessage() {
+        return this.loadingMessage;
+    }
+
+    @Override
+    public long getLoadingElapsedMs() {
+        if (loadingStartTime == 0 || !loading) {
+            return 0;
         }
-        SameDiffEncoder.BatchInfo encoderInfo = encoder.getCurrentBatchInfo();
-        if (encoderInfo == null || encoderInfo.numChunks() == 0) {
-            return BatchInfo.empty();
-        }
-        // Convert from encoder's BatchInfo to EmbeddingModel's BatchInfo
-        return new BatchInfo(
-                encoderInfo.numChunks(),
-                encoderInfo.maxSeqLength(),
-                encoderInfo.embeddingDim(),
-                encoderInfo.totalTokens(),
-                encoderInfo.inputShape(),
-                encoderInfo.outputShape(),
-                encoderInfo.step(),
-                encoderInfo.stepStartTimeMs()
-        );
+        return System.currentTimeMillis() - loadingStartTime;
     }
 
-    /**
-     * Initiates graceful shutdown of this embedding model.
-     * New encoding operations will be rejected, but existing operations
-     * will be allowed to complete.
-     * <p>
-     * This is useful for coordinating shutdown across multiple components.
-     */
-    public void initiateShutdown() {
-        log.info("Initiating graceful shutdown for model: {}", modelIdentifier);
-        encoder.initiateShutdown();
+    @Override
+    public String getInitializationError() {
+        return this.initializationError;
     }
 
-    /**
-     * Check if this embedding model is currently shutting down.
-     * @return true if shutdown has been initiated
-     */
-    public boolean isShuttingDown() {
-        return encoder.isShuttingDown();
-    }
-
-    /**
-     * Closes this embedding model and releases all native resources.
-     * Implements AutoCloseable.close() for proper resource management.
-     * <p>
-     * This method performs graceful shutdown:
-     * <ol>
-     *   <li>Initiates shutdown (rejects new operations)</li>
-     *   <li>Waits for active operations to complete</li>
-     *   <li>Closes the encoder (frees native resources)</li>
-     *   <li>Cleans up ND4J resources</li>
-     * </ol>
-     */
     @Override
     public void close() throws Exception {
         cleanup();
@@ -661,155 +805,599 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
 
     @PreDestroy
     public void cleanup() {
-        log.info("Cleaning up encoder for model: {}", modelIdentifier);
-
-        // First, initiate graceful shutdown - this signals the encoder and tokenizer
-        // to stop accepting new operations and waits for active operations to complete
-        try {
-            initiateShutdown();
-        } catch (Exception e) {
-            log.warn("Error initiating shutdown for model: {}", modelIdentifier, e);
+        log.info("Cleaning up embedding model subprocess for: {}", modelIdentifier);
+        if (subprocessLauncher != null) {
+            try {
+                subprocessLauncher.stop();
+                // Publish SUBPROCESS_STOPPED event for job history tracking
+                publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
+            } catch (Exception e) {
+                log.warn("Error stopping subprocess: {}", e.getMessage());
+            }
+            subprocessLauncher = null;
         }
-
-        // Now close the encoder - this will wait for active operations via the
-        // graceful shutdown mechanism in Tokenizer.close()
-        try {
-            encoder.close();
-            log.info("Encoder closed successfully for model: {}", modelIdentifier);
-        } catch (IOException e) {
-            log.warn("Error closing encoder", e);
-        }
-
-        // Clean up ND4J native resources
-        try {
-            log.info("Shutting down ND4J native resources");
-            Nd4j.getWorkspaceManager().destroyAllWorkspacesForCurrentThread();
-            Nd4j.getMemoryManager().releaseCurrentContext();
-            log.info("ND4J native resources shutdown complete");
-        } catch (Exception e) {
-            log.warn("Error during ND4J cleanup", e);
-        }
+        initialized = false;
     }
 
-    private void logModelInfo() {
-        log.info("Model Info: {}", getModelInfo());
-        log.info("Auto-Managed: {}", usesAutoModelManagement());
-    }
+    // ========== Getters and status methods ==========
 
-    // ========== MODEL SWITCHING ==========
+    public String getModelIdentifier() { return modelIdentifier; }
 
     /**
-     * Switches the embedding model to a different encoder.
-     * <p>
-     * This method allows dynamically switching between different embedding models
-     * at runtime, for example when activating a fact sheet that uses a different
-     * encoder model.
-     * </p>
-     * <p>
-     * <b>WARNING:</b> Switching models invalidates any existing embeddings in the
-     * vector store that were created with the previous model. You must reindex
-     * documents after switching models.
-     * </p>
-     *
-     * @param newModelIdentifier The model ID to switch to (e.g., "bge-base-en-v1.5", "arctic-embed-m-v2.0")
-     * @return true if the switch was successful, false otherwise
-     * @throws IllegalArgumentException if the model identifier is null or empty
+     * Returns the encoder type. First checks the local state, then falls back to
+     * the subprocess launcher if available and has a loaded model.
+     */
+    public String getEncoderType() {
+        // If we have a valid encoder type from initialization, use it
+        if (encoderType != null && !encoderType.equals("UNKNOWN")) {
+            return encoderType;
+        }
+        // Fall back to subprocess launcher if available
+        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
+            String subprocessEncoderType = subprocessLauncher.getEncoderType();
+            if (subprocessEncoderType != null && !subprocessEncoderType.equals("UNKNOWN")) {
+                return subprocessEncoderType;
+            }
+        }
+        return encoderType;
+    }
+
+    /**
+     * Returns true if the embedding model is initialized and ready for use.
+     * Checks both the local state and the subprocess launcher state.
+     */
+    public boolean isInitialized() {
+        // Check local state first
+        if (initialized) {
+            return true;
+        }
+        // Also check subprocess launcher - it may have loaded the model
+        // even if the local state hasn't been updated yet
+        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
+            int subDim = subprocessLauncher.getCurrentDimensions();
+            if (subDim > 0) {
+                // Subprocess has a loaded model with valid dimensions
+                // Update local state to reflect this
+                this.embeddingDimensions = subDim;
+                this.encoderType = subprocessLauncher.getEncoderType();
+                this.modelSource = ModelSource.REGISTRY;
+                this.initialized = true;
+                // Also update loading state since model is ready
+                this.loading = false;
+                this.loadingPhase = LoadingPhase.COMPLETE;
+                this.loadingMessage = "Model loaded (synced from subprocess)";
+                this.initializationError = null;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the source from which the model was loaded.
+     * Checks both local state and subprocess launcher state.
+     */
+    public ModelSource getModelSource() {
+        // Check local state first
+        if (modelSource != ModelSource.NOT_INITIALIZED) {
+            return modelSource;
+        }
+        // Also check subprocess launcher - it may have loaded the model
+        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
+            int subDim = subprocessLauncher.getCurrentDimensions();
+            if (subDim > 0) {
+                // Subprocess has a loaded model - update local state
+                this.embeddingDimensions = subDim;
+                this.encoderType = subprocessLauncher.getEncoderType();
+                this.modelSource = ModelSource.REGISTRY;
+                this.initialized = true;
+                // Also update loading state since model is ready
+                this.loading = false;
+                this.loadingPhase = LoadingPhase.COMPLETE;
+                this.loadingMessage = "Model loaded (synced from subprocess)";
+                this.initializationError = null;
+                return ModelSource.REGISTRY;
+            }
+        }
+        return modelSource;
+    }
+
+    /**
+     * Returns true if the initialization error is retriable (transient).
+     * Retriable errors include timeouts, connection issues, and temporary unavailability.
+     */
+    public boolean isInitializationErrorRetriable() {
+        return initializationErrorRetriable;
+    }
+
+    /**
+     * Returns true if background polling should continue.
+     * Polling should continue if:
+     * - The model is not initialized AND
+     * - Either there's no error, or the error is retriable (transient)
+     */
+    public boolean shouldContinuePolling() {
+        if (initialized) {
+            return false; // Model is ready, no need to poll
+        }
+        if (initializationError == null) {
+            return true; // No error yet, keep polling
+        }
+        return initializationErrorRetriable; // Continue only if error is retriable
+    }
+
+    @Override
+    public int getEmbeddingDimension() {
+        Integer dim = AnseriniEncoderFactory.getEmbeddingDimension(modelIdentifier);
+        return dim != null ? dim : 768;
+    }
+
+    public Map<String, Object> getModelStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("modelId", this.modelIdentifier);
+        // Use isInitialized() to properly sync state from subprocess launcher
+        status.put("initialized", isInitialized());
+        // Use getModelSource() to ensure it's synced with subprocess state
+        status.put("source", getModelSource().name());
+        // Use getter methods to include subprocess launcher data if available
+        status.put("encoderType", getEncoderType());
+        status.put("dimensions", dimensions());
+        status.put("optimalBatchSize", getOptimalBatchSize());
+        status.put("maxBatchSize", getMaxBatchSize());
+        status.put("loading", this.loading);
+        status.put("loadingPhase", this.loadingPhase.name());
+        status.put("loadingMessage", this.loadingMessage);
+        status.put("subprocessMode", true);  // Indicate subprocess mode
+
+        if (subprocessLauncher != null) {
+            status.put("subprocessRunning", subprocessLauncher.isRunning());
+            status.put("subprocessModelLoaded", subprocessLauncher.isModelLoaded());
+            // Also expose subprocess launcher's direct state for debugging
+            status.put("subprocessDimensions", subprocessLauncher.getCurrentDimensions());
+            status.put("subprocessEncoderType", subprocessLauncher.getEncoderType());
+            status.put("subprocessModelId", subprocessLauncher.getCurrentModelId());
+        }
+
+        if (this.modelSource == ModelSource.FAILED && this.initializationError != null) {
+            status.put("error", this.initializationError);
+            status.put("errorRetriable", this.initializationErrorRetriable);
+        }
+
+        return status;
+    }
+
+    public Set<String> listAvailableModelIds() {
+        return AnseriniEncoderFactory.getAvailableModelIds();
+    }
+
+    public Map<String, String> listAvailableModels() {
+        return AnseriniEncoderFactory.getAvailableModelsWithSources();
+    }
+
+    /**
+     * Switches the model in the subprocess.
      */
     public boolean switchModel(String newModelIdentifier) {
         if (newModelIdentifier == null || newModelIdentifier.isBlank()) {
             throw new IllegalArgumentException("Model identifier cannot be null or empty");
         }
 
-        // Check if we're already using this model
-        if (newModelIdentifier.equals(this.modelIdentifier)) {
-            log.debug("Already using model: {}, no switch needed", newModelIdentifier);
+        if (newModelIdentifier.equals(this.modelIdentifier) && initialized) {
             return true;
         }
 
-        synchronized (switchLock) {
-            log.info("Switching embedding model from '{}' to '{}'", this.modelIdentifier, newModelIdentifier);
+        synchronized (launcherLock) {
+            log.info("Switching model from '{}' to '{}' in subprocess", this.modelIdentifier, newModelIdentifier);
 
-            // Close the existing encoder
-            SameDiffEncoder<float[]> oldEncoder = this.encoder;
-            if (oldEncoder != null) {
+            this.modelIdentifier = newModelIdentifier;
+            this.initialized = false;
+            this.modelSource = ModelSource.NOT_INITIALIZED;
+
+            if (subprocessLauncher != null && subprocessLauncher.isRunning()) {
                 try {
-                    oldEncoder.initiateShutdown();
-                    oldEncoder.close();
-                    log.info("Closed previous encoder: {}", this.modelIdentifier);
+                    // Publish event for model switch (subprocess already running)
+                    publishEvent(EmbeddingSubprocessEvent.subprocessStarted(this, newModelIdentifier));
+
+                    CompletableFuture<EmbeddingSubprocessMessage.LoadModelResponse> loadFuture =
+                            subprocessLauncher.loadModel(newModelIdentifier, configuredOptimalBatch, configuredMaxBatch);
+
+                    // Use configurable timeout for model loading (0 = no timeout)
+                    EmbeddingSubprocessMessage.LoadModelResponse response;
+                    if (getModelLoadTimeoutSeconds() > 0) {
+                        response = loadFuture.get(getModelLoadTimeoutSeconds(), TimeUnit.SECONDS);
+                    } else {
+                        response = loadFuture.get(); // No timeout - wait indefinitely
+                    }
+
+                    if (response.success()) {
+                        this.embeddingDimensions = response.dimensions();
+                        this.encoderType = response.encoderType();
+                        this.modelSource = ModelSource.REGISTRY;
+                        this.initialized = true;
+                        log.info("Switched to model: {} (dims={}, type={})",
+                                newModelIdentifier, embeddingDimensions, encoderType);
+
+                        // Apply stored op timing state
+                        applyStoredOpTimingState();
+
+                        // Publish MODEL_LOADED event
+                        publishEvent(EmbeddingSubprocessEvent.modelLoaded(this, newModelIdentifier,
+                                embeddingDimensions, encoderType));
+                        return true;
+                    } else {
+                        log.error("Failed to switch model: {}", response.error());
+                        // Publish MODEL_FAILED event
+                        publishEvent(EmbeddingSubprocessEvent.modelFailed(this, newModelIdentifier, response.error()));
+                        return false;
+                    }
                 } catch (Exception e) {
-                    log.warn("Error closing previous encoder: {}", e.getMessage());
-                }
-            }
-
-            // Create new encoder
-            try {
-                AnseriniEncoderFactory.EncoderType newEncoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(newModelIdentifier);
-
-                SameDiffEncoder<float[]> newEncoder;
-                if (AnseriniEncoderFactory.usesAutoModelManagement(newModelIdentifier)) {
-                    newEncoder = AnseriniEncoderFactory.createEncoder(newModelIdentifier);
-                } else {
-                    newEncoder = AnseriniEncoderFactory.createEncoder(newEncoderType, newModelIdentifier);
-                }
-
-                // Test the new encoder
-                float[] testEmbedding = newEncoder.encode("test");
-                int newDimensions = testEmbedding != null ? testEmbedding.length : -1;
-
-                if (newDimensions <= 0) {
-                    log.error("New encoder produced invalid embeddings, reverting to previous");
-                    try {
-                        newEncoder.close();
-                    } catch (Exception ignored) {}
+                    log.error("Error switching model: {}", e.getMessage());
+                    // Publish MODEL_FAILED event
+                    publishEvent(EmbeddingSubprocessEvent.modelFailed(this, newModelIdentifier, e.getMessage()));
                     return false;
                 }
-
-                // Update fields atomically
-                this.encoder = newEncoder;
-                this.modelIdentifier = newModelIdentifier;
-                this.encoderType = newEncoderType;
-                this.embeddingDimensions = newDimensions;
-
-                log.info("Successfully switched to model: {} (type={}, dims={})",
-                        newModelIdentifier, newEncoderType, newDimensions);
-                return true;
-
-            } catch (Exception e) {
-                log.error("Failed to switch to model '{}': {}", newModelIdentifier, e.getMessage(), e);
-                return false;
+            } else {
+                // Subprocess not running, will be started on next use
+                ensureInitialized();
+                return initialized;
             }
         }
     }
 
-    /**
-     * Gets the currently active model identifier.
-     *
-     * @return The model identifier (e.g., "bge-base-en-v1.5")
-     */
-    public String getActiveModelId() {
-        return this.modelIdentifier;
+    public boolean reloadModel() {
+        return reloadModel(this.modelIdentifier);
     }
 
-    /**
-     * Checks if the specified model is compatible with the current index.
-     * <p>
-     * Two models are compatible if they produce embeddings of the same dimension.
-     * </p>
-     *
-     * @param otherModelId The model ID to check compatibility with
-     * @return true if the models produce embeddings of the same dimension
-     */
-    public boolean isModelCompatible(String otherModelId) {
-        if (otherModelId == null || otherModelId.equals(this.modelIdentifier)) {
-            return true;
-        }
-
-        Integer otherDims = AnseriniEncoderFactory.getEmbeddingDimension(otherModelId);
-        if (otherDims == null) {
-            log.warn("Unknown embedding dimension for model: {}", otherModelId);
+    public boolean reloadModel(String modelId) {
+        if (modelId == null || modelId.isBlank()) {
             return false;
         }
 
-        return otherDims == this.embeddingDimensions;
+        synchronized (launcherLock) {
+            // Stop existing subprocess
+            if (subprocessLauncher != null) {
+                String oldModelId = this.modelIdentifier;
+                subprocessLauncher.stop();
+                subprocessLauncher = null;
+                // Publish SUBPROCESS_STOPPED event for the old model
+                publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, oldModelId));
+            }
+
+            // Reset state
+            this.modelIdentifier = modelId;
+            this.initialized = false;
+            this.modelSource = ModelSource.NOT_INITIALIZED;
+            this.initializationError = null;
+
+            // Re-initialize
+            ensureInitialized();
+            return initialized;
+        }
+    }
+
+    public void initiateShutdown() {
+        log.info("Initiating shutdown for model: {}", modelIdentifier);
+        if (subprocessLauncher != null) {
+            subprocessLauncher.stop();
+        }
+    }
+
+    public boolean isShuttingDown() {
+        return subprocessLauncher == null || !subprocessLauncher.isRunning();
+    }
+
+    /**
+     * Restarts the embedding subprocess with updated environment variables.
+     * This is useful for debugging when ND4J configuration has been changed
+     * and needs to be applied to the subprocess.
+     *
+     * <p>The restart process:
+     * <ol>
+     *   <li>Stops the current subprocess gracefully</li>
+     *   <li>Clears initialization state</li>
+     *   <li>Re-initializes, which will start a new subprocess with current system properties</li>
+     * </ol>
+     *
+     * @return true if restart was successful, false otherwise
+     */
+    public boolean restartWithUpdatedEnvironment() {
+        synchronized (launcherLock) {
+            log.info("Restarting embedding subprocess with updated environment for model: {}", modelIdentifier);
+
+            // Publish event for restart initiation
+            publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
+
+            // Stop existing subprocess
+            if (subprocessLauncher != null) {
+                try {
+                    subprocessLauncher.stop();
+                } catch (Exception e) {
+                    log.warn("Error stopping subprocess during restart: {}", e.getMessage());
+                }
+                subprocessLauncher = null;
+            }
+
+            // Reset state
+            initialized = false;
+            modelSource = ModelSource.NOT_INITIALIZED;
+            initializationError = null;
+            loadingPhase = LoadingPhase.IDLE;
+            loadingMessage = null;
+
+            // Re-initialize - this will pick up current system properties
+            // which include any newly set ND4J environment variables
+            ensureInitialized();
+
+            return initialized;
+        }
+    }
+
+    /**
+     * Gets the subprocess status information including whether it's running,
+     * model loaded state, and any relevant metrics.
+     *
+     * @return Map containing subprocess status details
+     */
+    public Map<String, Object> getSubprocessStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("modelId", modelIdentifier);
+        status.put("initialized", initialized);
+        status.put("modelSource", modelSource.name());
+        status.put("loadingPhase", loadingPhase.name());
+        status.put("loadingMessage", loadingMessage);
+
+        if (subprocessLauncher != null) {
+            status.put("subprocessRunning", subprocessLauncher.isRunning());
+            status.put("subprocessModelLoaded", subprocessLauncher.isModelLoaded());
+            status.put("subprocessDimensions", subprocessLauncher.getCurrentDimensions());
+            status.put("subprocessEncoderType", subprocessLauncher.getEncoderType());
+            status.put("subprocessModelId", subprocessLauncher.getCurrentModelId());
+            status.put("totalEmbeddingsProcessed", subprocessLauncher.getTotalEmbeddingsProcessed());
+            status.put("launchMode", subprocessLauncher.getLaunchMode().name());
+            status.put("isNativeMode", subprocessLauncher.isNativeMode());
+            status.put("lastCrashReason", subprocessLauncher.getLastCrashReason());
+        } else {
+            status.put("subprocessRunning", false);
+            status.put("subprocessModelLoaded", false);
+        }
+
+        if (initializationError != null) {
+            status.put("error", initializationError);
+            status.put("errorRetriable", initializationErrorRetriable);
+        }
+
+        return status;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // OP TIMING METHODS (delegate to subprocess)
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Configure op timing in the embedding subprocess.
+     * This enables ND4J operation timing collection in the subprocess JVM.
+     *
+     * Note: The desired state is stored so it can be applied when the subprocess starts
+     * (in case op timing is enabled before the subprocess is running).
+     *
+     * @param enabled Whether to enable op timing
+     * @param detailedMode Whether to use detailed mode (more info but more overhead)
+     * @return CompletableFuture with success status
+     */
+    public CompletableFuture<Boolean> configureSubprocessOpTiming(boolean enabled, boolean detailedMode) {
+        // Always store the desired state - will be applied when subprocess starts if not running
+        this.desiredOpTimingEnabled = enabled;
+        this.desiredOpTimingDetailedMode = detailedMode;
+        log.info("Op timing desired state stored: enabled={}, detailed={}", enabled, detailedMode);
+
+        if (subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.info("Subprocess not running - op timing will be applied when subprocess starts");
+            return CompletableFuture.completedFuture(true); // Stored for later
+        }
+
+        return subprocessLauncher.configureOpTiming(enabled, detailedMode)
+                .thenApply(resp -> {
+                    if (resp.success()) {
+                        log.info("Subprocess op timing configured: enabled={}, detailed={}",
+                                resp.enabled(), resp.detailedMode());
+                        return true;
+                    } else {
+                        log.warn("Failed to configure subprocess op timing: {}", resp.error());
+                        return false;
+                    }
+                })
+                .exceptionally(e -> {
+                    log.error("Error configuring subprocess op timing: {}", e.getMessage());
+                    return false;
+                });
+    }
+
+    /**
+     * Flush op timing stats from the embedding subprocess.
+     *
+     * @param topN Number of top ops to return (by total time), 0 for all
+     * @param reset Whether to reset timing data after flush
+     * @return CompletableFuture with timing response (includes hotspots list)
+     */
+    public CompletableFuture<EmbeddingSubprocessMessage.OpTimingFlushResponse> flushSubprocessOpTiming(
+            int topN, boolean reset) {
+        if (subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.warn("Cannot flush op timing: subprocess not running");
+            return CompletableFuture.completedFuture(
+                    new EmbeddingSubprocessMessage.OpTimingFlushResponse(
+                            "N/A", false, 0, 0, List.of(), "Subprocess not running"));
+        }
+
+        return subprocessLauncher.flushOpTiming(topN, reset)
+                .exceptionally(e -> {
+                    log.error("Error flushing subprocess op timing: {}", e.getMessage());
+                    return new EmbeddingSubprocessMessage.OpTimingFlushResponse(
+                            "N/A", false, 0, 0, List.of(), e.getMessage());
+                });
+    }
+
+    /**
+     * Check if subprocess is available for op timing.
+     */
+    public boolean isSubprocessAvailableForOpTiming() {
+        return subprocessLauncher != null && subprocessLauncher.isRunning();
+    }
+
+    /**
+     * Apply stored op timing state to the subprocess.
+     * Called after subprocess starts and model loads successfully.
+     */
+    private void applyStoredOpTimingState() {
+        if (!desiredOpTimingEnabled) {
+            return; // Nothing to apply
+        }
+        if (subprocessLauncher == null || !subprocessLauncher.isRunning()) {
+            log.warn("Cannot apply op timing state: subprocess not running");
+            return;
+        }
+
+        log.info("Applying stored op timing state to subprocess: enabled={}, detailed={}",
+                desiredOpTimingEnabled, desiredOpTimingDetailedMode);
+
+        try {
+            subprocessLauncher.configureOpTiming(desiredOpTimingEnabled, desiredOpTimingDetailedMode)
+                    .thenAccept(resp -> {
+                        if (resp.success()) {
+                            log.info("Op timing state applied to subprocess: enabled={}, detailed={}",
+                                    resp.enabled(), resp.detailedMode());
+                        } else {
+                            log.warn("Failed to apply op timing state to subprocess: {}", resp.error());
+                        }
+                    })
+                    .exceptionally(e -> {
+                        log.error("Error applying op timing state to subprocess: {}", e.getMessage());
+                        return null;
+                    });
+        } catch (Exception e) {
+            log.error("Exception applying op timing state: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Check if op timing is currently desired/enabled.
+     */
+    public boolean isOpTimingDesired() {
+        return desiredOpTimingEnabled;
+    }
+
+    /**
+     * Returns the currently active model ID.
+     * Returns the subprocess's loaded model ID if available, otherwise the configured model ID.
+     */
+    public String getActiveModelId() {
+        // If subprocess has a loaded model, return its model ID
+        if (subprocessLauncher != null && subprocessLauncher.isModelLoaded()) {
+            String subprocessModelId = subprocessLauncher.getCurrentModelId();
+            if (subprocessModelId != null && !subprocessModelId.isBlank()) {
+                return subprocessModelId;
+            }
+        }
+        // Fall back to configured model identifier
+        return modelIdentifier;
+    }
+
+    /**
+     * Returns the model type (DENSE or SPARSE).
+     * In subprocess mode, we determine this from the encoder type or default to DENSE.
+     */
+    public String getModelType() {
+        if (encoderType != null && encoderType.toLowerCase().contains("sparse")) {
+            return "SPARSE";
+        }
+        return "DENSE";
+    }
+
+    /**
+     * Returns whether auto model management is used.
+     * With subprocess mode, we always use registry-based model management.
+     */
+    public boolean usesAutoModelManagement() {
+        return true;
+    }
+
+    /**
+     * Returns detailed info about available models.
+     */
+    public Map<String, Map<String, Object>> getAvailableModelsInfo() {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        Set<String> modelIds = AnseriniEncoderFactory.getAvailableModelIds();
+        Map<String, String> modelSources = AnseriniEncoderFactory.getAvailableModelsWithSources();
+
+        for (String modelId : modelIds) {
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("modelId", modelId);
+            info.put("source", modelSources.getOrDefault(modelId, "UNKNOWN"));
+            Integer dim = AnseriniEncoderFactory.getEmbeddingDimension(modelId);
+            info.put("dimensions", dim != null ? dim : -1);
+            info.put("active", modelId.equals(this.modelIdentifier));
+            result.put(modelId, info);
+        }
+
+        return result;
+    }
+
+    /**
+     * Returns detailed model info for the current model.
+     */
+    public Map<String, Object> getModelInfo() {
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("modelId", modelIdentifier);
+        info.put("initialized", initialized);
+        info.put("source", modelSource.name());
+        // Use getter methods to include subprocess launcher data if available
+        info.put("encoderType", getEncoderType());
+        info.put("dimensions", dimensions());
+        info.put("optimalBatchSize", getOptimalBatchSize());
+        info.put("maxBatchSize", getMaxBatchSize());
+        info.put("modelType", getModelType());
+        info.put("subprocessMode", true);
+
+        if (subprocessLauncher != null) {
+            info.put("subprocessRunning", subprocessLauncher.isRunning());
+            info.put("subprocessModelLoaded", subprocessLauncher.isModelLoaded());
+            // Also expose subprocess launcher's direct state for debugging
+            info.put("subprocessDimensions", subprocessLauncher.getCurrentDimensions());
+            info.put("subprocessEncoderType", subprocessLauncher.getEncoderType());
+        }
+
+        return info;
+    }
+
+    /**
+     * Returns the optimal batch size for a given sequence length.
+     * This is a simplified implementation that doesn't require direct encoder access.
+     */
+    public int getOptimalBatchSizeForSeqLength(int seqLength) {
+        // Simple heuristic: reduce batch size for longer sequences
+        if (seqLength <= 128) {
+            return configuredOptimalBatch;
+        } else if (seqLength <= 256) {
+            return Math.max(1, configuredOptimalBatch / 2);
+        } else if (seqLength <= 512) {
+            return Math.max(1, configuredOptimalBatch / 4);
+        } else {
+            return Math.max(1, configuredOptimalBatch / 8);
+        }
+    }
+
+    /**
+     * Returns the encoder instance.
+     * In subprocess mode, we don't have direct access to the encoder.
+     * This method returns null - callers should use embed/embedBatch methods instead.
+     *
+     * @deprecated Use embed() or embedBatch() methods instead. Direct encoder access
+     *             is not available in subprocess mode.
+     */
+    @Deprecated
+    public Object getEncoder() {
+        // In subprocess mode, we don't have direct access to the encoder
+        // Return null - callers should use embed/embedBatch methods
+        log.warn("getEncoder() called but encoder is in subprocess - use embed/embedBatch methods instead");
+        return null;
     }
 }

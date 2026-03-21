@@ -345,8 +345,8 @@ public class CrossEncoderRerankerAdapter implements Reranker {
         }
 
         long elapsed = System.currentTimeMillis() - startTime;
-        log.debug("SameDiff cross-encoder scored {} documents in {}ms ({:.1f} docs/sec)",
-                documents.size(), elapsed, documents.size() * 1000.0 / Math.max(1, elapsed));
+        log.debug("SameDiff cross-encoder scored {} documents in {}ms ({} docs/sec)",
+                documents.size(), elapsed, String.format("%.1f", documents.size() * 1000.0 / Math.max(1, elapsed)));
 
         return reranked;
     }
@@ -718,6 +718,26 @@ public class CrossEncoderRerankerAdapter implements Reranker {
      */
     public static void refreshRegistry() {
         getRegistryManager().refreshRegistry();
-        log.info("Cross-encoder registry cache refreshed");
+    }
+
+    /**
+     * Configure the remote staging service.
+     */
+    public static void configureStagingService(String url, String apiKey) {
+        getRegistryManager().configureStagingService(url, apiKey);
+    }
+
+    /**
+     * Load an archive file.
+     */
+    public static void loadArchive(java.nio.file.Path archivePath) throws java.io.IOException {
+        getRegistryManager().loadArchive(archivePath);
+    }
+
+    /**
+     * Clear the loaded archive.
+     */
+    public static void clearArchive() {
+        getRegistryManager().clearArchive();
     }
 }

@@ -17,6 +17,8 @@
 package ai.kompile.app.services.pipeline;
 
 import ai.kompile.app.subprocess.IngestCheckpointService;
+import ai.kompile.app.subprocess.IngestSubprocessMain;
+import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.embeddings.EmbeddingModel;
 import ai.kompile.core.indexers.IndexerService;
@@ -35,31 +37,31 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
- * Parallel ingest pipeline with separate stages for chunking, embedding, and
- * indexing.
+ * Parallel ingest pipeline with separate stages for chunking, indexing, and embedding.
  *
  * <h2>Architecture</h2>
- * 
+ *
  * <pre>
  * Phase 1: PARALLEL CHUNKING (ForkJoinPool)
  *   - Documents are chunked concurrently
  *   - Each document is independent, allowing full parallelization
  *
- * Phase 2: PARALLEL EMBEDDING (ThreadPoolExecutor)
- *   - Chunks are embedded in parallel batches
- *   - Uses producer-consumer pattern with BlockingQueue
- *   - Multiple embedding workers process batches concurrently
+ * Phase 2: PARALLEL INDEXING (writes to Lucene)
+ *   - Chunks are written to Lucene keyword index
+ *   - Enables keyword/BM25 search immediately
  *
- * Phase 3: SEQUENTIAL INDEXING (Single Thread)
- *   - Embedded chunks are written to Lucene index
- *   - Sequential due to IndexWriter thread-safety constraints
- *   - Consumes from embedding output queue
+ * Phase 3: PARALLEL EMBEDDING + VECTOR WRITE
+ *   - Chunks are embedded (neural network inference)
+ *   - Embeddings are written directly to vector store
+ *   - Enables semantic/vector search
  * </pre>
  *
  * <h2>Producer-Consumer Flow</h2>
- * 
+ *
  * <pre>
- * [Chunking] --&gt; [chunkQueue] --&gt; [Embedding Workers] --&gt; [embeddedQueue] --&gt; [Indexing]
+ *                      ┌──→ [Indexing Workers] ──→ Lucene (keyword search)
+ * [Chunking] ──→ [chunkQueue] ──┤
+ *                      └──→ [Embedding Workers] ──→ Vector Store (semantic search)
  * </pre>
  */
 public class ParallelIngestPipeline implements AutoCloseable {
@@ -68,20 +70,28 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
     // ========== DEFAULT VALUES (used when no configuration provided) ==========
     // These are fallback values - prefer using PipelineConfig for customization.
+    // NOTE: Chunk batching has been removed - chunks are processed individually.
+    // NDArray batching is still handled internally by the embedding model.
+    // These batch size constants are only used for Lucene indexing batches.
     private static final int DEFAULT_MIN_BATCH_SIZE = 1;
-    private static final int DEFAULT_BATCH_SIZE = 16;    // Increased from 4
-    private static final int DEFAULT_MAX_BATCH_SIZE = 64; // Increased from 8
+    private static final int DEFAULT_BATCH_SIZE = 1;     // Single chunk processing
+    private static final int DEFAULT_MAX_BATCH_SIZE = 128; // Only for indexing batches
 
-    private static final int DEFAULT_QUEUE_CAPACITY = 1000; // Increased from 500
+    private static final int DEFAULT_QUEUE_CAPACITY = 1000;
     private static final long DEFAULT_QUEUE_POLL_TIMEOUT_MS = 50;
 
+    // Batch wait times are no longer used for embedding (single chunk processing)
+    // Kept for backwards compatibility with PipelineConfig
     private static final long DEFAULT_MAX_BATCH_WAIT_MS = 500;
     private static final long DEFAULT_MIN_BATCH_WAIT_MS = 25;
 
     private static final int DEFAULT_CHUNKING_THREADS = Math.min(Runtime.getRuntime().availableProcessors() / 2, 16);
-    private static final int DEFAULT_EMBEDDING_THREADS = 1; // Single thread for OpenMP
+    // Use 1 embedding worker - parallelism comes from OpenMP/BLAS internally, not multiple workers
+    // Multiple workers cause thread contention with OpenMP
+    private static final int DEFAULT_EMBEDDING_THREADS = 1;
     private static final int DEFAULT_INDEXING_THREADS = 4;
     private static final int DEFAULT_INDEXING_BATCH_ACCUMULATION = 8; // Increased from 4
+    private static final int DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 300; // 5 minutes
 
     // ========== PROGRESS REPORTING ==========
     private static final int PROGRESS_REPORT_INTERVAL = 5;  // Report every 5 items for finer granularity
@@ -90,6 +100,12 @@ public class ParallelIngestPipeline implements AutoCloseable {
     /**
      * Configuration record for pipeline settings.
      * All values are configurable - use this to tune performance for your hardware.
+     *
+     * <p>Worker types:</p>
+     * <ul>
+     *   <li><b>indexingThreads</b> - Write chunks to Lucene (keyword search)</li>
+     *   <li><b>embeddingThreads</b> - Compute embeddings AND write to vector store (semantic search)</li>
+     * </ul>
      */
     public record PipelineConfig(
             int minBatchSize,
@@ -100,13 +116,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
             long maxBatchWaitMs,
             long minBatchWaitMs,
             int chunkingThreads,
-            int embeddingThreads,
-            int indexingThreads,
+            int embeddingThreads,            // Embedding workers: compute embeddings + write to vector store
+            int indexingThreads,             // Indexing workers: write to Lucene (keyword index)
             int indexingBatchAccumulationSize,
-            boolean parallelIndexingEnabled
+            boolean skipEmbedding,           // Skip embedding computation entirely (keyword-only mode)
+            int embeddingTimeoutSeconds      // Timeout for each embedding batch (0 = no timeout)
     ) {
         /**
-         * Creates a default configuration with reasonable defaults.
+         * Creates a default configuration.
+         * Both indexing (Lucene) and embedding (vector store) run in parallel.
          */
         public static PipelineConfig defaults() {
             return new PipelineConfig(
@@ -121,48 +139,77 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     DEFAULT_EMBEDDING_THREADS,
                     DEFAULT_INDEXING_THREADS,
                     DEFAULT_INDEXING_BATCH_ACCUMULATION,
-                    true
+                    false,  // skipEmbedding
+                    DEFAULT_EMBEDDING_TIMEOUT_SECONDS
             );
         }
 
         /**
          * Creates a high-throughput configuration for systems with more memory.
+         * Chunks are processed individually; NDArray batching is internal to the model.
          */
         public static PipelineConfig highThroughput() {
             int cores = Runtime.getRuntime().availableProcessors();
             return new PipelineConfig(
-                    1,
-                    32,     // Larger batches
-                    128,    // Higher max
+                    1,      // Single chunk processing
+                    1,      // Single chunk processing
+                    256,    // For indexing batches only
                     2000,   // Larger queue
                     50,
                     500,
                     25,
                     Math.min(cores, 16),
-                    1,      // Still single thread for OpenMP
-                    Math.min(cores / 2, 8),  // More indexing threads
-                    16,     // More batch accumulation
-                    true
+                    1,      // 1 embedding thread - OpenMP handles internal parallelism
+                    Math.min(cores / 2, 8),  // Indexing threads for Lucene
+                    16,     // Indexing batch accumulation
+                    false,  // skipEmbedding
+                    DEFAULT_EMBEDDING_TIMEOUT_SECONDS
             );
         }
 
         /**
          * Creates a low-memory configuration for constrained systems.
+         * Chunks are processed individually to minimize memory usage.
          */
         public static PipelineConfig lowMemory() {
             return new PipelineConfig(
-                    1,
-                    4,      // Small batches
-                    16,     // Lower max
+                    1,      // Single chunk processing
+                    1,      // Single chunk processing
+                    32,     // Lower max for indexing
                     250,    // Smaller queue
                     50,
                     500,
                     25,
                     2,      // Fewer threads
-                    1,
-                    2,
-                    4,
-                    true
+                    1,      // Single embedding thread - OpenMP handles parallelism
+                    2,      // 2 indexing threads
+                    4,      // Indexing batch accumulation
+                    false,  // skipEmbedding
+                    DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+            );
+        }
+
+        /**
+         * Creates a keyword-only configuration for maximum ingestion speed.
+         * Embedding and vector store population is skipped entirely.
+         * Call indexFromLucene() later to populate the vector store.
+         */
+        public static PipelineConfig keywordOnly() {
+            int cores = Runtime.getRuntime().availableProcessors();
+            return new PipelineConfig(
+                    1,      // Single chunk processing
+                    1,      // Single chunk processing
+                    256,    // For indexing batches only
+                    5000,   // Large queue for buffering
+                    50,
+                    500,
+                    25,
+                    Math.min(cores, 16),  // Max chunking parallelism
+                    0,      // No embedding threads - keyword only
+                    Math.min(cores / 2, 8),  // Indexing threads for Lucene
+                    32,     // Large indexing batch accumulation
+                    true,   // skipEmbedding
+                    0       // No timeout needed for keyword-only mode
             );
         }
 
@@ -185,7 +232,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
             private int embeddingThreads = DEFAULT_EMBEDDING_THREADS;
             private int indexingThreads = DEFAULT_INDEXING_THREADS;
             private int indexingBatchAccumulationSize = DEFAULT_INDEXING_BATCH_ACCUMULATION;
-            private boolean parallelIndexingEnabled = true;
+            private boolean skipEmbedding = false;
+            private int embeddingTimeoutSeconds = DEFAULT_EMBEDDING_TIMEOUT_SECONDS;
 
             public Builder minBatchSize(int v) { this.minBatchSize = v; return this; }
             public Builder defaultBatchSize(int v) { this.defaultBatchSize = v; return this; }
@@ -198,14 +246,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
             public Builder embeddingThreads(int v) { this.embeddingThreads = v; return this; }
             public Builder indexingThreads(int v) { this.indexingThreads = v; return this; }
             public Builder indexingBatchAccumulationSize(int v) { this.indexingBatchAccumulationSize = v; return this; }
-            public Builder parallelIndexingEnabled(boolean v) { this.parallelIndexingEnabled = v; return this; }
+            public Builder skipEmbedding(boolean v) { this.skipEmbedding = v; return this; }
+            public Builder embeddingTimeoutSeconds(int v) { this.embeddingTimeoutSeconds = v; return this; }
 
             public PipelineConfig build() {
                 return new PipelineConfig(
                         minBatchSize, defaultBatchSize, maxBatchSize, queueCapacity,
                         queuePollTimeoutMs, maxBatchWaitMs, minBatchWaitMs,
                         chunkingThreads, embeddingThreads, indexingThreads,
-                        indexingBatchAccumulationSize, parallelIndexingEnabled
+                        indexingBatchAccumulationSize, skipEmbedding, embeddingTimeoutSeconds
                 );
             }
         }
@@ -220,43 +269,64 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private final EmbeddingModel embeddingModel;
     private final IndexerService indexerService;
     private final Map<String, Object> chunkingOptions;
-    private final int batchSize;
 
-    // Adaptive batch accumulator for efficient embedding
-    private final AdaptiveBatchAccumulator<RetrievedDoc> batchAccumulator;
+    // NOTE: Chunk batching has been removed. Chunks are processed individually.
+    // NDArray batching is handled internally by the embedding model.
+    // The indexingBatchAccumulationSize in PipelineConfig is used for Lucene writes only.
 
     // Thread pools
     private final ExecutorService chunkingExecutor;
-    private final ExecutorService embeddingExecutor;
-    private final ExecutorService indexingExecutor;
+    private final ExecutorService embeddingExecutor;  // Embedding + vector store writes
+    private final ExecutorService indexingExecutor;   // Lucene (keyword index) writes
     private final int chunkingParallelism;
     private final int embeddingParallelism;
     private final int indexingParallelism;
-    private final boolean parallelIndexingEnabled;
 
     // Vector-only mode: when true, skip keyword index updates (for vector population from existing index)
     private final boolean vectorOnlyMode;
 
-    // Producer-consumer queues - individual chunks flow through pipeline
+    // Skip-embedding mode: when true, skip all embedding and index only to keyword store
+    // Vector store can be populated later via indexFromLucene()
+    private final boolean skipEmbedding;
+
+    // Producer-consumer queue - chunks are consumed by both indexing and embedding workers
     private final BlockingQueue<RetrievedDoc> chunkQueue;
-    private final BlockingQueue<EmbeddedBatch> embeddedQueue;
 
     // Progress tracking (thread-safe)
     private final AtomicInteger documentsProcessed = new AtomicInteger(0);
     private final AtomicInteger chunksCreated = new AtomicInteger(0);
-    private final AtomicInteger chunksEmbedded = new AtomicInteger(0);
-    private final AtomicInteger chunksIndexed = new AtomicInteger(0);
+    private final AtomicInteger chunksEmbedded = new AtomicInteger(0);  // Embedded AND written to vector store
+    private final AtomicInteger chunksIndexed = new AtomicInteger(0);   // Written to Lucene (keyword index)
     private final AtomicInteger embeddingBatchesProcessed = new AtomicInteger(0);
+    private final AtomicLong tokensProcessed = new AtomicLong(0);  // Total tokens processed
     private final AtomicInteger indexingBatchesProcessed = new AtomicInteger(0);
     private final AtomicLong startTimeMs = new AtomicLong(0);
     private final AtomicLong lastProgressReportMs = new AtomicLong(0);
 
+    // Sliding window rate tracking for accurate ETA calculation
+    // Using a circular buffer to track progress samples over time
+    private static final int RATE_WINDOW_SIZE = 10;  // Number of samples to track
+    private static final long RATE_SAMPLE_INTERVAL_MS = 2000;  // Sample every 2 seconds
+    private final long[] rateSampleTimestamps = new long[RATE_WINDOW_SIZE];
+    private final int[] rateSampleCounts = new int[RATE_WINDOW_SIZE];
+    private volatile int rateSampleIndex = 0;
+    private volatile long lastRateSampleTime = 0;
+
     // Per-worker status tracking
     private final ConcurrentHashMap<String, PipelineProgress.WorkerStatus> workerStatuses = new ConcurrentHashMap<>();
-    private final AtomicInteger indexingWorkerProcessed = new AtomicInteger(0);
 
     // Current embedding batch metrics (for progress reporting)
     private volatile PipelineProgress.EmbeddingBatchMetrics currentEmbeddingBatchMetrics = null;
+
+    // Batch history - keep last N completed batches for UI visibility
+    private static final int BATCH_HISTORY_SIZE = 5;
+    private final java.util.Deque<PipelineProgress.EmbeddingBatchMetrics> batchHistory =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
+
+    // Fixed total batches - set once when total chunks is known, never changes
+    private final AtomicInteger fixedTotalBatches = new AtomicInteger(-1);  // -1 means not yet set
+    private final AtomicInteger fixedBatchSize = new AtomicInteger(-1);     // The batch size used for calculation
+    private final AtomicInteger resumedBatchOffset = new AtomicInteger(0);  // Batches already done when resuming
 
     // Callback for progress updates
     private Consumer<PipelineProgress> progressCallback;
@@ -265,17 +335,45 @@ public class ParallelIngestPipeline implements AutoCloseable {
     private volatile boolean cancelled = false;
     private volatile boolean chunkingComplete = false;
     private volatile boolean embeddingComplete = false;
+    private volatile boolean indexingComplete = false;
+    private volatile boolean embeddingFailed = false;  // Set when embedding model fails to initialize
+    private volatile String embeddingFailureReason = null;
     private volatile String lastError = null;
 
     // Checkpoint service (optional)
     private IngestCheckpointService checkpointService;
     private IngestCheckpointService.CheckpointState resumeState;
 
+    // Cached embeddings from previous run (for resume support)
+    // Key is chunk ID, value is the pre-computed embedding
+    private Map<String, float[]> cachedEmbeddings = new ConcurrentHashMap<>();
+
+    // Adaptive memory recovery for OOM handling
+    private final AdaptiveMemoryRecovery memoryRecovery;
+
     /**
      * Set checkpoint service for persistence and resume.
      */
     public void setCheckpointService(IngestCheckpointService service) {
         this.checkpointService = service;
+    }
+
+    /**
+     * Set cached embeddings from a previous run.
+     * These embeddings will be used instead of re-computing when processing chunks with matching IDs.
+     */
+    public void setCachedEmbeddings(Map<String, float[]> embeddings) {
+        if (embeddings != null) {
+            this.cachedEmbeddings.putAll(embeddings);
+            logger.info("Loaded {} cached embeddings for resume", embeddings.size());
+        }
+    }
+
+    /**
+     * Get a cached embedding by chunk ID, or null if not cached.
+     */
+    public float[] getCachedEmbedding(String chunkId) {
+        return cachedEmbeddings.get(chunkId);
     }
 
     /**
@@ -318,7 +416,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
             IndexerService indexerService,
             Map<String, Object> chunkingOptions,
             int batchSize) {
-        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize, true, false);
+        this(chunker, embeddingModel, indexerService, chunkingOptions,
+             PipelineConfig.builder()
+                     .defaultBatchSize(batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE)
+                     .build(),
+             false);  // vectorOnlyMode = false
     }
 
     /**
@@ -329,8 +431,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
      * @param indexerService          The indexer service for storing documents
      * @param chunkingOptions         Options for chunking behavior
      * @param batchSize               Number of chunks per batch (0 to use model default)
-     * @param parallelIndexingEnabled Whether to run keyword and vector indexing in parallel
+     * @param parallelIndexingEnabled Deprecated: ignored. Indexing and embedding always run in parallel.
+     * @deprecated Use constructor without parallelIndexingEnabled. Indexing and embedding always run in parallel.
      */
+    @Deprecated
     public ParallelIngestPipeline(
             TextChunker chunker,
             EmbeddingModel embeddingModel,
@@ -338,7 +442,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
             Map<String, Object> chunkingOptions,
             int batchSize,
             boolean parallelIndexingEnabled) {
-        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize, parallelIndexingEnabled, false);
+        // parallelIndexingEnabled is ignored - new architecture always runs in parallel
+        this(chunker, embeddingModel, indexerService, chunkingOptions, batchSize);
     }
 
     /**
@@ -349,9 +454,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
      * @param indexerService          The indexer service for storing documents
      * @param chunkingOptions         Options for chunking behavior
      * @param batchSize               Number of chunks per batch (0 to use model default)
-     * @param parallelIndexingEnabled Whether to run keyword and vector indexing in parallel
+     * @param parallelIndexingEnabled Deprecated: ignored. Indexing and embedding always run in parallel.
      * @param vectorOnlyMode          When true, only index to vector store (skip keyword index)
+     * @deprecated Use constructor with PipelineConfig. The parallelIndexingEnabled parameter is ignored.
      */
+    @Deprecated
     public ParallelIngestPipeline(
             TextChunker chunker,
             EmbeddingModel embeddingModel,
@@ -360,10 +467,10 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int batchSize,
             boolean parallelIndexingEnabled,
             boolean vectorOnlyMode) {
+        // parallelIndexingEnabled is ignored - new architecture always runs in parallel
         this(chunker, embeddingModel, indexerService, chunkingOptions,
              PipelineConfig.builder()
                      .defaultBatchSize(batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE)
-                     .parallelIndexingEnabled(parallelIndexingEnabled)
                      .build(),
              vectorOnlyMode);
     }
@@ -405,41 +512,35 @@ public class ParallelIngestPipeline implements AutoCloseable {
             boolean vectorOnlyMode) {
         this.pipelineConfig = pipelineConfig != null ? pipelineConfig : PipelineConfig.defaults();
         this.vectorOnlyMode = vectorOnlyMode;
+        this.skipEmbedding = this.pipelineConfig.skipEmbedding();
         this.config = new AdaptivePipelineConfig();
         this.chunker = chunker;
         this.embeddingModel = embeddingModel;
         this.indexerService = indexerService;
         this.chunkingOptions = chunkingOptions != null ? chunkingOptions : new HashMap<>();
-        this.parallelIndexingEnabled = this.pipelineConfig.parallelIndexingEnabled();
 
         // Log embedding model status for debugging
         if (embeddingModel != null) {
             logger.info("ParallelIngestPipeline: embedding model provided - {}",
                     embeddingModel.getClass().getSimpleName());
         } else {
-            logger.warn("ParallelIngestPipeline: NO embedding model - using passthrough mode");
+            logger.warn("ParallelIngestPipeline: NO embedding model - keyword-only mode");
         }
 
         // Log vector-only mode status
         if (vectorOnlyMode) {
-            logger.info("ParallelIngestPipeline: VECTOR-ONLY MODE enabled - keyword indexing will be skipped");
+            logger.info("ParallelIngestPipeline: VECTOR-ONLY MODE enabled - Lucene indexing will be skipped");
         }
 
-        // Determine optimal batch size from embedding model if available, respecting config limits
-        int modelOptimal = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : this.pipelineConfig.defaultBatchSize();
-        int modelMax = embeddingModel != null ? embeddingModel.getMaxBatchSize() : this.pipelineConfig.maxBatchSize();
-        int configMax = this.pipelineConfig.maxBatchSize();
-        int effectiveMax = Math.max(modelMax, configMax); // Use the higher of model or config max
-        int requestedBatch = this.pipelineConfig.defaultBatchSize() > 0 ? this.pipelineConfig.defaultBatchSize() : modelOptimal;
-        this.batchSize = Math.max(this.pipelineConfig.minBatchSize(), Math.min(requestedBatch, effectiveMax));
+        // Log skip-embedding mode status
+        if (this.skipEmbedding) {
+            logger.info("ParallelIngestPipeline: SKIP-EMBEDDING MODE enabled - embedding will be skipped");
+            logger.info("ParallelIngestPipeline: Documents will be indexed to Lucene only");
+            logger.info("ParallelIngestPipeline: Call indexFromLucene() later to populate vector store");
+        }
 
-        // Create adaptive batch accumulator for efficient embedding
-        this.batchAccumulator = new AdaptiveBatchAccumulator<>(
-                this.pipelineConfig.minBatchSize(),
-                this.batchSize,
-                effectiveMax,
-                this.pipelineConfig.maxBatchWaitMs(),
-                this.pipelineConfig.minBatchWaitMs());
+        // NOTE: Chunk batching has been removed. Chunks are processed individually.
+        // NDArray batching is handled internally by the embedding model.
 
         // Use configured parallelism
         this.chunkingParallelism = this.pipelineConfig.chunkingThreads();
@@ -453,35 +554,37 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 (t, e) -> logger.error("Chunking thread {} failed: {}", t.getName(), e.getMessage(), e),
                 true);
 
-        this.embeddingExecutor = Executors.newFixedThreadPool(embeddingParallelism, r -> {
+        // Embedding workers: compute embeddings AND write to vector store
+        this.embeddingExecutor = Executors.newFixedThreadPool(Math.max(1, embeddingParallelism), r -> {
             Thread t = new Thread(r, "embedding-worker-" + System.nanoTime());
             t.setDaemon(true);
             return t;
         });
 
-        // Create indexing executor for parallel keyword/vector indexing
-        this.indexingExecutor = Executors.newFixedThreadPool(indexingParallelism, r -> {
+        // Indexing workers: write to Lucene (keyword index)
+        this.indexingExecutor = Executors.newFixedThreadPool(Math.max(1, indexingParallelism), r -> {
             Thread t = new Thread(r, "indexing-worker-" + System.nanoTime());
             t.setDaemon(true);
             return t;
         });
 
-        // Create bounded queues for backpressure using configured capacity
+        // Single queue for chunks - consumed by both indexing and embedding workers
         this.chunkQueue = new LinkedBlockingQueue<>(this.pipelineConfig.queueCapacity());
-        this.embeddedQueue = new LinkedBlockingQueue<>(this.pipelineConfig.queueCapacity());
+
+        // Initialize adaptive memory recovery for OOM handling (uses single chunk processing)
+        this.memoryRecovery = new AdaptiveMemoryRecovery(1);
 
         logger.info("=== ParallelIngestPipeline INITIALIZED ===");
-        logger.info("  Threading: chunking={}, embedding={}, indexing={}",
-                chunkingParallelism, embeddingParallelism, indexingParallelism);
-        logger.info("  Batching: pipeline_batch={} (model_optimal={}, model_max={}, config_max={}), queueCapacity={}",
-                this.batchSize, modelOptimal, modelMax, configMax, this.pipelineConfig.queueCapacity());
-        logger.info("  DYNAMIC BATCH SIZING: The encoder will dynamically adjust batch sizes based on");
-        logger.info("    actual sequence lengths. For 512-token sequences: batch ~{}. For shorter texts,",
-                modelOptimal);
-        logger.info("    batches will be larger. See [DYNAMIC-BATCH] log entries for actual sizes used.");
-        logger.info("  PARALLEL INDEXING: {} (keyword+vector indexes updated concurrently)",
-                parallelIndexingEnabled ? "ENABLED" : "DISABLED");
-        logger.info("  Indexing batch accumulation: {}", this.pipelineConfig.indexingBatchAccumulationSize());
+        logger.info("  Architecture: Chunks → [Indexing → Lucene] AND [Embedding → Vector Store]");
+        logger.info("  Threading: chunking={}, indexing={} (Lucene), embedding={} (vector store)",
+                chunkingParallelism, indexingParallelism, this.skipEmbedding ? 0 : embeddingParallelism);
+        logger.info("  Chunk Processing: individual (no batching), queueCapacity={}", this.pipelineConfig.queueCapacity());
+        logger.info("  NDArray batching: handled internally by embedding model");
+        if (!this.skipEmbedding) {
+            logger.info("  Embedding workers will compute embeddings AND write to vector store");
+        }
+        logger.info("  Indexing workers write directly to Lucene (keyword index)");
+        logger.info("  SKIP EMBEDDING: {}", this.skipEmbedding ? "ENABLED (keyword-only)" : "DISABLED");
         logger.info("==========================================");
     }
 
@@ -503,8 +606,28 @@ public class ParallelIngestPipeline implements AutoCloseable {
         return pipelineConfig;
     }
 
+    /**
+     * Returns whether embedding is being skipped (keyword-only mode).
+     */
+    public boolean isSkipEmbedding() {
+        return skipEmbedding;
+    }
+
     public void setProgressCallback(Consumer<PipelineProgress> callback) {
         this.progressCallback = callback;
+
+        // Hook up memory recovery notifications to the progress callback
+        if (memoryRecovery != null && callback != null) {
+            memoryRecovery.setUserNotificationCallback(message -> {
+                // Report memory adaptation events through the progress callback
+                PipelineProgress memoryEvent = PipelineProgress.builder()
+                        .phase("memory_adaptation")
+                        .percent(0)
+                        .message(message)
+                        .build();
+                callback.accept(memoryEvent);
+            });
+        }
     }
 
     /**
@@ -515,22 +638,46 @@ public class ParallelIngestPipeline implements AutoCloseable {
      */
     public PipelineResult process(List<Document> documents) throws InterruptedException {
         if (documents == null || documents.isEmpty()) {
-            return new PipelineResult(0, 0, 0, 0, List.of());
+            return new PipelineResult(0, 0, 0, 0, 0, List.of());
+        }
+
+        // If skip-embedding is enabled, use the optimized keyword-only path
+        if (skipEmbedding) {
+            return processKeywordOnly(documents);
         }
 
         startTimeMs.set(System.currentTimeMillis());
         int totalDocuments = documents.size();
 
-        logger.info("Starting parallel pipeline: {} documents, chunking={} threads, embedding={} threads, batch={}",
-                totalDocuments, chunkingParallelism, embeddingParallelism, batchSize);
+        // === CHECKPOINT: Initialize checkpoint for document processing ===
+        ai.kompile.app.subprocess.IngestCheckpoint checkpoint =
+                ai.kompile.app.subprocess.IngestSubprocessMain.getCurrentCheckpoint();
+        if (checkpoint != null) {
+            checkpoint.setCurrentPhase("CHUNKING");
+            // Note: For document processing, we can't easily skip chunks since chunking
+            // happens on-the-fly. The checkpoint will track embedded chunks for resume
+            // on the next attempt if OOM occurs.
+        }
+
+        int modelBatchSize = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : pipelineConfig.defaultBatchSize();
+        logger.info("Starting parallel pipeline: {} documents, chunking={} threads, indexing={} threads, embedding={} threads, modelBatch={}",
+                totalDocuments, chunkingParallelism, indexingParallelism, embeddingParallelism, modelBatchSize);
 
         reportProgress("starting", 1,
-                String.format("Starting: %d documents, %d+%d workers",
-                        totalDocuments, chunkingParallelism, embeddingParallelism));
+                String.format("Starting: %d documents, %d chunking + %d indexing + %d embedding workers",
+                        totalDocuments, chunkingParallelism, indexingParallelism, embeddingParallelism));
 
-        // Start embedding workers (consumers of chunk queue, producers of embedded
-        // queue)
+        // Start indexing workers (consume from chunkQueue, write to Lucene)
+        List<Future<?>> indexingFutures = startIndexingWorkers();
+        if (!indexingFutures.isEmpty()) {
+            logger.info("Started {} indexing workers (write to Lucene)", indexingFutures.size());
+        }
+
+        // Start embedding workers (consume from chunkQueue, compute embeddings, write to vector store)
         List<Future<?>> embeddingFutures = startEmbeddingWorkers();
+        if (!embeddingFutures.isEmpty()) {
+            logger.info("Started {} embedding workers (compute embeddings + write to vector store)", embeddingFutures.size());
+        }
 
         // Initialize queues with resume state if available
         if (resumeState != null) {
@@ -540,27 +687,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     logger.warn("ParallelIngestPipeline: Failed to requeue orphaned chunk {}", chunk.getId());
                 }
             }
-
-            // Restore orphaned embeddings (embedded but not indexed)
-            if (!resumeState.orphanedEmbeddings().isEmpty()) {
-                // Convert map to list of chunks/embeddings
-                // Implementation detail: we need RetrievedDoc objects for these IDs.
-                // If we only have IDs and embeddings, we can't fully reconstruct RetrievedDoc
-                // unless we reload them.
-                // Ideally, IngestCheckpointService loaded them.
-                // For now, simpler approach: if we have orphaned embeddings, we might still
-                // need to re-chunk them
-                // OR we rely on chunks.jsonl to have them.
-                // Let's assume orphanedChunks contains EVERYTHING not indexed.
-                // But we want to skip re-embedding if possible.
-                // Complex resume logic:
-                // 1. Chunks that are invalid (not indexed) should be re-processed.
-                // 2. If we have their embedding, use it.
-            }
+            // Note: orphaned embeddings are no longer relevant since embedding workers
+            // now write directly to vector store. Orphaned chunks will be re-embedded.
         }
-
-        // Start indexing worker (consumer of embedded queue)
-        Future<List<String>> indexingFuture = startIndexingWorker();
 
         // Start periodic progress reporter (every 1 second for responsive progress)
         ScheduledExecutorService progressReporter = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -572,22 +701,22 @@ public class ParallelIngestPipeline implements AutoCloseable {
             try {
                 if (!cancelled) {
                     int created = chunksCreated.get();
-                    int embedded = chunksEmbedded.get();
-                    int indexed = chunksIndexed.get();
+                    int embedded = chunksEmbedded.get();  // Embedded AND written to vector store
+                    int indexed = chunksIndexed.get();    // Written to Lucene
                     int queueSize = chunkQueue.size();
-                    int embeddedQueueSize = embeddedQueue.size();
                     long elapsed = System.currentTimeMillis() - startTimeMs.get();
-                    double rate = elapsed > 0 ? (indexed * 1000.0 / elapsed) : 0;
+                    double rate = elapsed > 0 ? (Math.max(indexed, embedded) * 1000.0 / elapsed) : 0;
 
-                    // Determine phase based on actual work being done, not just flags
-                    // If we have created chunks but none embedded yet, we're in embedding phase
-                    // (chunks are waiting to be processed by embedding workers)
+                    // Determine phase based on actual work being done
                     String phase;
-                    if (indexed > 0 || embeddingComplete) {
-                        phase = "indexing";
+                    if (embeddingComplete && indexingComplete) {
+                        phase = "complete";
+                    } else if (indexed > 0 || embedded > 0) {
+                        // Both indexing and embedding are happening in parallel
+                        phase = "indexing+embedding";
                     } else if (created > 0) {
-                        // Chunks exist but not yet embedded - embedding is the active phase
-                        phase = "embedding";
+                        // Chunks created but not yet processed
+                        phase = "processing";
                     } else {
                         phase = "chunking";
                     }
@@ -598,14 +727,14 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     int waitingWorkers = (int) workerStatuses.values().stream()
                             .filter(w -> "waiting".equals(w.status())).count();
 
-                    logger.debug("Periodic progress: phase={}, created={}, embedded={}, indexed={}, " +
-                            "chunkQ={}, embedQ={}, workers={} active/{} waiting, rate={}",
-                            phase, created, embedded, indexed, queueSize, embeddedQueueSize,
-                            activeWorkers, waitingWorkers, rate);
+                    logger.debug("Periodic progress: phase={}, created={}, indexed={}, embedded={}, " +
+                            "chunkQ={}, workers={} active/{} waiting, rate={}",
+                            phase, created, indexed, embedded, queueSize, activeWorkers, waitingWorkers, rate);
 
-                    reportProgressWithWorkers(phase, 0,
-                            String.format("%d created, %d embedded, %d indexed (%.1f/sec) [Q:%d/%d]",
-                                    created, embedded, indexed, rate, queueSize, embeddedQueueSize));
+                    // Simplified progress message
+                    String progressMsg = String.format("%d created, %d indexed (Lucene), %d embedded (vector) (%.1f/sec) [Q:%d]",
+                            created, indexed, embedded, rate, queueSize);
+                    reportProgressWithWorkers(phase, 0, progressMsg);
                 }
             } catch (Exception e) {
                 logger.error("Error in periodic progress reporter: {}", e.getMessage(), e);
@@ -614,40 +743,64 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
         try {
             // Phase 1: Parallel chunking (producer of chunk queue)
+            // Indexing and embedding workers consume chunks as they're produced
             parallelChunkDocuments(documents);
             chunkingComplete = true;
 
             logger.info("Chunking complete: {} documents -> {} chunks",
                     documentsProcessed.get(), chunksCreated.get());
 
-            // Wait for embedding to complete
+            // Wait for indexing to complete (Lucene writes)
+            if (!indexingFutures.isEmpty()) {
+                for (Future<?> future : indexingFutures) {
+                    try {
+                        future.get(30, TimeUnit.MINUTES);
+                    } catch (TimeoutException e) {
+                        logger.error("Lucene indexing timed out");
+                        cancelled = true;
+                    } catch (ExecutionException e) {
+                        logger.error("Lucene indexing failed: {}", e.getCause().getMessage(), e.getCause());
+                    }
+                }
+                indexingComplete = true;
+                logger.info("Indexing complete: {} chunks indexed to Lucene", chunksIndexed.get());
+            } else {
+                indexingComplete = true;
+            }
+
+            // Wait for embedding to complete (embedding computation + vector store writes)
+            String embeddingError = null;
             for (Future<?> future : embeddingFutures) {
                 try {
                     future.get(30, TimeUnit.MINUTES);
                 } catch (TimeoutException e) {
                     logger.error("Embedding timed out");
                     cancelled = true;
+                    embeddingError = "Embedding timed out after 30 minutes";
                 } catch (ExecutionException e) {
                     logger.error("Embedding failed: {}", e.getCause().getMessage(), e.getCause());
+                    cancelled = true;  // Mark as failed so job history shows failure
+                    embeddingError = e.getCause().getMessage();
                 }
             }
             embeddingComplete = true;
 
-            logger.info("Embedding complete: {} chunks embedded in {} batches",
+            // If embedding failed, throw to ensure job is marked as failed
+            if (embeddingError != null) {
+                throw new RuntimeException("Embedding/indexing failed: " + embeddingError);
+            }
+
+            logger.info("Embedding complete: {} chunks embedded and written to vector store in {} batches",
                     chunksEmbedded.get(), embeddingBatchesProcessed.get());
 
-            // Wait for indexing to complete
-            List<String> processedIds;
-            try {
-                processedIds = indexingFuture.get(30, TimeUnit.MINUTES);
-            } catch (TimeoutException | ExecutionException e) {
-                logger.error("Indexing failed: {}", e.getMessage(), e);
-                processedIds = new ArrayList<>();
-            }
+            // Collect processed IDs from both worker types
+            List<String> processedIds = new ArrayList<>();
+            // Note: With the new architecture, IDs are tracked during processing
+            // For now, we return an empty list as tracking is done via counters
 
             // ========== PIPELINE COMPLETE ==========
             long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
-            double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
+            double chunksPerSec = totalTimeMs > 0 ? (Math.max(chunksIndexed.get(), chunksEmbedded.get()) * 1000.0 / totalTimeMs) : 0;
 
             // Send highly visible completion message
             reportProgress("COMPLETED", 100,
@@ -661,6 +814,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     documentsProcessed.get(),
                     chunksCreated.get(),
                     chunksIndexed.get(),
+                    tokensProcessed.get(),
                     totalTimeMs,
                     processedIds);
         } finally {
@@ -670,34 +824,120 @@ public class ParallelIngestPipeline implements AutoCloseable {
     }
 
     /**
-     * Processes pre-chunked documents through the pipeline, skipping the chunking phase.
-     * This is optimized for vector store population from existing Lucene indexes.
+     * Processes documents in keyword-only mode (skip embedding and vector store).
+     * This is optimized for maximum ingestion throughput when vector store
+     * population will be done later via indexFromLucene().
+     * <p>
+     * This method:
+     * - Chunks documents in parallel
+     * - Indexes directly to keyword store (no embedding computation)
+     * - Skips vector store indexing entirely
+     * - Is significantly faster than full processing
+     * </p>
      *
-     * @param chunks The pre-chunked documents to process (embedding + indexing only)
+     * @param documents The documents to process
      * @return Pipeline result with statistics
      */
-    public PipelineResult processPreChunked(List<RetrievedDoc> chunks) throws InterruptedException {
-        if (chunks == null || chunks.isEmpty()) {
-            return new PipelineResult(0, 0, 0, 0, List.of());
+    public PipelineResult processKeywordOnly(List<Document> documents) throws InterruptedException {
+        if (documents == null || documents.isEmpty()) {
+            return new PipelineResult(0, 0, 0, 0, 0, List.of());
         }
 
         startTimeMs.set(System.currentTimeMillis());
-        int totalChunks = chunks.size();
+        int totalDocuments = documents.size();
 
-        logger.info("Starting PRE-CHUNKED pipeline: {} chunks, embedding={} threads, indexing={} threads, batch={}",
-                totalChunks, embeddingParallelism, indexingParallelism, batchSize);
+        logger.info("Starting KEYWORD-ONLY pipeline: {} documents, chunking={} threads, indexing={} threads",
+                totalDocuments, chunkingParallelism, indexingParallelism);
+        logger.info("  SKIP EMBEDDING: Vector store will NOT be populated (use indexFromLucene() later)");
 
         reportProgress("starting", 1,
-                String.format("Starting vector population: %d chunks, %d+%d workers",
-                        totalChunks, embeddingParallelism, indexingParallelism));
+                String.format("Starting keyword-only: %d documents, %d chunking workers",
+                        totalDocuments, chunkingParallelism));
 
-        // Start embedding workers (consumers of chunk queue, producers of embedded queue)
-        List<Future<?>> embeddingFutures = startEmbeddingWorkers();
+        // Queue for direct indexing (bypass embedding)
+        BlockingQueue<List<RetrievedDoc>> indexingQueue = new LinkedBlockingQueue<>(pipelineConfig.queueCapacity());
 
-        // Start indexing worker (consumer of embedded queue)
-        Future<List<String>> indexingFuture = startIndexingWorker();
+        // Start direct indexing worker (consumes chunks directly, no embedding)
+        Future<List<String>> indexingFuture = indexingExecutor.submit(() -> {
+            List<String> processedIds = new ArrayList<>();
+            List<RetrievedDoc> accumulatedBatch = new ArrayList<>();
+            int batchCount = 0;
+            int targetBatchSize = pipelineConfig.indexingBatchAccumulationSize() * pipelineConfig.defaultBatchSize();
 
-        // Start periodic progress reporter (every 1 second for responsive progress)
+            while (!cancelled && !Thread.currentThread().isInterrupted()) {
+                // Check subprocess memory watchdog
+                if (checkSubprocessMemoryLimit()) {
+                    logger.warn("Keyword indexing worker: subprocess memory limit reached, flushing and exiting");
+                    if (!accumulatedBatch.isEmpty()) {
+                        try {
+                            indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
+                            for (RetrievedDoc doc : accumulatedBatch) {
+                                processedIds.add(doc.getId());
+                                chunksIndexed.incrementAndGet();
+                            }
+                        } catch (Exception e) {
+                            logger.error("Error flushing batch on memory limit: {}", e.getMessage(), e);
+                        }
+                    }
+                    break;
+                }
+
+                try {
+                    // Poll for batches
+                    List<RetrievedDoc> batch = indexingQueue.poll(pipelineConfig.queuePollTimeoutMs(), TimeUnit.MILLISECONDS);
+
+                    if (batch != null) {
+                        accumulatedBatch.addAll(batch);
+
+                        // Index when we have enough or when chunking is complete
+                        if (accumulatedBatch.size() >= targetBatchSize ||
+                            (chunkingComplete && indexingQueue.isEmpty())) {
+
+                            if (!accumulatedBatch.isEmpty()) {
+                                try {
+                                    // Index directly to keyword store only
+                                    indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
+
+                                    for (RetrievedDoc doc : accumulatedBatch) {
+                                        processedIds.add(doc.getId());
+                                        chunksIndexed.incrementAndGet();
+                                    }
+                                    batchCount++;
+                                    indexingBatchesProcessed.incrementAndGet();
+                                } catch (Exception e) {
+                                    logger.error("Error indexing batch: {}", e.getMessage(), e);
+                                    lastError = "Indexing error: " + e.getMessage();
+                                }
+                                accumulatedBatch.clear();
+                            }
+                        }
+                    } else if (chunkingComplete && indexingQueue.isEmpty()) {
+                        // Flush any remaining documents
+                        if (!accumulatedBatch.isEmpty()) {
+                            try {
+                                indexerService.indexToKeywordIndexOnly(accumulatedBatch, true);
+                                for (RetrievedDoc doc : accumulatedBatch) {
+                                    processedIds.add(doc.getId());
+                                    chunksIndexed.incrementAndGet();
+                                }
+                                batchCount++;
+                            } catch (Exception e) {
+                                logger.error("Error in final batch indexing: {}", e.getMessage(), e);
+                            }
+                        }
+                        break;
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            logger.info("Keyword-only indexing complete: {} chunks in {} batches", processedIds.size(), batchCount);
+            return processedIds;
+        });
+
+        // Start periodic progress reporter
         ScheduledExecutorService progressReporter = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "pipeline-progress");
             t.setDaemon(true);
@@ -707,69 +947,28 @@ public class ParallelIngestPipeline implements AutoCloseable {
             try {
                 if (!cancelled) {
                     int created = chunksCreated.get();
-                    int embedded = chunksEmbedded.get();
                     int indexed = chunksIndexed.get();
-                    int queueSize = chunkQueue.size();
-                    int embeddedQueueSize = embeddedQueue.size();
                     long elapsed = System.currentTimeMillis() - startTimeMs.get();
                     double rate = elapsed > 0 ? (indexed * 1000.0 / elapsed) : 0;
 
-                    // Phase is always embedding or indexing for pre-chunked data
-                    String phase = indexed > 0 || embeddingComplete ? "indexing" : "embedding";
+                    String phase = indexed > 0 ? "indexing" : "chunking";
 
-                    int activeWorkers = (int) workerStatuses.values().stream()
-                            .filter(w -> "processing".equals(w.status())).count();
-
-                    // Calculate ETA
-                    String etaStr = "";
-                    if (indexed > 0 && indexed < totalChunks) {
-                        long remaining = totalChunks - indexed;
-                        if (rate > 0) {
-                            long etaSec = (long) (remaining / rate);
-                            if (etaSec > 60) {
-                                etaStr = String.format(" (~%dm %ds)", etaSec / 60, etaSec % 60);
-                            } else {
-                                etaStr = String.format(" (~%ds)", etaSec);
-                            }
-                        }
-                    }
-
-                    logger.debug("Periodic progress: phase={}, queued={}, embedded={}, indexed={}/{}, " +
-                            "chunkQ={}, embedQ={}, active={}, rate={}",
-                            phase, created, embedded, indexed, totalChunks, queueSize, embeddedQueueSize,
-                            activeWorkers, rate);
-
-                    reportProgressWithWorkers(phase, Math.min(99, (int) ((indexed * 100) / totalChunks)),
-                            String.format("%d/%d indexed (%.1f/sec)%s [Q:%d/%d]",
-                                    indexed, totalChunks, rate, etaStr, queueSize, embeddedQueueSize));
+                    reportProgressWithWorkers(phase, Math.min(99, (indexed * 100) / Math.max(1, created)),
+                            String.format("KEYWORD-ONLY: %d created, %d indexed (%.1f/sec)",
+                                    created, indexed, rate));
                 }
             } catch (Exception e) {
-                logger.error("Error in periodic progress reporter: {}", e.getMessage(), e);
+                logger.error("Error in progress reporter: {}", e.getMessage(), e);
             }
         }, 1, 1, TimeUnit.SECONDS);
 
         try {
-            // Skip chunking - queue pre-chunked documents directly
-            queuePreChunkedDocuments(chunks, totalChunks);
+            // Phase 1: Parallel chunking (writes directly to indexing queue)
+            parallelChunkDocumentsForKeywordOnly(documents, indexingQueue);
             chunkingComplete = true;
 
-            logger.info("Queued {} pre-chunked documents for embedding", chunksCreated.get());
-
-            // Wait for embedding to complete
-            for (Future<?> future : embeddingFutures) {
-                try {
-                    future.get(30, TimeUnit.MINUTES);
-                } catch (TimeoutException e) {
-                    logger.error("Embedding timed out");
-                    cancelled = true;
-                } catch (ExecutionException e) {
-                    logger.error("Embedding failed: {}", e.getCause().getMessage(), e.getCause());
-                }
-            }
-            embeddingComplete = true;
-
-            logger.info("Embedding complete: {} chunks embedded in {} batches",
-                    chunksEmbedded.get(), embeddingBatchesProcessed.get());
+            logger.info("Chunking complete: {} documents -> {} chunks",
+                    documentsProcessed.get(), chunksCreated.get());
 
             // Wait for indexing to complete
             List<String> processedIds;
@@ -785,16 +984,263 @@ public class ParallelIngestPipeline implements AutoCloseable {
             double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
 
             reportProgress("COMPLETED", 100,
-                    String.format("=== PIPELINE COMPLETE (pre-chunked) === %d chunks indexed in %dms (%.1f chunks/sec)",
-                            chunksIndexed.get(), totalTimeMs, chunksPerSec));
+                    String.format("=== KEYWORD-ONLY COMPLETE === %d docs -> %d chunks indexed in %dms (%.1f/sec)",
+                            documentsProcessed.get(), chunksIndexed.get(), totalTimeMs, chunksPerSec));
 
-            logger.info("========== PIPELINE COMPLETE (pre-chunked): {} chunks indexed in {}ms ({} chunks/sec) ==========",
-                    chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+            logger.info("========== KEYWORD-ONLY PIPELINE COMPLETE: {} documents -> {} chunks indexed in {}ms ({} chunks/sec) ==========",
+                    documentsProcessed.get(), chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+            logger.info("  To populate vector store later, call: indexerService.indexFromLucene()");
+
+            return new PipelineResult(
+                    documentsProcessed.get(),
+                    chunksCreated.get(),
+                    chunksIndexed.get(),
+                    tokensProcessed.get(),
+                    totalTimeMs,
+                    processedIds);
+        } finally {
+            progressReporter.shutdownNow();
+        }
+    }
+
+    /**
+     * Parallel chunking for keyword-only mode.
+     * Writes chunks directly to the indexing queue (bypasses embedding queue).
+     */
+    private void parallelChunkDocumentsForKeywordOnly(List<Document> documents,
+            BlockingQueue<List<RetrievedDoc>> indexingQueue) throws InterruptedException {
+        int totalDocuments = documents.size();
+        List<CompletableFuture<Void>> futures = new ArrayList<>(totalDocuments);
+
+        for (int i = 0; i < documents.size(); i++) {
+            if (cancelled) break;
+
+            final Document doc = documents.get(i);
+            final int docIndex = i;
+
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                if (cancelled || Thread.currentThread().isInterrupted()) return;
+
+                try {
+                    List<RetrievedDoc> chunks = chunkSingleDocument(doc, docIndex, totalDocuments);
+
+                    if (!chunks.isEmpty()) {
+                        // Queue chunks for indexing (batch them)
+                        boolean queued = false;
+                        int retries = 0;
+                        while (!queued && !cancelled && !Thread.currentThread().isInterrupted() && retries < 30) {
+                            queued = indexingQueue.offer(chunks, 1000, TimeUnit.MILLISECONDS);
+                            if (!queued) retries++;
+                        }
+
+                        if (queued) {
+                            chunksCreated.addAndGet(chunks.size());
+                        } else {
+                            logger.error("Failed to queue chunks for doc {}", docIndex);
+                        }
+                    }
+                    documentsProcessed.incrementAndGet();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    logger.error("Error chunking document {}: {}", docIndex, e.getMessage(), e);
+                }
+            }, chunkingExecutor);
+
+            futures.add(future);
+        }
+
+        // Wait for all chunking to complete
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .get(30, TimeUnit.MINUTES);
+        } catch (TimeoutException e) {
+            logger.error("Chunking timed out after 30 minutes");
+            cancelled = true;
+        } catch (ExecutionException e) {
+            logger.error("Chunking failed: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Processes pre-chunked documents through the pipeline, skipping the chunking phase.
+     * This is optimized for vector store population from existing Lucene indexes.
+     *
+     * @param chunks The pre-chunked documents to process (embedding + indexing only)
+     * @return Pipeline result with statistics
+     */
+    public PipelineResult processPreChunked(List<RetrievedDoc> chunks) throws InterruptedException {
+        if (chunks == null || chunks.isEmpty()) {
+            return new PipelineResult(0, 0, 0, 0, 0, List.of());
+        }
+
+        startTimeMs.set(System.currentTimeMillis());
+        int originalTotalChunks = chunks.size();
+
+        // === CHECKPOINT RESUME: Skip already-processed chunks ===
+        ai.kompile.app.subprocess.IngestCheckpoint checkpoint =
+                ai.kompile.app.subprocess.IngestSubprocessMain.getCurrentCheckpoint();
+        ai.kompile.app.subprocess.SubprocessArgs args =
+                ai.kompile.app.subprocess.IngestSubprocessMain.getCurrentArgs();
+
+        if (checkpoint != null && args != null && args.resume() && checkpoint.getEmbeddedCount() > 0) {
+            int alreadyProcessed = checkpoint.getEmbeddedCount();
+            if (alreadyProcessed < originalTotalChunks) {
+                // Skip already-processed chunks
+                List<RetrievedDoc> remainingChunks = chunks.subList(alreadyProcessed, originalTotalChunks);
+                logger.info("========================================");
+                logger.info("RESUMING FROM CHECKPOINT");
+                logger.info("  Already processed: {} chunks", alreadyProcessed);
+                logger.info("  Remaining: {} chunks", remainingChunks.size());
+                logger.info("  Skipping first {} chunks", alreadyProcessed);
+                logger.info("========================================");
+
+                // Update chunks to process only remaining
+                chunks = new ArrayList<>(remainingChunks);
+
+                // Pre-populate counters with already-processed amounts
+                chunksEmbedded.set(alreadyProcessed);
+                chunksIndexed.set(alreadyProcessed);
+                chunksCreated.set(alreadyProcessed); // Will be updated when we queue new chunks
+
+                // Update checkpoint with total chunks
+                checkpoint.setTotalChunks(originalTotalChunks);
+            } else {
+                // All chunks already processed
+                logger.info("All {} chunks already processed according to checkpoint - nothing to do",
+                        originalTotalChunks);
+                checkpoint.markCompleted(0);
+                return new PipelineResult(0, originalTotalChunks, originalTotalChunks, 0, originalTotalChunks, List.of());
+            }
+        } else if (checkpoint != null) {
+            // First run - record total chunks
+            checkpoint.setTotalChunks(originalTotalChunks);
+            checkpoint.setCurrentPhase("EMBEDDING");
+        }
+
+        int totalChunks = chunks.size();
+
+        int modelBatchSize = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : pipelineConfig.defaultBatchSize();
+        logger.info("Starting PRE-CHUNKED pipeline: {} chunks (of {} total), embedding={} threads, modelBatch={}",
+                totalChunks, originalTotalChunks, embeddingParallelism, modelBatchSize);
+
+        reportProgress("starting", 1,
+                String.format("Starting vector population: %d chunks, %d embedding workers",
+                        totalChunks, embeddingParallelism));
+
+        // CRITICAL FIX: Queue documents BEFORE starting embedding workers
+        // Previously, workers started immediately and had only a few items available when their
+        // 500ms batch timeout expired, resulting in tiny batches (e.g., 3 items instead of 32).
+        // By pre-loading the queue, workers will have full batches available immediately.
+        logger.info("Pre-loading {} documents to queue before starting embedding workers...", totalChunks);
+        try {
+            queuePreChunkedDocuments(chunks, totalChunks);
+            chunkingComplete = true;
+            logger.info("Pre-loaded {} documents to queue (size={})", chunksCreated.get(), chunkQueue.size());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+
+        // Now start embedding workers - queue is already populated with all documents
+        List<Future<?>> embeddingFutures = startEmbeddingWorkers();
+
+        // Start periodic progress reporter (every 1 second for responsive progress)
+        ScheduledExecutorService progressReporter = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "pipeline-progress");
+            t.setDaemon(true);
+            return t;
+        });
+        progressReporter.scheduleAtFixedRate(() -> {
+            try {
+                if (!cancelled) {
+                    int created = chunksCreated.get();
+                    int embedded = chunksEmbedded.get();  // Embedded AND written to vector store
+                    int indexed = chunksIndexed.get();    // Written to Lucene
+                    int queueSize = chunkQueue.size();
+                    long elapsed = System.currentTimeMillis() - startTimeMs.get();
+                    // In vector-only mode, rate is based on embedded count only (no Lucene indexing)
+                    int rateBase = vectorOnlyMode ? embedded : Math.max(indexed, embedded);
+                    double rate = elapsed > 0 ? (rateBase * 1000.0 / elapsed) : 0;
+
+                    // Phase based on work being done - in vector-only mode, only embedding happens
+                    String phase = vectorOnlyMode ? "embedding" :
+                            ((indexed > 0 || embedded > 0) ? "indexing+embedding" : "processing");
+
+                    int activeWorkers = (int) workerStatuses.values().stream()
+                            .filter(w -> "processing".equals(w.status())).count();
+
+                    // Calculate ETA using sliding window rate (more accurate than overall average)
+                    // In vector-only mode, use embedded count; otherwise use max of indexed/embedded
+                    int maxProgress = vectorOnlyMode ? embedded : Math.max(indexed, embedded);
+                    long remaining = totalChunks - maxProgress;
+                    String etaStr = calculateEtaString(remaining, maxProgress, rate);
+
+                    logger.debug("Periodic progress: phase={}, queued={}, embedded={}, indexed={}/{}, " +
+                            "chunkQ={}, active={}, rate={}, vectorOnlyMode={}",
+                            phase, created, embedded, indexed, totalChunks, queueSize,
+                            activeWorkers, rate, vectorOnlyMode);
+
+                    // Progress message varies based on mode
+                    String progressMsg = vectorOnlyMode
+                            ? String.format("%d/%d embedded (vector only) (%.1f/sec)%s [Q:%d]",
+                                    embedded, totalChunks, rate, etaStr, queueSize)
+                            : String.format("%d/%d indexed (Lucene), %d embedded (vector) (%.1f/sec)%s [Q:%d]",
+                                    indexed, totalChunks, embedded, rate, etaStr, queueSize);
+                    reportProgressWithWorkers(phase, Math.min(99, (int) ((maxProgress * 100) / totalChunks)), progressMsg);
+                }
+            } catch (Exception e) {
+                logger.error("Error in periodic progress reporter: {}", e.getMessage(), e);
+            }
+        }, 1, 1, TimeUnit.SECONDS);
+
+        try {
+            // Documents already queued before starting workers (see above)
+            // Wait for embedding to complete
+            String embeddingError = null;
+            for (Future<?> future : embeddingFutures) {
+                try {
+                    future.get(30, TimeUnit.MINUTES);
+                } catch (TimeoutException e) {
+                    logger.error("Embedding timed out");
+                    cancelled = true;
+                    embeddingError = "Embedding timed out after 30 minutes";
+                } catch (ExecutionException e) {
+                    logger.error("Embedding failed: {}", e.getCause().getMessage(), e.getCause());
+                    cancelled = true;  // Mark as failed so job history shows failure
+                    embeddingError = e.getCause().getMessage();
+                }
+            }
+            embeddingComplete = true;
+
+            // If embedding failed, throw to ensure job is marked as failed
+            if (embeddingError != null) {
+                throw new RuntimeException("Embedding/indexing failed: " + embeddingError);
+            }
+
+            logger.info("Embedding complete: {} chunks embedded and written to vector store in {} batches",
+                    chunksEmbedded.get(), embeddingBatchesProcessed.get());
+
+            // In pre-chunked/vector-only mode, embedding workers write directly to vector store
+            // No separate indexing step needed
+            List<String> processedIds = new ArrayList<>();
+
+            // ========== PIPELINE COMPLETE ==========
+            long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
+            double chunksPerSec = totalTimeMs > 0 ? (chunksEmbedded.get() * 1000.0 / totalTimeMs) : 0;
+
+            reportProgress("COMPLETED", 100,
+                    String.format("=== PIPELINE COMPLETE (pre-chunked) === %d chunks embedded to vector store in %dms (%.1f chunks/sec)",
+                            chunksEmbedded.get(), totalTimeMs, chunksPerSec));
+
+            logger.info("========== PIPELINE COMPLETE (pre-chunked): {} chunks embedded to vector store in {}ms ({} chunks/sec) ==========",
+                    chunksEmbedded.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
 
             return new PipelineResult(
                     totalChunks, // documents = total chunks for pre-chunked
                     chunksCreated.get(),
-                    chunksIndexed.get(),
+                    chunksEmbedded.get(),  // Use embedded count for vector-only mode
+                    tokensProcessed.get(),
                     totalTimeMs,
                     processedIds);
         } finally {
@@ -821,8 +1267,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // This allows the pipeline to naturally throttle when embedding is slow
             boolean queued = false;
             int waitCycles = 0;
-            while (!queued && !cancelled && !Thread.currentThread().isInterrupted()) {
-                // Try to offer with a timeout, so we can check for cancellation
+            while (!queued && !cancelled && !embeddingFailed && !Thread.currentThread().isInterrupted()) {
+                // Try to offer with a timeout, so we can check for cancellation/failure
                 queued = chunkQueue.offer(chunk, 5000, TimeUnit.MILLISECONDS);
                 if (!queued) {
                     waitCycles++;
@@ -844,6 +1290,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                 chunksEmbedded.get(), chunksIndexed.get());
                     }
                 }
+            }
+
+            // Check if embedding failed - fail fast
+            if (embeddingFailed) {
+                String reason = embeddingFailureReason != null ? embeddingFailureReason : "Unknown embedding failure";
+                logger.error("Aborting pipeline - embedding failed: {}", reason);
+                throw new RuntimeException("Embedding failed: " + reason);
             }
 
             // Check if we were cancelled while waiting
@@ -926,7 +1379,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             boolean queued = false;
                             int retries = 0;
                             final int maxRetries = 30; // 30 * 1000ms = 30 seconds max wait per chunk
-                            while (!queued && !cancelled && !Thread.currentThread().isInterrupted()
+                            while (!queued && !cancelled && !embeddingFailed && !Thread.currentThread().isInterrupted()
                                     && retries < maxRetries) {
                                 queued = chunkQueue.offer(chunk, 1000, TimeUnit.MILLISECONDS);
                                 if (!queued) {
@@ -937,13 +1390,20 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                     }
                                 }
                             }
+                            // Check if embedding failed - fail fast
+                            if (embeddingFailed) {
+                                String reason = embeddingFailureReason != null ? embeddingFailureReason : "Unknown embedding failure";
+                                throw new RuntimeException("Embedding failed: " + reason);
+                            }
                             if (!queued) {
                                 logger.error(
-                                        "Chunking doc {}: failed to queue chunk after {} retries - embedding may have stalled",
+                                        "Chunking doc {}: failed to queue chunk after {} retries - workers may have stalled",
                                         docIndex, maxRetries);
-                                throw new RuntimeException("Chunk queue full - embedding pipeline stalled");
+                                throw new RuntimeException("Chunk queue full - pipeline stalled");
                             }
 
+                            // Chunks are consumed by both indexing workers (Lucene) and embedding workers (vector store)
+                            // from the same chunkQueue - no separate queue needed
                             chunksCreated.incrementAndGet();
                             threadChunks.incrementAndGet();
 
@@ -1056,8 +1516,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
     }
 
     /**
-     * Start embedding worker threads that consume from chunkQueue and produce to
-     * embeddedQueue.
+     * Start embedding worker threads that consume from chunkQueue, compute embeddings,
+     * and write directly to the vector store.
      *
      * <h2>Optimization: Adaptive Batch Accumulation</h2>
      * <p>
@@ -1089,9 +1549,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 System.err.println("[PIPELINE-DEBUG] Embedding worker " + workerId + " STARTED on "
                         + Thread.currentThread().getName());
                 System.err.flush();
-                logger.info("Embedding worker {} STARTED on thread {} with adaptive batching (target={}, max={})",
-                        workerId, Thread.currentThread().getName(),
-                        batchAccumulator.getTargetBatchSize(), batchAccumulator.getMaxBatchSize());
+                int modelBatchSize = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : 32;
+                logger.info("Embedding worker {} STARTED on thread {} with model batch size={}",
+                        workerId, Thread.currentThread().getName(), modelBatchSize);
 
                 // Report embedding phase started immediately (before warmup)
                 // This ensures frontend knows we've entered embedding phase
@@ -1101,58 +1561,47 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             String.format("Starting embedding workers (%d chunks queued)", queueSize));
                 }
 
-                // Wait for embedding model to be ready (warmup may be in progress)
-                // This prevents concurrent access to the SameDiff model during warmup
+                // Check embedding model is ready - dimensions() blocks until initialized
+                // With proper synchronization in AnseriniEmbeddingModelImpl, this should
+                // return immediately if already initialized, or block until init completes
                 if (embeddingModel != null) {
-                    System.err.println("[PIPELINE-DEBUG] Worker " + workerId + ": checking model dimensions...");
-                    System.err.flush();
-                    int warmupWaitCount = 0;
-                    while (!cancelled && !Thread.currentThread().isInterrupted()) {
-                        try {
-                            // Try to get dimensions - this will succeed if model is ready
-                            // This is a lightweight check that doesn't trigger full inference
-                            int dims = embeddingModel.dimensions();
-                            System.err.println("[PIPELINE-DEBUG] Worker " + workerId + ": got dimensions=" + dims);
-                            System.err.flush();
-                            if (dims > 0) {
-                                if (warmupWaitCount > 0) {
-                                    logger.info("Embedding worker {}: Model ready (dimensions={}), waited {}ms",
-                                            workerId, dims, warmupWaitCount * 100);
-                                }
-                                break;
-                            }
-                        } catch (Exception e) {
-                            System.err.println(
-                                    "[PIPELINE-DEBUG] Worker " + workerId + ": dimensions() threw: " + e.getMessage());
-                            System.err.flush();
-                            // Model not ready yet
-                        }
-
-                        warmupWaitCount++;
-                        if (warmupWaitCount % 50 == 0) { // Every 5 seconds
-                            System.err.println("[PIPELINE-DEBUG] Worker " + workerId + ": waiting for warmup, count="
-                                    + warmupWaitCount);
-                            System.err.flush();
-                            logger.info("Embedding worker {}: Waiting for model warmup ({} checks)...",
-                                    workerId, warmupWaitCount);
+                    logger.debug("Embedding worker {}: checking model readiness...", workerId);
+                    try {
+                        // This call blocks until model is initialized (lazy init with synchronization)
+                        int dims = embeddingModel.dimensions();
+                        if (dims > 0) {
+                            logger.info("Embedding worker {}: Model ready (dimensions={})", workerId, dims);
+                        } else {
+                            // Model returned invalid dimensions - likely failed to initialize
+                            String reason = "Model returned invalid dimensions (" + dims + ")";
+                            logger.error("Embedding worker {}: {}. Model may have failed to initialize. Check model configuration.",
+                                    workerId, reason);
+                            embeddingFailed = true;
+                            embeddingFailureReason = reason;
                             workerStatuses.put(workerKey,
-                                    new PipelineProgress.WorkerStatus(workerId, "embedding", "waiting",
-                                            0, 0, 0, "waiting for model warmup"));
-                            // Report progress during warmup so frontend knows embedding phase has started
-                            int queueSize = chunkQueue.size();
-                            reportProgressWithWorkers("embedding", 0,
-                                    String.format("Model warmup in progress (worker %d, queue=%d)", workerId, queueSize));
+                                    new PipelineProgress.WorkerStatus(workerId, "embedding", "failed",
+                                            0, 0, 0, "model initialization failed"));
+                            return; // Exit this worker - can't proceed without valid model
                         }
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
+                    } catch (Exception e) {
+                        String reason = "Failed to get model dimensions: " + e.getMessage();
+                        logger.error("Embedding worker {}: {}", workerId, reason);
+                        embeddingFailed = true;
+                        embeddingFailureReason = reason;
+                        workerStatuses.put(workerKey,
+                                new PipelineProgress.WorkerStatus(workerId, "embedding", "failed",
+                                        0, 0, 0, "model error: " + e.getMessage()));
+                        return; // Exit this worker
                     }
                 } else {
-                    System.err.println("[PIPELINE-DEBUG] Worker " + workerId + ": embeddingModel is NULL!");
-                    System.err.flush();
+                    String reason = "Embedding model is NULL";
+                    logger.error("Embedding worker {}: {}!", workerId, reason);
+                    embeddingFailed = true;
+                    embeddingFailureReason = reason;
+                    workerStatuses.put(workerKey,
+                            new PipelineProgress.WorkerStatus(workerId, "embedding", "failed",
+                                    0, 0, 0, "no embedding model"));
+                    return; // Exit this worker
                 }
 
                 // Watchdog variables for detecting stalls
@@ -1170,7 +1619,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 final double MEMORY_PRESSURE_THRESHOLD = 0.85; // 85% heap usage
 
                 while (!cancelled && !Thread.currentThread().isInterrupted()) {
-                    // Periodic memory pressure check
+                    // Check subprocess memory watchdog first (highest priority)
+                    if (checkSubprocessMemoryLimit()) {
+                        logger.warn("Embedding worker {}: subprocess memory limit reached, exiting", workerId);
+                        break;
+                    }
+
+                    // Periodic memory pressure check (in-process fallback)
                     long now = System.currentTimeMillis();
                     if (now - lastMemoryCheckTime > MEMORY_CHECK_INTERVAL_MS) {
                         lastMemoryCheckTime = now;
@@ -1192,29 +1647,32 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             }
                         }
                     }
-                    // Update status to waiting/accumulating with cumulative throughput
+                    // Update status to waiting with cumulative throughput
                     long elapsed = System.currentTimeMillis() - startTimeMs.get();
                     double cumulativeThroughput = elapsed > 0 ? (workerProcessed.get() * 1000.0 / elapsed) : 0;
                     workerStatuses.put(workerKey,
                             PipelineProgress.WorkerStatus.waitingWithThroughput(workerId, "embedding", workerProcessed.get(), cumulativeThroughput));
 
-                    System.err
-                            .println("[PIPELINE-DEBUG] Worker " + workerId + ": calling accumulateFlatBatch, queueSize="
-                                    + chunkQueue.size() + ", chunkingComplete=" + chunkingComplete);
-                    System.err.flush();
+                    // Eagerly fetch chunks up to model's batch size - no waiting, grab what's available
+                    // modelBatchSize is declared once at start of worker (before loop)
+                    List<RetrievedDoc> batch = new ArrayList<>(modelBatchSize);
 
-                    // Use adaptive accumulator to collect individual chunks into optimal batch
-                    // Chunks flow through immediately - no waiting for entire documents
-                    List<RetrievedDoc> batch = batchAccumulator.accumulateFlatBatch(
-                            chunkQueue,
-                            () -> chunkingComplete,
-                            this.pipelineConfig.queuePollTimeoutMs());
+                    // First poll with timeout (blocking wait if queue is empty)
+                    RetrievedDoc first;
+                    try {
+                        first = chunkQueue.poll(this.pipelineConfig.queuePollTimeoutMs(), TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        logger.info("Embedding worker {}: interrupted during poll, exiting", workerId);
+                        break;
+                    }
+                    if (first != null) {
+                        batch.add(first);
+                        // Eagerly drain more items without waiting (non-blocking)
+                        chunkQueue.drainTo(batch, modelBatchSize - 1);
+                    }
 
-                    System.err.println("[PIPELINE-DEBUG] Worker " + workerId
-                            + ": accumulateFlatBatch returned batch.size=" + batch.size());
-                    System.err.flush();
-
-                    // Check for interrupt after accumulation
+                    // Check for interrupt after poll
                     if (Thread.currentThread().isInterrupted()) {
                         logger.info("Embedding worker {}: interrupted, exiting", workerId);
                         break;
@@ -1225,27 +1683,18 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         lastActivityTime = System.currentTimeMillis();
                         consecutiveEmptyPolls = 0;
 
-                        System.err.println("[PIPELINE-DEBUG] Worker " + workerId + ": GOT BATCH of " + batch.size()
-                                + " chunks, about to embed");
-                        System.err.flush();
-                        logger.info("Embedding worker {}: got batch of {} chunks, queue={}, cancelled={}",
+                        logger.debug("Embedding worker {}: processing {} chunks, queue={}, cancelled={}",
                                 workerId, batch.size(), chunkQueue.size(), cancelled);
 
-                        // Show which batch we're about to process (counter increments inside
-                        // processBatchEmbeddingOptimized)
-                        int nextBatchNum = embeddingBatchesProcessed.get() + 1;
+                        // Update worker status
                         workerStatuses.put(workerKey,
                                 PipelineProgress.WorkerStatus.processing(workerId, "embedding",
                                         workerProcessed.get(), batch.size(), 0,
-                                        "batch " + nextBatchNum + " (" + batch.size() + " chunks)"));
+                                        "processing " + batch.size() + " chunks"));
 
+                        // Process batch through embedding model (NDArray batching happens inside)
                         processBatchEmbeddingOptimized(batch, workerId, workerProcessed);
 
-                        // Checkpoint hook is inside optimized method for accuracy
-
-                        System.err.println(
-                                "[PIPELINE-DEBUG] Worker " + workerId + ": processBatchEmbeddingOptimized RETURNED");
-                        System.err.flush();
                         // Reset waiting report timer after processing
                         lastWaitingProgressReportMs = System.currentTimeMillis();
                     } else {
@@ -1295,10 +1744,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         PipelineProgress.WorkerStatus.complete(workerId, "embedding", workerProcessed.get(),
                                 throughput));
 
-                // Log accumulator stats
-                AdaptiveBatchAccumulator.AccumulatorStats stats = batchAccumulator.getStats();
-                logger.debug("Embedding worker {} finished: {} chunks, accumulator stats: {}",
-                        workerId, workerProcessed.get(), stats);
+                logger.info("Embedding worker {} finished: {} chunks processed at {} chunks/sec",
+                        workerId, workerProcessed.get(), String.format("%.1f", throughput));
             }));
         }
 
@@ -1306,8 +1753,171 @@ public class ParallelIngestPipeline implements AutoCloseable {
     }
 
     /**
+     * Starts indexing workers that write chunks directly to Lucene (keyword index).
+     * These workers run in parallel with embedding workers, both consuming from chunkQueue.
+     * This enables immediate keyword searchability while embedding is still processing.
+     *
+     * @return List of futures for the indexing workers
+     */
+    private List<Future<?>> startIndexingWorkers() {
+        // In vector-only mode, skip Lucene indexing entirely
+        if (vectorOnlyMode) {
+            logger.info("Vector-only mode: skipping Lucene indexing workers");
+            return new ArrayList<>();
+        }
+
+        List<Future<?>> futures = new ArrayList<>(indexingParallelism);
+
+        // Initialize worker statuses
+        for (int i = 0; i < indexingParallelism; i++) {
+            workerStatuses.put("index-" + i, PipelineProgress.WorkerStatus.idle(i, "indexing"));
+        }
+
+        for (int i = 0; i < indexingParallelism; i++) {
+            final int workerId = i;
+            final String workerKey = "index-" + workerId;
+            final AtomicInteger workerProcessed = new AtomicInteger(0);
+
+            futures.add(indexingExecutor.submit(() -> {
+                logger.info("Indexing worker {} STARTED on thread {} (writes to Lucene)",
+                        workerId, Thread.currentThread().getName());
+
+                List<RetrievedDoc> batchBuffer = new ArrayList<>();
+                int batchNum = 0;
+                long lastActivityTime = System.currentTimeMillis();
+                int consecutiveEmptyPolls = 0;
+                final int MAX_EMPTY_POLLS_BEFORE_EXIT = 20;
+                final int INDEX_BATCH_SIZE = Math.max(32, this.pipelineConfig.indexingBatchAccumulationSize());
+
+                while (!cancelled && !Thread.currentThread().isInterrupted()) {
+                    // Check subprocess memory watchdog
+                    if (checkSubprocessMemoryLimit()) {
+                        logger.warn("Indexing worker {}: subprocess memory limit reached, exiting", workerId);
+                        // Process any remaining items before exiting
+                        if (!batchBuffer.isEmpty()) {
+                            processIndexBatch(batchBuffer, workerId, workerProcessed, ++batchNum);
+                            batchBuffer.clear();
+                        }
+                        break;
+                    }
+
+                    try {
+                        // Poll for next chunk with timeout
+                        RetrievedDoc chunk = chunkQueue.poll(
+                                this.pipelineConfig.queuePollTimeoutMs(), TimeUnit.MILLISECONDS);
+
+                        if (chunk != null) {
+                            consecutiveEmptyPolls = 0;
+                            lastActivityTime = System.currentTimeMillis();
+                            batchBuffer.add(chunk);
+
+                            // Update worker status
+                            workerStatuses.put(workerKey,
+                                    PipelineProgress.WorkerStatus.processing(workerId, "indexing",
+                                            workerProcessed.get(), batchBuffer.size(), 0, "buffering"));
+
+                            // Process batch when full or queue is empty and we have items
+                            if (batchBuffer.size() >= INDEX_BATCH_SIZE ||
+                                    (chunkQueue.isEmpty() && !batchBuffer.isEmpty())) {
+                                processIndexBatch(batchBuffer, workerId, workerProcessed, ++batchNum);
+                                batchBuffer.clear();
+                            }
+                        } else {
+                            consecutiveEmptyPolls++;
+
+                            // Process any remaining items in buffer
+                            if (!batchBuffer.isEmpty()) {
+                                processIndexBatch(batchBuffer, workerId, workerProcessed, ++batchNum);
+                                batchBuffer.clear();
+                            }
+
+                            // Update status to waiting
+                            workerStatuses.put(workerKey,
+                                    PipelineProgress.WorkerStatus.waiting(workerId, "indexing",
+                                            workerProcessed.get()));
+
+                            // Exit condition: chunking complete AND queue empty for multiple polls
+                            boolean standardExit = chunkingComplete && chunkQueue.isEmpty();
+                            boolean watchdogExit = chunkingComplete && consecutiveEmptyPolls >= MAX_EMPTY_POLLS_BEFORE_EXIT;
+
+                            if (standardExit || watchdogExit) {
+                                break;
+                            }
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
+                // Process any remaining buffered chunks
+                if (!batchBuffer.isEmpty()) {
+                    processIndexBatch(batchBuffer, workerId, workerProcessed, ++batchNum);
+                }
+
+                // Mark worker as complete
+                long elapsed = System.currentTimeMillis() - startTimeMs.get();
+                double throughput = elapsed > 0 ? (workerProcessed.get() * 1000.0 / elapsed) : 0;
+                workerStatuses.put(workerKey,
+                        PipelineProgress.WorkerStatus.complete(workerId, "indexing", workerProcessed.get(),
+                                throughput));
+
+                logger.info("Indexing worker {} finished: {} chunks in {} batches (Lucene)",
+                        workerId, workerProcessed.get(), batchNum);
+            }));
+        }
+
+        return futures;
+    }
+
+    /**
+     * Process a batch of chunks for Lucene (keyword) indexing only.
+     * Vector store indexing is handled separately by embedding workers.
+     */
+    private void processIndexBatch(List<RetrievedDoc> batch, int workerId,
+            AtomicInteger workerProcessed, int batchNum) {
+        if (batch == null || batch.isEmpty() || cancelled) {
+            return;
+        }
+
+        String workerKey = "index-" + workerId;
+        int batchSize = batch.size();
+
+        try {
+            long batchStartTime = System.currentTimeMillis();
+
+            // Update worker status
+            workerStatuses.put(workerKey,
+                    PipelineProgress.WorkerStatus.processing(workerId, "indexing",
+                            workerProcessed.get(), batchSize, 0, "indexing batch " + batchNum));
+
+            // Index to Lucene (keyword store) only
+            indexerService.indexToKeywordIndexOnly(batch, true);
+
+            // Update counters
+            int indexed = chunksIndexed.addAndGet(batchSize);
+            workerProcessed.addAndGet(batchSize);
+
+            long elapsed = System.currentTimeMillis() - batchStartTime;
+            double batchThroughput = elapsed > 0 ? (batchSize * 1000.0 / elapsed) : 0;
+
+            // Update worker status with throughput
+            workerStatuses.put(workerKey,
+                    PipelineProgress.WorkerStatus.processing(workerId, "indexing",
+                            workerProcessed.get(), batchSize, batchThroughput, "batch " + batchNum + " done"));
+
+            logger.debug("Indexing worker {}: batch {} ({} chunks) in {}ms ({}/sec) [total: {}]",
+                    workerId, batchNum, batchSize, elapsed, String.format("%.1f", batchThroughput), indexed);
+
+        } catch (Exception e) {
+            logger.error("Indexing worker {}: batch {} failed: {}", workerId, batchNum, e.getMessage(), e);
+            lastError = "Lucene indexing failed: " + e.getMessage();
+        }
+    }
+
+    /**
      * Process a batch of chunks through the embedding model.
-     * 
+     *
      * @deprecated Use processBatchEmbeddingOptimized instead
      */
     @Deprecated
@@ -1350,10 +1960,42 @@ public class ParallelIngestPipeline implements AutoCloseable {
         try {
             long batchStartTime = System.currentTimeMillis();
 
-            // Estimate total batches based on current progress
+            // Use fixed total batches - calculate once and reuse
             int totalChunks = chunksCreated.get();
-            int estimatedTotalBatches = totalChunks > 0 ? Math.max(batchNum, (totalChunks + batchSize - 1) / batchSize)
-                    : batchNum;
+            int currentBatchSize = batch.size();
+
+            // Set fixed batch size, total batches, and resume offset on first batch (compareAndSet ensures thread-safety)
+            if (fixedBatchSize.get() < 0 && currentBatchSize > 0) {
+                if (fixedBatchSize.compareAndSet(-1, currentBatchSize)) {
+                    // Only the thread that successfully set fixedBatchSize does the resume offset calculation
+                    if (resumeState != null && resumeState.indexedIds().size() > 0) {
+                        int alreadyIndexed = resumeState.indexedIds().size();
+                        int batchesAlreadyDone = alreadyIndexed / currentBatchSize;
+                        if (batchesAlreadyDone > 0) {
+                            resumedBatchOffset.set(batchesAlreadyDone);
+                            logger.info("Resume offset set to {} batches ({} chunks already indexed)",
+                                    batchesAlreadyDone, alreadyIndexed);
+                        }
+                    }
+                }
+            }
+            if (fixedTotalBatches.get() < 0 && totalChunks > 0 && fixedBatchSize.get() > 0) {
+                int calculatedTotal = (totalChunks + fixedBatchSize.get() - 1) / fixedBatchSize.get();
+                if (fixedTotalBatches.compareAndSet(-1, calculatedTotal)) {
+                    logger.info("Fixed total batches set to {} (totalChunks={}, batchSize={})",
+                            calculatedTotal, totalChunks, fixedBatchSize.get());
+                }
+            }
+
+            // Adjust batch number for display to account for resumed batches
+            int displayBatchNum = batchNum + resumedBatchOffset.get();
+
+            // Use fixed value if set, otherwise fall back to current batch number
+            int estimatedTotalBatches = fixedTotalBatches.get() > 0
+                    ? fixedTotalBatches.get()
+                    : Math.max(batchNum, totalChunks > 0 && currentBatchSize > 0
+                            ? (totalChunks + currentBatchSize - 1) / currentBatchSize
+                            : batchNum);
 
             // Calculate input metrics and extract source documents
             int inputTexts = batch.size();
@@ -1413,10 +2055,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             : sourceDocuments.stream().limit(2).collect(java.util.stream.Collectors.joining(", ")) +
                                     " + " + (sourceDocuments.size() - 2) + " more");
 
-            // Estimate tokens (rough approximation: ~4 chars per token for English)
-            int estimatedTokens = totalChars / 4;
-            int estimatedMaxSeqLen = Math.min(512, maxChars / 4); // Most models have 512 max
-            int estimatedAvgSeqLen = avgChars / 4;
+            // NO ESTIMATES - will get real data from encoder when available
 
             // Generate embeddings for batch using optimized batch method
             // NOTE: If embeddingModel is null, this returns null (passthrough mode)
@@ -1430,19 +2069,24 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int progressPercent = totalChunksCreated > 0 ? Math.min(95, (embeddedSoFar * 100) / totalChunksCreated) : 0;
 
             // Set batch metrics to show we're starting this batch
+            // NO ESTIMATES - shapes will be populated by encoder
+            int embDim = embeddingModel != null ? embeddingModel.dimensions() : 0;
+            String inputShape = "[" + inputTexts + " x PENDING]";
+            String outputShape = "[" + inputTexts + " x " + embDim + "]";
+
             currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
-                    .batchNumber(batchNum)
+                    .batchNumber(displayBatchNum)
                     .totalBatches(estimatedTotalBatches)
                     .inputTexts(inputTexts)
-                    .inputTokens(estimatedTokens)
-                    .maxSequenceLength(estimatedMaxSeqLen)
-                    .avgSequenceLength(estimatedAvgSeqLen)
+                    .inputTokens(0) // Will be set by encoder
+                    .maxSequenceLength(0) // Will be set by encoder
+                    .avgSequenceLength(0) // Will be set by encoder
                     .outputVectors(0) // Not yet generated
-                    .embeddingDimension(0)
+                    .embeddingDimension(embDim)
                     .outputSizeBytes(0)
                     .inferenceTimeMs(0)
                     .totalBatchTimeMs(0)
-                    .currentStep("EMBEDDING")
+                    .currentStep("STARTING")
                     .heartbeatSeconds(0)
                     .stepStartTimeMs(batchStartTime)
                     .isStuck(false)
@@ -1451,15 +2095,86 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     .batchThroughput(0)
                     .modelName(modelName)
                     .deviceType("CPU")
+                    .isBatched(true)
+                    .inputTensorShape(inputShape)
+                    .outputTensorShape(outputShape)
+                    .actualInputShape(null)
+                    .actualOutputShape(null)
                     .statusLevel("RUNNING")
                     .build();
 
             reportProgressWithWorkers("embedding", progressPercent,
                     String.format("BEGIN BATCH %d: Embedding %d chunks (%d/%d total) using %s",
-                            batchNum, inputTexts, embeddedSoFar, totalChunksCreated, modelName));
+                            displayBatchNum, inputTexts, embeddedSoFar, totalChunksCreated, modelName));
             // === END BEGIN BATCH ===
 
-            List<float[]> embeddings = generateEmbeddingsOptimized(actualBatch);
+            // ========== CACHED EMBEDDINGS SUPPORT ==========
+            // Check if any chunks have cached embeddings from a previous run
+            List<float[]> embeddings;
+            int cachedCount = 0;
+            int computedCount = 0;
+
+            if (!cachedEmbeddings.isEmpty()) {
+                // Separate chunks into cached and non-cached
+                List<RetrievedDoc> chunksToEmbed = new ArrayList<>();
+                List<Integer> cachedIndices = new ArrayList<>();
+                List<Integer> computeIndices = new ArrayList<>();
+
+                for (int i = 0; i < actualBatch.size(); i++) {
+                    RetrievedDoc chunk = actualBatch.get(i);
+                    String chunkId = chunk.getId();
+                    if (chunkId != null && cachedEmbeddings.containsKey(chunkId)) {
+                        cachedIndices.add(i);
+                        cachedCount++;
+                    } else {
+                        chunksToEmbed.add(chunk);
+                        computeIndices.add(i);
+                    }
+                }
+
+                if (cachedCount > 0) {
+                    logger.info("Batch {}: Using {} cached embeddings, computing {} new",
+                            batchNum, cachedCount, chunksToEmbed.size());
+                }
+
+                // Compute embeddings only for non-cached chunks
+                List<float[]> newEmbeddings = null;
+                if (!chunksToEmbed.isEmpty()) {
+                    newEmbeddings = generateEmbeddingsOptimized(chunksToEmbed);
+                    computedCount = newEmbeddings != null ? newEmbeddings.size() : 0;
+                }
+
+                // Merge cached and new embeddings in correct order
+                embeddings = new ArrayList<>(actualBatch.size());
+                int cachedIdx = 0;
+                int computeIdx = 0;
+                for (int i = 0; i < actualBatch.size(); i++) {
+                    RetrievedDoc chunk = actualBatch.get(i);
+                    String chunkId = chunk.getId();
+                    if (chunkId != null && cachedEmbeddings.containsKey(chunkId)) {
+                        embeddings.add(cachedEmbeddings.get(chunkId));
+                        // Remove from cache after use (to free memory)
+                        cachedEmbeddings.remove(chunkId);
+                    } else if (newEmbeddings != null && computeIdx < newEmbeddings.size()) {
+                        embeddings.add(newEmbeddings.get(computeIdx++));
+                    } else {
+                        // Fallback - should not happen
+                        logger.warn("Batch {}: Missing embedding for chunk {}", batchNum, i);
+                        embeddings.add(null);
+                    }
+                }
+            } else {
+                // No cached embeddings - compute all
+                embeddings = generateEmbeddingsOptimized(actualBatch);
+                computedCount = embeddings != null ? embeddings.size() : 0;
+            }
+            // ========== END CACHED EMBEDDINGS SUPPORT ==========
+
+            // CRITICAL: Capture batch info IMMEDIATELY after encoding returns, before any
+            // other operation that might allow another worker to overwrite currentBatchInfo.
+            // This fixes the race condition where shapes shown are from a different batch.
+            final EmbeddingModel.BatchInfo capturedBatchInfo = embeddingModel != null
+                    ? embeddingModel.getCurrentBatchInfo() : null;
 
             // Checkpoint hook
             if (checkpointService != null && embeddings != null) {
@@ -1475,6 +2190,17 @@ public class ParallelIngestPipeline implements AutoCloseable {
             // Track whether actual embedding work was done
             boolean actualEmbeddingDone = (embeddings != null && !embeddings.isEmpty());
 
+            // DIAGNOSTIC: Log the actual embedding state to help debug counter issues
+            logger.info("Batch {}: EMBEDDING_STATE - actualEmbeddingDone={}, embeddings={}, embeddingsSize={}, cachedCount={}, computedCount={}",
+                    batchNum, actualEmbeddingDone,
+                    embeddings != null ? "non-null" : "NULL",
+                    embeddings != null ? embeddings.size() : 0,
+                    cachedCount, computedCount);
+            if (!actualEmbeddingDone) {
+                logger.warn("Batch {}: WARNING - actualEmbeddingDone is FALSE - counter will NOT increment! " +
+                        "This means generateEmbeddingsOptimized returned null/empty. Check embedding model logs.", batchNum);
+            }
+
             // Calculate output metrics
             int outputVectors = actualEmbeddingDone ? embeddings.size() : 0;
             int embeddingDimension = 0;
@@ -1484,9 +2210,22 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 outputSizeBytes = (long) outputVectors * embeddingDimension * 4; // 4 bytes per float
             }
 
-            // Calculate throughput metrics
+            // Use the batch info we captured IMMEDIATELY after encoding
+            // This avoids the race condition where another worker overwrites currentBatchInfo.
+            boolean hasActualInfo = capturedBatchInfo != null
+                    && capturedBatchInfo.numChunks() > 0
+                    && capturedBatchInfo.numChunks() == inputTexts  // Validate same batch size
+                    && capturedBatchInfo.inputShape() != null
+                    && capturedBatchInfo.inputShape().length > 0;  // Validate shapes are populated
+
+            // ONLY use actual data from encoder - NO ESTIMATES
+            int actualMaxSeqLen = hasActualInfo ? capturedBatchInfo.maxSeqLength() : 0;
+            int actualInputTokens = hasActualInfo ? capturedBatchInfo.totalTokens() : 0;
+
+            // Calculate throughput metrics using ACTUAL token count if available
             double batchThroughput = totalBatchTime > 0 ? (inputTexts * 1000.0 / totalBatchTime) : 0;
-            double tokensPerSecond = totalBatchTime > 0 ? (estimatedTokens * 1000.0 / totalBatchTime) : 0;
+            double tokensPerSecond = (totalBatchTime > 0 && actualInputTokens > 0)
+                    ? (actualInputTokens * 1000.0 / totalBatchTime) : 0;
             double embeddingsPerSecond = totalBatchTime > 0 ? (outputVectors * 1000.0 / totalBatchTime) : 0;
 
             // Get model info
@@ -1496,39 +2235,56 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int heartbeatSecs = (int) (totalBatchTime / 1000);
             boolean isStuck = totalBatchTime > 30000; // Stuck if > 30 seconds for a batch
 
-            // Build tensor shape strings
-            String inputShape = "[" + inputTexts + ", " + estimatedMaxSeqLen + "]";
-            String outputShape = "[" + outputVectors + ", " + embeddingDimension + "]";
+            // Update tensor shape strings with ACTUAL values - NO ESTIMATES
+            if (hasActualInfo) {
+                inputShape = capturedBatchInfo.inputShapeString();
+                outputShape = capturedBatchInfo.outputShapeString();
+            } else {
+                // If embedding failed or no batch info, use what we have
+                inputShape = "[" + inputTexts + " x " + actualMaxSeqLen + "]";
+                outputShape = "[" + outputVectors + " x " + embeddingDimension + "]";
+            }
 
-            // Build and store embedding batch metrics
+            // Use actual shapes from encoder if available
+            String actualInputShapeStr = hasActualInfo ? capturedBatchInfo.inputShapeString() : inputShape;
+            String actualOutputShapeStr = hasActualInfo ? capturedBatchInfo.outputShapeString() : outputShape;
+
+            // Use actual timing from encoder if available - NO FALLBACKS
+            long actualTokenizeTime = hasActualInfo ? capturedBatchInfo.tokenizeTimeMs() : 0;
+            long actualPaddingTime = hasActualInfo ? capturedBatchInfo.paddingTimeMs() : 0;
+            long actualTensorTime = hasActualInfo ? capturedBatchInfo.tensorCreationTimeMs() : 0;
+            long actualForwardTime = hasActualInfo ? capturedBatchInfo.forwardPassTimeMs() : 0;
+            long actualExtractTime = hasActualInfo ? capturedBatchInfo.extractionTimeMs() : 0;
+
+            // Build and store embedding batch metrics - ONLY ACTUAL data from encoder
             currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
-                    .batchNumber(batchNum)
+                    .batchNumber(displayBatchNum)
                     .totalBatches(estimatedTotalBatches)
                     .inputTexts(inputTexts)
-                    .inputTokens(estimatedTokens)
-                    .maxSequenceLength(estimatedMaxSeqLen)
-                    .avgSequenceLength(estimatedAvgSeqLen)
+                    .inputTokens(actualInputTokens)
+                    .maxSequenceLength(actualMaxSeqLen)
+                    .avgSequenceLength(hasActualInfo && capturedBatchInfo.numChunks() > 0
+                            ? capturedBatchInfo.totalTokens() / capturedBatchInfo.numChunks() : 0)
                     .outputVectors(outputVectors)
-                    .embeddingDimension(embeddingDimension)
+                    .embeddingDimension(hasActualInfo ? capturedBatchInfo.embeddingDim() : embeddingDimension)
                     .outputSizeBytes(outputSizeBytes)
-                    // Timing - coarse grained
-                    .tokenizationTimeMs(0) // Not separately tracked in current impl
-                    .inferenceTimeMs(totalBatchTime)
+                    // Timing - use actual from encoder
+                    .tokenizationTimeMs(actualTokenizeTime)
+                    .inferenceTimeMs(actualForwardTime)
                     .totalBatchTimeMs(totalBatchTime)
-                    // Timing - fine grained (populated from encoder metrics if available)
-                    .paddingTimeMs(0)
-                    .tensorCreationTimeMs(0)
-                    .forwardPassTimeMs(totalBatchTime) // Treat whole time as forward pass for now
-                    .extractionTimeMs(0)
+                    .paddingTimeMs(actualPaddingTime)
+                    .tensorCreationTimeMs(actualTensorTime)
+                    .forwardPassTimeMs(actualForwardTime)
+                    .extractionTimeMs(actualExtractTime)
                     // Heartbeat/liveness
                     .currentStep("COMPLETED")
                     .heartbeatSeconds(heartbeatSecs)
                     .stepStartTimeMs(batchStartTime)
                     .isStuck(isStuck)
-                    // Throughput
-                    .tokensPerSecond(tokensPerSecond)
-                    .embeddingsPerSecond(embeddingsPerSecond)
-                    .batchThroughput(batchThroughput)
+                    // Throughput - use actual from encoder if available
+                    .tokensPerSecond(hasActualInfo ? capturedBatchInfo.tokensPerSecond() : tokensPerSecond)
+                    .embeddingsPerSecond(hasActualInfo ? capturedBatchInfo.chunksPerSecond() : embeddingsPerSecond)
+                    .batchThroughput(hasActualInfo ? capturedBatchInfo.chunksPerSecond() : batchThroughput)
                     .modelName(modelName)
                     .deviceType(deviceType)
                     .isBatched(true)
@@ -1536,59 +2292,108 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     // Source documents
                     .sourceDocuments(sourcesStr)
                     .sourceDocumentCount(sourceDocuments.size())
-                    // Tensor shapes
+                    // Tensor shapes - use ACTUAL from encoder
                     .inputTensorShape(inputShape)
                     .outputTensorShape(outputShape)
-                    .actualInputShape(null) // Not available in completion path
-                    .actualOutputShape(null)
+                    .actualInputShape(actualInputShapeStr)
+                    .actualOutputShape(actualOutputShapeStr)
                     // Status
                     .statusLevel("COMPLETED")
                     .etaMessage(null)
+                    // Per-passage token counts
+                    .passageTokenCounts(hasActualInfo ? capturedBatchInfo.passageTokenCounts() : null)
                     .build();
 
-            // Put batch in queue for indexing (with or without embeddings)
-            // Use offer with timeout instead of blocking put to prevent deadlock
-            // if the indexing worker stalls or fails
-            EmbeddedBatch embeddedBatch = new EmbeddedBatch(new ArrayList<>(actualBatch), embeddings);
-            boolean queued = false;
-            int retries = 0;
-            final int maxRetries = 60; // 60 * 1000ms = 60 seconds max wait
-            while (!queued && !cancelled && !Thread.currentThread().isInterrupted() && retries < maxRetries) {
-                queued = embeddedQueue.offer(embeddedBatch, 1000, TimeUnit.MILLISECONDS);
-                if (!queued) {
-                    retries++;
-                    if (retries % 10 == 0) {
-                        logger.warn("Batch {}: embedded queue full ({}), waiting... (retry {}/{})",
-                                batchNum, embeddedQueue.size(), retries, maxRetries);
+            // NOTE: Batch history is added AFTER confirming embedding succeeded (see below)
+            // This ensures batch history, chunksEmbedded counter, and worker stats stay in sync
+
+            // Write embeddings directly to vector store (no queue - embedding workers own the write)
+            int actualVectorIndexed = 0;
+            if (actualEmbeddingDone && embeddings != null && !embeddings.isEmpty()) {
+                try {
+                    // Write directly to vector store - this is the new simplified architecture
+                    actualVectorIndexed = indexerService.indexToVectorStoreOnly(actualBatch, embeddings);
+                    if (actualVectorIndexed != actualBatch.size()) {
+                        logger.debug("Batch {}: Vector store indexed {} vs {} expected",
+                                batchNum, actualVectorIndexed, actualBatch.size());
                     }
+
+                    // Mark indexed chunks in checkpoint service for resume support
+                    if (checkpointService != null && actualVectorIndexed > 0) {
+                        List<String> indexedIds = actualBatch.stream()
+                                .map(RetrievedDoc::getId)
+                                .filter(id -> id != null)
+                                .toList();
+                        if (!indexedIds.isEmpty()) {
+                            checkpointService.markIndexed(indexedIds);
+                            logger.debug("Batch {}: Marked {} chunk IDs as indexed in checkpoint",
+                                    batchNum, indexedIds.size());
+                        }
+                    }
+                } catch (java.io.IOException e) {
+                    logger.error("Batch {}: Vector store write failed: {}", batchNum, e.getMessage());
+                    throw new RuntimeException("Vector store write failed", e);
                 }
-            }
-            if (!queued) {
-                logger.error("Batch {}: failed to queue after {} retries - indexing may have stalled",
-                        batchNum, maxRetries);
-                // Don't silently continue - propagate the failure
-                throw new RuntimeException("Embedded queue full - indexing pipeline stalled");
+            } else if (!actualEmbeddingDone) {
+                // Passthrough mode - no embeddings computed, indexer will handle embedding
+                // This path is for keyword-only mode or when embedding model is null
+                logger.debug("Batch {}: Passthrough mode (no embeddings), chunks will be indexed to Lucene only",
+                        batchNum);
             }
 
-            // Only count as "embedded" if actual embedding work was done
-            // If embeddingModel is null, indexer will handle embedding - don't double count
+            // Count as "embedded" (and written to vector store) if actual embedding work was done
             int processed;
             if (actualEmbeddingDone) {
-                processed = chunksEmbedded.addAndGet(batch.size());
-                workerProcessed.addAndGet(batch.size());
+                processed = chunksEmbedded.addAndGet(actualBatch.size());
+                workerProcessed.addAndGet(actualBatch.size());
+                logger.info("Batch {}: COUNTER_INCREMENTED - chunksEmbedded now {} (added {}), vectorIndexed={}",
+                        batchNum, processed, actualBatch.size(), actualVectorIndexed);
+
+                // Add to batch history ONLY after embedding succeeded
+                // This keeps batch history, chunksEmbedded counter, and worker stats in sync
+                addToBatchHistory(currentEmbeddingBatchMetrics);
+
+                // Track total tokens processed for this batch - ONLY use actual data
+                int batchTokens = (hasActualInfo && capturedBatchInfo != null)
+                        ? capturedBatchInfo.totalTokens()
+                        : 0; // NO ESTIMATES - use 0 if no actual data
+                if (batchTokens > 0) {
+                    tokensProcessed.addAndGet(batchTokens);
+                }
+
+                // === CHECKPOINT: Record progress for adaptive retry ===
+                // Get chunk indices from the batch (if available) for checkpoint tracking
+                ai.kompile.app.subprocess.IngestCheckpoint checkpoint =
+                        ai.kompile.app.subprocess.IngestSubprocessMain.getCurrentCheckpoint();
+                if (checkpoint != null) {
+                    // Record batch completion using global progress counter
+                    // The exact chunk indices don't matter as much as the count
+                    List<Integer> batchIndices = new ArrayList<>();
+                    int baseIndex = processed - actualBatch.size(); // Starting index for this batch
+                    for (int i = 0; i < actualBatch.size(); i++) {
+                        batchIndices.add(baseIndex + i);
+                    }
+                    checkpoint.markChunksEmbedded(batchIndices);
+                    checkpoint.markChunksIndexed(batchIndices);
+                    checkpoint.markBatchCompleted(batchNum);
+
+                    // Save checkpoint periodically (every 5 batches or if batch is large)
+                    if (batchNum % 5 == 0 || actualBatch.size() >= 50) {
+                        ai.kompile.app.subprocess.IngestSubprocessMain.saveCheckpoint();
+                        logger.debug("Checkpoint saved at batch {}, {} chunks processed", batchNum, processed);
+                    }
+                }
             } else {
-                // Passthrough mode - chunks go directly to indexer for embedding
-                // Don't increment chunksEmbedded here - it will be counted when indexed
-                // (see passthrough handling in processIndexBatchForWorker)
+                // Passthrough mode - chunks are not embedded, only indexed to Lucene
                 processed = chunksEmbedded.get();
                 // Still count as processed by this worker for status display
-                workerProcessed.addAndGet(batch.size());
+                workerProcessed.addAndGet(actualBatch.size());
             }
 
-            // Update worker status with throughput
+            // Update worker status with throughput (use displayBatchNum for UI)
             String statusText = actualEmbeddingDone
-                    ? String.format("batch %d (%d @ %.1f/s)", batchNum, batch.size(), batchThroughput)
-                    : String.format("batch %d (%d passthrough)", batchNum, batch.size());
+                    ? String.format("batch %d (%d @ %.1f/s)", displayBatchNum, batch.size(), batchThroughput)
+                    : String.format("batch %d (%d passthrough)", displayBatchNum, batch.size());
             workerStatuses.put(workerKey,
                     PipelineProgress.WorkerStatus.processing(workerId, "embedding",
                             workerProcessed.get(), batch.size(), batchThroughput, statusText));
@@ -1602,56 +2407,103 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int total = chunksCreated.get();
             if (total > 0) {
                 // Always report as "embedding" phase so frontend shows correct UI state
-                // Even in passthrough mode, we're still in the embedding phase of the pipeline
-                int embeddedQueuedCount = actualEmbeddingDone ? processed : embeddedQueue.size();
-                int endProgressPercent = total > 0 ? Math.min(95, (embeddedQueuedCount * 100) / total) : 0;
+                // processed = total chunks embedded and written to vector store so far
+                int endProgressPercent = total > 0 ? Math.min(95, (processed * 100) / total) : 0;
 
-                // Update batch metrics for END state
+                // Update batch metrics for END state - use capturedBatchInfo we saved earlier
+                String endInputShape = "[" + batch.size() + " x " + actualMaxSeqLen + "]";
+                String endOutputShape = "[" + batch.size() + " x " + embeddingDimension + "]";
+
+                // Use the batch info we captured immediately after encoding (capturedBatchInfo)
+                // This avoids race conditions with other workers
+                String actualEndInputShape = hasActualInfo ? capturedBatchInfo.inputShapeString() : endInputShape;
+                String actualEndOutputShape = hasActualInfo ? capturedBatchInfo.outputShapeString() : endOutputShape;
+
+                // ONLY use actual token count from encoder - NO ESTIMATES
+                int actualTokensForEnd = hasActualInfo ? capturedBatchInfo.totalTokens() : 0;
                 currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
-                        .batchNumber(batchNum)
+                        .batchNumber(displayBatchNum)
                         .totalBatches(estimatedTotalBatches)
                         .inputTexts(batch.size())
-                        .inputTokens(0) // Already processed
-                        .maxSequenceLength(0)
-                        .avgSequenceLength(0)
+                        .inputTokens(actualTokensForEnd)
+                        .maxSequenceLength(hasActualInfo ? capturedBatchInfo.maxSeqLength() : actualMaxSeqLen)
+                        .avgSequenceLength(hasActualInfo && capturedBatchInfo.numChunks() > 0
+                                ? capturedBatchInfo.totalTokens() / capturedBatchInfo.numChunks() : 0)
                         .outputVectors(actualEmbeddingDone ? batch.size() : 0)
-                        .embeddingDimension(embeddingDimension)
+                        .embeddingDimension(hasActualInfo ? capturedBatchInfo.embeddingDim() : embeddingDimension)
                         .outputSizeBytes(outputSizeBytes)
-                        .inferenceTimeMs(actualEmbeddingDone ? totalBatchTime : 0)
+                        .tokenizationTimeMs(hasActualInfo ? capturedBatchInfo.tokenizeTimeMs() : 0)
+                        .inferenceTimeMs(hasActualInfo ? capturedBatchInfo.forwardPassTimeMs() : (actualEmbeddingDone ? totalBatchTime : 0))
                         .totalBatchTimeMs(totalBatchTime)
+                        .paddingTimeMs(hasActualInfo ? capturedBatchInfo.paddingTimeMs() : 0)
+                        .tensorCreationTimeMs(hasActualInfo ? capturedBatchInfo.tensorCreationTimeMs() : 0)
+                        .forwardPassTimeMs(hasActualInfo ? capturedBatchInfo.forwardPassTimeMs() : 0)
+                        .extractionTimeMs(hasActualInfo ? capturedBatchInfo.extractionTimeMs() : 0)
                         .currentStep("COMPLETE")
                         .heartbeatSeconds(0)
                         .stepStartTimeMs(0)
                         .isStuck(false)
-                        .tokensPerSecond(0)
-                        .embeddingsPerSecond(batchThroughput)
-                        .batchThroughput(batchThroughput)
+                        .tokensPerSecond(hasActualInfo ? capturedBatchInfo.tokensPerSecond() : 0)
+                        .embeddingsPerSecond(hasActualInfo ? capturedBatchInfo.chunksPerSecond() : batchThroughput)
+                        .batchThroughput(hasActualInfo ? capturedBatchInfo.chunksPerSecond() : batchThroughput)
                         .modelName(modelName)
                         .deviceType("CPU")
+                        .isBatched(true)
+                        .inputTensorShape(endInputShape)
+                        .outputTensorShape(endOutputShape)
+                        .actualInputShape(actualEndInputShape)
+                        .actualOutputShape(actualEndOutputShape)
                         .statusLevel("COMPLETE")
+                        .passageTokenCounts(hasActualInfo ? capturedBatchInfo.passageTokenCounts() : null)
                         .build();
 
                 reportProgressWithWorkers("embedding", endProgressPercent,
                         String.format("END BATCH %d: %s %d chunks in %dms (%.1f/s) [%d/%d total, dim=%d]",
                                 batchNum,
-                                actualEmbeddingDone ? "Embedded" : "Queued",
+                                actualEmbeddingDone ? "Embedded+Indexed" : "Skipped",
                                 batch.size(), totalBatchTime, batchThroughput,
-                                embeddedQueuedCount, total, embeddingDimension));
+                                processed, total, embeddingDimension));
             }
             // === END END BATCH ===
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         } catch (OutOfMemoryError oom) {
-            // Handle OOM gracefully - log, trigger GC, and continue with next batch
-            logger.error("OUT OF MEMORY in embedding worker {} processing batch {} ({} chunks)! " +
-                    "Consider reducing batch size (current: {}) or increasing heap (-Xmx).",
-                    workerId, batchNum, batch.size(), batchSize);
-            // Try to recover some memory
-            System.gc();
-            // Update last error for progress reporting
-            lastError = "OutOfMemoryError in batch " + batchNum + " - reduce batch size or increase heap";
+            // FAIL FAST: In-process OOM recovery is unreliable.
+            // Let the subprocess crash cleanly so the parent can restart with reduced settings.
+            // The parent process will use checkpoint to resume from last completed batch.
+            logger.error("====================================================================");
+            logger.error("OUT OF MEMORY in worker {} batch {} with {} chunks", workerId, batchNum, batch.size());
+            logger.error("====================================================================");
+            logger.error("Heap status: max={}MB, used={}MB, free={}MB",
+                    Runtime.getRuntime().maxMemory() / (1024 * 1024),
+                    (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024 * 1024),
+                    Runtime.getRuntime().freeMemory() / (1024 * 1024));
+            logger.error("OOM message: {}", oom.getMessage());
+            logger.error("The subprocess will exit. Parent process will restart with reduced settings.");
+            logger.error("====================================================================");
+
+            lastError = "OutOfMemoryError in batch " + batchNum;
+            // Throw to crash the subprocess cleanly - parent will restart with lower settings
+            throw new RuntimeException("OutOfMemoryError in batch " + batchNum + " - subprocess will restart with reduced settings", oom);
+        } catch (RuntimeException re) {
+            // FAIL-FAST: All exceptions propagate immediately to fail the pipeline
+            // Check if this is wrapping an OOM
+            Throwable cause = re.getCause();
+            while (cause != null) {
+                if (cause instanceof OutOfMemoryError) {
+                    logger.error("OUT OF MEMORY (wrapped) in batch {}: {} - subprocess will restart",
+                            batchNum, cause.getMessage());
+                    lastError = cause.getMessage();
+                    throw re;
+                }
+                cause = cause.getCause();
+            }
+            logger.error("Embedding batch {} failed: {}", batchNum, re.getMessage(), re);
+            lastError = re.getMessage();
+            throw re;
         } catch (Exception e) {
-            logger.error("Embedding batch failed: {}", e.getMessage(), e);
+            // FAIL-FAST: All exceptions propagate immediately to fail the pipeline
+            logger.error("Embedding batch {} failed: {}", batchNum, e.getMessage(), e);
+            lastError = e.getMessage();
+            throw new RuntimeException("Embedding batch " + batchNum + " failed: " + e.getMessage(), e);
         }
     }
 
@@ -1712,11 +2564,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
             final int avgTextLength = texts.stream().mapToInt(String::length).sum() / Math.max(1, texts.size());
             final int maxTextLength = texts.stream().mapToInt(String::length).max().orElse(0);
             final int totalChars = texts.stream().mapToInt(String::length).sum();
-            final int estimatedTokens = totalChars / 4; // ~4 chars per token
-            // Estimate input tensor shape: [batch_size, max_seq_length]
-            // BERT models typically cap at 512 tokens, so estimate max sequence length
-            final int estimatedMaxSeqLen = Math.min(512, (maxTextLength / 4) + 2); // +2 for [CLS] and [SEP]
-            final int estimatedAvgSeqLen = Math.min(512, (avgTextLength / 4) + 2);
+            // NO ESTIMATES - will get actual data from encoder
             // Get embedding dimension for output tensor shape
             final int embeddingDim = embeddingModel.dimensions();
 
@@ -1797,80 +2645,131 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             int memoryPercent = (int) ((usedMemoryMB * 100) / maxMemoryMB);
 
                             // Update metrics for real-time UI display
-                            // Calculate estimated total batches based on chunks created
+                            // Use fixed total batches if set, otherwise calculate
                             int totalChunks = chunksCreated.get();
                             int currentBatch = embeddingBatchesProcessed.get();
-                            int estimatedTotal = totalChunks > 0
-                                    ? Math.max(currentBatch, (totalChunks + batchSize - 1) / batchSize)
-                                    : currentBatch;
+                            int displayBatch = currentBatch + resumedBatchOffset.get();  // Offset for resume
+                            int estimatedTotal = fixedTotalBatches.get() > 0
+                                    ? fixedTotalBatches.get()
+                                    : (totalChunks > 0
+                                            ? Math.max(displayBatch, (totalChunks + batchSize - 1) / batchSize)
+                                            : displayBatch);
 
-                            // Estimate remaining time if we have completed batches
+                            // Estimate remaining time using TOTAL pipeline elapsed time and completed batches
+                            // NOT current batch elapsed (which would cause ETA to increase as batch takes longer)
                             String etaInfo = "";
-                            if (currentBatch > 1 && estimatedTotal > currentBatch) {
-                                // Use average time per batch from previous batches (rough estimate)
-                                int remainingBatches = estimatedTotal - currentBatch;
-                                // Assume current batch time is representative
-                                long estRemainingMs = elapsed * remainingBatches;
-                                if (estRemainingMs > 60000) {
-                                    etaInfo = String.format(" | ETA: ~%dm", estRemainingMs / 60000);
-                                } else if (estRemainingMs > 0) {
-                                    etaInfo = String.format(" | ETA: ~%ds", estRemainingMs / 1000);
+                            if (displayBatch > 0 && estimatedTotal > displayBatch) {
+                                int remainingBatches = estimatedTotal - displayBatch;
+                                // Use total pipeline elapsed time divided by completed batches for average
+                                long totalPipelineElapsed = System.currentTimeMillis() - startTimeMs.get();
+                                if (totalPipelineElapsed > 0 && currentBatch > 0) {
+                                    long avgBatchTimeMs = totalPipelineElapsed / currentBatch;
+                                    long estRemainingMs = avgBatchTimeMs * remainingBatches;
+                                    if (estRemainingMs > 3600000) { // > 1 hour
+                                        etaInfo = String.format(" | ETA: ~%dh %dm", estRemainingMs / 3600000, (estRemainingMs % 3600000) / 60000);
+                                    } else if (estRemainingMs > 60000) {
+                                        etaInfo = String.format(" | ETA: ~%dm", estRemainingMs / 60000);
+                                    } else if (estRemainingMs > 0) {
+                                        etaInfo = String.format(" | ETA: ~%ds", estRemainingMs / 1000);
+                                    }
                                 }
                             }
 
                             // Get actual batch info from embedding model if available
+                            // Poll a few times briefly to wait for actual shapes (encoder may be tokenizing)
                             EmbeddingModel.BatchInfo actualBatchInfo = embeddingModel.getCurrentBatchInfo();
-                            boolean hasActualInfo = actualBatchInfo != null && actualBatchInfo.numChunks() > 0;
+                            boolean hasActualInfo = actualBatchInfo != null
+                                    && actualBatchInfo.numChunks() > 0
+                                    && actualBatchInfo.inputShape() != null
+                                    && actualBatchInfo.inputShape().length > 0;
 
-                            // Build tensor shape strings
-                            String inputShape = hasActualInfo ? actualBatchInfo.inputShapeString()
-                                    : "[" + batchSize + ", " + estimatedMaxSeqLen + "]";
-                            String outputShape = hasActualInfo ? actualBatchInfo.outputShapeString()
-                                    : "[" + batchSize + ", " + embeddingDim + "]";
-
-                            // Build ETA message
-                            String etaMsg = "";
-                            if (currentBatch > 1 && estimatedTotal > currentBatch) {
-                                int remainingBatches = estimatedTotal - currentBatch;
-                                long estRemainingMs = elapsed * remainingBatches;
-                                if (estRemainingMs > 60000) {
-                                    etaMsg = String.format("~%dm remaining", estRemainingMs / 60000);
-                                } else if (estRemainingMs > 0) {
-                                    etaMsg = String.format("~%ds remaining", estRemainingMs / 1000);
+                            // If we don't have actual info yet, wait briefly and retry (encoder may be tokenizing)
+                            if (!hasActualInfo && actualBatchInfo != null && "TOKENIZING".equals(actualBatchInfo.step())) {
+                                for (int retry = 0; retry < 3 && !hasActualInfo; retry++) {
+                                    try {
+                                        Thread.sleep(100); // Brief wait for tokenization to complete
+                                    } catch (InterruptedException ie) {
+                                        Thread.currentThread().interrupt();
+                                        break;
+                                    }
+                                    actualBatchInfo = embeddingModel.getCurrentBatchInfo();
+                                    hasActualInfo = actualBatchInfo != null
+                                            && actualBatchInfo.numChunks() > 0
+                                            && actualBatchInfo.inputShape() != null
+                                            && actualBatchInfo.inputShape().length > 0;
                                 }
                             }
 
+                            // Build tensor shape strings - ONLY use actual from encoder, NO ESTIMATES
+                            // If no actual info, show explicit "WAITING" to indicate data not yet available
+                            String inputShape = hasActualInfo ? actualBatchInfo.inputShapeString() : "[WAITING]";
+                            String outputShape = hasActualInfo ? actualBatchInfo.outputShapeString() : "[WAITING]";
+
+                            // Build ETA message using total pipeline elapsed time (not current batch elapsed)
+                            String etaMsg = "";
+                            if (currentBatch > 0 && estimatedTotal > currentBatch) {
+                                int remainingBatches = estimatedTotal - currentBatch;
+                                long totalPipelineElapsedForMsg = System.currentTimeMillis() - startTimeMs.get();
+                                if (totalPipelineElapsedForMsg > 0) {
+                                    long avgBatchTimeMsForMsg = totalPipelineElapsedForMsg / currentBatch;
+                                    long estRemainingMs = avgBatchTimeMsForMsg * remainingBatches;
+                                    if (estRemainingMs > 3600000) {
+                                        etaMsg = String.format("~%dh %dm remaining", estRemainingMs / 3600000, (estRemainingMs % 3600000) / 60000);
+                                    } else if (estRemainingMs > 60000) {
+                                        etaMsg = String.format("~%dm remaining", estRemainingMs / 60000);
+                                    } else if (estRemainingMs > 0) {
+                                        etaMsg = String.format("~%ds remaining", estRemainingMs / 1000);
+                                    }
+                                }
+                            }
+
+                            // ========== USE ACTUAL TIMING FROM ENCODER'S BATCHINFO ==========
+                            // ONLY use real data from encoder - NO ESTIMATES
+                            // If no actual info, use 0 or "WAITING" to indicate data not available
+                            long actualTokenizeTimeMs = hasActualInfo ? actualBatchInfo.tokenizeTimeMs() : 0;
+                            long actualPaddingTimeMs = hasActualInfo ? actualBatchInfo.paddingTimeMs() : 0;
+                            long actualTensorTimeMs = hasActualInfo ? actualBatchInfo.tensorCreationTimeMs() : 0;
+                            long actualForwardPassTimeMs = hasActualInfo ? actualBatchInfo.forwardPassTimeMs() : 0;
+                            long actualExtractTimeMs = hasActualInfo ? actualBatchInfo.extractionTimeMs() : 0;
+                            long actualTotalTimeMs = hasActualInfo ? actualBatchInfo.totalTimeMs() : 0;
+                            double actualTokPerSec = hasActualInfo ? actualBatchInfo.tokensPerSecond() : 0;
+                            double actualChunksPerSec = hasActualInfo ? actualBatchInfo.chunksPerSecond() : 0;
+                            String actualStep = hasActualInfo ? actualBatchInfo.step() : "WAITING_FOR_ENCODER";
+                            int actualTokens = hasActualInfo ? actualBatchInfo.totalTokens() : 0;
+                            int actualNumChunks = hasActualInfo ? actualBatchInfo.numChunks() : 0;
+
                             currentEmbeddingBatchMetrics = PipelineProgress.EmbeddingBatchMetrics.builder()
-                                    .batchNumber(currentBatch)
+                                    .batchNumber(displayBatch)  // Use display batch for UI
                                     .totalBatches(estimatedTotal)
-                                    .inputTexts(batchSize)
-                                    .inputTokens(estimatedTokens)
-                                    .maxSequenceLength(estimatedMaxSeqLen)
-                                    .avgSequenceLength(estimatedAvgSeqLen)
-                                    .outputVectors(batchSize) // Each chunk produces one embedding vector
-                                    .embeddingDimension(embeddingDim)
-                                    .outputSizeBytes((long) batchSize * embeddingDim * 4) // 4 bytes per float
-                                    // Timing - still in progress
-                                    .tokenizationTimeMs(0)
-                                    .inferenceTimeMs(elapsed)
-                                    .totalBatchTimeMs(elapsed)
-                                    .paddingTimeMs(0)
-                                    .tensorCreationTimeMs(0)
-                                    .forwardPassTimeMs(elapsed)
-                                    .extractionTimeMs(0)
+                                    .inputTexts(hasActualInfo ? actualNumChunks : batchSize) // Use actual OR known batch size
+                                    .inputTokens(actualTokens) // 0 if no actual data
+                                    .maxSequenceLength(hasActualInfo ? actualBatchInfo.maxSeqLength() : 0)
+                                    .avgSequenceLength(hasActualInfo && actualBatchInfo.numChunks() > 0
+                                            ? actualBatchInfo.totalTokens() / actualBatchInfo.numChunks() : 0)
+                                    .outputVectors(actualNumChunks) // 0 if no actual data
+                                    .embeddingDimension(hasActualInfo ? actualBatchInfo.embeddingDim() : 0)
+                                    .outputSizeBytes(hasActualInfo ? (long) actualNumChunks * actualBatchInfo.embeddingDim() * 4 : 0)
+                                    // ========== ACTUAL TIMING FROM ENCODER ==========
+                                    .tokenizationTimeMs(actualTokenizeTimeMs)
+                                    .inferenceTimeMs(actualForwardPassTimeMs)  // Use forward pass as primary inference time
+                                    .totalBatchTimeMs(actualTotalTimeMs) // NO FALLBACK - use actual or 0
+                                    .paddingTimeMs(actualPaddingTimeMs)
+                                    .tensorCreationTimeMs(actualTensorTimeMs)
+                                    .forwardPassTimeMs(actualForwardPassTimeMs)
+                                    .extractionTimeMs(actualExtractTimeMs)
                                     // Heartbeat/liveness - key info for UI
-                                    .currentStep("FORWARD_PASS")
+                                    .currentStep(actualStep)
                                     .heartbeatSeconds(heartbeatSecs)
-                                    .stepStartTimeMs(startTime)
+                                    .stepStartTimeMs(hasActualInfo ? actualBatchInfo.stepStartTimeMs() : startTime)
                                     .isStuck(isStuck)
-                                    // Throughput - 0 until complete
-                                    .tokensPerSecond(0)
-                                    .embeddingsPerSecond(0)
-                                    .batchThroughput(0)
+                                    // ========== ACTUAL THROUGHPUT FROM ENCODER ==========
+                                    .tokensPerSecond(actualTokPerSec)
+                                    .embeddingsPerSecond(actualChunksPerSec)  // chunks/sec = embeddings/sec
+                                    .batchThroughput(actualChunksPerSec)
                                     .modelName(modelName)
                                     .deviceType("CPU")
                                     .isBatched(true)
-                                    // ========== NEW DETAILED FIELDS ==========
+                                    // ========== SOURCE AND SHAPE INFO ==========
                                     // Source documents
                                     .sourceDocuments(sourcesStr)
                                     .sourceDocumentCount(sourceDocuments.size())
@@ -1882,6 +2781,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                     // Status
                                     .statusLevel(statusLevel)
                                     .etaMessage(etaMsg)
+                                    // Per-passage token counts
+                                    .passageTokenCounts(hasActualInfo ? actualBatchInfo.passageTokenCounts() : null)
                                     .build();
 
                             // Detailed console output for long-running batches
@@ -1908,17 +2809,28 @@ public class ParallelIngestPipeline implements AutoCloseable {
                                 logMsg.append(actualBatchInfo.embeddingDim()).append("-dim embeddings (ACTUAL)");
                                 logMsg.append("\n    Token Stats: ").append(actualBatchInfo.totalTokens())
                                         .append(" tokens total (ACTUAL)");
+                                // ========== TIMING BREAKDOWN FROM ENCODER ==========
+                                if (actualBatchInfo.tokenizeTimeMs() > 0 || actualBatchInfo.forwardPassTimeMs() > 0) {
+                                    logMsg.append("\n    TIMING: Tokenize=").append(actualBatchInfo.tokenizeTimeMs()).append("ms");
+                                    logMsg.append(" | Pad=").append(actualBatchInfo.paddingTimeMs()).append("ms");
+                                    logMsg.append(" | Tensor=").append(actualBatchInfo.tensorCreationTimeMs()).append("ms");
+                                    logMsg.append(" | FORWARD=").append(actualBatchInfo.forwardPassTimeMs()).append("ms");
+                                    logMsg.append(" | Extract=").append(actualBatchInfo.extractionTimeMs()).append("ms");
+                                    if (actualBatchInfo.totalTimeMs() > 0) {
+                                        logMsg.append(" | TOTAL=").append(actualBatchInfo.totalTimeMs()).append("ms");
+                                    }
+                                }
+                                if (actualBatchInfo.tokensPerSecond() > 0) {
+                                    logMsg.append("\n    THROUGHPUT: ").append(String.format("%.1f", actualBatchInfo.tokensPerSecond())).append(" tok/sec");
+                                    logMsg.append(" | ").append(String.format("%.2f", actualBatchInfo.chunksPerSecond())).append(" chunks/sec");
+                                }
                             } else {
-                                logMsg.append("\n    Input Tensor:  [").append(batchSize).append(", ")
-                                        .append(estimatedMaxSeqLen).append("]");
-                                logMsg.append(" = ").append(batchSize).append(" chunks × ").append(estimatedMaxSeqLen)
-                                        .append(" max tokens/chunk (estimated)");
-                                logMsg.append("\n    Output Tensor: [").append(batchSize).append(", ")
-                                        .append(embeddingDim).append("]");
-                                logMsg.append(" = ").append(batchSize).append(" chunks × ").append(embeddingDim)
-                                        .append("-dim embeddings (estimated)");
-                                logMsg.append("\n    Token Stats: ~").append(estimatedTokens)
-                                        .append(" tokens total (estimated)");
+                                // NO ACTUAL DATA FROM ENCODER - show explicit waiting state
+                                String stepInfo = (actualBatchInfo != null && actualBatchInfo.step() != null)
+                                        ? actualBatchInfo.step() : "WAITING_FOR_ENCODER";
+                                logMsg.append("\n    Input Tensor:  [WAITING] - encoder not yet reporting");
+                                logMsg.append("\n    Output Tensor: [WAITING] - encoder not yet reporting");
+                                logMsg.append("\n    Token Stats: WAITING - (").append(stepInfo).append(")");
                             }
                             logMsg.append("\n    Char Stats:  ").append(totalChars).append(" chars total");
                             logMsg.append(", avg ").append(avgTextLength).append(" chars/chunk");
@@ -1945,16 +2857,13 @@ public class ParallelIngestPipeline implements AutoCloseable {
                             if (!statusLevel.equals("RUNNING")) {
                                 uiStatus.append(" [").append(statusLevel).append("]");
                             }
-                            // Show tensor shapes for SLOW or worse batches - use actual if available
+                            // Show tensor shapes for SLOW or worse batches - ONLY actual, NO ESTIMATES
                             if (!statusLevel.equals("RUNNING") && !statusLevel.equals("PROCESSING")) {
                                 if (hasActualInfo) {
                                     uiStatus.append(" | ").append(actualBatchInfo.inputShapeString());
                                     uiStatus.append("→").append(actualBatchInfo.outputShapeString());
                                 } else {
-                                    uiStatus.append(" | [").append(batchSize).append("×").append(estimatedMaxSeqLen)
-                                            .append("]");
-                                    uiStatus.append("→[").append(batchSize).append("×").append(embeddingDim)
-                                            .append("]");
+                                    uiStatus.append(" | [WAITING]→[WAITING]");
                                 }
                             }
                             // Show source files for slow batches
@@ -1991,8 +2900,9 @@ public class ParallelIngestPipeline implements AutoCloseable {
             List<float[]> embeddings;
 
             // Use timeout to prevent indefinite blocking on native calls
-            // Default: 5 minutes per batch (adjust based on batch size and hardware)
-            final long EMBED_TIMEOUT_MS = 5 * 60 * 1000L; // 5 minutes
+            // Configurable via pipelineConfig.embeddingTimeoutSeconds() (0 = no timeout)
+            final int timeoutSeconds = pipelineConfig.embeddingTimeoutSeconds();
+            final long EMBED_TIMEOUT_MS = timeoutSeconds > 0 ? timeoutSeconds * 1000L : Long.MAX_VALUE;
 
             // Submit embedding to a separate thread with timeout
             final List<String> finalTexts = texts;
@@ -2014,8 +2924,16 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     embedFuture.cancel(true);  // Try to interrupt
 
                     // Log detailed info about the problematic batch
-                    logger.error("EMBEDDING TIMEOUT after {}ms for batch of {} texts!",
+                    logger.error("=======================================================================");
+                    logger.error("FATAL: EMBEDDING TIMEOUT after {}ms for batch of {} texts!",
                             EMBED_TIMEOUT_MS, texts.size());
+                    logger.error("=======================================================================");
+                    logger.error("The embedding model took too long to process this batch.");
+                    logger.error("This typically indicates:");
+                    logger.error("  1. The embedding model is not properly initialized");
+                    logger.error("  2. The model is too large for available memory");
+                    logger.error("  3. The batch size is too large");
+                    logger.error("  4. A deadlock in the native code");
                     logger.error("Batch details: avgLen={}, maxLen={}, minLen={}",
                             texts.stream().mapToInt(String::length).average().orElse(0),
                             texts.stream().mapToInt(String::length).max().orElse(0),
@@ -2030,31 +2948,44 @@ public class ParallelIngestPipeline implements AutoCloseable {
                         logger.error("  Text[{}] preview: {}", i, preview.replace("\n", "\\n"));
                     }
 
-                    System.err.println("[EMBEDDING-TIMEOUT] Batch timed out after " + EMBED_TIMEOUT_MS +
-                            "ms - skipping batch of " + texts.size() + " texts");
+                    // Create a clear error message for the user
+                    String errorMsg = String.format(
+                        "EMBEDDING TIMEOUT: The embedding model failed to respond after %d seconds for a batch of %d texts. " +
+                        "This usually means the model is stuck or not properly initialized. " +
+                        "Try: (1) Restart the application, (2) Reduce batch size, (3) Check available memory, " +
+                        "(4) Increase timeout in Processing Settings.",
+                        timeoutSeconds, texts.size());
+
+                    // Set lastError so it gets propagated to the user
+                    lastError = errorMsg;
+
+                    System.err.println("=======================================================================");
+                    System.err.println("[EMBEDDING-TIMEOUT] FATAL ERROR - " + errorMsg);
+                    System.err.println("=======================================================================");
                     System.err.flush();
 
-                    // Return null to skip this batch - pipeline will continue with next batch
-                    return null;
+                    // FAIL LOUDLY: Throw exception instead of silently skipping
+                    // This will cause the pipeline to fail and report the error to the user
+                    throw new RuntimeException(errorMsg, te);
                 } catch (java.util.concurrent.ExecutionException ee) {
-                    // Fix: Handle OutOfMemoryError and other Errors properly
-                    // OutOfMemoryError extends Error, not Exception, so casting to Exception fails
                     Throwable cause = ee.getCause();
-                    if (cause instanceof OutOfMemoryError) {
-                        logger.error("OUT OF MEMORY during embedding batch of {} texts! " +
-                                "Consider reducing batch size or increasing heap.", texts.size());
-                        // Return null to skip this batch gracefully instead of crashing
-                        return null;
+                    if (cause instanceof OutOfMemoryError oom) {
+                        // FAIL FAST: In-process OOM recovery is unreliable.
+                        // Let the subprocess crash so parent can restart with reduced settings.
+                        logger.error("OUT OF MEMORY during embedding {} texts - subprocess will restart", texts.size());
+                        lastError = "OutOfMemoryError during embedding";
+                        throw new RuntimeException("OutOfMemoryError during embedding - subprocess will restart with reduced settings", oom);
                     } else if (cause instanceof Error) {
-                        // Other errors (StackOverflowError, etc.) - log and skip batch
+                        // Other errors (StackOverflowError, etc.) - fail fast
                         logger.error("Critical error during embedding: {}", cause.getClass().getSimpleName(), cause);
-                        return null;
+                        throw new RuntimeException("Critical error: " + cause.getMessage(), cause);
                     } else if (cause instanceof Exception) {
                         throw (Exception) cause;
                     } else if (cause != null) {
                         throw new RuntimeException("Embedding failed", cause);
+                    } else {
+                        throw ee;
                     }
-                    throw ee;
                 }
             } finally {
                 inferenceComplete.set(true);
@@ -2074,10 +3005,33 @@ public class ParallelIngestPipeline implements AutoCloseable {
             logger.info("generateEmbeddingsOptimized: embedBatch returned {} embeddings in {}ms",
                     embeddings != null ? embeddings.size() : 0, elapsed);
 
-            // Validate we got the expected number of embeddings
+            // Validate we got the expected number of embeddings - FAIL LOUDLY if not
             if (embeddings == null || embeddings.isEmpty()) {
-                logger.warn("Embedding model returned null or empty for batch of {} texts", texts.size());
-                return null;
+                String errorMsg = String.format(
+                    "EMBEDDING FAILURE: Embedding model returned %s for batch of %d texts. " +
+                    "The embedding model failed to generate embeddings. " +
+                    "Check the embedding model logs for errors. Model: %s",
+                    embeddings == null ? "NULL" : "EMPTY LIST",
+                    texts.size(),
+                    embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "NULL");
+
+                logger.error("=======================================================================");
+                logger.error("FATAL: {}", errorMsg);
+                logger.error("=======================================================================");
+                logger.error("Check embedding model logs for errors. Model class: {}, initialized: {}",
+                        embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "NULL",
+                        embeddingModel != null);
+
+                // Set lastError so it gets propagated to the user
+                lastError = errorMsg;
+
+                System.err.println("=======================================================================");
+                System.err.println("[EMBEDDING-FAILURE] FATAL ERROR - " + errorMsg);
+                System.err.println("=======================================================================");
+                System.err.flush();
+
+                // FAIL LOUDLY: Throw exception instead of silently returning null
+                throw new RuntimeException(errorMsg);
             }
 
             if (embeddings.size() != chunks.size()) {
@@ -2098,306 +3052,35 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
             return embeddings;
         } catch (OutOfMemoryError oom) {
-            // Catch OOM at the outer level too (not wrapped in ExecutionException)
-            logger.error("OUT OF MEMORY in generateEmbeddingsOptimized for {} texts! " +
-                    "Heap exhausted - reduce batch size or increase -Xmx", chunks.size());
-            // Attempt to free memory by suggesting GC (may help in some cases)
-            System.gc();
-            return null;
+            // FAIL FAST: In-process OOM recovery is unreliable.
+            // Let the subprocess crash so parent can restart with reduced settings.
+            logger.error("OUT OF MEMORY during embedding {} chunks - subprocess will restart", chunks.size());
+            lastError = "OutOfMemoryError during embedding";
+            throw new RuntimeException("OutOfMemoryError during embedding - subprocess will restart with reduced settings", oom);
+        } catch (RuntimeException re) {
+            // FAIL-FAST: All exceptions propagate immediately to fail the pipeline
+            // Check if this is wrapping an OOM
+            Throwable cause = re.getCause();
+            while (cause != null) {
+                if (cause instanceof OutOfMemoryError) {
+                    logger.error("OUT OF MEMORY (wrapped) during embedding: {} - subprocess will restart", cause.getMessage());
+                    throw re;
+                }
+                cause = cause.getCause();
+            }
+            logger.error("Failed to generate embeddings: {}", re.getMessage(), re);
+            throw re;
         } catch (Exception e) {
+            // FAIL-FAST: All exceptions propagate immediately to fail the pipeline
             logger.error("Failed to generate embeddings: {}", e.getMessage(), e);
-            return null;
+            throw new RuntimeException("Embedding failed: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * Start multiple indexing workers that consume from embeddedQueue concurrently.
-     * Multiple workers improve throughput by processing batches in parallel.
-     */
-    private Future<List<String>> startIndexingWorker() {
-        // Initialize all indexing worker statuses
-        for (int i = 0; i < indexingParallelism; i++) {
-            workerStatuses.put("index-" + i, PipelineProgress.WorkerStatus.idle(i, "indexing"));
-        }
-
-        // Thread-safe collection for aggregating results from all workers
-        List<String> aggregatedProcessedIds = Collections.synchronizedList(new ArrayList<>());
-        // Track per-worker processed counts
-        ConcurrentHashMap<Integer, AtomicInteger> perWorkerProcessed = new ConcurrentHashMap<>();
-
-        // Start multiple indexing workers
-        List<CompletableFuture<Void>> workerFutures = new ArrayList<>(indexingParallelism);
-
-        for (int workerIdx = 0; workerIdx < indexingParallelism; workerIdx++) {
-            final int workerId = workerIdx;
-            final String workerKey = "index-" + workerId;
-            perWorkerProcessed.put(workerId, new AtomicInteger(0));
-
-            CompletableFuture<Void> workerFuture = CompletableFuture.runAsync(() -> {
-                logger.info("Indexing worker {} started on thread {}", workerId, Thread.currentThread().getName());
-                List<String> localProcessedIds = new ArrayList<>();
-
-                // Watchdog variables for robust exit detection
-                int consecutiveEmptyPolls = 0;
-                final int MAX_EMPTY_POLLS_AFTER_COMPLETE = 10; // 10 * 50ms = 500ms grace period
-
-                // Progress reporting while waiting - track last report time
-                long lastWaitingProgressReportMs = System.currentTimeMillis();
-                final long WAITING_PROGRESS_REPORT_INTERVAL_MS = 200; // Report every 200ms while waiting
-
-                while (!cancelled && !Thread.currentThread().isInterrupted()) {
-                    try {
-                        // Update status to waiting with cumulative throughput
-                        long elapsedMs = System.currentTimeMillis() - startTimeMs.get();
-                        int workerTotal = perWorkerProcessed.get(workerId).get();
-                        double cumulativeThroughput = elapsedMs > 0 ? (workerTotal * 1000.0 / elapsedMs) : 0;
-                        workerStatuses.put(workerKey,
-                                PipelineProgress.WorkerStatus.waitingWithThroughput(workerId, "indexing",
-                                        workerTotal, cumulativeThroughput));
-
-                        // Poll with timeout to check for completion
-                        EmbeddedBatch batch = embeddedQueue.poll(this.pipelineConfig.queuePollTimeoutMs(), TimeUnit.MILLISECONDS);
-
-                        if (batch != null) {
-                            // Reset watchdog on successful dequeue
-                            consecutiveEmptyPolls = 0;
-                            processIndexBatchForWorker(batch, localProcessedIds, workerId,
-                                    perWorkerProcessed.get(workerId));
-                            // Reset waiting report timer after processing
-                            lastWaitingProgressReportMs = System.currentTimeMillis();
-                        } else {
-                            // Queue was empty on this poll
-                            if (embeddingComplete) {
-                                consecutiveEmptyPolls++;
-                            }
-
-                            // Periodically report progress while waiting for work
-                            long now = System.currentTimeMillis();
-                            if (now - lastWaitingProgressReportMs >= WAITING_PROGRESS_REPORT_INTERVAL_MS) {
-                                lastWaitingProgressReportMs = now;
-                                int indexed = chunksIndexed.get();
-                                int total = chunksCreated.get();
-                                int progressPercent = total > 0 ? Math.min(99, (indexed * 100) / total) : 0;
-                                reportProgressWithWorkers("indexing", progressPercent,
-                                        String.format("Indexed %d/%d chunks (waiting for embeddings, queue=%d)",
-                                                indexed, total, embeddedQueue.size()));
-                            }
-                        }
-
-                        // Robust exit condition:
-                        // 1. Standard exit: embedding complete AND queue empty (checked atomically-ish)
-                        // 2. Watchdog exit: embedding complete AND multiple consecutive empty polls
-                        boolean queueEmpty = embeddedQueue.isEmpty();
-                        boolean standardExit = embeddingComplete && queueEmpty;
-                        boolean watchdogExit = embeddingComplete
-                                && consecutiveEmptyPolls >= MAX_EMPTY_POLLS_AFTER_COMPLETE;
-
-                        if (standardExit || watchdogExit) {
-                            // Double-check the queue is really empty before exiting
-                            if (embeddedQueue.isEmpty()) {
-                                if (watchdogExit && !standardExit) {
-                                    logger.info("Indexing worker {}: exiting via watchdog after {} empty polls",
-                                            workerId, consecutiveEmptyPolls);
-                                }
-                                break;
-                            } else {
-                                // Queue not empty after all - reset and continue
-                                consecutiveEmptyPolls = 0;
-                            }
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    } catch (OutOfMemoryError oom) {
-                        // Handle OOM gracefully - log, trigger GC, and try to continue
-                        logger.error("OUT OF MEMORY in indexing worker {} processing batch! " +
-                                "Consider reducing queue capacity or increasing heap (-Xmx).", workerId);
-                        // Try to recover some memory
-                        System.gc();
-                        lastError = "OutOfMemoryError in indexing worker " + workerId + " - increase heap";
-                        // Sleep briefly to let GC run
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    } catch (RuntimeException e) {
-                        logger.error("Indexing worker {}: error processing batch, continuing: {}",
-                                workerId, e.getMessage());
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    }
-                }
-
-                // Mark this worker as complete
-                long elapsed = System.currentTimeMillis() - startTimeMs.get();
-                int processed = perWorkerProcessed.get(workerId).get();
-                double throughput = elapsed > 0 ? (processed * 1000.0 / elapsed) : 0;
-                workerStatuses.put(workerKey,
-                        PipelineProgress.WorkerStatus.complete(workerId, "indexing", processed, throughput));
-
-                // Add local results to aggregated list
-                aggregatedProcessedIds.addAll(localProcessedIds);
-
-                logger.info("Indexing worker {} finished: {} documents indexed", workerId, localProcessedIds.size());
-            }, indexingExecutor);
-
-            workerFutures.add(workerFuture);
-        }
-
-        logger.info("Started {} indexing workers", indexingParallelism);
-
-        // Return a future that completes when ALL workers are done
-        return CompletableFuture.allOf(workerFutures.toArray(new CompletableFuture[0]))
-                .thenApply(v -> {
-                    logger.info("All {} indexing workers completed, total indexed: {}",
-                            indexingParallelism, aggregatedProcessedIds.size());
-                    return aggregatedProcessedIds;
-                });
-    }
-
-    /**
-     * Process an embedded batch for a specific worker (supports multiple concurrent
-     * workers).
-     */
-    private void processIndexBatchForWorker(EmbeddedBatch batch, List<String> processedIds,
-            int workerId, AtomicInteger workerProcessed) {
-        if (batch.chunks().isEmpty() || cancelled)
-            return;
-
-        String workerKey = "index-" + workerId;
-
-        try {
-            int batchNum = indexingBatchesProcessed.get() + 1;
-            int batchSize = batch.chunks().size();
-
-            // === BEGIN INDEX: Report batch indexing start ===
-            workerStatuses.put(workerKey,
-                    PipelineProgress.WorkerStatus.processing(workerId, "indexing",
-                            workerProcessed.get(), batchSize, 0,
-                            "batch " + batchNum));
-
-            int indexedBefore = chunksIndexed.get();
-            int totalChunks = chunksCreated.get();
-            String indexMode = vectorOnlyMode ? "vector-only" : (parallelIndexingEnabled ? "parallel" : "sequential");
-            int progressPercent = 60 + (totalChunks > 0 ? (int) ((indexedBefore / (double) totalChunks) * 35) : 0);
-            reportProgressWithWorkers("indexing", progressPercent,
-                    String.format("BEGIN INDEX batch %d: %d chunks (%s mode, worker %d) [indexed so far: %d/%d]",
-                            batchNum, batchSize, indexMode, workerId, indexedBefore, totalChunks));
-            // === END BEGIN INDEX ===
-
-            long batchStartTime = System.currentTimeMillis();
-
-            // Index the batch WITH pre-computed embeddings to avoid re-embedding
-            // Track ACTUAL persisted count, not just batch size sent
-            int actualVectorIndexed = 0;
-            // batchSize already declared at top of method
-
-            // VECTOR-ONLY MODE: Skip keyword indexing, only update vector store
-            // This is used when populating vector store from existing keyword index
-            if (vectorOnlyMode && batch.embeddings() != null && !batch.embeddings().isEmpty()) {
-                logger.debug("Worker {}: VECTOR-ONLY INDEXING batch ({} chunks, {} embeddings) - skipping keyword index",
-                        workerId, batch.chunks().size(), batch.embeddings().size());
-                try {
-                    actualVectorIndexed = indexerService.indexToVectorStoreOnly(batch.chunks(), batch.embeddings());
-                    if (actualVectorIndexed != batchSize) {
-                        logger.debug("Worker {}: VECTOR-ONLY indexing returned {} actual vs {} batch size",
-                                workerId, actualVectorIndexed, batchSize);
-                    }
-                } catch (java.io.IOException e) {
-                    logger.error("Worker {}: VECTOR-ONLY INDEXING FAILED: {}", workerId, e.getMessage());
-                    throw new RuntimeException("Vector-only indexing failed", e);
-                }
-            } else if (parallelIndexingEnabled && batch.embeddings() != null && !batch.embeddings().isEmpty()) {
-                // PARALLEL MODE: Run keyword and vector indexing concurrently
-                logger.debug("Worker {}: PARALLEL INDEXING batch ({} chunks, {} embeddings)",
-                        workerId, batch.chunks().size(), batch.embeddings().size());
-                java.util.concurrent.CompletableFuture<ai.kompile.core.indexers.IndexerService.IndexingResult> indexingFuture =
-                        indexerService.indexDocumentsParallel(batch.chunks(), batch.embeddings());
-
-                try {
-                    ai.kompile.core.indexers.IndexerService.IndexingResult result = indexingFuture.get(60, TimeUnit.SECONDS);
-                    // Use the actual vector indexed count from the result
-                    actualVectorIndexed = result.vectorIndexed();
-                    if (actualVectorIndexed != batchSize) {
-                        logger.warn("Worker {}: PARALLEL INDEXING returned {} actual vector indexed vs {} batch size",
-                                workerId, actualVectorIndexed, batchSize);
-                    }
-                } catch (java.util.concurrent.TimeoutException e) {
-                    logger.error("Worker {}: PARALLEL INDEXING TIMEOUT after 60s for {} chunks",
-                            workerId, batch.chunks().size());
-                    indexingFuture.cancel(true);
-                    lastError = "Parallel indexing timed out after 60 seconds";
-                    throw new RuntimeException("Parallel indexing timed out");
-                } catch (java.util.concurrent.ExecutionException e) {
-                    logger.error("Worker {}: PARALLEL INDEXING FAILED: {}", workerId, e.getCause().getMessage());
-                    throw new RuntimeException("Parallel indexing failed", e.getCause());
-                }
-            } else if (batch.embeddings() != null && !batch.embeddings().isEmpty()) {
-                // SEQUENTIAL MODE with embeddings
-                logger.debug("Worker {}: SEQUENTIAL INDEXING batch ({} chunks, {} embeddings)",
-                        workerId, batch.chunks().size(), batch.embeddings().size());
-                indexerService.indexDocumentsWithFloatEmbeddings(batch.chunks(), batch.embeddings());
-                // Sequential mode doesn't return count yet, assume all indexed
-                actualVectorIndexed = batchSize;
-            } else {
-                // PASSTHROUGH MODE: No embeddings provided
-                // The indexer will handle embedding if needed
-                logger.debug("Worker {}: PASSTHROUGH INDEXING batch ({} chunks)",
-                        workerId, batch.chunks().size());
-                indexerService.indexDocuments(batch.chunks());
-                actualVectorIndexed = batchSize;
-                // In passthrough mode, also count as embedded since no separate embedding step
-                // This fulfills the promise in embedding worker: "it will be counted when indexed"
-                chunksEmbedded.addAndGet(batchSize);
-            }
-
-            // Track processed IDs
-            for (RetrievedDoc chunk : batch.chunks()) {
-                if (chunk.getId() != null) {
-                    processedIds.add(chunk.getId());
-                }
-            }
-
-            // Use the ACTUAL count of documents persisted to vector store
-            int indexed = chunksIndexed.addAndGet(actualVectorIndexed);
-            workerProcessed.addAndGet(batchSize);
-            indexingWorkerProcessed.addAndGet(batchSize);
-            indexingBatchesProcessed.incrementAndGet(); // Increment but reuse batchNum from start
-
-            long elapsed = System.currentTimeMillis() - batchStartTime;
-            double batchThroughput = elapsed > 0 ? (batchSize * 1000.0 / elapsed) : 0;
-
-            // Update worker status with throughput
-            workerStatuses.put(workerKey,
-                    PipelineProgress.WorkerStatus.processing(workerId, "indexing",
-                            workerProcessed.get(), batchSize, batchThroughput,
-                            indexMode + " batch " + batchNum));
-
-            logger.debug("Worker {}: indexed batch {} ({} chunks, {}) in {}ms ({}/sec)",
-                    workerId, batchNum, batchSize, indexMode, elapsed, String.format("%.1f", batchThroughput));
-
-            // === END INDEX: Report batch indexing completion ===
-            int total = chunksCreated.get();
-            if (total > 0) {
-                int progressPercentEnd = 60 + (int) ((indexed / (double) total) * 35);
-                reportProgressWithWorkers("indexing", progressPercentEnd,
-                        String.format("END INDEX batch %d: %d chunks in %dms (%.1f/s) [%d/%d total, %s mode]",
-                                batchNum, batchSize, elapsed, batchThroughput,
-                                indexed, total, indexMode));
-            }
-            // === END END INDEX ===
-        } catch (Exception e) {
-            logger.error("Worker {}: indexing batch failed: {}", workerId, e.getMessage(), e);
-            lastError = "Indexing failed: " + e.getMessage();
-            throw new RuntimeException("Indexing batch failed", e);
-        }
-    }
+    // NOTE: The old startIndexingWorker() method that consumed from embeddedQueue has been removed.
+    // With the new architecture:
+    //   - Indexing workers (startIndexingWorkers) consume from chunkQueue and write to Lucene
+    //   - Embedding workers (startEmbeddingWorkers) consume from chunkQueue, compute embeddings, and write to vector store
 
     private RetrievedDoc convertToRetrievedDoc(Document doc) {
         return new RetrievedDoc(
@@ -2411,6 +3094,86 @@ public class ParallelIngestPipeline implements AutoCloseable {
                 doc.getId(),
                 doc.getContent(),
                 doc.getMetadata() != null ? new HashMap<>(doc.getMetadata()) : new HashMap<>());
+    }
+
+    /**
+     * Updates the sliding window rate samples and calculates the windowed rate.
+     * This provides a more accurate ETA by using recent throughput rather than overall average.
+     *
+     * @param currentProcessed current number of items processed
+     * @return windowed rate in items per second, or -1 if not enough samples yet
+     */
+    private double updateAndGetWindowedRate(int currentProcessed) {
+        long now = System.currentTimeMillis();
+
+        // Only sample at intervals to avoid noise
+        if (now - lastRateSampleTime >= RATE_SAMPLE_INTERVAL_MS) {
+            // Store current sample
+            rateSampleTimestamps[rateSampleIndex] = now;
+            rateSampleCounts[rateSampleIndex] = currentProcessed;
+            rateSampleIndex = (rateSampleIndex + 1) % RATE_WINDOW_SIZE;
+            lastRateSampleTime = now;
+        }
+
+        // Find oldest valid sample in the window
+        int oldestIndex = -1;
+        long oldestTime = Long.MAX_VALUE;
+        int validSamples = 0;
+
+        for (int i = 0; i < RATE_WINDOW_SIZE; i++) {
+            if (rateSampleTimestamps[i] > 0) {
+                validSamples++;
+                if (rateSampleTimestamps[i] < oldestTime) {
+                    oldestTime = rateSampleTimestamps[i];
+                    oldestIndex = i;
+                }
+            }
+        }
+
+        // Need at least 2 samples to calculate rate
+        if (validSamples < 2 || oldestIndex < 0) {
+            return -1;
+        }
+
+        // Calculate rate from oldest to current
+        long timeDelta = now - oldestTime;
+        int countDelta = currentProcessed - rateSampleCounts[oldestIndex];
+
+        if (timeDelta > 0 && countDelta >= 0) {
+            return (countDelta * 1000.0) / timeDelta;
+        }
+
+        return -1;
+    }
+
+    /**
+     * Calculates ETA string using windowed rate with fallback to overall rate.
+     *
+     * @param remaining items remaining to process
+     * @param currentProcessed current items processed
+     * @param overallRate overall average rate (fallback)
+     * @return formatted ETA string, or empty if cannot calculate
+     */
+    private String calculateEtaString(long remaining, int currentProcessed, double overallRate) {
+        // Try windowed rate first (more accurate for ongoing work)
+        double rate = updateAndGetWindowedRate(currentProcessed);
+
+        // Fall back to overall rate if windowed rate not available
+        if (rate < 0) {
+            rate = overallRate;
+        }
+
+        if (rate > 0 && remaining > 0) {
+            long etaSec = (long) (remaining / rate);
+            if (etaSec > 3600) {
+                return String.format(" (~%dh %dm)", etaSec / 3600, (etaSec % 3600) / 60);
+            } else if (etaSec > 60) {
+                return String.format(" (~%dm %ds)", etaSec / 60, etaSec % 60);
+            } else {
+                return String.format(" (~%ds)", etaSec);
+            }
+        }
+        return "";
     }
 
     private void reportProgressThrottled(String phase, int percent, String message) {
@@ -2434,29 +3197,24 @@ public class ParallelIngestPipeline implements AutoCloseable {
             int embedded = chunksEmbedded.get();
             int indexed = chunksIndexed.get();
 
-            double throughput = elapsed > 0 ? (indexed * 1000.0 / elapsed) : 0;
+            int effectiveCompleted = vectorOnlyMode ? embedded : Math.max(indexed, embedded);
+            double throughput = elapsed > 0 ? (effectiveCompleted * 1000.0 / elapsed) : 0;
 
             // Collect worker statuses
             List<PipelineProgress.WorkerStatus> workers = new ArrayList<>(workerStatuses.values());
 
-            // DEBUG: Log worker collection
-            logger.info("reportProgressWithWorkers: collecting workers - workerStatuses.size()={}, workers.size()={}",
-                    workerStatuses.size(), workers.size());
-            if (!workers.isEmpty()) {
-                for (PipelineProgress.WorkerStatus ws : workers) {
-                    logger.info("  Worker: id={}, type={}, status={}", ws.workerId(), ws.workerType(), ws.status());
-                }
-            }
-
-            // Build queue status
+            // Build queue status (embeddedQueue no longer exists - use 0)
             PipelineProgress.QueueStatus queueStatus = new PipelineProgress.QueueStatus(
                     chunkQueue.size(),
                     this.pipelineConfig.queueCapacity(),
-                    embeddedQueue.size(),
-                    this.pipelineConfig.queueCapacity());
+                    0,  // embeddedQueue removed - embedding workers write directly to vector store
+                    0);
 
             // Get current embedding batch metrics (may be null if not embedding)
             PipelineProgress.EmbeddingBatchMetrics batchMetrics = currentEmbeddingBatchMetrics;
+
+            // Get batch history snapshot
+            java.util.List<PipelineProgress.EmbeddingBatchMetrics> historySnapshot = getBatchHistory();
 
             // Build progress object first, then calculate overall progress
             PipelineProgress progress = new PipelineProgress(
@@ -2467,16 +3225,25 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     created,
                     embedded,
                     indexed,
+                    tokensProcessed.get(),
                     throughput,
                     config.getMemoryUsagePercent(),
                     chunkingParallelism,
                     embeddingParallelism,
                     workers,
                     queueStatus,
-                    batchMetrics);
+                    batchMetrics,
+                    historySnapshot);
 
-            // Calculate the actual overall progress from work completed
-            int calculatedPercent = progress.calculateOverallProgress();
+            // Calculate the actual overall progress from work completed.
+            // NOTE: PipelineProgress.calculateOverallProgress() does not know about vectorOnlyMode,
+            // so compute percent here where we have full context.
+            int calculatedPercent = calculateOverallProgressPercent(
+                    phase,
+                    progress.documentsProcessed(),
+                    progress.chunksCreated(),
+                    progress.chunksEmbedded(),
+                    progress.chunksIndexed());
 
             // Create final progress with correct percentage
             PipelineProgress finalProgress = new PipelineProgress(
@@ -2487,13 +3254,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     progress.chunksCreated(),
                     progress.chunksEmbedded(),
                     progress.chunksIndexed(),
+                    progress.tokensProcessed(),
                     progress.chunksPerSecond(),
                     progress.memoryUsagePercent(),
                     progress.chunkingWorkers(),
                     progress.embeddingWorkers(),
                     progress.workerStatuses(),
                     progress.queueStatus(),
-                    progress.currentEmbeddingBatch());
+                    progress.currentEmbeddingBatch(),
+                    progress.batchHistory());
 
             try {
                 progressCallback.accept(finalProgress);
@@ -2503,6 +3272,54 @@ public class ParallelIngestPipeline implements AutoCloseable {
         }
     }
 
+    private int calculateOverallProgressPercent(String phase, int documentsProcessed, int chunksCreated,
+                                               int chunksEmbedded, int chunksIndexed) {
+        if (phase != null) {
+            String p = phase.trim().toLowerCase(java.util.Locale.ROOT);
+            if (p.equals("completed") || p.equals("complete") || p.equals("done")) {
+                return 100;
+            }
+        }
+
+        if (chunksCreated <= 0) {
+            return documentsProcessed > 0 ? Math.min(5, documentsProcessed) : 0;
+        }
+
+        // In vector-only mode, Lucene indexing is skipped entirely: embedding is the terminal stage.
+        if (vectorOnlyMode) {
+            final double READY_WEIGHT = 0.10;
+            final double EMBEDDING_WEIGHT = 0.90;
+            double embeddingProgress = (double) chunksEmbedded / chunksCreated;
+            double overall = (READY_WEIGHT) + (embeddingProgress * EMBEDDING_WEIGHT);
+            return clampPercent(overall);
+        }
+
+        // Passthrough/keyword-only mode: embedding is performed by indexer (or skipped).
+        boolean isPassthroughMode = (chunksEmbedded == 0 && chunksIndexed > 0);
+        if (isPassthroughMode || pipelineConfig.skipEmbedding()) {
+            final double READY_WEIGHT = 0.10;
+            final double INDEXING_WEIGHT = 0.90;
+            double indexingProgress = (double) chunksIndexed / chunksCreated;
+            double overall = (READY_WEIGHT) + (indexingProgress * INDEXING_WEIGHT);
+            return clampPercent(overall);
+        }
+
+        // Standard mode: chunking (10%) + embedding (50%) + indexing (40%).
+        final double READY_WEIGHT = 0.10;
+        final double EMBEDDING_WEIGHT = 0.50;
+        final double INDEXING_WEIGHT = 0.40;
+
+        double embeddingProgress = (double) chunksEmbedded / chunksCreated;
+        double indexingProgress = (double) chunksIndexed / chunksCreated;
+        double overall = (READY_WEIGHT) + (embeddingProgress * EMBEDDING_WEIGHT) + (indexingProgress * INDEXING_WEIGHT);
+        return clampPercent(overall);
+    }
+
+    private static int clampPercent(double overallProgress01) {
+        double clamped = Math.max(0.0, Math.min(1.0, overallProgress01));
+        return Math.min(100, Math.max(0, (int) (clamped * 100)));
+    }
+
     public void cancel() {
         cancelled = true;
         logger.info("Pipeline cancellation requested");
@@ -2510,6 +3327,55 @@ public class ParallelIngestPipeline implements AutoCloseable {
 
     public boolean isCancelled() {
         return cancelled;
+    }
+
+    /**
+     * Check if the subprocess memory watchdog indicates we should stop or kill the pipeline.
+     * This is only relevant when running in subprocess mode.
+     *
+     * @return true if we should terminate due to memory pressure
+     */
+    private boolean checkSubprocessMemoryLimit() {
+        // Try both subprocess types - only one will be active at a time
+        SubprocessMemoryWatchdog watchdog = IngestSubprocessMain.getMemoryWatchdog();
+        if (watchdog == null) {
+            watchdog = ai.kompile.app.subprocess.VectorPopulationSubprocessMain.getMemoryWatchdog();
+        }
+        if (watchdog == null) {
+            return false; // Not running in subprocess mode
+        }
+
+        if (watchdog.shouldKill()) {
+            if (!cancelled) {
+                SubprocessMemoryWatchdog.MemorySnapshot snapshot = watchdog.getLastSnapshot();
+                String msg = String.format(
+                        "MEMORY KILL: Pipeline terminated due to memory kill threshold (%.1f%% > %d%%). " +
+                        "Used: %dMB, Max: %dMB",
+                        snapshot != null ? snapshot.usagePercent() : 0,
+                        ai.kompile.app.subprocess.SubprocessArgs.DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT,
+                        snapshot != null ? snapshot.usedMB() : 0,
+                        snapshot != null ? snapshot.maxMB() : 0);
+                logger.error(msg);
+                lastError = msg;
+                cancelled = true;
+            }
+            return true;
+        }
+
+        if (watchdog.shouldStop()) {
+            if (!cancelled) {
+                SubprocessMemoryWatchdog.MemorySnapshot snapshot = watchdog.getLastSnapshot();
+                logger.warn("MEMORY PRESSURE: Memory threshold exceeded ({}%), stopping new work. Used: {}MB, Max: {}MB",
+                        snapshot != null ? String.format("%.1f", snapshot.usagePercent()) : "?",
+                        snapshot != null ? snapshot.usedMB() : 0,
+                        snapshot != null ? snapshot.maxMB() : 0);
+                // Don't set cancelled=true here - we want to finish current batch first
+                // But we'll return true so the worker can decide to stop accepting new work
+            }
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -2563,15 +3429,11 @@ public class ParallelIngestPipeline implements AutoCloseable {
         }
 
         // MEMORY LEAK FIX: Clear all queues to release held objects
-        // Without this, RetrievedDoc and EmbeddedBatch objects remain in memory
-        // after pipeline completion or cancellation
+        // Without this, RetrievedDoc objects remain in memory after pipeline completion or cancellation
         int chunkQueueSize = chunkQueue.size();
-        int embeddedQueueSize = embeddedQueue.size();
         chunkQueue.clear();
-        embeddedQueue.clear();
-        if (chunkQueueSize > 0 || embeddedQueueSize > 0) {
-            logger.info("Cleared {} chunks and {} embedded batches from queues during close",
-                    chunkQueueSize, embeddedQueueSize);
+        if (chunkQueueSize > 0) {
+            logger.info("Cleared {} chunks from queue during close", chunkQueueSize);
         }
 
         // MEMORY LEAK FIX: Clear worker status map to prevent unbounded growth
@@ -2585,7 +3447,8 @@ public class ParallelIngestPipeline implements AutoCloseable {
         // MEMORY LEAK FIX: Null out metrics reference to allow GC
         currentEmbeddingBatchMetrics = null;
 
-        logger.info("ParallelIngestPipeline closed (parallelIndexing={})", parallelIndexingEnabled);
+        logger.info("ParallelIngestPipeline closed (indexing={} threads, embedding={} threads)",
+                indexingParallelism, embeddingParallelism);
     }
 
     // Getters for monitoring
@@ -2601,16 +3464,46 @@ public class ParallelIngestPipeline implements AutoCloseable {
         return indexingParallelism;
     }
 
+    /**
+     * Adds a completed batch to the history, maintaining a fixed size.
+     */
+    private void addToBatchHistory(PipelineProgress.EmbeddingBatchMetrics metrics) {
+        if (metrics == null) return;
+        batchHistory.addFirst(metrics);
+        // Trim to max size
+        while (batchHistory.size() > BATCH_HISTORY_SIZE) {
+            batchHistory.removeLast();
+        }
+    }
+
+    /**
+     * Returns the batch history (most recent first).
+     */
+    public java.util.List<PipelineProgress.EmbeddingBatchMetrics> getBatchHistory() {
+        return new java.util.ArrayList<>(batchHistory);
+    }
+
+    /**
+     * Returns true since indexing and embedding always run in parallel with the new architecture.
+     * @deprecated This method is deprecated. Indexing and embedding always run in parallel.
+     */
+    @Deprecated
     public boolean isParallelIndexingEnabled() {
-        return parallelIndexingEnabled;
+        return true;  // Always parallel in new architecture
     }
 
     public int getChunkQueueSize() {
         return chunkQueue.size();
     }
 
+    /**
+     * Returns 0 since embeddedQueue no longer exists.
+     * Embedding workers now write directly to vector store.
+     * @deprecated This method is deprecated. EmbeddedQueue no longer exists.
+     */
+    @Deprecated
     public int getEmbeddedQueueSize() {
-        return embeddedQueue.size();
+        return 0;  // No longer exists
     }
 
     // ========== External Producer Support ==========
@@ -2652,27 +3545,27 @@ public class ParallelIngestPipeline implements AutoCloseable {
      * method.
      * </p>
      *
-     * @return Tuple of embedding futures and indexing future for monitoring
+     * @return Handle for monitoring the workers
      */
     public ExternalProducerHandle startWorkersForExternalProducer() {
         startTimeMs.set(System.currentTimeMillis());
 
         logger.info("=== STARTING EXTERNAL PRODUCER WORKERS ===");
-        logger.info("embeddingParallelism={}, batchSize={}, embeddingModel={}, chunkQueue.size={}",
-                embeddingParallelism, batchSize,
+        int modelBatchSize = embeddingModel != null ? embeddingModel.getOptimalBatchSize() : pipelineConfig.defaultBatchSize();
+        logger.info("indexingParallelism={}, embeddingParallelism={}, modelBatchSize={}, embeddingModel={}, chunkQueue.size={}",
+                indexingParallelism, embeddingParallelism, modelBatchSize,
                 embeddingModel != null ? embeddingModel.getClass().getSimpleName() : "NULL",
                 chunkQueue.size());
 
-        // Start embedding workers (consumers of chunk queue, producers of embedded
-        // queue)
+        // Start indexing workers (consume from chunkQueue, write to Lucene)
+        logger.info("Calling startIndexingWorkers()...");
+        List<Future<?>> indexingFutures = startIndexingWorkers();
+        logger.info("startIndexingWorkers() returned {} futures (Lucene writers)", indexingFutures.size());
+
+        // Start embedding workers (consume from chunkQueue, compute embeddings, write to vector store)
         logger.info("Calling startEmbeddingWorkers()...");
         List<Future<?>> embeddingFutures = startEmbeddingWorkers();
-        logger.info("startEmbeddingWorkers() returned {} futures", embeddingFutures.size());
-
-        // Start indexing worker (consumer of embedded queue)
-        logger.info("Calling startIndexingWorker()...");
-        Future<List<String>> indexingFuture = startIndexingWorker();
-        logger.info("startIndexingWorker() returned, workers are now running");
+        logger.info("startEmbeddingWorkers() returned {} futures (embedding + vector store writers)", embeddingFutures.size());
 
         // Start periodic progress reporter (every 1 second) for external producer mode
         ScheduledExecutorService progressReporter = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -2684,24 +3577,22 @@ public class ParallelIngestPipeline implements AutoCloseable {
             try {
                 if (!cancelled) {
                     int created = chunksCreated.get();
-                    int embedded = chunksEmbedded.get();
-                    int indexed = chunksIndexed.get();
+                    int embedded = chunksEmbedded.get();  // Embedded AND written to vector store
+                    int indexed = chunksIndexed.get();    // Written to Lucene
                     int chunkQueueSize = chunkQueue.size();
-                    int embeddedQueueSize = embeddedQueue.size();
                     long elapsed = System.currentTimeMillis() - startTimeMs.get();
-                    double rate = elapsed > 0 ? (indexed * 1000.0 / elapsed) : 0;
+                    double rate = elapsed > 0 ? (Math.max(indexed, embedded) * 1000.0 / elapsed) : 0;
 
                     // Determine phase based on actual work being done
                     String phase;
-                    if (indexed > 0 || embeddingComplete) {
-                        phase = "indexing";
-                    } else if (embedded > 0) {
-                        phase = "embedding";
+                    if (embeddingComplete && indexingComplete) {
+                        phase = "complete";
+                    } else if (indexed > 0 || embedded > 0) {
+                        phase = "indexing+embedding";
                     } else if (created > 0) {
-                        // Chunks created but not yet embedded
-                        phase = "embedding";
+                        phase = "processing";
                     } else {
-                        phase = "chunking";
+                        phase = "waiting";
                     }
 
                     // Log worker status details
@@ -2714,12 +3605,12 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     StringBuilder workerInfo = new StringBuilder();
                     workerInfo.append("\n  [Pipeline Status] phase=").append(phase)
                             .append(", chunkingComplete=").append(chunkingComplete)
-                            .append(", embeddingComplete=").append(embeddingComplete);
-                    workerInfo.append("\n  [Queues] chunkQueue=").append(chunkQueueSize)
-                            .append(", embeddedQueue=").append(embeddedQueueSize);
+                            .append(", embeddingComplete=").append(embeddingComplete)
+                            .append(", indexingComplete=").append(indexingComplete);
+                    workerInfo.append("\n  [Queues] chunkQueue=").append(chunkQueueSize);
                     workerInfo.append("\n  [Totals] created=").append(created)
-                            .append(", embedded=").append(embedded)
-                            .append(", indexed=").append(indexed)
+                            .append(", indexed=").append(indexed).append(" (Lucene)")
+                            .append(", embedded=").append(embedded).append(" (vector)")
                             .append(" (").append(String.format("%.1f", rate)).append("/sec)")
                             .append(" [workers: ").append(activeWorkers).append(" active, ")
                             .append(waitingWorkers).append(" waiting]");
@@ -2738,15 +3629,15 @@ public class ParallelIngestPipeline implements AutoCloseable {
                     logger.info("Pipeline Progress:{}", workerInfo);
 
                     reportProgressWithWorkers(phase, 0,
-                            String.format("%d created, %d embedded, %d indexed (%.1f/sec) [Q:%d/%d]",
-                                    created, embedded, indexed, rate, chunkQueueSize, embeddedQueueSize));
+                            String.format("%d created, %d indexed (Lucene), %d embedded (vector) (%.1f/sec) [Q:%d]",
+                                    created, indexed, embedded, rate, chunkQueueSize));
                 }
             } catch (Exception e) {
                 logger.error("Error in periodic progress reporter (ext): {}", e.getMessage(), e);
             }
         }, 1, 1, TimeUnit.SECONDS);
 
-        return new ExternalProducerHandle(embeddingFutures, indexingFuture, progressReporter);
+        return new ExternalProducerHandle(embeddingFutures, indexingFutures, progressReporter);
     }
 
     /**
@@ -2788,46 +3679,72 @@ public class ParallelIngestPipeline implements AutoCloseable {
      */
     public PipelineResult awaitCompletion(ExternalProducerHandle handle) throws InterruptedException {
         try {
-            // Wait for embedding to complete
+            // Wait for indexing to complete (Lucene writes)
+            String indexingError = null;
+            for (Future<?> future : handle.indexingFutures()) {
+                try {
+                    future.get(30, TimeUnit.MINUTES);
+                } catch (TimeoutException e) {
+                    logger.error("Lucene indexing timed out");
+                    cancelled = true;
+                    indexingError = "Lucene indexing timed out after 30 minutes";
+                } catch (ExecutionException e) {
+                    logger.error("Lucene indexing failed: {}", e.getCause().getMessage(), e.getCause());
+                    cancelled = true;  // Mark as failed so job history shows failure
+                    indexingError = e.getCause().getMessage();
+                }
+            }
+            indexingComplete = true;
+
+            // If indexing failed, throw to ensure job is marked as failed
+            if (indexingError != null) {
+                throw new RuntimeException("Lucene indexing failed: " + indexingError);
+            }
+            logger.info("Indexing complete: {} chunks indexed to Lucene", chunksIndexed.get());
+
+            // Wait for embedding to complete (embedding + vector store writes)
+            String embeddingError = null;
             for (Future<?> future : handle.embeddingFutures()) {
                 try {
                     future.get(30, TimeUnit.MINUTES);
                 } catch (TimeoutException e) {
                     logger.error("Embedding timed out");
                     cancelled = true;
+                    embeddingError = "Embedding timed out after 30 minutes";
                 } catch (ExecutionException e) {
                     logger.error("Embedding failed: {}", e.getCause().getMessage(), e.getCause());
+                    cancelled = true;  // Mark as failed so job history shows failure
+                    embeddingError = e.getCause().getMessage();
                 }
             }
             embeddingComplete = true;
 
-            logger.info("Embedding complete: {} chunks embedded in {} batches",
+            // If embedding failed, throw to ensure job is marked as failed
+            if (embeddingError != null) {
+                throw new RuntimeException("Embedding/indexing failed: " + embeddingError);
+            }
+
+            logger.info("Embedding complete: {} chunks embedded and written to vector store in {} batches",
                     chunksEmbedded.get(), embeddingBatchesProcessed.get());
 
-            // Wait for indexing to complete
-            List<String> processedIds;
-            try {
-                processedIds = handle.indexingFuture().get(30, TimeUnit.MINUTES);
-            } catch (TimeoutException | ExecutionException e) {
-                logger.error("Indexing failed: {}", e.getMessage(), e);
-                processedIds = new ArrayList<>();
-            }
+            List<String> processedIds = new ArrayList<>();
 
             // ========== PIPELINE COMPLETE ==========
             long totalTimeMs = System.currentTimeMillis() - startTimeMs.get();
-            double chunksPerSec = totalTimeMs > 0 ? (chunksIndexed.get() * 1000.0 / totalTimeMs) : 0;
+            double chunksPerSec = totalTimeMs > 0 ? (Math.max(chunksIndexed.get(), chunksEmbedded.get()) * 1000.0 / totalTimeMs) : 0;
 
             reportProgress("COMPLETED", 100,
-                    String.format("=== PIPELINE COMPLETE (external producer) === %d chunks created -> %d indexed in %dms (%.1f chunks/sec)",
-                            chunksCreated.get(), chunksIndexed.get(), totalTimeMs, chunksPerSec));
+                    String.format("=== PIPELINE COMPLETE (external producer) === %d created, %d indexed (Lucene), %d embedded (vector) in %dms (%.1f/sec)",
+                            chunksCreated.get(), chunksIndexed.get(), chunksEmbedded.get(), totalTimeMs, chunksPerSec));
 
-            logger.info("========== PIPELINE COMPLETE (external producer): {} chunks created -> {} indexed in {}ms ({} chunks/sec) ==========",
-                    chunksCreated.get(), chunksIndexed.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
+            logger.info("========== PIPELINE COMPLETE (external producer): {} created -> {} indexed (Lucene), {} embedded (vector) in {}ms ({} chunks/sec) ==========",
+                    chunksCreated.get(), chunksIndexed.get(), chunksEmbedded.get(), totalTimeMs, String.format("%.1f", chunksPerSec));
 
             return new PipelineResult(
                     documentsProcessed.get(),
                     chunksCreated.get(),
-                    chunksIndexed.get(),
+                    Math.max(chunksIndexed.get(), chunksEmbedded.get()),  // Use the higher of the two
+                    tokensProcessed.get(),
                     totalTimeMs,
                     processedIds);
         } finally {
@@ -2843,7 +3760,7 @@ public class ParallelIngestPipeline implements AutoCloseable {
      */
     public record ExternalProducerHandle(
             List<Future<?>> embeddingFutures,
-            Future<List<String>> indexingFuture,
+            List<Future<?>> indexingFutures,
             ScheduledExecutorService progressReporter) {
         /**
          * Shuts down the progress reporter. Call this after awaitCompletion.

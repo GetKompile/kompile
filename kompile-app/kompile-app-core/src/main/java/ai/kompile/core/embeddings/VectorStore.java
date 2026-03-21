@@ -469,6 +469,84 @@ public interface VectorStore {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // CHUNK MANAGEMENT METHODS (for Chunk Manager)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Retrieves a single document/chunk from the vector store by its ID.
+     *
+     * @param id The document ID
+     * @return Map containing document info (id, content, metadata), or null if not found
+     */
+    default Map<String, Object> getVectorDocument(String id) {
+        return null;
+    }
+
+    /**
+     * Deletes all documents from the vector store.
+     * <p>
+     * This is a destructive operation and should be used with caution.
+     * Implementations should handle cleanup of all indices and resources.
+     * </p>
+     *
+     * @return true if deletion was successful, false otherwise
+     */
+    default boolean deleteAll() {
+        return false;
+    }
+
+    /**
+     * Retrieves all document IDs that belong to a specific source document.
+     * <p>
+     * This is useful for bulk deletion of all chunks from a source file.
+     * The source ID is typically stored in the 'source_id' metadata field.
+     * </p>
+     *
+     * @param sourceId The source document ID (e.g., file path or URL)
+     * @return List of document IDs belonging to this source
+     */
+    default List<String> getDocumentIdsBySourceId(String sourceId) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Retrieves all documents from the vector store.
+     * <p>
+     * This method is used for operations that need to scan all documents,
+     * such as deduplication. Use with caution on large indices as this
+     * may be memory-intensive.
+     * </p>
+     *
+     * @return List of all document info maps
+     */
+    default List<Map<String, Object>> getAllVectorDocuments() {
+        // Default implementation uses pagination to get all documents
+        List<Map<String, Object>> allDocs = new ArrayList<>();
+        int offset = 0;
+        int limit = 1000;
+        List<Map<String, Object>> batch;
+        do {
+            batch = listVectorDocuments(offset, limit);
+            allDocs.addAll(batch);
+            offset += limit;
+        } while (batch.size() == limit);
+        return allDocs;
+    }
+
+    /**
+     * Returns a list of unique source document IDs present in the vector store.
+     * <p>
+     * This is useful for UI components that need to show a filter dropdown
+     * of available sources.
+     * </p>
+     *
+     * @return List of unique source IDs
+     */
+    default List<String> getUniqueSourceIds() {
+        return Collections.emptyList();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // LEGACY METHODS (Spring AI compatibility, involves conversion overhead)
     // ═══════════════════════════════════════════════════════════════════════════
 

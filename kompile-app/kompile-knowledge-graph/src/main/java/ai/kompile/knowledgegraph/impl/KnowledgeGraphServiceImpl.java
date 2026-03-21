@@ -332,6 +332,51 @@ public class KnowledgeGraphServiceImpl implements KnowledgeGraphService {
         return edgeRepository.findEdgeBetweenNodesBidirectional(sourceNodeId, targetNodeId).isPresent();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<GraphEdge> searchEdges(String query, EdgeType edgeType, int limit) {
+        if (query == null || query.isBlank()) {
+            if (edgeType != null) {
+                return edgeRepository.findByEdgeType(edgeType, PageRequest.of(0, limit)).getContent();
+            }
+            return edgeRepository.findAll(PageRequest.of(0, limit)).getContent();
+        }
+
+        String searchQuery = "%" + query.toLowerCase() + "%";
+
+        // Search in edge descriptions and connected node titles
+        List<GraphEdge> results = new ArrayList<>();
+
+        // First, get edges with matching descriptions
+        List<GraphEdge> byDescription = edgeRepository.searchByDescription(searchQuery, edgeType, PageRequest.of(0, limit));
+        results.addAll(byDescription);
+
+        // If we need more results, search by connected node titles
+        if (results.size() < limit) {
+            // Search nodes that match the query
+            List<GraphNode> matchingNodes = nodeRepository.searchByTitleOrDescription(query, PageRequest.of(0, 50)).getContent();
+            Set<String> matchingNodeIds = matchingNodes.stream()
+                .map(GraphNode::getNodeId)
+                .collect(Collectors.toSet());
+
+            // Get edges connected to matching nodes
+            for (GraphNode node : matchingNodes) {
+                if (results.size() >= limit) break;
+                List<GraphEdge> nodeEdges = edgeRepository.findAllEdgesForNode(node);
+                for (GraphEdge edge : nodeEdges) {
+                    if (results.size() >= limit) break;
+                    if (edgeType == null || edge.getEdgeType() == edgeType) {
+                        if (!results.contains(edge)) {
+                            results.add(edge);
+                        }
+                    }
+                }
+            }
+        }
+
+        return results.stream().limit(limit).collect(Collectors.toList());
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // GRAPH TRAVERSAL
     // ═══════════════════════════════════════════════════════════════════════════

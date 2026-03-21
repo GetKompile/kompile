@@ -36,19 +36,25 @@ import java.util.stream.Stream;
 /**
  * Repository for persisting processing state for resume capability.
  *
- * <p>Uses file-based storage for durability across restarts. State files are stored
- * as JSON in a configurable directory (default: ~/.kompile/state/processing).</p>
+ * <p>
+ * Uses file-based storage for durability across restarts. State files are
+ * stored
+ * as JSON in a configurable directory (default: ~/.kompile/state/processing).
+ * </p>
  *
  * <h2>Features</h2>
  * <ul>
- *   <li>In-memory cache for fast lookups</li>
- *   <li>Async persistence to disk to avoid blocking ingestion</li>
- *   <li>Automatic cleanup of old completed states</li>
- *   <li>Recovery of incomplete states on startup</li>
+ * <li>In-memory cache for fast lookups</li>
+ * <li>Async persistence to disk to avoid blocking ingestion</li>
+ * <li>Automatic cleanup of old completed states</li>
+ * <li>Recovery of incomplete states on startup</li>
  * </ul>
  *
  * <h2>File Format</h2>
- * <p>States are stored as JSON files named {@code {sourceId}.json} in the state directory.</p>
+ * <p>
+ * States are stored as JSON files named {@code {sourceId}.json} in the state
+ * directory.
+ * </p>
  */
 @Repository
 public class ProcessingStateRepository {
@@ -66,8 +72,14 @@ public class ProcessingStateRepository {
     private final Set<String> pendingWrites = ConcurrentHashMap.newKeySet();
 
     public ProcessingStateRepository(
-            @Value("${kompile.ingest.state-directory:${user.home}/.kompile/state}") String baseDirectory) {
-        this.stateDir = Paths.get(baseDirectory, STATE_DIR_NAME);
+            @Value("${kompile.ingest.state-directory:#{null}}") String baseDirectory) {
+        // Handle null baseDirectory - use temporary directory as fallback
+        if (baseDirectory != null) {
+            this.stateDir = Paths.get(baseDirectory, STATE_DIR_NAME);
+        } else {
+            this.stateDir = Paths.get(System.getProperty("java.io.tmpdir"), "kompile-state", STATE_DIR_NAME);
+            logger.warn("kompile.ingest.state-directory not configured, using temporary directory: {}", this.stateDir);
+        }
         this.objectMapper = new ObjectMapper();
         this.objectMapper.registerModule(new JavaTimeModule());
         this.persistenceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -88,9 +100,8 @@ public class ProcessingStateRepository {
 
             // Schedule periodic cleanup of old states
             persistenceExecutor.scheduleAtFixedRate(
-                this::cleanupOldStates,
-                1, 24, TimeUnit.HOURS
-            );
+                    this::cleanupOldStates,
+                    1, 24, TimeUnit.HOURS);
         } catch (IOException e) {
             logger.error("Failed to initialize state directory: {}", e.getMessage());
         }
@@ -100,7 +111,8 @@ public class ProcessingStateRepository {
      * Finds a state that can be resumed.
      *
      * @param sourceId The source document identifier
-     * @return Optional containing the resumable state, or empty if none exists or not resumable
+     * @return Optional containing the resumable state, or empty if none exists or
+     *         not resumable
      */
     public Optional<ProcessingState> findResumable(String sourceId) {
         String normalizedId = normalizeId(sourceId);
@@ -110,7 +122,7 @@ public class ProcessingStateRepository {
         if (cached != null) {
             if (cached.canResume()) {
                 logger.info("Found resumable state for {}: page {}/{}, {} chunks",
-                           sourceId, cached.lastProcessedPage(), cached.totalPages(), cached.chunksCreated());
+                        sourceId, cached.lastProcessedPage(), cached.totalPages(), cached.chunksCreated());
                 return Optional.of(cached);
             }
             return Optional.empty();
@@ -118,12 +130,12 @@ public class ProcessingStateRepository {
 
         // Try loading from disk
         return loadFromDisk(normalizedId)
-            .filter(ProcessingState::canResume)
-            .map(state -> {
-                cache.put(normalizedId, state);
-                logger.info("Loaded resumable state from disk for {}", sourceId);
-                return state;
-            });
+                .filter(ProcessingState::canResume)
+                .map(state -> {
+                    cache.put(normalizedId, state);
+                    logger.info("Loaded resumable state from disk for {}", sourceId);
+                    return state;
+                });
     }
 
     /**
@@ -134,12 +146,13 @@ public class ProcessingStateRepository {
      */
     public Optional<ProcessingState> findByTaskId(String taskId) {
         return cache.values().stream()
-            .filter(state -> taskId.equals(state.taskId()))
-            .findFirst();
+                .filter(state -> taskId.equals(state.taskId()))
+                .findFirst();
     }
 
     /**
-     * Saves a state. The state is written to cache immediately and persisted asynchronously.
+     * Saves a state. The state is written to cache immediately and persisted
+     * asynchronously.
      *
      * @param state The state to save
      */
@@ -200,8 +213,8 @@ public class ProcessingStateRepository {
      */
     public List<ProcessingState> findIncomplete() {
         return cache.values().stream()
-            .filter(ProcessingState::canResume)
-            .toList();
+                .filter(ProcessingState::canResume)
+                .toList();
     }
 
     /**
@@ -211,8 +224,8 @@ public class ProcessingStateRepository {
      */
     public List<ProcessingState> findActive() {
         return cache.values().stream()
-            .filter(ProcessingState::isActive)
-            .toList();
+                .filter(ProcessingState::isActive)
+                .toList();
     }
 
     /**
@@ -227,10 +240,9 @@ public class ProcessingStateRepository {
      */
     public Map<ProcessingState.ProcessingPhase, Long> getStateCounts() {
         return cache.values().stream()
-            .collect(java.util.stream.Collectors.groupingBy(
-                ProcessingState::phase,
-                java.util.stream.Collectors.counting()
-            ));
+                .collect(java.util.stream.Collectors.groupingBy(
+                        ProcessingState::phase,
+                        java.util.stream.Collectors.counting()));
     }
 
     // ========== Private Methods ==========
@@ -243,15 +255,15 @@ public class ProcessingStateRepository {
     private void loadAllStates() {
         try (Stream<Path> paths = Files.list(stateDir)) {
             paths.filter(p -> p.toString().endsWith(FILE_EXTENSION))
-                .forEach(path -> {
-                    try {
-                        ProcessingState state = objectMapper.readValue(path.toFile(), ProcessingState.class);
-                        String id = path.getFileName().toString().replace(FILE_EXTENSION, "");
-                        cache.put(id, state);
-                    } catch (Exception e) {
-                        logger.warn("Failed to load state from {}: {}", path, e.getMessage());
-                    }
-                });
+                    .forEach(path -> {
+                        try {
+                            ProcessingState state = objectMapper.readValue(path.toFile(), ProcessingState.class);
+                            String id = path.getFileName().toString().replace(FILE_EXTENSION, "");
+                            cache.put(id, state);
+                        } catch (Exception e) {
+                            logger.warn("Failed to load state from {}: {}", path, e.getMessage());
+                        }
+                    });
 
             logger.info("Loaded {} processing states from disk", cache.size());
 
@@ -261,7 +273,7 @@ public class ProcessingStateRepository {
                 logger.info("Found {} incomplete states that can be resumed:", incomplete.size());
                 for (ProcessingState state : incomplete) {
                     logger.info("  - {}: page {}/{}, phase={}", state.fileName(),
-                               state.lastProcessedPage(), state.totalPages(), state.phase());
+                            state.lastProcessedPage(), state.totalPages(), state.phase());
                 }
             }
         } catch (IOException e) {
@@ -296,13 +308,14 @@ public class ProcessingStateRepository {
             Files.move(tempPath, statePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
             logger.debug("Persisted state for {} (page {}/{})",
-                        state.sourceId(), state.lastProcessedPage(), state.totalPages());
+                    state.sourceId(), state.lastProcessedPage(), state.totalPages());
         } catch (IOException e) {
             logger.error("Failed to save state to {}: {}", statePath, e.getMessage());
             // Try to clean up temp file
             try {
                 Files.deleteIfExists(tempPath);
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
     }
 
@@ -337,7 +350,8 @@ public class ProcessingStateRepository {
 
     /**
      * Shuts down the persistence executor.
-     * MEMORY LEAK FIX: Added @PreDestroy to ensure executor is properly shut down on Spring context close.
+     * MEMORY LEAK FIX: Added @PreDestroy to ensure executor is properly shut down
+     * on Spring context close.
      */
     @PreDestroy
     public void shutdown() {

@@ -17,6 +17,7 @@
 package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.services.ServerPortService;
+import ai.kompile.cli.main.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -54,14 +55,16 @@ public class SubprocessConfigService {
     /**
      * Maximum native/off-heap bytes for JavaCPP.
      *
-     * When empty, the subprocess launcher will auto-calculate this value as (heapSize * 2).
+     * When empty, the subprocess launcher will auto-calculate this value as
+     * (heapSize * 2).
      */
     private volatile String offHeapMaxBytes;
     private volatile int timeoutMinutes;
     private volatile int heartbeatIntervalSeconds;
     private volatile int staleThresholdSeconds;
 
-    // Pipeline configuration (non-embedding settings - embedding batch sizes come from AnseriniEmbeddingProperties)
+    // Pipeline configuration (non-embedding settings - embedding batch sizes come
+    // from AnseriniEmbeddingProperties)
     private volatile int queueCapacity;
     private volatile boolean parallelIndexing;
     private volatile int indexingWorkers;
@@ -71,7 +74,8 @@ public class SubprocessConfigService {
     // Defaults from @Value annotations - DEFAULT TO FALSE for in-process mode
     // Subprocess mode can be enabled via UI (Developer Hub > Processing Settings)
     // or via API: POST /api/subprocess-config/enable
-    // or by setting kompile.ingest.subprocess.enabled=true in application.properties
+    // or by setting kompile.ingest.subprocess.enabled=true in
+    // application.properties
     @Value("${kompile.ingest.subprocess.enabled:false}")
     private boolean defaultEnabled;
 
@@ -93,7 +97,8 @@ public class SubprocessConfigService {
     @Value("${kompile.ingest.subprocess.stale-threshold-seconds:120}")
     private int defaultStaleThresholdSeconds;
 
-    // Pipeline defaults (embedding batch sizes come from AnseriniEmbeddingProperties/benchmark config)
+    // Pipeline defaults (embedding batch sizes come from
+    // AnseriniEmbeddingProperties/benchmark config)
     @Value("${kompile.ingest.subprocess.queue-capacity:1000}")
     private int defaultQueueCapacity;
 
@@ -106,17 +111,102 @@ public class SubprocessConfigService {
     @Value("${kompile.ingest.subprocess.indexing-batch-accumulation:8}")
     private int defaultIndexingBatchAccumulationSize;
 
-    @Value("${kompile.ingest.subprocess.embedding-threads:1}")
-    private int defaultEmbeddingThreads;
+    // Embedding workers - use 1 worker to avoid thread contention
+    // Parallelism comes from OpenMP/BLAS internally, not multiple workers
+    private final int defaultEmbeddingThreads = 1;
+
+    // Restart configuration defaults
+    @Value("${kompile.subprocess.restart.enabled:true}")
+    private boolean defaultRestartEnabled;
+
+    @Value("${kompile.subprocess.restart.max-attempts:3}")
+    private int defaultMaxRestartAttempts;
+
+    @Value("${kompile.subprocess.restart.initial-backoff-ms:5000}")
+    private int defaultInitialBackoffMs;
+
+    @Value("${kompile.subprocess.restart.backoff-multiplier:2.0}")
+    private double defaultBackoffMultiplier;
+
+    @Value("${kompile.subprocess.restart.heap-increase-factor:1.25}")
+    private double defaultHeapIncreaseFactor;
+
+    @Value("${kompile.subprocess.restart.system-ram-safety-margin:0.15}")
+    private double defaultSystemRamSafetyMargin;
+
+    // Stall/deadlock detection defaults
+    @Value("${kompile.subprocess.restart.on-stall:true}")
+    private boolean defaultRestartOnStall;
+
+    @Value("${kompile.subprocess.restart.on-timeout:true}")
+    private boolean defaultRestartOnTimeout;
+
+    @Value("${kompile.subprocess.restart.stall-detection-threshold-seconds:300}")
+    private int defaultStallDetectionThresholdSeconds;
+
+    @Value("${kompile.subprocess.restart.progress-stall-warning-seconds:60}")
+    private int defaultProgressStallWarningSeconds;
+
+    // Runtime restart configuration
+    private volatile boolean restartEnabled;
+    private volatile int maxRestartAttempts;
+    private volatile int initialBackoffMs;
+    private volatile double backoffMultiplier;
+    private volatile double heapIncreaseFactor;
+    private volatile double systemRamSafetyMargin;
+
+    // Stall/deadlock detection runtime config
+    private volatile boolean restartOnStall;
+    private volatile boolean restartOnTimeout;
+    private volatile int stallDetectionThresholdSeconds;
+    private volatile int progressStallWarningSeconds;
+
+    // Native executable configuration - runtime values
+    // Mode: "auto" (detect based on runtime context), "jvm" (always use classpath), "native" (always use native executable)
+    private volatile String nativeExecutableMode;
+    private volatile String nativeExecutablePath;
+    private volatile String ingestExecutablePath;
+    private volatile String vectorPopulationExecutablePath;
+    private volatile String embeddingExecutablePath;
+    private volatile String modelInitExecutablePath;
+    private volatile String subprocessTypeFlag;
+
+    // Native executable defaults
+    @Value("${kompile.subprocess.executable.mode:auto}")
+    private String defaultNativeExecutableMode;
+
+    @Value("${kompile.subprocess.executable.native-path:}")
+    private String defaultNativeExecutablePath;
+
+    @Value("${kompile.subprocess.executable.ingest-path:}")
+    private String defaultIngestExecutablePath;
+
+    @Value("${kompile.subprocess.executable.vector-population-path:}")
+    private String defaultVectorPopulationExecutablePath;
+
+    @Value("${kompile.subprocess.executable.embedding-path:}")
+    private String defaultEmbeddingExecutablePath;
+
+    @Value("${kompile.subprocess.executable.model-init-path:}")
+    private String defaultModelInitExecutablePath;
+
+    @Value("${kompile.subprocess.executable.type-flag:--subprocess=}")
+    private String defaultSubprocessTypeFlag;
 
     @Autowired
     public SubprocessConfigService(
             @Autowired(required = false) ServerPortService serverPortService,
-            @Value("${kompile.data.dir:#{systemProperties['user.home'] + '/.kompile'}}") String dataDir
-    ) {
+            @Value("${kompile.data.dir:#{null}}") String dataDir) {
         this.serverPortService = serverPortService;
         this.objectMapper = new ObjectMapper();
-        this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
+
+        // Use provided dataDir, or fall back to ~/.kompile if not set
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+            log.info("kompile.data.dir not set, using default: {}", effectiveDataDir);
+        }
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
         log.info("SubprocessConfigService initialized, config path: {}", configFilePath);
     }
 
@@ -134,12 +224,46 @@ public class SubprocessConfigService {
         this.heartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds;
         this.staleThresholdSeconds = defaultStaleThresholdSeconds;
 
-        // Pipeline defaults (embedding batch sizes come from AnseriniEmbeddingProperties)
+        // Pipeline defaults (embedding batch sizes come from
+        // AnseriniEmbeddingProperties)
         this.queueCapacity = defaultQueueCapacity;
         this.parallelIndexing = defaultParallelIndexing;
         this.indexingWorkers = defaultIndexingWorkers;
         this.indexingBatchAccumulationSize = defaultIndexingBatchAccumulationSize;
         this.embeddingThreads = defaultEmbeddingThreads;
+
+        // Restart configuration defaults
+        this.restartEnabled = defaultRestartEnabled;
+        this.maxRestartAttempts = defaultMaxRestartAttempts;
+        this.initialBackoffMs = defaultInitialBackoffMs;
+        this.backoffMultiplier = defaultBackoffMultiplier;
+        this.heapIncreaseFactor = defaultHeapIncreaseFactor;
+        this.systemRamSafetyMargin = defaultSystemRamSafetyMargin;
+
+        // Stall/deadlock detection defaults
+        this.restartOnStall = defaultRestartOnStall;
+        this.restartOnTimeout = defaultRestartOnTimeout;
+        this.stallDetectionThresholdSeconds = defaultStallDetectionThresholdSeconds;
+        this.progressStallWarningSeconds = defaultProgressStallWarningSeconds;
+
+        // Native executable defaults
+        this.nativeExecutableMode = normalizeOptionalString(defaultNativeExecutableMode);
+        if (this.nativeExecutableMode.isEmpty()) {
+            this.nativeExecutableMode = "auto";
+        }
+        this.nativeExecutablePath = normalizeOptionalString(defaultNativeExecutablePath);
+        this.ingestExecutablePath = normalizeOptionalString(defaultIngestExecutablePath);
+        this.vectorPopulationExecutablePath = normalizeOptionalString(defaultVectorPopulationExecutablePath);
+        this.embeddingExecutablePath = normalizeOptionalString(defaultEmbeddingExecutablePath);
+        this.modelInitExecutablePath = normalizeOptionalString(defaultModelInitExecutablePath);
+        this.subprocessTypeFlag = defaultSubprocessTypeFlag != null && !defaultSubprocessTypeFlag.isBlank()
+                ? defaultSubprocessTypeFlag : "--subprocess=";
+
+        // Skip loading if configFilePath is null (dataDir not configured)
+        if (configFilePath == null) {
+            log.warn("Cannot load subprocess config - kompile.data.dir not configured. Using defaults.");
+            return;
+        }
 
         log.info("Loading persisted subprocess config from: {}", configFilePath);
 
@@ -176,7 +300,8 @@ public class SubprocessConfigService {
                 this.staleThresholdSeconds = ((Number) config.get("staleThresholdSeconds")).intValue();
             }
 
-            // Pipeline settings (embedding batch sizes come from AnseriniEmbeddingProperties/benchmark config)
+            // Pipeline settings (embedding batch sizes come from
+            // AnseriniEmbeddingProperties/benchmark config)
             if (config.containsKey("queueCapacity")) {
                 this.queueCapacity = ((Number) config.get("queueCapacity")).intValue();
             }
@@ -193,9 +318,76 @@ public class SubprocessConfigService {
                 this.embeddingThreads = ((Number) config.get("embeddingThreads")).intValue();
             }
 
+            // Restart configuration
+            if (config.containsKey("restartEnabled")) {
+                this.restartEnabled = (Boolean) config.get("restartEnabled");
+            }
+            if (config.containsKey("maxRestartAttempts")) {
+                this.maxRestartAttempts = ((Number) config.get("maxRestartAttempts")).intValue();
+            }
+            if (config.containsKey("initialBackoffMs")) {
+                this.initialBackoffMs = ((Number) config.get("initialBackoffMs")).intValue();
+            }
+            if (config.containsKey("backoffMultiplier")) {
+                this.backoffMultiplier = ((Number) config.get("backoffMultiplier")).doubleValue();
+            }
+            if (config.containsKey("heapIncreaseFactor")) {
+                this.heapIncreaseFactor = ((Number) config.get("heapIncreaseFactor")).doubleValue();
+            }
+            if (config.containsKey("systemRamSafetyMargin")) {
+                this.systemRamSafetyMargin = ((Number) config.get("systemRamSafetyMargin")).doubleValue();
+            }
+
+            // Stall/deadlock detection config
+            if (config.containsKey("restartOnStall")) {
+                this.restartOnStall = (Boolean) config.get("restartOnStall");
+            }
+            if (config.containsKey("restartOnTimeout")) {
+                this.restartOnTimeout = (Boolean) config.get("restartOnTimeout");
+            }
+            if (config.containsKey("stallDetectionThresholdSeconds")) {
+                this.stallDetectionThresholdSeconds = ((Number) config.get("stallDetectionThresholdSeconds")).intValue();
+            }
+            if (config.containsKey("progressStallWarningSeconds")) {
+                this.progressStallWarningSeconds = ((Number) config.get("progressStallWarningSeconds")).intValue();
+            }
+
+            // Native executable config
+            if (config.containsKey("nativeExecutableMode")) {
+                Object v = config.get("nativeExecutableMode");
+                this.nativeExecutableMode = v != null ? v.toString() : "auto";
+            }
+            if (config.containsKey("nativeExecutablePath")) {
+                Object v = config.get("nativeExecutablePath");
+                this.nativeExecutablePath = normalizeOptionalString(v != null ? v.toString() : null);
+            }
+            if (config.containsKey("ingestExecutablePath")) {
+                Object v = config.get("ingestExecutablePath");
+                this.ingestExecutablePath = normalizeOptionalString(v != null ? v.toString() : null);
+            }
+            if (config.containsKey("vectorPopulationExecutablePath")) {
+                Object v = config.get("vectorPopulationExecutablePath");
+                this.vectorPopulationExecutablePath = normalizeOptionalString(v != null ? v.toString() : null);
+            }
+            if (config.containsKey("embeddingExecutablePath")) {
+                Object v = config.get("embeddingExecutablePath");
+                this.embeddingExecutablePath = normalizeOptionalString(v != null ? v.toString() : null);
+            }
+            if (config.containsKey("modelInitExecutablePath")) {
+                Object v = config.get("modelInitExecutablePath");
+                this.modelInitExecutablePath = normalizeOptionalString(v != null ? v.toString() : null);
+            }
+            if (config.containsKey("subprocessTypeFlag")) {
+                Object v = config.get("subprocessTypeFlag");
+                this.subprocessTypeFlag = v != null && !v.toString().isBlank() ? v.toString() : "--subprocess=";
+            }
+
             log.info("Loaded persisted subprocess config: enabled={}, heapSize={}, timeout={}min, " +
-                            "queue={}, indexWorkers={}, embeddingThreads={}",
-                    enabled, heapSize, timeoutMinutes, queueCapacity, indexingWorkers, embeddingThreads);
+                    "queue={}, indexWorkers={}, embeddingThreads={}, restartEnabled={}, maxRestartAttempts={}, " +
+                    "restartOnStall={}, stallThreshold={}s, nativeMode={}",
+                    enabled, heapSize, timeoutMinutes, queueCapacity, indexingWorkers, embeddingThreads,
+                    restartEnabled, maxRestartAttempts, restartOnStall, stallDetectionThresholdSeconds,
+                    nativeExecutableMode);
 
         } catch (IOException e) {
             log.error("Failed to load persisted subprocess config from {}: {}",
@@ -223,12 +415,36 @@ public class SubprocessConfigService {
             config.put("heartbeatIntervalSeconds", heartbeatIntervalSeconds);
             config.put("staleThresholdSeconds", staleThresholdSeconds);
 
-            // Pipeline settings (embedding batch sizes stored separately in batch-size-config.json)
+            // Pipeline settings (embedding batch sizes stored separately in
+            // batch-size-config.json)
             config.put("queueCapacity", queueCapacity);
             config.put("parallelIndexing", parallelIndexing);
             config.put("indexingWorkers", indexingWorkers);
             config.put("indexingBatchAccumulationSize", indexingBatchAccumulationSize);
             config.put("embeddingThreads", embeddingThreads);
+
+            // Restart configuration
+            config.put("restartEnabled", restartEnabled);
+            config.put("maxRestartAttempts", maxRestartAttempts);
+            config.put("initialBackoffMs", initialBackoffMs);
+            config.put("backoffMultiplier", backoffMultiplier);
+            config.put("heapIncreaseFactor", heapIncreaseFactor);
+            config.put("systemRamSafetyMargin", systemRamSafetyMargin);
+
+            // Stall/deadlock detection config
+            config.put("restartOnStall", restartOnStall);
+            config.put("restartOnTimeout", restartOnTimeout);
+            config.put("stallDetectionThresholdSeconds", stallDetectionThresholdSeconds);
+            config.put("progressStallWarningSeconds", progressStallWarningSeconds);
+
+            // Native executable config
+            config.put("nativeExecutableMode", nativeExecutableMode);
+            config.put("nativeExecutablePath", nativeExecutablePath);
+            config.put("ingestExecutablePath", ingestExecutablePath);
+            config.put("vectorPopulationExecutablePath", vectorPopulationExecutablePath);
+            config.put("embeddingExecutablePath", embeddingExecutablePath);
+            config.put("modelInitExecutablePath", modelInitExecutablePath);
+            config.put("subprocessTypeFlag", subprocessTypeFlag);
 
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(config);
             Files.writeString(configFilePath, json);
@@ -270,7 +486,8 @@ public class SubprocessConfigService {
         return staleThresholdSeconds;
     }
 
-    // Pipeline settings getters (embedding batch sizes come from AnseriniEmbeddingProperties)
+    // Pipeline settings getters (embedding batch sizes come from
+    // AnseriniEmbeddingProperties)
     public int getQueueCapacity() {
         return queueCapacity;
     }
@@ -289,6 +506,154 @@ public class SubprocessConfigService {
 
     public int getEmbeddingThreads() {
         return embeddingThreads;
+    }
+
+    // Restart configuration getters
+    public boolean isRestartEnabled() {
+        return restartEnabled;
+    }
+
+    public int getMaxRestartAttempts() {
+        return maxRestartAttempts;
+    }
+
+    public int getInitialBackoffMs() {
+        return initialBackoffMs;
+    }
+
+    public double getBackoffMultiplier() {
+        return backoffMultiplier;
+    }
+
+    public double getHeapIncreaseFactor() {
+        return heapIncreaseFactor;
+    }
+
+    public double getSystemRamSafetyMargin() {
+        return systemRamSafetyMargin;
+    }
+
+    // Stall/deadlock detection getters
+    public boolean isRestartOnStall() {
+        return restartOnStall;
+    }
+
+    public boolean isRestartOnTimeout() {
+        return restartOnTimeout;
+    }
+
+    public int getStallDetectionThresholdSeconds() {
+        return stallDetectionThresholdSeconds;
+    }
+
+    public int getProgressStallWarningSeconds() {
+        return progressStallWarningSeconds;
+    }
+
+    // Native executable configuration getters
+    public String getNativeExecutableMode() {
+        return nativeExecutableMode;
+    }
+
+    public String getNativeExecutablePath() {
+        return nativeExecutablePath;
+    }
+
+    public String getIngestExecutablePath() {
+        return ingestExecutablePath;
+    }
+
+    public String getVectorPopulationExecutablePath() {
+        return vectorPopulationExecutablePath;
+    }
+
+    public String getEmbeddingExecutablePath() {
+        return embeddingExecutablePath;
+    }
+
+    public String getModelInitExecutablePath() {
+        return modelInitExecutablePath;
+    }
+
+    public String getSubprocessTypeFlag() {
+        return subprocessTypeFlag;
+    }
+
+    /**
+     * Determine if native executable mode should be used.
+     * When mode is "auto", detects based on runtime context (native image vs JVM).
+     */
+    public boolean shouldUseNativeExecutableMode() {
+        if ("native".equalsIgnoreCase(nativeExecutableMode)) {
+            return true;
+        }
+        if ("jvm".equalsIgnoreCase(nativeExecutableMode)) {
+            return false;
+        }
+        // Auto mode: detect based on runtime context
+        NativeImageInfo.SubprocessLaunchMode recommended = NativeImageInfo.getRecommendedLaunchMode();
+        return recommended == NativeImageInfo.SubprocessLaunchMode.NATIVE_EXECUTABLE;
+    }
+
+    /**
+     * Get the executable path for a specific subprocess type.
+     * Falls back to the unified native executable path if no specific path is configured.
+     *
+     * @param subprocessType One of: "ingest", "vector-population", "embedding", "model-init"
+     * @return The executable path, or null if not configured
+     */
+    public String getExecutablePathForType(String subprocessType) {
+        String specificPath = switch (subprocessType.toLowerCase()) {
+            case "ingest" -> ingestExecutablePath;
+            case "vector-population" -> vectorPopulationExecutablePath;
+            case "embedding" -> embeddingExecutablePath;
+            case "model-init" -> modelInitExecutablePath;
+            default -> null;
+        };
+
+        // Use specific path if configured and valid
+        if (specificPath != null && !specificPath.isBlank()) {
+            Path path = Paths.get(specificPath);
+            if (Files.exists(path) && Files.isExecutable(path)) {
+                return path.toAbsolutePath().toString();
+            }
+            log.warn("Specific subprocess path for {} does not exist or is not executable: {}", subprocessType, specificPath);
+        }
+
+        // Fall back to unified executable path
+        if (nativeExecutablePath != null && !nativeExecutablePath.isBlank()) {
+            Path path = Paths.get(nativeExecutablePath);
+            if (Files.exists(path) && Files.isExecutable(path)) {
+                return path.toAbsolutePath().toString();
+            }
+        }
+
+        // Try to detect from current native image
+        if (NativeImageInfo.isRunningInNativeImage()) {
+            String execPath = NativeImageInfo.getExecutablePath();
+            if (execPath != null) {
+                return execPath;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if the unified executable should be used (vs separate executables).
+     *
+     * @param subprocessType One of: "ingest", "vector-population", "embedding", "model-init"
+     * @return true if should use unified executable with --subprocess flag
+     */
+    public boolean useUnifiedExecutable(String subprocessType) {
+        String specificPath = switch (subprocessType.toLowerCase()) {
+            case "ingest" -> ingestExecutablePath;
+            case "vector-population" -> vectorPopulationExecutablePath;
+            case "embedding" -> embeddingExecutablePath;
+            case "model-init" -> modelInitExecutablePath;
+            default -> null;
+        };
+        return specificPath == null || specificPath.isBlank();
     }
 
     /**
@@ -355,7 +720,8 @@ public class SubprocessConfigService {
         log.info("Updated subprocess staleThresholdSeconds: {}", staleThresholdSeconds);
     }
 
-    // Pipeline settings setters (embedding batch sizes managed via BatchSizeConfigService)
+    // Pipeline settings setters (embedding batch sizes managed via
+    // BatchSizeConfigService)
     public void setQueueCapacity(int queueCapacity) {
         this.queueCapacity = queueCapacity;
         persistConfig();
@@ -384,6 +750,113 @@ public class SubprocessConfigService {
         this.embeddingThreads = embeddingThreads;
         persistConfig();
         log.info("Updated subprocess embeddingThreads: {}", embeddingThreads);
+    }
+
+    // Restart configuration setters
+    public void setRestartEnabled(boolean restartEnabled) {
+        this.restartEnabled = restartEnabled;
+        persistConfig();
+        log.info("Updated subprocess restartEnabled: {}", restartEnabled);
+    }
+
+    public void setMaxRestartAttempts(int maxRestartAttempts) {
+        this.maxRestartAttempts = maxRestartAttempts;
+        persistConfig();
+        log.info("Updated subprocess maxRestartAttempts: {}", maxRestartAttempts);
+    }
+
+    public void setInitialBackoffMs(int initialBackoffMs) {
+        this.initialBackoffMs = initialBackoffMs;
+        persistConfig();
+        log.info("Updated subprocess initialBackoffMs: {}", initialBackoffMs);
+    }
+
+    public void setBackoffMultiplier(double backoffMultiplier) {
+        this.backoffMultiplier = backoffMultiplier;
+        persistConfig();
+        log.info("Updated subprocess backoffMultiplier: {}", backoffMultiplier);
+    }
+
+    public void setHeapIncreaseFactor(double heapIncreaseFactor) {
+        this.heapIncreaseFactor = heapIncreaseFactor;
+        persistConfig();
+        log.info("Updated subprocess heapIncreaseFactor: {}", heapIncreaseFactor);
+    }
+
+    public void setSystemRamSafetyMargin(double systemRamSafetyMargin) {
+        this.systemRamSafetyMargin = systemRamSafetyMargin;
+        persistConfig();
+        log.info("Updated subprocess systemRamSafetyMargin: {}", systemRamSafetyMargin);
+    }
+
+    // Stall/deadlock detection setters
+    public void setRestartOnStall(boolean restartOnStall) {
+        this.restartOnStall = restartOnStall;
+        persistConfig();
+        log.info("Updated subprocess restartOnStall: {}", restartOnStall);
+    }
+
+    public void setRestartOnTimeout(boolean restartOnTimeout) {
+        this.restartOnTimeout = restartOnTimeout;
+        persistConfig();
+        log.info("Updated subprocess restartOnTimeout: {}", restartOnTimeout);
+    }
+
+    public void setStallDetectionThresholdSeconds(int stallDetectionThresholdSeconds) {
+        this.stallDetectionThresholdSeconds = stallDetectionThresholdSeconds;
+        persistConfig();
+        log.info("Updated subprocess stallDetectionThresholdSeconds: {}", stallDetectionThresholdSeconds);
+    }
+
+    public void setProgressStallWarningSeconds(int progressStallWarningSeconds) {
+        this.progressStallWarningSeconds = progressStallWarningSeconds;
+        persistConfig();
+        log.info("Updated subprocess progressStallWarningSeconds: {}", progressStallWarningSeconds);
+    }
+
+    // Native executable configuration setters
+    public void setNativeExecutableMode(String nativeExecutableMode) {
+        this.nativeExecutableMode = nativeExecutableMode != null && !nativeExecutableMode.isBlank()
+                ? nativeExecutableMode : "auto";
+        persistConfig();
+        log.info("Updated subprocess nativeExecutableMode: {}", this.nativeExecutableMode);
+    }
+
+    public void setNativeExecutablePath(String nativeExecutablePath) {
+        this.nativeExecutablePath = normalizeOptionalString(nativeExecutablePath);
+        persistConfig();
+        log.info("Updated subprocess nativeExecutablePath: {}", this.nativeExecutablePath);
+    }
+
+    public void setIngestExecutablePath(String ingestExecutablePath) {
+        this.ingestExecutablePath = normalizeOptionalString(ingestExecutablePath);
+        persistConfig();
+        log.info("Updated subprocess ingestExecutablePath: {}", this.ingestExecutablePath);
+    }
+
+    public void setVectorPopulationExecutablePath(String vectorPopulationExecutablePath) {
+        this.vectorPopulationExecutablePath = normalizeOptionalString(vectorPopulationExecutablePath);
+        persistConfig();
+        log.info("Updated subprocess vectorPopulationExecutablePath: {}", this.vectorPopulationExecutablePath);
+    }
+
+    public void setEmbeddingExecutablePath(String embeddingExecutablePath) {
+        this.embeddingExecutablePath = normalizeOptionalString(embeddingExecutablePath);
+        persistConfig();
+        log.info("Updated subprocess embeddingExecutablePath: {}", this.embeddingExecutablePath);
+    }
+
+    public void setModelInitExecutablePath(String modelInitExecutablePath) {
+        this.modelInitExecutablePath = normalizeOptionalString(modelInitExecutablePath);
+        persistConfig();
+        log.info("Updated subprocess modelInitExecutablePath: {}", this.modelInitExecutablePath);
+    }
+
+    public void setSubprocessTypeFlag(String subprocessTypeFlag) {
+        this.subprocessTypeFlag = subprocessTypeFlag != null && !subprocessTypeFlag.isBlank()
+                ? subprocessTypeFlag : "--subprocess=";
+        persistConfig();
+        log.info("Updated subprocess subprocessTypeFlag: {}", this.subprocessTypeFlag);
     }
 
     /**
@@ -427,6 +900,60 @@ public class SubprocessConfigService {
         if (update.embeddingThreads() != null) {
             this.embeddingThreads = update.embeddingThreads();
         }
+        // Restart configuration
+        if (update.restartEnabled() != null) {
+            this.restartEnabled = update.restartEnabled();
+        }
+        if (update.maxRestartAttempts() != null) {
+            this.maxRestartAttempts = update.maxRestartAttempts();
+        }
+        if (update.initialBackoffMs() != null) {
+            this.initialBackoffMs = update.initialBackoffMs();
+        }
+        if (update.backoffMultiplier() != null) {
+            this.backoffMultiplier = update.backoffMultiplier();
+        }
+        if (update.heapIncreaseFactor() != null) {
+            this.heapIncreaseFactor = update.heapIncreaseFactor();
+        }
+        if (update.systemRamSafetyMargin() != null) {
+            this.systemRamSafetyMargin = update.systemRamSafetyMargin();
+        }
+        // Stall/deadlock detection config
+        if (update.restartOnStall() != null) {
+            this.restartOnStall = update.restartOnStall();
+        }
+        if (update.restartOnTimeout() != null) {
+            this.restartOnTimeout = update.restartOnTimeout();
+        }
+        if (update.stallDetectionThresholdSeconds() != null) {
+            this.stallDetectionThresholdSeconds = update.stallDetectionThresholdSeconds();
+        }
+        if (update.progressStallWarningSeconds() != null) {
+            this.progressStallWarningSeconds = update.progressStallWarningSeconds();
+        }
+        // Native executable config
+        if (update.nativeExecutableMode() != null) {
+            this.nativeExecutableMode = update.nativeExecutableMode().isBlank() ? "auto" : update.nativeExecutableMode();
+        }
+        if (update.nativeExecutablePath() != null) {
+            this.nativeExecutablePath = normalizeOptionalString(update.nativeExecutablePath());
+        }
+        if (update.ingestExecutablePath() != null) {
+            this.ingestExecutablePath = normalizeOptionalString(update.ingestExecutablePath());
+        }
+        if (update.vectorPopulationExecutablePath() != null) {
+            this.vectorPopulationExecutablePath = normalizeOptionalString(update.vectorPopulationExecutablePath());
+        }
+        if (update.embeddingExecutablePath() != null) {
+            this.embeddingExecutablePath = normalizeOptionalString(update.embeddingExecutablePath());
+        }
+        if (update.modelInitExecutablePath() != null) {
+            this.modelInitExecutablePath = normalizeOptionalString(update.modelInitExecutablePath());
+        }
+        if (update.subprocessTypeFlag() != null) {
+            this.subprocessTypeFlag = update.subprocessTypeFlag().isBlank() ? "--subprocess=" : update.subprocessTypeFlag();
+        }
         persistConfig();
         log.info("Updated subprocess configuration: {}", update);
     }
@@ -448,6 +975,30 @@ public class SubprocessConfigService {
         this.indexingWorkers = defaultIndexingWorkers;
         this.indexingBatchAccumulationSize = defaultIndexingBatchAccumulationSize;
         this.embeddingThreads = defaultEmbeddingThreads;
+        // Restart configuration
+        this.restartEnabled = defaultRestartEnabled;
+        this.maxRestartAttempts = defaultMaxRestartAttempts;
+        this.initialBackoffMs = defaultInitialBackoffMs;
+        this.backoffMultiplier = defaultBackoffMultiplier;
+        this.heapIncreaseFactor = defaultHeapIncreaseFactor;
+        this.systemRamSafetyMargin = defaultSystemRamSafetyMargin;
+        // Stall/deadlock detection
+        this.restartOnStall = defaultRestartOnStall;
+        this.restartOnTimeout = defaultRestartOnTimeout;
+        this.stallDetectionThresholdSeconds = defaultStallDetectionThresholdSeconds;
+        this.progressStallWarningSeconds = defaultProgressStallWarningSeconds;
+        // Native executable config
+        this.nativeExecutableMode = normalizeOptionalString(defaultNativeExecutableMode);
+        if (this.nativeExecutableMode.isEmpty()) {
+            this.nativeExecutableMode = "auto";
+        }
+        this.nativeExecutablePath = normalizeOptionalString(defaultNativeExecutablePath);
+        this.ingestExecutablePath = normalizeOptionalString(defaultIngestExecutablePath);
+        this.vectorPopulationExecutablePath = normalizeOptionalString(defaultVectorPopulationExecutablePath);
+        this.embeddingExecutablePath = normalizeOptionalString(defaultEmbeddingExecutablePath);
+        this.modelInitExecutablePath = normalizeOptionalString(defaultModelInitExecutablePath);
+        this.subprocessTypeFlag = defaultSubprocessTypeFlag != null && !defaultSubprocessTypeFlag.isBlank()
+                ? defaultSubprocessTypeFlag : "--subprocess=";
         persistConfig();
         log.info("Reset subprocess configuration to defaults");
     }
@@ -472,27 +1023,115 @@ public class SubprocessConfigService {
                 indexingWorkers,
                 indexingBatchAccumulationSize,
                 embeddingThreads,
+                // Restart configuration
+                restartEnabled,
+                maxRestartAttempts,
+                initialBackoffMs,
+                backoffMultiplier,
+                heapIncreaseFactor,
+                systemRamSafetyMargin,
+                // Stall/deadlock detection
+                restartOnStall,
+                restartOnTimeout,
+                stallDetectionThresholdSeconds,
+                progressStallWarningSeconds,
+                // Native executable config
+                nativeExecutableMode,
+                nativeExecutablePath,
+                ingestExecutablePath,
+                vectorPopulationExecutablePath,
+                embeddingExecutablePath,
+                modelInitExecutablePath,
+                subprocessTypeFlag,
+                shouldUseNativeExecutableMode(),
+                NativeImageInfo.isRunningInNativeImage(),
+                NativeImageInfo.hasClasspath(),
+                // Computed/system info
                 getCallbackBaseUrl(),
                 getActualServerPort(),
                 availableMemoryMb,
                 runtime.availableProcessors(),
                 System.getProperty("os.name"),
-                System.getProperty("java.version")
-        );
+                System.getProperty("java.version"));
     }
 
     /**
-     * Get list of common heap size options.
+     * Get list of heap size options dynamically based on system RAM.
+     * Returns options up to 80% of system RAM, capped at 1TB maximum.
      */
     public List<String> getHeapSizeOptions() {
-        return List.of("1g", "2g", "4g", "6g", "8g", "12g", "16g");
+        long systemRamBytes = getSystemRamBytes();
+        long maxHeapBytes = Math.min(
+                (long) (systemRamBytes * 0.80),  // 80% of system RAM
+                1024L * 1024L * 1024L * 1024L    // 1TB absolute cap
+        );
+        long maxHeapGb = maxHeapBytes / (1024L * 1024L * 1024L);
+
+        java.util.List<String> options = new java.util.ArrayList<>();
+        // Always include small options
+        options.add("1g");
+        options.add("2g");
+        options.add("4g");
+        options.add("6g");
+        options.add("8g");
+
+        // Add larger options based on available RAM
+        if (maxHeapGb >= 12) options.add("12g");
+        if (maxHeapGb >= 16) options.add("16g");
+        if (maxHeapGb >= 24) options.add("24g");
+        if (maxHeapGb >= 32) options.add("32g");
+        if (maxHeapGb >= 48) options.add("48g");
+        if (maxHeapGb >= 64) options.add("64g");
+        if (maxHeapGb >= 96) options.add("96g");
+        if (maxHeapGb >= 128) options.add("128g");
+        if (maxHeapGb >= 192) options.add("192g");
+        if (maxHeapGb >= 256) options.add("256g");
+        if (maxHeapGb >= 384) options.add("384g");
+        if (maxHeapGb >= 512) options.add("512g");
+        if (maxHeapGb >= 768) options.add("768g");
+        if (maxHeapGb >= 1024) options.add("1024g");
+
+        log.debug("Generated heap size options for {}GB system RAM (max {}GB @ 80%): {}",
+                systemRamBytes / (1024L * 1024L * 1024L), maxHeapGb, options);
+        return options;
+    }
+
+    /**
+     * Get maximum allowed heap size (80% of system RAM, capped at 1TB).
+     */
+    public String getMaxHeapSize() {
+        long systemRamBytes = getSystemRamBytes();
+        long maxHeapBytes = Math.min(
+                (long) (systemRamBytes * 0.80),
+                1024L * 1024L * 1024L * 1024L  // 1TB cap
+        );
+        long maxHeapGb = maxHeapBytes / (1024L * 1024L * 1024L);
+        return maxHeapGb + "g";
+    }
+
+    /**
+     * Get total system RAM in bytes.
+     */
+    private long getSystemRamBytes() {
+        try {
+            java.lang.management.OperatingSystemMXBean osBean =
+                java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+            if (osBean instanceof com.sun.management.OperatingSystemMXBean sunOsBean) {
+                return sunOsBean.getTotalMemorySize();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to get system RAM, using fallback: {}", e.getMessage());
+        }
+        // Fallback: estimate based on JVM max memory (assumes ~25% allocated to JVM)
+        return Runtime.getRuntime().maxMemory() * 4;
     }
 
     // ============= DTOs =============
 
     /**
      * Configuration update request.
-     * Note: Embedding batch sizes are managed via BatchSizeConfigService (benchmark results).
+     * Note: Embedding batch sizes are managed via BatchSizeConfigService (benchmark
+     * results).
      */
     public record SubprocessConfigUpdate(
             Boolean enabled,
@@ -507,12 +1146,33 @@ public class SubprocessConfigService {
             Boolean parallelIndexing,
             Integer indexingWorkers,
             Integer indexingBatchAccumulationSize,
-            Integer embeddingThreads
-    ) {}
+            Integer embeddingThreads,
+            // Restart configuration
+            Boolean restartEnabled,
+            Integer maxRestartAttempts,
+            Integer initialBackoffMs,
+            Double backoffMultiplier,
+            Double heapIncreaseFactor,
+            Double systemRamSafetyMargin,
+            // Stall/deadlock detection
+            Boolean restartOnStall,
+            Boolean restartOnTimeout,
+            Integer stallDetectionThresholdSeconds,
+            Integer progressStallWarningSeconds,
+            // Native executable configuration
+            String nativeExecutableMode,
+            String nativeExecutablePath,
+            String ingestExecutablePath,
+            String vectorPopulationExecutablePath,
+            String embeddingExecutablePath,
+            String modelInitExecutablePath,
+            String subprocessTypeFlag) {
+    }
 
     /**
      * Configuration response.
-     * Note: Embedding batch sizes come from AnseriniEmbeddingProperties (benchmark results in batch-size-config.json).
+     * Note: Embedding batch sizes come from AnseriniEmbeddingProperties (benchmark
+     * results in batch-size-config.json).
      */
     public record SubprocessConfigResponse(
             boolean enabled,
@@ -528,14 +1188,37 @@ public class SubprocessConfigService {
             int indexingWorkers,
             int indexingBatchAccumulationSize,
             int embeddingThreads,
+            // Restart configuration
+            boolean restartEnabled,
+            int maxRestartAttempts,
+            int initialBackoffMs,
+            double backoffMultiplier,
+            double heapIncreaseFactor,
+            double systemRamSafetyMargin,
+            // Stall/deadlock detection
+            boolean restartOnStall,
+            boolean restartOnTimeout,
+            int stallDetectionThresholdSeconds,
+            int progressStallWarningSeconds,
+            // Native executable configuration
+            String nativeExecutableMode,
+            String nativeExecutablePath,
+            String ingestExecutablePath,
+            String vectorPopulationExecutablePath,
+            String embeddingExecutablePath,
+            String modelInitExecutablePath,
+            String subprocessTypeFlag,
+            boolean resolvedNativeMode,
+            boolean runningInNativeImage,
+            boolean hasClasspath,
             // Computed/system info
             String callbackBaseUrl,
             int actualServerPort,
             long availableMemoryMb,
             int availableProcessors,
             String osName,
-            String javaVersion
-    ) {}
+            String javaVersion) {
+    }
 
     private static String normalizeOptionalString(String value) {
         if (value == null) {

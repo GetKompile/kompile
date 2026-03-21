@@ -22,3 +22,47 @@ buildNumber.properties
 .mvn/wrapper/maven-wrapper.jar
 .idea/
 *.json
+
+# Frontend build artifacts
+node_modules/
+.next/
+.angular/
+dist/
+*.pack
+
+# Binary/model files
+*.onnx
+*.bin
+*.pb
+*.sdz
+*.tar.gz
+*.zip
+*.node
+*.trace.db*
+*.swp
+
+# Crash/error logs
+hs_err_pid*.log
+*.hs_err*
+
+# Data directories
+anserini-models/
+anserini-downloads/
+anserini-vector-index/
+kompile-app/data/
+kompile-rag-builds/kompile-sample/project/data/
+
+# Large build artifacts
+gcc-*.tar.gz
+gcc-4.9.4/
+kompile-rag-builds/kompile-sample/project/nd4j_symbols.txt
+
+# Static output files
+anserini/src/main/frontend/out/
+kompile-app/kompile-model-staging/src/main/resources/staging-static/
+
+# Lock files
+*.lock
+
+# Compiled native binaries at root
+/kompile

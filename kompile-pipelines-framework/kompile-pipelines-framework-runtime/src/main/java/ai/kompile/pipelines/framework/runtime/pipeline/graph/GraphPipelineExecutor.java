@@ -26,7 +26,9 @@ import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.api.data.DataFactory;
 import ai.kompile.pipelines.framework.api.data.PipelineDataConstants;
 import ai.kompile.pipelines.framework.api.data.ValueType;
+import ai.kompile.pipelines.framework.api.kvcache.KVCache;
 import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
+import ai.kompile.pipelines.framework.api.loop.LoopCondition;
 import ai.kompile.pipelines.framework.core.context.DefaultContext;
 import ai.kompile.pipelines.framework.core.context.NoOpMetrics;
 import ai.kompile.pipelines.framework.core.context.NoOpProfiler;
@@ -238,21 +240,10 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
                             Data inputData = completedStepOutputs.get(effectiveInputNodeId);
                             if(inputData != null) combinedData.merge(inputData);
                         }
-                        // The CombineNodeConfig in the uploaded file does not have a getCombineFn() that returns a Java Function.
-                        // It has getCombineFunctionClassName() and getCombineFunctionParams().
-                        // Executing this requires instantiating and calling the CombineFn.
-                        // This logic is complex and assumed to be handled by a dedicated runner or different mechanism
-                        // if COMBINE_FN nodes are to be executed directly by the GraphPipelineExecutor without a runner.
-                        // For this iteration, we'll assume a CombineFn node would be wrapped in a StandardGraphNodeConfig
-                        // with a specific runner if it needs active execution beyond simple merging.
-                        // If it's just data merging, the current logic is a simplified merge.
-                        // If a custom CombineFn class needs to be invoked:
                         if (combineConfig.getCombineFunctionClassName() != null && !combineConfig.getCombineFunctionClassName().isEmpty()) {
                             try {
                                 Class<?> fnClass = Class.forName(combineConfig.getCombineFunctionClassName());
                                 CombineFn combineFnInstance = (CombineFn) fnClass.getDeclaredConstructor().newInstance();
-                                // CombineFn might need its own init with combineConfig.getCombineFunctionParams()
-                                // This is a simplified invocation.
                                 combinedData = combineFnInstance.combine(combinedData, combineConfig.getCombineFunctionParams());
                             } catch (Exception e) {
                                 throw new RuntimeException("Failed to execute CombineFn for node " + stepId, e);
@@ -261,6 +252,17 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
                         completedStepOutputs.put(stepId, combinedData.dup());
                         stepStates.put(stepId, StepRunState.COMPLETED);
                         graphChangedStateInIteration = true;
+                    } else if (nodeConfig.getGraphStepType() == GraphStepType.LOOP) {
+                        LoopNodeConfig loopConfig = (LoopNodeConfig) nodeConfig;
+                        try {
+                            Data loopResult = executeLoopNode(loopConfig, completedStepOutputs, currentPipelineContext);
+                            completedStepOutputs.put(stepId, loopResult.dup());
+                            stepStates.put(stepId, StepRunState.COMPLETED);
+                            graphChangedStateInIteration = true;
+                        } catch (Exception e) {
+                            stepStates.put(stepId, StepRunState.FAILED);
+                            throw new RuntimeException("Error executing LOOP node " + stepId, e);
+                        }
                     }
                 }
             }
@@ -363,6 +365,128 @@ public class GraphPipelineExecutor extends BasePipelineExecutor {
             }
         }
         return false;
+    }
+
+    private Data executeLoopNode(LoopNodeConfig loopConfig, Map<String, Data> completedStepOutputs,
+                                    Context pipelineContext) throws Exception {
+        // Resolve the body step runner
+        String bodyStepName = loopConfig.getBodyStepName();
+        PipelineStepRunner bodyRunner = runnersMapLocal.get(bodyStepName);
+        if (bodyRunner == null) {
+            throw new IllegalStateException("LOOP node '" + loopConfig.getName() +
+                    "' references body step '" + bodyStepName + "' which has no initialized runner.");
+        }
+
+        // Instantiate the loop condition
+        LoopCondition condition;
+        try {
+            Class<?> condClass = Class.forName(loopConfig.getConditionClassName());
+            condition = (LoopCondition) condClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to instantiate LoopCondition: " + loopConfig.getConditionClassName(), e);
+        }
+
+        // Prepare initial loop state from inputs
+        Data loopState = Data.empty();
+        for (String inputNodeId : loopConfig.getInputs()) {
+            String effectiveInputNodeId = inputNodeId.equals(graphPipeline.getInputNodeName()) ? PIPELINE_INPUT_ID : inputNodeId;
+            Data inputData = completedStepOutputs.get(effectiveInputNodeId);
+            if (inputData != null) {
+                loopState.merge(inputData);
+            }
+        }
+
+        // Accumulate generated values (e.g., token IDs)
+        List<Long> accumulatedTokens = new ArrayList<>();
+        int maxIter = condition.maxIterations();
+
+        for (int iteration = 0; iteration < maxIter; iteration++) {
+            // Check condition before executing (except first iteration which always runs)
+            if (iteration > 0 && !condition.shouldContinue(loopState, iteration)) {
+                break;
+            }
+
+            // Execute body step
+            Context iterContext = pipelineContext.child(
+                    loopConfig.getName() + "-loop-iter-" + iteration + "-" + System.nanoTime());
+            Data iterOutput;
+            try {
+                iterOutput = bodyRunner.exec(loopState, iterContext);
+            } catch (Exception e) {
+                // Close any KVCache in loopState on failure
+                closeKVCachesInData(loopState);
+                throw new RuntimeException("LOOP node '" + loopConfig.getName() +
+                        "' body step failed at iteration " + iteration, e);
+            }
+
+            // Accumulate the designated value (e.g., generated token ID)
+            String accFromKey = loopConfig.getAccumulateFromKey();
+            if (iterOutput.has(accFromKey)) {
+                Long tokenId = iterOutput.getInt64(accFromKey);
+                if (tokenId != null) {
+                    accumulatedTokens.add(tokenId);
+                }
+            }
+
+            // Check condition after executing
+            if (!condition.shouldContinue(iterOutput, iteration)) {
+                // Close old KV caches before finishing
+                closeKVCachesInData(loopState);
+                loopState = iterOutput;
+                break;
+            }
+
+            // Prepare next iteration: close old KV caches and feed back specified keys
+            Data nextLoopState = Data.empty();
+
+            // Copy all non-feedback keys from the current loopState (initial inputs that don't change)
+            for (String key : loopState.keySet()) {
+                if (!loopConfig.getFeedbackKeys().contains(key)) {
+                    nextLoopState.put(key, (Object) loopState.get(key));
+                }
+            }
+
+            // Feed back specified keys from iteration output
+            for (String feedbackKey : loopConfig.getFeedbackKeys()) {
+                if (iterOutput.has(feedbackKey)) {
+                    Object val = iterOutput.get(feedbackKey);
+                    if (val instanceof KVCache) {
+                        // Dup the KV cache for next iteration, close the old one from loopState
+                        KVCache oldCache = loopState.getKVCache(feedbackKey);
+                        KVCache newCache = ((KVCache) val).dup();
+                        nextLoopState.put(feedbackKey, newCache);
+                        if (oldCache != null) {
+                            try { oldCache.close(); } catch (Exception ignored) {}
+                        }
+                        // Close the iteration output's cache since we duped it
+                        try { ((KVCache) val).close(); } catch (Exception ignored) {}
+                    } else {
+                        nextLoopState.put(feedbackKey, val);
+                    }
+                }
+            }
+
+            loopState = nextLoopState;
+        }
+
+        // Build final output
+        Data result = Data.empty();
+        result.merge(loopState);
+        result.putList(loopConfig.getAccumulatorKey(), accumulatedTokens, ValueType.INT64);
+
+        return result;
+    }
+
+    private void closeKVCachesInData(Data data) {
+        if (data == null) return;
+        for (String key : data.keySet()) {
+            if (data.type(key) == ValueType.KV_CACHE) {
+                KVCache cache = data.getKVCache(key);
+                if (cache != null) {
+                    try { cache.close(); } catch (Exception ignored) {}
+                }
+            }
+        }
     }
 
     private Data prepareStepInput(StandardGraphNodeConfig nodeConfig, Map<String, Data> completedStepOutputs, String executionId) {

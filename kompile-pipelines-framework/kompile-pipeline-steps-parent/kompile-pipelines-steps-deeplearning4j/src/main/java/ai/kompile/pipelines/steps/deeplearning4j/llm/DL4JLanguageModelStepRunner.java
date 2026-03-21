@@ -199,6 +199,10 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
 
         Data resultData = Data.empty(); // Corrected: Use Data.empty()
 
+        long generationStartNanos = System.nanoTime();
+        long firstTokenLatencyNanos = -1;
+        int generatedTokenCount = 0;
+
         try {
             for (int i = 0; i < maxNewTokens; i++) {
                 INDArray logits;
@@ -246,6 +250,12 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
 
                 long nextTokenId = sampleNextToken(nextTokenLogits, temperature, topK);
 
+                // Track token generation metrics
+                if (firstTokenLatencyNanos < 0) {
+                    firstTokenLatencyNanos = System.nanoTime() - generationStartNanos;
+                }
+                generatedTokenCount++;
+
                 if (nextTokenId == eosTokenId) break;
                 allGeneratedTokenIdsThisTurn.add(nextTokenId);
 
@@ -286,7 +296,24 @@ public class DL4JLanguageModelStepRunner implements PipelineStepRunner {
             resultData.put(config.getResponseOutputName(), finalTextResponse);
             conversationHistory.add("assistant: " + finalTextResponse);
             resultData.put(config.getConversationContextName(), new ArrayList<>(conversationHistory));
-            log.debug("DL4J LLM (step '{}') generated response. Context ID: {}", config.getName(), context.executionId().orElse("N/A"));
+
+            // Record generation throughput metrics
+            long totalGenerationNanos = System.nanoTime() - generationStartNanos;
+            long totalGenerationMs = totalGenerationNanos / 1_000_000;
+            long firstTokenMs = firstTokenLatencyNanos > 0 ? firstTokenLatencyNanos / 1_000_000 : -1;
+            double tokensPerSecond = totalGenerationNanos > 0
+                    ? (generatedTokenCount * 1_000_000_000.0) / totalGenerationNanos : 0.0;
+
+            resultData.put("generatedTokens", generatedTokenCount);
+            resultData.put("promptTokens", promptTokenIds.size());
+            resultData.put("firstTokenLatencyMs", firstTokenMs);
+            resultData.put("totalGenerationMs", totalGenerationMs);
+            resultData.put("tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0);
+
+            log.info("DL4J LLM (step '{}'): {} tokens in {}ms ({} tok/s), TTFT {}ms, prompt {} tokens. Context ID: {}",
+                    config.getName(), generatedTokenCount, totalGenerationMs,
+                    String.format("%.1f", tokensPerSecond), firstTokenMs,
+                    promptTokenIds.size(), context.executionId().orElse("N/A"));
         } finally {
             // CRITICAL: Close all tracked arrays to prevent off-heap memory leaks
             // Also close the final currentSequenceIds and attentionMask if not already tracked

@@ -46,22 +46,39 @@ public class NoOpChunker implements TextChunker {
     @Override
     public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
         validateDocument(document);
-        
+
+        Map<String, Object> mergedOptions = prepareOptions(options);
+        boolean collectGarbage = (Boolean) mergedOptions.getOrDefault(OPTION_COLLECT_GARBAGE, true);
+        boolean includeGarbageChunk = (Boolean) mergedOptions.getOrDefault(OPTION_INCLUDE_GARBAGE_CHUNK, true);
+
+        String text = document.getText();
+
+        // Check if the document is garbage (not a complete sentence)
+        if (collectGarbage && SentenceFilter.isGarbage(text)) {
+            if (includeGarbageChunk) {
+                return List.of(SentenceFilter.createGarbageChunk(
+                    document, List.of(text.trim()), getName(), 0, 1));
+            }
+            return List.of();
+        }
+
         // Create a new document with additional chunk metadata
         Map<String, Object> chunkMetadata = new HashMap<>(document.getMetadata());
         chunkMetadata.put("chunk.strategy", getName());
         chunkMetadata.put("chunk.index", 0);
         chunkMetadata.put("chunk.total", 1);
         chunkMetadata.put("chunk.originalId", document.getId());
-        
+        chunkMetadata.put("chunk.isGarbage", false);
+        chunkMetadata.put("chunk.contentType", "sentence");
+
         RetrievedDoc chunkedDoc = RetrievedDoc.builder()
             .id(document.getId() + "-chunk-0")
             .text(document.getText())
             .metadata(chunkMetadata)
             .score(document.getScore())
             .build();
-        
-        return Arrays.asList(chunkedDoc);
+
+        return List.of(chunkedDoc);
     }
 
     @Override
@@ -77,7 +94,10 @@ public class NoOpChunker implements TextChunker {
     
     @Override
     public Map<String, Object> getDefaultOptions() {
-        // NoOp chunker doesn't need any specific options
-        return Collections.emptyMap();
+        Map<String, Object> defaults = new HashMap<>();
+        // Garbage collection options - disabled by default (see TextChunker interface)
+        defaults.put(OPTION_COLLECT_GARBAGE, false);
+        defaults.put(OPTION_INCLUDE_GARBAGE_CHUNK, true);
+        return defaults;
     }
 }

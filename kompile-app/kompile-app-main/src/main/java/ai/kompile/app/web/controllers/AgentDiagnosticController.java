@@ -54,41 +54,47 @@ public class AgentDiagnosticController {
     }
 
     /**
-     * Get all registered agents.
+     * Get all registered agents. API keys are masked for security.
      */
     @GetMapping
     public ResponseEntity<List<AgentProvider>> getAllAgents() {
         log.debug("Getting all registered agents");
-        return ResponseEntity.ok(agentRegistryService.getAllAgents());
+        List<AgentProvider> agents = agentRegistryService.getAllAgents();
+        agents.forEach(this::maskApiKey);
+        return ResponseEntity.ok(agents);
     }
 
     /**
-     * Get only available agents (CLI installed and accessible).
+     * Get only available agents. API keys are masked for security.
      */
     @GetMapping("/available")
     public ResponseEntity<List<AgentProvider>> getAvailableAgents() {
         log.debug("Getting available agents");
-        return ResponseEntity.ok(agentRegistryService.getAvailableAgents());
+        List<AgentProvider> agents = agentRegistryService.getAvailableAgents();
+        agents.forEach(this::maskApiKey);
+        return ResponseEntity.ok(agents);
     }
 
     /**
-     * Get the default agent.
+     * Get the default agent. API key masked for security.
      */
     @GetMapping("/default")
     public ResponseEntity<AgentProvider> getDefaultAgent() {
         log.debug("Getting default agent");
         Optional<AgentProvider> defaultAgent = agentRegistryService.getDefaultAgent();
+        defaultAgent.ifPresent(this::maskApiKey);
         return defaultAgent.map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     /**
-     * Get a specific agent by name.
+     * Get a specific agent by name. API key masked for security.
      */
     @GetMapping("/{name}")
     public ResponseEntity<AgentProvider> getAgent(@PathVariable String name) {
         log.debug("Getting agent: {}", name);
         Optional<AgentProvider> agent = agentRegistryService.getAgent(name);
+        agent.ifPresent(this::maskApiKey);
         return agent.map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -111,13 +117,24 @@ public class AgentDiagnosticController {
     }
 
     /**
-     * Refresh availability status for all agents.
+     * Refresh availability status for all agents. API keys masked.
      */
     @PostMapping("/refresh")
     public ResponseEntity<List<AgentProvider>> refreshAllAgents() {
         log.info("Refreshing all agent availability status");
         agentRegistryService.checkAllAgentsAvailability();
-        return ResponseEntity.ok(agentRegistryService.getAllAgents());
+        List<AgentProvider> agents = agentRegistryService.getAllAgents();
+        agents.forEach(this::maskApiKey);
+        return ResponseEntity.ok(agents);
+    }
+
+    /**
+     * Mask API key in agent provider for frontend display.
+     */
+    private void maskApiKey(AgentProvider agent) {
+        if (agent.isApiAgent() && agent.getApiKey() != null && !agent.getApiKey().isEmpty()) {
+            agent.setApiKey(agent.getMaskedApiKey());
+        }
     }
 
     /**

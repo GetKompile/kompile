@@ -18,8 +18,10 @@ package ai.kompile.oauth.service.providers;
 
 import ai.kompile.oauth.dto.OAuthTokenResponse;
 import ai.kompile.oauth.dto.OAuthUserInfo;
+import ai.kompile.oauth.service.OAuthSettingsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
@@ -37,21 +39,69 @@ public class MicrosoftOAuthHandler extends AbstractOAuthProviderHandler {
     private static final String AUTHORIZATION_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize";
     private static final String TOKEN_ENDPOINT_TEMPLATE = "https://login.microsoftonline.com/%s/oauth2/v2.0/token";
     private static final String GRAPH_USERINFO_ENDPOINT = "https://graph.microsoft.com/v1.0/me";
+    private static final String DEFAULT_SCOPES = "Files.Read User.Read https://outlook.office365.com/IMAP.AccessAsUser.All offline_access";
+
+    private OAuthSettingsService settingsService;
 
     @Value("${kompile.oauth.microsoft.client-id:}")
-    private String clientId;
+    private String defaultClientId;
 
     @Value("${kompile.oauth.microsoft.client-secret:}")
-    private String clientSecret;
+    private String defaultClientSecret;
 
     @Value("${kompile.oauth.microsoft.tenant-id:common}")
-    private String tenantId;
+    private String defaultTenantId;
 
-    @Value("${kompile.oauth.microsoft.scopes:Files.Read User.Read https://outlook.office365.com/IMAP.AccessAsUser.All offline_access}")
-    private String scopes;
+    @Value("${kompile.oauth.microsoft.scopes:" + DEFAULT_SCOPES + "}")
+    private String defaultScopes;
 
     public MicrosoftOAuthHandler(RestTemplate restTemplate, ObjectMapper objectMapper) {
         super(restTemplate, objectMapper);
+    }
+
+    @Autowired(required = false)
+    public void setSettingsService(OAuthSettingsService settingsService) {
+        this.settingsService = settingsService;
+    }
+
+    private String getEffectiveClientId() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientId(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientId;
+    }
+
+    private String getEffectiveClientSecret() {
+        if (settingsService != null) {
+            String configured = settingsService.getClientSecret(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultClientSecret;
+    }
+
+    private String getEffectiveScopes() {
+        if (settingsService != null) {
+            String configured = settingsService.getScopes(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultScopes != null && !defaultScopes.isEmpty() ? defaultScopes : DEFAULT_SCOPES;
+    }
+
+    private String getEffectiveTenantId() {
+        if (settingsService != null) {
+            String configured = settingsService.getTenantId(getProviderId());
+            if (configured != null && !configured.isEmpty()) {
+                return configured;
+            }
+        }
+        return defaultTenantId != null && !defaultTenantId.isEmpty() ? defaultTenantId : "common";
     }
 
     @Override
@@ -81,7 +131,7 @@ public class MicrosoftOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     public List<String> getRequiredScopes() {
-        return List.of(scopes.split("\\s+"));
+        return List.of(getEffectiveScopes().split("\\s+"));
     }
 
     @Override
@@ -91,17 +141,17 @@ public class MicrosoftOAuthHandler extends AbstractOAuthProviderHandler {
 
     @Override
     protected String getClientId() {
-        return clientId;
+        return getEffectiveClientId();
     }
 
     @Override
     protected String getClientSecret() {
-        return clientSecret;
+        return getEffectiveClientSecret();
     }
 
     @Override
     protected String getTokenEndpoint() {
-        return String.format(TOKEN_ENDPOINT_TEMPLATE, tenantId);
+        return String.format(TOKEN_ENDPOINT_TEMPLATE, getEffectiveTenantId());
     }
 
     @Override
@@ -112,14 +162,14 @@ public class MicrosoftOAuthHandler extends AbstractOAuthProviderHandler {
     @Override
     public String buildAuthorizationUrl(String redirectUri, String state) {
         Map<String, String> params = new LinkedHashMap<>();
-        params.put("client_id", clientId);
+        params.put("client_id", getEffectiveClientId());
         params.put("redirect_uri", redirectUri);
         params.put("response_type", "code");
-        params.put("scope", scopes);
+        params.put("scope", getEffectiveScopes());
         params.put("state", state);
         params.put("response_mode", "query");
 
-        String authEndpoint = String.format(AUTHORIZATION_ENDPOINT_TEMPLATE, tenantId);
+        String authEndpoint = String.format(AUTHORIZATION_ENDPOINT_TEMPLATE, getEffectiveTenantId());
         return authEndpoint + "?" + buildQueryString(params);
     }
 

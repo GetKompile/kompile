@@ -17,7 +17,6 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.MemoryWatchdogService;
-import ai.kompile.app.services.StartupWarmupService;
 import ai.kompile.app.services.SystemResourceBroadcaster;
 import org.nd4j.linalg.api.memory.MemoryWorkspace;
 import org.nd4j.linalg.api.memory.conf.WorkspaceConfiguration;
@@ -46,7 +45,6 @@ public class SystemResourceController {
     private static final Logger logger = LoggerFactory.getLogger(SystemResourceController.class);
 
     private final MemoryWatchdogService memoryWatchdogService;
-    private final StartupWarmupService startupWarmupService;
     private final SystemResourceBroadcaster systemResourceBroadcaster;
 
     // Store previous CPU measurements for calculating usage
@@ -56,10 +54,8 @@ public class SystemResourceController {
     @Autowired
     public SystemResourceController(
             @Autowired(required = false) MemoryWatchdogService memoryWatchdogService,
-            @Autowired(required = false) StartupWarmupService startupWarmupService,
             @Autowired(required = false) SystemResourceBroadcaster systemResourceBroadcaster) {
         this.memoryWatchdogService = memoryWatchdogService;
-        this.startupWarmupService = startupWarmupService;
         this.systemResourceBroadcaster = systemResourceBroadcaster;
     }
 
@@ -936,70 +932,6 @@ public class SystemResourceController {
 
         } catch (Exception e) {
             logger.error("Error setting memory watchdog check interval", e);
-            response.put("status", "error");
-            response.put("message", e.getMessage());
-            return ResponseEntity.internalServerError().body(response);
-        }
-    }
-
-    // ==================== Startup Warmup Endpoints ====================
-
-    /**
-     * Get the status of startup warmup (model preloading).
-     * This indicates whether the embedding model and chunker are ready for use.
-     */
-    @GetMapping("/warmup")
-    public ResponseEntity<Map<String, Object>> getWarmupStatus() {
-        Map<String, Object> response = new LinkedHashMap<>();
-
-        try {
-            if (startupWarmupService == null) {
-                response.put("status", "unavailable");
-                response.put("message", "Startup warmup service is not available");
-                response.put("ready", true); // Assume ready if no warmup service
-                return ResponseEntity.ok(response);
-            }
-
-            Map<String, Object> warmupStatus = startupWarmupService.getWarmupStatus();
-            response.putAll(warmupStatus);
-            response.put("ready", startupWarmupService.isWarmupComplete());
-            response.put("status", "success");
-
-            return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            logger.error("Error getting warmup status", e);
-            response.put("status", "error");
-            response.put("message", e.getMessage());
-            response.put("ready", false);
-            return ResponseEntity.internalServerError().body(response);
-        }
-    }
-
-    /**
-     * Manually trigger a warmup of all models.
-     * Useful after configuration changes or for testing.
-     */
-    @PostMapping("/warmup/trigger")
-    public ResponseEntity<Map<String, Object>> triggerWarmup() {
-        Map<String, Object> response = new LinkedHashMap<>();
-
-        try {
-            if (startupWarmupService == null) {
-                response.put("status", "unavailable");
-                response.put("message", "Startup warmup service is not available");
-                return ResponseEntity.ok(response);
-            }
-
-            startupWarmupService.triggerWarmup();
-
-            response.put("status", "success");
-            response.put("message", "Warmup triggered. Check /api/system/warmup for status.");
-
-            return ResponseEntity.ok(response);
-
-        } catch (Exception e) {
-            logger.error("Error triggering warmup", e);
             response.put("status", "error");
             response.put("message", e.getMessage());
             return ResponseEntity.internalServerError().body(response);

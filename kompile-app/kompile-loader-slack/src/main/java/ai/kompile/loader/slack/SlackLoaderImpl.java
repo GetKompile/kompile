@@ -36,7 +36,6 @@ import com.slack.api.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -49,6 +48,12 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Document loader for ingesting Slack channel messages.
  * Supports loading messages from public channels, private channels, and direct messages.
+ *
+ * <p>Configuration is per-request via metadata in the source descriptor:</p>
+ * <ul>
+ *   <li>slackToken - Slack API token</li>
+ *   <li>limit - Maximum number of messages to load</li>
+ * </ul>
  */
 @Component
 public class SlackLoaderImpl implements DocumentLoader {
@@ -58,11 +63,9 @@ public class SlackLoaderImpl implements DocumentLoader {
     private final Slack slack = Slack.getInstance();
     private final Map<String, String> userCache = new ConcurrentHashMap<>();
 
-    @Value("${kompile.slack.token:}")
-    private String slackToken;
-
-    @Value("${kompile.slack.default-limit:100}")
-    private int defaultLimit;
+    // Runtime configurable defaults (set via UI/API)
+    private String slackToken = "";
+    private int defaultLimit = 100;
 
     @Override
     public String getName() {
@@ -330,5 +333,35 @@ public class SlackLoaderImpl implements DocumentLoader {
         if (sourceDescriptor.getSourceId() != null) {
             metadata.put("source_id", sourceDescriptor.getSourceId());
         }
+    }
+
+    // Configuration methods for UI/API
+
+    /**
+     * Sets the default Slack API token. Can be overridden per-request via metadata.
+     */
+    public void setSlackToken(String slackToken) {
+        this.slackToken = slackToken;
+    }
+
+    /**
+     * Gets the current default Slack API token.
+     */
+    public String getSlackToken() {
+        return slackToken;
+    }
+
+    /**
+     * Sets the default message limit.
+     */
+    public void setDefaultLimit(int defaultLimit) {
+        this.defaultLimit = defaultLimit;
+    }
+
+    /**
+     * Gets the default message limit.
+     */
+    public int getDefaultLimit() {
+        return defaultLimit;
     }
 }

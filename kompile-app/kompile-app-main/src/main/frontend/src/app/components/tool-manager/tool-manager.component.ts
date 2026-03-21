@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { MatDialog } from '@angular/material/dialog';
+import { Subject } from 'rxjs';
+import { filter, takeUntil } from 'rxjs/operators';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import { ToolDefinitionService } from '../../services/tool-definition.service';
 import {
   EnhancedToolDefinition,
@@ -30,9 +34,10 @@ import {
   templateUrl: './tool-manager.component.html',
   styleUrls: ['./tool-manager.component.css']
 })
-export class ToolManagerComponent implements OnInit {
+export class ToolManagerComponent implements OnInit, OnDestroy {
   // Data
   tools: EnhancedToolDefinition[] = [];
+  private destroy$ = new Subject<void>();
   toolsByCategory: { [key: string]: EnhancedToolDefinition[] } = {};
   categories: { [key: string]: ToolCategoryInfo } = TOOL_CATEGORIES;
   summary: ToolsSummary | null = null;
@@ -55,10 +60,18 @@ export class ToolManagerComponent implements OnInit {
   agentPrompt: string | null = null;
   showAgentPrompt = false;
 
-  constructor(private toolService: ToolDefinitionService) {}
+  constructor(
+    private toolService: ToolDefinitionService,
+    private dialog: MatDialog
+  ) {}
 
   ngOnInit(): void {
     this.loadTools();
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();
+    this.destroy$.complete();
   }
 
   loadTools(): void {
@@ -226,20 +239,34 @@ export class ToolManagerComponent implements OnInit {
   }
 
   deleteTool(tool: EnhancedToolDefinition): void {
-    if (!confirm(`Are you sure you want to delete "${tool.name}"?`)) return;
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Tool',
+      message: `Are you sure you want to delete "${tool.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
 
-    this.isLoading = true;
-    this.toolService.deleteTool(tool.name).subscribe({
-      next: () => {
-        this.closeTool();
-        this.showSuccess('Tool deleted successfully');
-        this.loadTools();
-      },
-      error: (err) => {
-        this.errorMessage = `Failed to delete tool: ${err.message}`;
-        this.isLoading = false;
-      }
-    });
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.isLoading = true;
+        this.toolService.deleteTool(tool.name).subscribe({
+          next: () => {
+            this.closeTool();
+            this.showSuccess('Tool deleted successfully');
+            this.loadTools();
+          },
+          error: (err) => {
+            this.errorMessage = `Failed to delete tool: ${err.message}`;
+            this.isLoading = false;
+          }
+        });
+      });
   }
 
   toggleToolEnabled(tool: EnhancedToolDefinition): void {

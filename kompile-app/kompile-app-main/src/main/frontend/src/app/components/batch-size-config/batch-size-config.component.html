@@ -83,10 +83,10 @@
             <label>Optimal Batch Size</label>
             <div class="slider-row">
               <mat-slider min="1" [max]="selectedConfig.absoluteMaxBatchSize" step="1" class="batch-slider">
-                <input matSliderThumb [(ngModel)]="editOptimalBatchSize">
+                <input matSliderThumb [(ngModel)]="editOptimalBatchSize" [ngModelOptions]="{standalone: true}">
               </mat-slider>
               <mat-form-field appearance="outline" class="small-input">
-                <input matInput type="number" [(ngModel)]="editOptimalBatchSize" min="1" [max]="selectedConfig.absoluteMaxBatchSize">
+                <input matInput type="number" [(ngModel)]="editOptimalBatchSize" [ngModelOptions]="{standalone: true}" min="1" [max]="selectedConfig.absoluteMaxBatchSize">
               </mat-form-field>
             </div>
             <mat-hint>Recommended batch size for normal operations</mat-hint>
@@ -97,10 +97,10 @@
             <label>Max Batch Size</label>
             <div class="slider-row">
               <mat-slider min="1" [max]="selectedConfig.absoluteMaxBatchSize" step="1" class="batch-slider">
-                <input matSliderThumb [(ngModel)]="editMaxBatchSize">
+                <input matSliderThumb [(ngModel)]="editMaxBatchSize" [ngModelOptions]="{standalone: true}">
               </mat-slider>
               <mat-form-field appearance="outline" class="small-input">
-                <input matInput type="number" [(ngModel)]="editMaxBatchSize" min="1" [max]="selectedConfig.absoluteMaxBatchSize">
+                <input matInput type="number" [(ngModel)]="editMaxBatchSize" [ngModelOptions]="{standalone: true}" min="1" [max]="selectedConfig.absoluteMaxBatchSize">
               </mat-form-field>
             </div>
             <mat-hint>Maximum batch size (never exceeded)</mat-hint>
@@ -110,13 +110,13 @@
           <div class="config-item">
             <label>Memory Scaling</label>
             <div class="scale-row">
-              <mat-slide-toggle [(ngModel)]="autoScale">Auto-detect</mat-slide-toggle>
+              <mat-slide-toggle [(ngModel)]="autoScale" [ngModelOptions]="{standalone: true}">Auto-detect</mat-slide-toggle>
               <div *ngIf="!autoScale" class="slider-row">
                 <mat-slider min="0.1" max="2.0" step="0.1" class="scale-slider">
-                  <input matSliderThumb [(ngModel)]="editMemoryScaleFactor">
+                  <input matSliderThumb [(ngModel)]="editMemoryScaleFactor" [ngModelOptions]="{standalone: true}">
                 </mat-slider>
                 <mat-form-field appearance="outline" class="small-input">
-                  <input matInput type="number" [(ngModel)]="editMemoryScaleFactor" min="0.1" max="2.0" step="0.1">
+                  <input matInput type="number" [(ngModel)]="editMemoryScaleFactor" [ngModelOptions]="{standalone: true}" min="0.1" max="2.0" step="0.1">
                 </mat-form-field>
               </div>
             </div>
@@ -176,7 +176,7 @@
         <!-- Sample Text -->
         <mat-form-field appearance="outline" class="full-width sample-text-field">
           <mat-label>Sample Text (optional)</mat-label>
-          <textarea matInput [(ngModel)]="sampleText" rows="3"
+          <textarea matInput [(ngModel)]="sampleText" [ngModelOptions]="{standalone: true}" rows="3"
                     placeholder="Leave empty for default test texts covering various lengths"></textarea>
           <mat-hint>Custom text for domain-specific testing</mat-hint>
         </mat-form-field>
@@ -185,17 +185,17 @@
         <div class="test-params">
           <mat-form-field appearance="outline">
             <mat-label>Iterations</mat-label>
-            <input matInput type="number" [(ngModel)]="testIterations" min="1" max="10">
+            <input matInput type="number" [(ngModel)]="testIterations" [ngModelOptions]="{standalone: true}" min="1" max="10">
             <mat-hint>Per batch size</mat-hint>
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Warmup</mat-label>
-            <input matInput type="number" [(ngModel)]="warmupIterations" min="0" max="5">
+            <input matInput type="number" [(ngModel)]="warmupIterations" [ngModelOptions]="{standalone: true}" min="0" max="5">
             <mat-hint>Excluded from results</mat-hint>
           </mat-form-field>
           <mat-form-field appearance="outline">
             <mat-label>Timeout (s)</mat-label>
-            <input matInput type="number" [(ngModel)]="timeoutSeconds" min="5" max="120">
+            <input matInput type="number" [(ngModel)]="timeoutSeconds" [ngModelOptions]="{standalone: true}" min="5" max="120">
             <mat-hint>Per batch test</mat-hint>
           </mat-form-field>
         </div>

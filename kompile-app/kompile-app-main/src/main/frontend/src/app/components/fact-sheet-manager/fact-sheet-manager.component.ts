@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import { Component, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, ChangeDetectorRef, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators, FormControl } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -40,16 +41,20 @@ import { MatPaginatorModule, MatPaginator, PageEvent } from '@angular/material/p
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatSliderModule } from '@angular/material/slider';
 import { Subject, Subscription, interval } from 'rxjs';
-import { takeUntil, debounceTime, distinctUntilChanged, finalize } from 'rxjs/operators';
+import { takeUntil, debounceTime, distinctUntilChanged, finalize, filter } from 'rxjs/operators';
 
 import { FactSheetService } from '../../services/fact-sheet.service';
 import { DocumentService } from '../../services/document.service';
 import { WebSocketService, WebSocketConnectionState } from '../../services/websocket.service';
 import { ConfluenceService, ConfluenceIngestRequest } from '../../services/confluence.service';
 import { IndexBrowserService } from '../../services/index-browser.service';
+import { MainPanelNavigationService } from '../../services/main-panel-navigation.service';
 import { SourceViewerService } from '../../services/source-viewer.service';
 import { ArchiveService } from '../../services/archive.service';
+import { LocalRegistryService, EmbeddingModelStatus } from '../../services/local-registry.service';
+import { ModelRegistryService } from '../../services/model-registry.service';
 import { SourceViewerDialogComponent, SourceViewerDialogData } from '../source-viewer-dialog/source-viewer-dialog.component';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
   FactSheet,
   Fact,
@@ -62,6 +67,7 @@ import {
   IngestProgressUpdate,
   IngestPhase,
   IngestStatus,
+  IngestStats,
   AsyncUploadResponse,
   BatchAsyncUploadResponse,
   YouTubeTranscriptResponse,
@@ -69,11 +75,53 @@ import {
   ArchiveModelInfo,
   ArchiveInfo,
   ArchiveStatus,
-  ModelSourceType
+  ModelSourceType,
+  VectorPopulationWorkerStatus,
+  VectorPopulationQueueStatus,
+  VectorPopulationEmbeddingBatchMetrics,
+  VectorPopulationUpdate,
+  JobType,
+  SubprocessRuntimeInfo,
+  ModelStatusUpdate,
+  BatchHistoryEntry
 } from '../../models/api-models';
+
+// Interface for vector population progress tracking
+interface VectorPopulationProgress {
+  taskId: string;
+  phase: string;
+  progressPercent: number;
+  message: string;
+  currentStep?: string;
+  keywordIndexPath?: string;
+  vectorIndexPath?: string;
+  stats?: {
+    documentsLoaded: number;       // From subprocess - actual count from keyword index
+    documentsProcessed: number;    // Legacy field
+    chunksCreated: number;
+    chunksEmbedded: number;
+    chunksIndexed: number;
+    totalDocuments: number;
+    throughputDocsPerSec: number;
+    elapsedTimeMs: number;
+    actualKeywordIndexCount?: number;
+    actualVectorStoreCount?: number;
+    workerStatuses?: VectorPopulationWorkerStatus[];
+    queueStatus?: VectorPopulationQueueStatus;
+    currentEmbeddingBatch?: VectorPopulationEmbeddingBatchMetrics;
+    batchHistory?: BatchHistoryEntry[];  // Last N completed batches for UI visibility
+    runtimeInfo?: SubprocessRuntimeInfo;
+    // Restart tracking
+    restartAttempt?: number;
+    maxRestartAttempts?: number;
+    heapSize?: string;
+    heapIncreased?: boolean;
+  };
+}
 import { AddSourceDialogComponent, AddSourceDialogData } from '../document-manager/add-source-dialog/add-source-dialog.component';
 import { PipelineSettingsPanelComponent } from '../document-manager/pipeline-settings-panel/pipeline-settings-panel.component';
 import { SubprocessLogsComponent } from '../subprocess-logs/subprocess-logs.component';
+import { ConnectionsManagerComponent } from '../connections-manager/connections-manager.component';
 
 @Component({
   selector: 'app-fact-sheet-manager',
@@ -104,7 +152,9 @@ import { SubprocessLogsComponent } from '../subprocess-logs/subprocess-logs.comp
     MatCheckboxModule,
     MatSliderModule,
     PipelineSettingsPanelComponent,
-    SubprocessLogsComponent
+    SubprocessLogsComponent,
+    ConnectionsManagerComponent,
+    ConfirmDialogComponent
   ],
   templateUrl: './fact-sheet-manager.component.html',
   styleUrls: ['./fact-sheet-manager.component.css']
@@ -114,6 +164,9 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   @ViewChild('keywordPaginator') keywordPaginator!: MatPaginator;
   @ViewChild('vectorPaginator') vectorPaginator!: MatPaginator;
 
+  // Event to open Model Staging tab in parent
+  @Output() openModelStaging = new EventEmitter<void>();
+
   // Backend URL for API calls
   private backendUrl: string;
 
@@ -121,6 +174,17 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   sheets: FactSheet[] = [];
   activeSheet: FactSheet | null = null;
   isLoading = false;
+
+  // Vector population state
+  isVectorPopulating = false;
+  currentVectorTaskId: string | null = null;
+  vectorPopulationProgress: VectorPopulationProgress | null = null;
+  isVectorPopulationLogsExpanded = true;  // Default expanded to show logs
+  private wsVectorProgressSub: Subscription | null = null;
+  private vectorPopulationEnvironmentRequests: Set<string> = new Set();
+
+  // Embedding subprocess logs visibility
+  showEmbeddingLogs = false;
 
   // Facts state
   facts: Fact[] = [];
@@ -131,17 +195,49 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   activeUploads: Map<string, IngestProgressUpdate> = new Map();
   activeUploadsArray: IngestProgressUpdate[] = [];
   wsConnectionState: WebSocketConnectionState = WebSocketConnectionState.DISCONNECTED;
+
+  // Completed jobs notification pane - shows recently completed jobs until dismissed
+  completedJobs: IngestProgressUpdate[] = [];
   expandedPipelines: Set<string> = new Set();
   expandedBatchDetails: Set<string> = new Set();
   expandedJobInfo: Set<string> = new Set();
   expandedSubprocessDetails: Set<string> = new Set();
   expandedSubprocessLogs: Set<string> = new Set();
   taskLogs: Map<string, IngestLogEntry[]> = new Map();
+
+  // UI state for environment panels
+  expandedEnvironment: Set<string> = new Set();
+  showRawJson: Set<string> = new Set();
+
+  toggleEnvironment(taskId: string): void {
+    if (this.expandedEnvironment.has(taskId)) {
+      this.expandedEnvironment.delete(taskId);
+    } else {
+      this.expandedEnvironment.add(taskId);
+    }
+  }
+
+  toggleRawJson(taskId: string): void {
+    if (this.showRawJson.has(taskId)) {
+      this.showRawJson.delete(taskId);
+    } else {
+      this.showRawJson.add(taskId);
+    }
+  }
+
+  isEnvironmentExpanded(taskId: string): boolean {
+    return this.expandedEnvironment.has(taskId);
+  }
+
+  isRawJsonVisible(taskId: string): boolean {
+    return this.showRawJson.has(taskId);
+  }
   private cancelledTaskIds: Set<string> = new Set();
   private wsSubscription: Subscription | null = null;
   private logsSubscription: Subscription | null = null;
   private connectionSubscription: Subscription | null = null;
   private taskPollingSubscription: Subscription | null = null;
+  private modelStatusSubscribed = false;
 
   // Tab state
   selectedTabIndex = 0;
@@ -224,11 +320,14 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   // System-wide loaded configuration (from backend)
   systemConfig: {
-    embeddingModel: { className: string; dimensions: number; isNoOp: boolean } | null;
+    embeddingModel: { className: string; dimensions: number; isNoOp: boolean; modelId?: string } | null;
     reranker: { available: boolean; className: string; supportedTypes: string[] } | null;
     vectorStore: { className: string; available: boolean } | null;
   } = { embeddingModel: null, reranker: null, vectorStore: null };
   isLoadingSystemConfig = false;
+
+  // Embedding model status (includes source: REGISTRY or ARCHIVE)
+  embeddingStatus: EmbeddingModelStatus | null = null;
 
   // Model config form fields
   editEmbeddingModel: string | null = null;
@@ -259,6 +358,28 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     { value: 'registry', label: 'From Registry' }
   ];
 
+  // Knowledge Graph Configuration (per-sheet)
+  editEnableGraphBuilding = false;
+  editGraphBuilderType: string = 'llm';
+  editGraphStorageType: string = 'jpa';
+  isGraphConfigSaving = false;
+  graphConfigSaveMessage: string | null = null;
+  availableStorageTypes: { type: string; available: boolean; description: string }[] = [];
+
+  // Graph builder type options
+  graphBuilderTypes = [
+    { value: 'manual', label: 'Manual (UI-based)' },
+    { value: 'llm', label: 'LLM-based Extraction' },
+    { value: 'pattern', label: 'Pattern-based (Regex/NLP)' },
+    { value: 'hybrid', label: 'Hybrid (Combined)' }
+  ];
+
+  // Graph storage type options (will be filtered by availability)
+  graphStorageTypes = [
+    { value: 'jpa', label: 'Local Database (JPA/JDBC)', description: 'Store graph data in the local database' },
+    { value: 'neo4j', label: 'Neo4j', description: 'Store graph data in Neo4j graph database' }
+  ];
+
   private destroy$ = new Subject<void>();
 
   constructor(
@@ -267,13 +388,17 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     private webSocketService: WebSocketService,
     private confluenceService: ConfluenceService,
     private indexBrowserService: IndexBrowserService,
+    private mainPanelNavigationService: MainPanelNavigationService,
     private sourceViewerService: SourceViewerService,
     private archiveService: ArchiveService,
+    private localRegistryService: LocalRegistryService,
+    private modelRegistryService: ModelRegistryService,
     private http: HttpClient,
     private fb: FormBuilder,
     private snackBar: MatSnackBar,
     private dialog: MatDialog,
-    private cdr: ChangeDetectorRef
+    private cdr: ChangeDetectorRef,
+    private router: Router
   ) {
     // Initialize backend URL
     if (typeof window !== 'undefined' && window.location) {
@@ -320,7 +445,25 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         if (sheetChanged) {
           console.log(`[FactSheetManager] Sheet changed from ${previousSheetId} to ${sheet?.id}, updating filtered uploads`);
           this.updateFilteredUploadsArray();
+
+          // Refresh index browser status when switching sheets
+          // This updates storage location and document counts for the new sheet
+          this.loadIndexerStatus();
+
+          // Refresh archive status to ensure archive loading display is up to date
+          this.refreshArchiveStatus();
+
+          // Refresh system config to show correct encoder/reranker for this sheet
+          this.loadSystemConfig();
         }
+      });
+
+    // Navigate to the main facts panel when requested by other components
+    this.mainPanelNavigationService.focusMainPanel$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(() => {
+        this.selectedTabIndex = 0;
+        this.cdr.detectChanges();
       });
 
     // Now load data after subscriptions are ready
@@ -328,15 +471,29 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.loadAvailableLoadersAndChunkers();
     this.loadActiveIngestTasks();
     this.initializeWebSocket();
+    this.subscribeToVectorProgress();
+    this.restoreActiveVectorPopulationState();
     this.startTaskPolling();
     this.loadIndexerStatus();
     this.loadArchiveModels();
     this.loadSystemConfig();
+    this.loadAvailableStorageTypes();
 
     // Subscribe to facts
     this.factSheetService.facts$
       .pipe(takeUntil(this.destroy$))
       .subscribe(facts => this.facts = facts);
+
+    // Subscribe to model registry changes to refresh UI when models change
+    this.modelRegistryService.changes$
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(event => {
+        console.log('[FactSheetManager] Model registry change:', event.type, event.modelId);
+        // Refresh embedding status and system config when models change
+        this.loadSystemConfig();
+        this.loadIndexerStatus();
+        this.cdr.markForCheck();
+      });
 
     // Subscribe to keyword search input
     this.keywordSearchControl.valueChanges.pipe(
@@ -362,6 +519,63 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       }
     });
 
+    // Subscribe to WebSocket model status updates for real-time UI updates
+    this.subscribeToModelStatusUpdates();
+  }
+
+  /**
+   * Subscribe to WebSocket model status updates for real-time UI updates.
+   * This provides push-based updates when embedding model status changes.
+   */
+  private subscribeToModelStatusUpdates(): void {
+    if (this.modelStatusSubscribed) {
+      return;
+    }
+
+    this.modelStatusSubscribed = true;
+
+    this.webSocketService.subscribeToModelStatus().pipe(
+      takeUntil(this.destroy$)
+    ).subscribe({
+      next: (status: ModelStatusUpdate) => {
+        this.handleModelStatusUpdate(status);
+      },
+      error: (err) => {
+        console.error('[WS-MODEL] Error in model status WebSocket:', err);
+      }
+    });
+
+    console.log('[WS-MODEL] FactSheetManager subscribed to model status updates');
+  }
+
+  /**
+   * Handle incoming model status updates from WebSocket.
+   */
+  private handleModelStatusUpdate(status: ModelStatusUpdate): void {
+    if (!status.embedding) return;
+
+    const isNowInitialized = status.embedding.initialized && (status.embedding.dimensions || 0) > 0;
+
+    // Check if model just became ready (wasn't available before, now is)
+    const wasAvailable = this.systemConfig?.embeddingModel &&
+      !this.systemConfig.embeddingModel.isNoOp &&
+      this.systemConfig.embeddingModel.dimensions > 0;
+
+    if (!wasAvailable && isNowInitialized) {
+      console.log('[WS-MODEL] Embedding model is now ready in FactSheetManager!');
+      this.snackBar.open('Embedding model is now ready!', 'Close', {
+        duration: 5000,
+        panelClass: ['snackbar-success']
+      });
+      // Refresh full system config to get accurate info
+      this.loadSystemConfig();
+      this.loadIndexerStatus();
+    } else if (status.embedding.loading !== undefined) {
+      // Model status changed (loading state), refresh config
+      this.loadSystemConfig();
+    }
+
+    this.cdr.markForCheck();
   }
 
   loadAvailableLoadersAndChunkers(): void {
@@ -382,6 +596,9 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.logsSubscription?.unsubscribe();
     this.connectionSubscription?.unsubscribe();
     this.taskPollingSubscription?.unsubscribe();
+    this.unsubscribeFromVectorProgress();
+    // Unsubscribe from model status WebSocket
+    this.webSocketService.unsubscribeFromModelStatus();
     this.webSocketService.disconnect();
   }
 
@@ -526,7 +743,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     }
 
     // Log incoming update for debugging
-    console.log(`[FactSheetManager] Received progress update: taskId=${update.taskId.substring(0,8)}, factSheetId=${update.factSheetId}, status=${update.status}, activeSheetId=${this.activeSheet?.id}`);
+    console.log(`[FactSheetManager] Received progress update: taskId=${update.taskId.substring(0, 8)}, factSheetId=${update.factSheetId}, status=${update.status}, activeSheetId=${this.activeSheet?.id}`);
 
     const existing = this.activeUploads.get(update.taskId);
     const merged = this.mergeProgressUpdate(existing, update);
@@ -540,25 +757,37 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
     this.updateFilteredUploadsArray();
 
-    // Remove completed/failed/cancelled tasks after a delay
+    // Handle completed/failed/cancelled tasks
     if (update.status === IngestStatus.COMPLETED ||
       update.status === IngestStatus.FAILED ||
       update.status === IngestStatus.CANCELLED) {
+
+      // Add to completed jobs notification pane (if not already there)
+      const alreadyInCompleted = this.completedJobs.some(j => j.taskId === update.taskId);
+      if (!alreadyInCompleted) {
+        // Add completed job with completion timestamp
+        const completedJob = { ...merged, completedAt: new Date().toISOString() };
+        this.completedJobs.unshift(completedJob); // Add to beginning
+
+        // Auto-dismiss completed jobs after 60 seconds
+        setTimeout(() => {
+          this.dismissCompletedJob(update.taskId);
+        }, 60000);
+      }
+
+      // Remove from active uploads after a short delay
       setTimeout(() => {
         this.activeUploads.delete(update.taskId);
         this.cancelledTaskIds.delete(update.taskId);
         this.updateFilteredUploadsArray();
-      }, 10000);
+      }, 2000); // Reduced delay since we now have the completed pane
 
       // Refresh facts on completion
       if (update.status === IngestStatus.COMPLETED) {
         this.loadFacts();
         this.factSheetService.loadSheets().subscribe();
-        this.showSuccess(`'${update.fileName}' processed successfully!`);
       } else if (update.status === IngestStatus.FAILED) {
         this.showError(`Failed to process '${update.fileName}': ${update.errorMessage}`);
-      } else if (update.status === IngestStatus.CANCELLED) {
-        this.showSuccess(`'${update.fileName}' was cancelled`);
       }
     }
 
@@ -585,6 +814,43 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
     let mergedStats = update.stats;
     if (existing.stats && update.stats) {
+      const mergedRuntimeInfo = existing.stats.subprocessRuntimeInfo && update.stats.subprocessRuntimeInfo
+        ? { ...existing.stats.subprocessRuntimeInfo, ...update.stats.subprocessRuntimeInfo }
+        : update.stats.subprocessRuntimeInfo || existing.stats.subprocessRuntimeInfo;
+
+      // Merge batch history - accumulate unique batches instead of replacing
+      let mergedBatchHistory = update.stats.batchHistory || existing.stats.batchHistory;
+      if (existing.stats.batchHistory && update.stats.batchHistory) {
+        // Combine and dedupe by batch number, keeping newer entries
+        const batchMap = new Map<number, any>();
+        for (const batch of existing.stats.batchHistory) {
+          if (batch?.batchNumber !== undefined) {
+            batchMap.set(batch.batchNumber, batch);
+          }
+        }
+        for (const batch of update.stats.batchHistory) {
+          if (batch?.batchNumber !== undefined) {
+            batchMap.set(batch.batchNumber, batch);
+          }
+        }
+        mergedBatchHistory = Array.from(batchMap.values()).sort((a, b) => a.batchNumber - b.batchNumber);
+      }
+
+      // Merge current embedding batch - preserve higher batch number during restarts
+      let mergedCurrentBatch = update.stats.currentEmbeddingBatch || existing.stats.currentEmbeddingBatch;
+      if (existing.stats.currentEmbeddingBatch && update.stats.currentEmbeddingBatch) {
+        const existingBatchNum = existing.stats.currentEmbeddingBatch.batchNumber || 0;
+        const updateBatchNum = update.stats.currentEmbeddingBatch.batchNumber || 0;
+        // Use the batch info with higher processed count to handle restarts properly
+        const existingProcessed = existing.stats.chunksEmbedded ?? 0;
+        const updateProcessed = update.stats.chunksEmbedded ?? 0;
+        if (updateProcessed >= existingProcessed) {
+          mergedCurrentBatch = update.stats.currentEmbeddingBatch;
+        } else {
+          mergedCurrentBatch = existing.stats.currentEmbeddingBatch;
+        }
+      }
+
       mergedStats = {
         ...existing.stats,
         ...update.stats,
@@ -595,9 +861,14 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         chunksIndexed: Math.max(update.stats.chunksIndexed ?? 0, existing.stats.chunksIndexed ?? 0),
         documentsIndexed: Math.max(update.stats.documentsIndexed ?? 0, existing.stats.documentsIndexed ?? 0),
         queueStatus: update.stats.queueStatus || existing.stats.queueStatus,
-        currentEmbeddingBatch: update.stats.currentEmbeddingBatch || existing.stats.currentEmbeddingBatch,
-        subprocessRuntimeInfo: update.stats.subprocessRuntimeInfo || existing.stats.subprocessRuntimeInfo,
+        currentEmbeddingBatch: mergedCurrentBatch,
+        batchHistory: mergedBatchHistory,
+        subprocessRuntimeInfo: mergedRuntimeInfo,
         workerStatuses: update.stats.workerStatuses || existing.stats.workerStatuses,
+        // Preserve restart information
+        restartAttempt: Math.max(update.stats.restartAttempt ?? 0, existing.stats.restartAttempt ?? 0),
+        maxRestartAttempts: update.stats.maxRestartAttempts ?? existing.stats.maxRestartAttempts,
+        heapSize: update.stats.heapSize || existing.stats.heapSize,
       };
     } else if (existing.stats && !update.stats) {
       mergedStats = existing.stats;
@@ -608,7 +879,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       ? update.factSheetId
       : existing.factSheetId;
 
-    return { ...existing, ...update, stats: mergedStats, factSheetId: mergedFactSheetId };
+    // Use Math.max for progressPercent to prevent regression during restarts
+    const mergedProgressPercent = Math.max(update.progressPercent ?? 0, existing.progressPercent ?? 0);
+
+    return { ...existing, ...update, stats: mergedStats, factSheetId: mergedFactSheetId, progressPercent: mergedProgressPercent };
   }
 
   /**
@@ -630,7 +904,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
     console.log(`[FactSheetManager] updateFilteredUploadsArray: activeSheetId=${activeSheetId}, total=${allUploads.length}, filtered=${filtered.length}`);
     if (allUploads.length > 0) {
-      console.log(`[FactSheetManager] All uploads factSheetIds:`, allUploads.map(u => ({ taskId: u.taskId.substring(0,8), factSheetId: u.factSheetId, status: u.status })));
+      console.log(`[FactSheetManager] All uploads factSheetIds:`, allUploads.map(u => ({ taskId: u.taskId.substring(0, 8), factSheetId: u.factSheetId, status: u.status })));
     }
 
     this.activeUploadsArray = filtered.map(u => ({ ...u }));
@@ -640,7 +914,35 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   // Progress tracking helpers
   hasActiveProcessing(): boolean {
-    return this.activeUploadsArray.some(u => u.status === IngestStatus.IN_PROGRESS);
+    // Include PENDING status to ensure polling catches newly-queued tasks
+    // that might have missed their initial WebSocket event
+    return this.activeUploadsArray.some(u =>
+      u.status === IngestStatus.IN_PROGRESS || u.status === IngestStatus.PENDING
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // COMPLETED JOBS NOTIFICATION PANE
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /** Dismiss a single completed job from the notification pane */
+  dismissCompletedJob(taskId: string): void {
+    this.completedJobs = this.completedJobs.filter(j => j.taskId !== taskId);
+    this.cdr.detectChanges();
+  }
+
+  /** Dismiss all completed jobs from the notification pane */
+  dismissAllCompletedJobs(): void {
+    this.completedJobs = [];
+    this.cdr.detectChanges();
+  }
+
+  /** Get completed jobs for the current active sheet */
+  getCompletedJobsForCurrentSheet(): IngestProgressUpdate[] {
+    const activeSheetId = this.activeSheet?.id;
+    return this.completedJobs.filter(j =>
+      j.factSheetId === activeSheetId || j.factSheetId === null || j.factSheetId === undefined
+    );
   }
 
   trackByTaskId(index: number, upload: IngestProgressUpdate): string {
@@ -676,6 +978,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         'QUEUED': 'Queued for processing',
         'UPLOADING': 'Uploading file...',
         'LOADING': 'Loading document...',
+        'OCR_PROCESSING': 'OCR processing pages...',
         'CHUNKING': 'Chunking content...',
         'EMBEDDING': 'Generating embeddings...',
         'INDEXING': 'Indexing...',
@@ -738,7 +1041,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   isPhaseComplete(upload: IngestProgressUpdate, phase: string): boolean {
-    const phaseOrder = ['QUEUED', 'LOADING', 'CONVERTING', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'COMPLETED'];
+    const phaseOrder = ['QUEUED', 'LOADING', 'OCR_PROCESSING', 'CONVERTING', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'COMPLETED'];
     const currentPhase = String(upload.phase);
     const currentIndex = phaseOrder.indexOf(currentPhase);
     const checkIndex = phaseOrder.indexOf(phase);
@@ -756,6 +1059,48 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       localTask.status === IngestStatus.FAILED ||
       localTask.status === IngestStatus.CANCELLED)) {
       this.showError(`Task already ${localTask.status.toLowerCase()}`);
+      return;
+    }
+
+    if (localTask && this.isVectorPopulationTask(localTask)) {
+      this.indexBrowserService.cancelVectorPopulation(taskId).subscribe({
+        next: (response: any) => {
+          const message = response?.message || 'Cancellation requested...';
+          this.showSuccess(message);
+          this.cancelledTaskIds.add(taskId);
+
+          const updatedTask: IngestProgressUpdate = {
+            ...(localTask || {
+              taskId,
+              fileName: 'Vector Population',
+              phase: IngestPhase.COMPLETED,
+              status: IngestStatus.CANCELLED,
+              progressPercent: 0,
+              currentStep: 'Stopping',
+              message: 'Cancellation requested...',
+              stats: null,
+              errorMessage: null,
+              timestamp: new Date().toISOString(),
+              factSheetId: this.activeSheet?.id || null,
+              jobType: 'VECTOR_POPULATION'
+            }),
+            status: IngestStatus.CANCELLED,
+            message: message,
+            currentStep: 'Stopping'
+          };
+          this.activeUploads.set(taskId, updatedTask);
+          this.updateFilteredUploadsArray();
+
+          setTimeout(() => {
+            this.activeUploads.delete(taskId);
+            this.cancelledTaskIds.delete(taskId);
+            this.updateFilteredUploadsArray();
+          }, 5000);
+        },
+        error: (err) => {
+          this.showError(err.message || 'Failed to cancel vector population task');
+        }
+      });
       return;
     }
 
@@ -900,8 +1245,42 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     if (!upload.stats || !upload.stats.chunksCreated || upload.stats.chunksCreated === 0) {
       return 0;
     }
-    const indexed = upload.stats.documentsIndexed || upload.stats.chunksIndexed || 0;
+    const indexed = this.getIndexingDisplayCount(upload);
     return Math.round((indexed / upload.stats.chunksCreated) * 100);
+  }
+
+  isVectorPopulationTask(upload: IngestProgressUpdate): boolean {
+    const name = upload?.fileName || '';
+    return upload?.jobType === 'VECTOR_POPULATION' || name.toLowerCase().startsWith('vector population');
+  }
+
+  getIndexingDisplayCount(upload: IngestProgressUpdate): number {
+    if (!upload.stats) return 0;
+    if (this.isVectorPopulationTask(upload)) {
+      return upload.stats.chunksEmbedded || 0;
+    }
+    return upload.stats.documentsIndexed || upload.stats.chunksIndexed || 0;
+  }
+
+  getIndexingDisplayInProgress(upload: IngestProgressUpdate): number {
+    if (this.isVectorPopulationTask(upload)) {
+      return this.getEmbeddingInProgress(upload);
+    }
+    return this.getIndexingInProgress(upload);
+  }
+
+  isVectorIndexingActive(upload: IngestProgressUpdate): boolean {
+    if (this.isVectorPopulationTask(upload)) {
+      return this.isEmbeddingActive(upload) || this.hasEmbeddingQueueItems(upload);
+    }
+    return this.isIndexingActive(upload);
+  }
+
+  getIndexingQueueSize(upload: IngestProgressUpdate): number {
+    if (this.isVectorPopulationTask(upload)) {
+      return upload.stats?.queueStatus?.chunkQueueSize || 0;
+    }
+    return upload.stats?.queueStatus?.embeddedQueueSize || 0;
   }
 
   // Detect passthrough mode: embedding is done by indexer
@@ -910,6 +1289,56 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     const embedded = upload.stats.chunksEmbedded || 0;
     const indexed = upload.stats.chunksIndexed || 0;
     return embedded === 0 && indexed > 0;
+  }
+
+  // Get total items currently being processed by indexing workers
+  getIndexingInProgress(upload: IngestProgressUpdate): number {
+    if (!upload.stats?.workerStatuses) return 0;
+    return upload.stats.workerStatuses
+      .filter(w => w.workerType === 'indexing' && w.status === 'processing')
+      .reduce((sum, w) => sum + (w.currentBatchSize || 0), 0);
+  }
+
+  // Get total items currently being processed by embedding workers
+  getEmbeddingInProgress(upload: IngestProgressUpdate): number {
+    if (!upload.stats?.workerStatuses) return 0;
+    return upload.stats.workerStatuses
+      .filter(w => w.workerType === 'embedding' && w.status === 'processing')
+      .reduce((sum, w) => sum + (w.currentBatchSize || 0), 0);
+  }
+
+  // Check if embedding workers are actively processing (not just waiting)
+  isEmbeddingActive(upload: IngestProgressUpdate): boolean {
+    if (!upload.stats?.workerStatuses) return false;
+    return upload.stats.workerStatuses.some(
+      w => w.workerType === 'embedding' && w.status === 'processing'
+    );
+  }
+
+  // Check if indexing workers are actively processing
+  isIndexingActive(upload: IngestProgressUpdate): boolean {
+    if (!upload.stats?.workerStatuses) return false;
+    return upload.stats.workerStatuses.some(
+      w => w.workerType === 'indexing' && w.status === 'processing'
+    );
+  }
+
+  // Check if chunking workers are actively processing
+  isChunkingActive(upload: IngestProgressUpdate): boolean {
+    if (!upload.stats?.workerStatuses) return false;
+    return upload.stats.workerStatuses.some(
+      w => w.workerType === 'chunking' && w.status === 'processing'
+    );
+  }
+
+  // Check if there are items waiting in the embedding queue (chunks to embed)
+  hasEmbeddingQueueItems(upload: IngestProgressUpdate): boolean {
+    return (upload.stats?.queueStatus?.chunkQueueSize || 0) > 0;
+  }
+
+  // Check if there are items waiting in the indexing queue (embeddings to index)
+  hasIndexingQueueItems(upload: IngestProgressUpdate): boolean {
+    return (upload.stats?.queueStatus?.embeddedQueueSize || 0) > 0;
   }
 
   formatTime(ms: number): string {
@@ -934,12 +1363,69 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     return Math.min(100, Math.round(((completed || 0) / total) * 100));
   }
 
+  /**
+   * Get the total chunks for progress calculation.
+   * For vector population jobs, use documentsLoaded (total chunks from Lucene source).
+   * For document ingest jobs, use chunksCreated.
+   */
+  getTotalChunks(upload: IngestProgressUpdate): number {
+    if (!upload.stats) return 0;
+
+    // For vector population, documentsLoaded represents total source chunks from Lucene
+    if (this.isVectorPopulationTask(upload) && upload.stats.documentsLoaded && upload.stats.documentsLoaded > 0) {
+      return upload.stats.documentsLoaded;
+    }
+
+    // For document ingest, chunksCreated is the total
+    return upload.stats.chunksCreated || 0;
+  }
+
+  /**
+   * Format a number for display with K/M suffixes for large values.
+   */
+  formatNumber(value: number | undefined | null): string {
+    if (value === undefined || value === null) return '0';
+    if (value >= 1000000) {
+      return (value / 1000000).toFixed(1) + 'M';
+    } else if (value >= 1000) {
+      return (value / 1000).toFixed(1) + 'K';
+    }
+    return value.toString();
+  }
+
+  /**
+   * Calculate remaining chunks to process.
+   * Uses chunksEmbedded + inProgress as the base for what's been handled.
+   * When on final batch, caps remaining at 0 to avoid display issues.
+   */
+  getRemainingChunks(upload: IngestProgressUpdate): number {
+    if (!upload.stats) return 0;
+
+    const total = this.getTotalChunks(upload);
+    const embedded = upload.stats.chunksEmbedded || 0;
+    const inProgress = this.getEmbeddingInProgress(upload);
+
+    // Check if we're on the final batch - if so, remaining should be 0 or close to 0
+    const batch = upload.stats.currentEmbeddingBatch;
+    if (batch && batch.batchNumber && batch.totalBatches && batch.batchNumber >= batch.totalBatches) {
+      // On final batch - remaining is just what's in progress, not queued
+      return Math.max(0, inProgress);
+    }
+
+    // Normal calculation: total - embedded - inProgress
+    // But cap at 0 if we've embedded more than expected (can happen with count mismatches)
+    const remaining = total - embedded - inProgress;
+    return Math.max(0, remaining);
+  }
+
   calculateETA(upload: IngestProgressUpdate): string | null {
     if (!upload.stats || !upload.stats.chunksPerSecond || upload.stats.chunksPerSecond <= 0) return null;
 
-    const chunksCreated = upload.stats.chunksCreated || 0;
-    const chunksIndexed = upload.stats.chunksIndexed || upload.stats.documentsIndexed || 0;
-    const remaining = chunksCreated - chunksIndexed;
+    const totalChunks = this.getTotalChunks(upload);
+    const completed = this.isVectorPopulationTask(upload)
+      ? (upload.stats.chunksEmbedded || 0)
+      : (upload.stats.chunksIndexed || 0);
+    const remaining = totalChunks - completed;
 
     if (remaining <= 0) return null;
 
@@ -1032,6 +1518,32 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         const rejected = response.rejectedCount;
         if (accepted > 0) {
           this.showSuccess(`${accepted} file(s) queued for processing to "${this.activeSheet?.name}". ${rejected > 0 ? rejected + ' rejected.' : ''} Track progress below.`);
+
+          // Immediately add accepted tasks to UI so they show up right away
+          response.files.filter(f => f.accepted && f.taskId).forEach(file => {
+            const initialUpdate: IngestProgressUpdate = {
+              taskId: file.taskId!,
+              fileName: file.fileName,
+              phase: IngestPhase.QUEUED,
+              status: IngestStatus.PENDING,
+              progressPercent: 0,
+              currentStep: 'Queued',
+              message: 'Waiting to start processing...',
+              stats: null,
+              errorMessage: null,
+              timestamp: new Date().toISOString(),
+              factSheetId: this.activeSheet?.id || null
+            };
+            this.activeUploads.set(file.taskId!, initialUpdate);
+            // Auto-expand panels for new tasks
+            this.expandedSubprocessLogs.add(file.taskId!);
+            this.expandedJobInfo.add(file.taskId!);
+          });
+          this.updateFilteredUploadsArray();
+
+          // Immediately fetch actual status from backend to catch any progress
+          // that may have been sent via WebSocket before we subscribed
+          setTimeout(() => this.loadActiveIngestTasks(), 100);
         } else {
           this.showError(`All files rejected: ${response.message}`);
         }
@@ -1214,6 +1726,28 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         const rejected = response.rejectedCount;
         if (accepted > 0) {
           this.showSuccess(`${accepted} file(s) queued for processing. ${rejected > 0 ? rejected + ' rejected.' : ''} Track progress in the panel above.`);
+
+          // Immediately add accepted tasks to UI so they show up right away
+          response.files.filter(f => f.accepted && f.taskId).forEach(file => {
+            const initialUpdate: IngestProgressUpdate = {
+              taskId: file.taskId!,
+              fileName: file.fileName,
+              phase: IngestPhase.QUEUED,
+              status: IngestStatus.PENDING,
+              progressPercent: 0,
+              currentStep: 'Queued',
+              message: 'Waiting to start processing...',
+              stats: null,
+              errorMessage: null,
+              timestamp: new Date().toISOString(),
+              factSheetId: this.activeSheet?.id || null
+            };
+            this.activeUploads.set(file.taskId!, initialUpdate);
+            // Auto-expand panels for new tasks
+            this.expandedSubprocessLogs.add(file.taskId!);
+            this.expandedJobInfo.add(file.taskId!);
+          });
+          this.updateFilteredUploadsArray();
         } else {
           this.showError(`All files rejected: ${response.message}`);
         }
@@ -1231,17 +1765,31 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   deleteFact(fact: Fact, event: Event): void {
     event.stopPropagation();
 
-    if (!confirm(`Delete "${fact.fileName}"?`)) return;
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Fact',
+      message: `Delete "${fact.fileName}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
 
-    this.factSheetService.deleteFact(fact.id).subscribe({
-      next: () => {
-        if (this.selectedFact?.id === fact.id) {
-          this.selectedFact = null;
-        }
-        this.showSuccess(`Deleted "${fact.fileName}"`);
-      },
-      error: () => this.showError('Failed to delete fact')
-    });
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.factSheetService.deleteFact(fact.id).subscribe({
+          next: () => {
+            if (this.selectedFact?.id === fact.id) {
+              this.selectedFact = null;
+            }
+            this.showSuccess(`Deleted "${fact.fileName}"`);
+          },
+          error: () => this.showError('Failed to delete fact')
+        });
+      });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1287,12 +1835,39 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   createSheet(): void {
     if (this.sheetForm.invalid) return;
 
+    // Start with basic form values
     const request: CreateFactSheetRequest = {
       name: this.sheetForm.value.name,
       description: this.sheetForm.value.description || undefined,
       color: this.sheetForm.value.color,
       icon: this.sheetForm.value.icon
     };
+
+    // Copy model source configuration from the active sheet (if any)
+    // This ensures new fact sheets inherit the archive/registry configuration
+    if (this.activeSheet) {
+      // Copy embedding model configuration
+      if (this.activeSheet.embeddingModelSource) {
+        request.embeddingModelSource = this.activeSheet.embeddingModelSource;
+      }
+      if (this.activeSheet.embeddingArchiveId) {
+        request.embeddingArchiveId = this.activeSheet.embeddingArchiveId;
+      }
+      if (this.activeSheet.embeddingModel) {
+        request.embeddingModel = this.activeSheet.embeddingModel;
+      }
+
+      // Copy cross-encoder/reranking configuration
+      if (this.activeSheet.crossEncoderModelSource) {
+        request.crossEncoderModelSource = this.activeSheet.crossEncoderModelSource;
+      }
+      if (this.activeSheet.crossEncoderArchiveId) {
+        request.crossEncoderArchiveId = this.activeSheet.crossEncoderArchiveId;
+      }
+      // Note: We intentionally don't copy crossEncoderModel, rerankingEnabled, rerankerType, etc.
+      // since those are more specific configuration choices that may not apply to all fact sheets.
+      // We only copy the source (archive vs staging) so the new sheet uses the same model source.
+    }
 
     this.isLoading = true;
     this.factSheetService.createSheet(request).subscribe({
@@ -1361,19 +1936,33 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       return;
     }
 
-    if (!confirm(`Delete "${sheet.name}" and all ${sheet.factCount} facts?`)) return;
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Fact Sheet',
+      message: `Delete "${sheet.name}" and all ${sheet.factCount} facts?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'folder_delete'
+    };
 
-    this.isLoading = true;
-    this.factSheetService.deleteSheet(sheet.id).subscribe({
-      next: () => {
-        this.isLoading = false;
-        this.showSuccess(`Deleted "${sheet.name}"`);
-      },
-      error: () => {
-        this.isLoading = false;
-        this.showError('Failed to delete fact sheet');
-      }
-    });
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.isLoading = true;
+        this.factSheetService.deleteSheet(sheet.id).subscribe({
+          next: () => {
+            this.isLoading = false;
+            this.showSuccess(`Deleted "${sheet.name}"`);
+          },
+          error: () => {
+            this.isLoading = false;
+            this.showError('Failed to delete fact sheet');
+          }
+        });
+      });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1467,6 +2056,582 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
         this.cdr.markForCheck();
       }
     });
+  }
+
+  private restoreActiveVectorPopulationState(): void {
+    this.indexBrowserService.getActiveTrackedVectorPopulationTasks().subscribe({
+      next: (response) => {
+        if (!response.available || response.activeCount === 0 || !response.tasks?.length) {
+          return;
+        }
+
+        let hasActive = false;
+
+        response.tasks.forEach(task => {
+          const progress = this.mapTrackedVectorPopulationToProgress(task);
+          const unifiedUpdate = this.convertVectorPopulationToIngestProgress(progress);
+          const existing = this.activeUploads.get(task.taskId);
+          const merged = this.mergeProgressUpdate(existing, unifiedUpdate);
+          this.activeUploads.set(task.taskId, merged);
+          this.ensureVectorPopulationEnvironment(task.taskId);
+
+          if (!this.isVectorPopulationTerminalPhase(progress.phase)) {
+            hasActive = true;
+            this.currentVectorTaskId = task.taskId;
+            this.vectorPopulationProgress = progress;
+          }
+        });
+
+        this.isVectorPopulating = hasActive;
+        this.updateFilteredUploadsArray();
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        console.warn('Could not restore vector population tasks:', err);
+      }
+    });
+  }
+
+  private mapTrackedVectorPopulationToProgress(task: VectorPopulationUpdate): VectorPopulationProgress {
+    return {
+      taskId: task.taskId,
+      phase: String(task.phase) || 'LOADING',
+      progressPercent: task.progressPercent || 0,
+      message: task.message || '',
+      currentStep: task.currentStep,
+      keywordIndexPath: task.keywordIndexPath,
+      vectorIndexPath: task.vectorIndexPath,
+      stats: task.stats ? {
+        documentsLoaded: task.stats.documentsLoaded || 0,
+        documentsProcessed: task.stats.documentsLoaded || 0,
+        chunksCreated: task.stats.chunksCreated || 0,
+        chunksEmbedded: task.stats.chunksEmbedded || 0,
+        chunksIndexed: task.stats.chunksIndexed || 0,
+        totalDocuments: task.stats.totalDocuments || 0,
+        throughputDocsPerSec: task.stats.throughputDocsPerSec || 0,
+        elapsedTimeMs: task.stats.elapsedTimeMs || 0,
+        actualKeywordIndexCount: task.stats.actualKeywordIndexCount,
+        actualVectorStoreCount: task.stats.actualVectorStoreCount,
+        workerStatuses: task.stats.workerStatuses,
+        queueStatus: task.stats.queueStatus,
+        currentEmbeddingBatch: task.stats.currentEmbeddingBatch,
+        batchHistory: task.stats.batchHistory  // Forward batch history for UI display
+      } : undefined
+    };
+  }
+
+  private isVectorPopulationTerminalPhase(phase: string): boolean {
+    return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(String(phase).toUpperCase());
+  }
+
+  /**
+   * Start vector population from the keyword index.
+   * This will create vector embeddings for all documents in the keyword index.
+   */
+  startVectorPopulation(): void {
+    if (this.isVectorPopulating) {
+      return;
+    }
+
+    this.isVectorPopulating = true;
+    this.snackBar.open('Starting vector population from keyword index...', 'Close', { duration: 3000 });
+
+    // Subscribe to WebSocket progress first
+    this.subscribeToVectorProgress();
+
+    this.indexBrowserService.startVectorPopulation().subscribe({
+      next: (response: any) => {
+        this.currentVectorTaskId = response.taskId;
+
+        // Initialize progress display
+        this.vectorPopulationProgress = {
+          taskId: response.taskId,
+          phase: 'LOADING',
+          progressPercent: 0,
+          message: 'Starting vector population...'
+        };
+
+        this.snackBar.open(
+          response.message || 'Vector population started. Watch progress below.',
+          'Close',
+          { duration: 5000, panelClass: ['snackbar-success'] }
+        );
+        this.mainPanelNavigationService.requestMainPanelFocus();
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        this.isVectorPopulating = false;
+        this.snackBar.open(
+          `Error starting vector population: ${err.message || 'Server error'}`,
+          'Close',
+          { duration: 5000, panelClass: ['snackbar-error'] }
+        );
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  /**
+   * Cancel the current vector population task.
+   */
+  cancelVectorPopulation(): void {
+    if (!this.isVectorPopulating || !this.currentVectorTaskId) {
+      return;
+    }
+
+    this.indexBrowserService.cancelVectorPopulation(this.currentVectorTaskId).subscribe({
+      next: () => {
+        this.snackBar.open('Cancellation requested...', 'Close', { duration: 3000 });
+      },
+      error: (err) => {
+        this.snackBar.open(`Error cancelling: ${err.message}`, 'Close', {
+          duration: 5000,
+          panelClass: ['snackbar-error']
+        });
+      }
+    });
+  }
+
+  /**
+   * Toggle the vector population logs panel visibility.
+   */
+  toggleVectorPopulationLogs(): void {
+    this.isVectorPopulationLogsExpanded = !this.isVectorPopulationLogsExpanded;
+  }
+
+  /**
+   * Toggle the embedding subprocess logs panel visibility.
+   */
+  toggleEmbeddingLogs(): void {
+    this.showEmbeddingLogs = !this.showEmbeddingLogs;
+  }
+
+  /**
+   * Subscribe to vector population progress updates via WebSocket.
+   */
+  private subscribeToVectorProgress(): void {
+    this.unsubscribeFromVectorProgress();
+
+    console.log('[VECTOR-PROGRESS] Subscribing to vector population progress');
+    this.webSocketService.connect();
+
+    this.wsVectorProgressSub = this.webSocketService
+      .subscribeToVectorPopulation<VectorPopulationProgress>()
+      .subscribe({
+        next: (progress: VectorPopulationProgress) => {
+          console.log('[VECTOR-PROGRESS] Received:', progress.taskId, progress.phase, progress.progressPercent + '%');
+
+          const isTerminal = this.isVectorPopulationTerminalPhase(progress.phase);
+          if (!this.currentVectorTaskId || (!isTerminal && this.currentVectorTaskId !== progress.taskId)) {
+            this.currentVectorTaskId = progress.taskId;
+          }
+
+          this.vectorPopulationProgress = progress;
+          if (!isTerminal) {
+            this.isVectorPopulating = true;
+          } else if (this.currentVectorTaskId === progress.taskId) {
+            this.isVectorPopulating = false;
+          }
+
+          // Convert to IngestProgressUpdate and add to activeUploads for unified display
+          const unifiedUpdate = this.convertVectorPopulationToIngestProgress(progress);
+          const existing = this.activeUploads.get(progress.taskId);
+          const merged = this.mergeProgressUpdate(existing, unifiedUpdate);
+          this.activeUploads.set(progress.taskId, merged);
+          this.ensureVectorPopulationEnvironment(progress.taskId);
+          this.updateFilteredUploadsArray();
+
+          this.cdr.detectChanges();
+
+          // Handle completion/failure
+          if (progress.phase === 'COMPLETED') {
+            this.handleVectorPopulationComplete(progress);
+          } else if (progress.phase === 'FAILED') {
+            this.handleVectorPopulationFailed(progress);
+          } else if (progress.phase === 'CANCELLED') {
+            this.handleVectorPopulationCancelled();
+          }
+        },
+        error: (err: Error) => {
+          console.error('WebSocket vector progress error:', err);
+        }
+      });
+  }
+
+  /**
+   * Convert VectorPopulationProgress to IngestProgressUpdate for unified job tracking.
+   */
+  private convertVectorPopulationToIngestProgress(progress: VectorPopulationProgress): IngestProgressUpdate {
+    // Map vector population phases to IngestPhase
+    let phase: IngestPhase;
+    let status: IngestStatus;
+    switch (progress.phase) {
+      case 'LOADING':
+        phase = IngestPhase.LOADING;
+        status = IngestStatus.IN_PROGRESS;
+        break;
+      case 'EMBEDDING':
+        phase = IngestPhase.EMBEDDING;
+        status = IngestStatus.IN_PROGRESS;
+        break;
+      case 'INDEXING':
+        phase = IngestPhase.INDEXING;
+        status = IngestStatus.IN_PROGRESS;
+        break;
+      case 'COMPLETED':
+        phase = IngestPhase.COMPLETED;
+        status = IngestStatus.COMPLETED;
+        break;
+      case 'FAILED':
+        phase = IngestPhase.FAILED;
+        status = IngestStatus.FAILED;
+        break;
+      case 'CANCELLED':
+        phase = IngestPhase.COMPLETED; // No CANCELLED phase in IngestPhase
+        status = IngestStatus.CANCELLED;
+        break;
+      default:
+        phase = IngestPhase.QUEUED;
+        status = IngestStatus.IN_PROGRESS;
+    }
+
+    return {
+      taskId: progress.taskId,
+      fileName: 'Vector Population',
+      phase: phase,
+      status: status,
+      progressPercent: progress.progressPercent,
+      currentStep: progress.currentStep || progress.phase,
+      message: progress.message,
+      stats: progress.stats ? {
+        documentsLoaded: progress.stats.documentsLoaded || progress.stats.totalDocuments,
+        chunksCreated: progress.stats.chunksCreated,
+        chunksEmbedded: progress.stats.chunksEmbedded,
+        chunksIndexed: progress.stats.chunksIndexed,
+        documentsIndexed: progress.stats.documentsProcessed,
+        totalProcessingTimeMs: progress.stats.elapsedTimeMs,
+        loaderUsed: null,
+        chunkerUsed: null,
+        processedDocumentIds: [],
+        chunksPerSecond: progress.stats.throughputDocsPerSec,
+        currentEmbeddingBatch: progress.stats.currentEmbeddingBatch,
+        batchHistory: progress.stats.batchHistory,  // Forward batch history for UI display
+        subprocessRuntimeInfo: progress.stats.runtimeInfo,
+        // Restart tracking fields
+        restartAttempt: progress.stats.restartAttempt,
+        maxRestartAttempts: progress.stats.maxRestartAttempts,
+        heapSize: progress.stats.heapSize,
+        heapIncreased: progress.stats.heapIncreased
+      } : null,
+      errorMessage: null,
+      timestamp: new Date().toISOString(),
+      factSheetId: this.activeSheet?.id || null,
+      jobType: 'VECTOR_POPULATION',
+      keywordIndexPath: progress.keywordIndexPath,
+      vectorIndexPath: progress.vectorIndexPath
+    };
+  }
+
+  private ensureVectorPopulationEnvironment(taskId: string): void {
+    const existing = this.activeUploads.get(taskId);
+    if (existing?.stats?.subprocessRuntimeInfo?.nd4jEnvironmentUsed) {
+      return;
+    }
+
+    if (this.vectorPopulationEnvironmentRequests.has(taskId)) {
+      return;
+    }
+    this.vectorPopulationEnvironmentRequests.add(taskId);
+
+    this.indexBrowserService.getVectorPopulationTaskEnvironment(taskId).subscribe({
+      next: (envResponse) => {
+        if (!envResponse?.environmentCaptured || !envResponse.nd4jEnvironment) {
+          this.vectorPopulationEnvironmentRequests.delete(taskId);
+          return;
+        }
+
+        const latest = this.activeUploads.get(taskId);
+        if (!latest) {
+          return;
+        }
+
+        const baseStats: IngestStats = latest.stats ?? {
+          documentsLoaded: 0,
+          chunksCreated: 0,
+          chunksEmbedded: 0,
+          chunksIndexed: 0,
+          documentsIndexed: 0,
+          totalProcessingTimeMs: 0,
+          loaderUsed: null,
+          chunkerUsed: null,
+          processedDocumentIds: []
+        };
+
+        const runtimeInfo: SubprocessRuntimeInfo = {
+          ...(baseStats.subprocessRuntimeInfo || {}),
+          processMode: baseStats.subprocessRuntimeInfo?.processMode || 'SUBPROCESS',
+          nd4jEnvironmentUsed: envResponse.nd4jEnvironment
+        };
+
+        const updatedStats: IngestStats = {
+          ...baseStats,
+          subprocessRuntimeInfo: runtimeInfo
+        };
+
+        this.activeUploads.set(taskId, { ...latest, stats: updatedStats });
+        this.updateFilteredUploadsArray();
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        console.warn('Failed to fetch vector population environment:', err);
+        this.vectorPopulationEnvironmentRequests.delete(taskId);
+      }
+    });
+  }
+
+  /**
+   * Unsubscribe from vector population progress updates.
+   */
+  private unsubscribeFromVectorProgress(): void {
+    if (this.wsVectorProgressSub) {
+      this.wsVectorProgressSub.unsubscribe();
+      this.wsVectorProgressSub = null;
+    }
+  }
+
+  /**
+   * Handle vector population completion.
+   */
+  private handleVectorPopulationComplete(progress: VectorPopulationProgress): void {
+    this.isVectorPopulating = false;
+
+    const stats = progress.stats;
+    const throughput = stats?.throughputDocsPerSec?.toFixed(1) || '0';
+    const indexed = stats?.chunksIndexed || 0;
+
+    this.snackBar.open(
+      `Vector population complete! ${indexed} documents indexed (${throughput} docs/sec)`,
+      'Close',
+      { duration: 8000, panelClass: ['snackbar-success'] }
+    );
+
+    // Record which embedding model was used for indexing
+    if (this.activeSheet) {
+      // Get the effective model used (sheet override or system default)
+      const modelUsed = this.activeSheet.embeddingModel || this.getSystemEncoderModelId();
+      if (modelUsed) {
+        this.factSheetService.setIndexedWithModel(this.activeSheet.id, modelUsed).subscribe({
+          next: () => {
+            console.log(`Recorded indexedWithModel='${modelUsed}' for sheet '${this.activeSheet?.name}'`);
+          },
+          error: (err) => {
+            console.warn('Failed to record indexed model:', err);
+          }
+        });
+      }
+    }
+
+    // Refresh the index status
+    this.loadIndexerStatus();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Trigger a reindex of the vector store (used when model mismatch detected).
+   */
+  triggerReindex(): void {
+    if (!this.activeSheet || this.isVectorPopulating) {
+      return;
+    }
+
+    const sheetName = this.activeSheet.name;
+    const indexedCount = this.activeSheet.indexedCount || 0;
+    const configuredModel = this.activeSheet.embeddingModel || 'default';
+    const indexedWithModel = this.activeSheet.indexedWithModel || 'unknown';
+
+    const dialogData: ConfirmDialogData = {
+      title: 'Rebuild Vector Store',
+      message: `This will rebuild the vector store for "${sheetName}" using the ${configuredModel} embedding model.\n\nCurrent index was built with: ${indexedWithModel}\nDocuments to reindex: ${indexedCount}\n\nThis may take some time depending on the number of documents. Continue?`,
+      confirmText: 'Rebuild',
+      confirmColor: 'primary',
+      icon: 'sync'
+    };
+
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(
+        filter(confirmed => confirmed === true),
+        takeUntil(this.destroy$)
+      )
+      .subscribe(() => {
+        this.snackBar.open('Starting vector store rebuild...', 'Close', { duration: 3000 });
+        this.startVectorPopulation();
+      });
+  }
+
+  /**
+   * Get the system encoder model ID (for recording when indexing).
+   */
+  private getSystemEncoderModelId(): string | null {
+    if (this.systemConfig?.embeddingModel?.modelId) {
+      return this.systemConfig.embeddingModel.modelId;
+    }
+    return null;
+  }
+
+  /**
+   * Handle vector population failure.
+   */
+  private handleVectorPopulationFailed(progress: VectorPopulationProgress): void {
+    this.isVectorPopulating = false;
+
+    // Keep progress visible with FAILED state so UI shows error
+    this.vectorPopulationProgress = {
+      ...progress,
+      phase: 'FAILED',
+      progressPercent: 0  // Reset progress to show failed state clearly
+    };
+
+    // Show error snackbar with longer duration for native crashes
+    const isNativeCrash = progress.message?.includes('Native crash') ||
+      progress.message?.includes('native crash');
+    const duration = isNativeCrash ? 0 : 10000;  // 0 = stays until dismissed
+
+    this.snackBar.open(
+      `Vector population failed: ${progress.message}`,
+      'Dismiss',
+      {
+        duration: duration,
+        panelClass: ['snackbar-error']
+      }
+    );
+
+    // Clear progress after a delay to let user see the error state
+    setTimeout(() => {
+      if (this.vectorPopulationProgress?.phase === 'FAILED') {
+        this.vectorPopulationProgress = null;
+        this.cdr.markForCheck();
+      }
+    }, isNativeCrash ? 30000 : 10000);  // Keep visible longer for native crashes
+
+    this.loadIndexerStatus();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Handle vector population cancellation.
+   */
+  private handleVectorPopulationCancelled(): void {
+    this.isVectorPopulating = false;
+    this.vectorPopulationProgress = null;
+
+    this.snackBar.open('Vector population cancelled.', 'Close', { duration: 5000 });
+    this.loadIndexerStatus();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Get the display name for a vector population phase.
+   */
+  getVectorPhaseDisplayName(phase: string): string {
+    const phaseNames: { [key: string]: string } = {
+      'LOADING': 'Loading Documents',
+      'EMBEDDING': 'Generating Embeddings',
+      'INDEXING': 'Indexing Vectors',
+      'COMPLETED': 'Completed',
+      'FAILED': 'Failed',
+      'CANCELLED': 'Cancelled'
+    };
+    return phaseNames[phase] || phase;
+  }
+
+  /**
+   * Get the icon for a vector population phase.
+   */
+  getVectorPhaseIcon(phase: string): string {
+    const phaseIcons: { [key: string]: string } = {
+      'LOADING': 'description',
+      'EMBEDDING': 'memory',
+      'INDEXING': 'storage',
+      'COMPLETED': 'check_circle',
+      'FAILED': 'error',
+      'CANCELLED': 'cancel'
+    };
+    return phaseIcons[phase] || 'pending';
+  }
+
+  /**
+   * Get the color for a vector population status.
+   */
+  getVectorProgressColor(phase: string): string {
+    switch (phase) {
+      case 'COMPLETED': return 'primary';
+      case 'FAILED': return 'warn';
+      case 'CANCELLED': return 'accent';
+      default: return 'accent';
+    }
+  }
+
+  /**
+   * Calculate embedding progress percentage.
+   */
+  getVectorEmbeddingProgress(): number {
+    const stats = this.vectorPopulationProgress?.stats;
+    const total = stats?.totalDocuments || stats?.chunksCreated || 0;
+    if (total === 0) return 0;
+    return Math.round(((stats?.chunksEmbedded || 0) / total) * 100);
+  }
+
+  /**
+   * Calculate indexing progress percentage.
+   */
+  getVectorIndexingProgress(): number {
+    const stats = this.vectorPopulationProgress?.stats;
+    const total = stats?.totalDocuments || stats?.chunksCreated || 0;
+    if (total === 0) return 0;
+    return Math.round(((stats?.chunksIndexed || 0) / total) * 100);
+  }
+
+  /**
+   * Calculate ETA for vector population.
+   */
+  calculateVectorETA(): string | null {
+    const stats = this.vectorPopulationProgress?.stats;
+    if (!stats?.throughputDocsPerSec || stats.throughputDocsPerSec <= 0) return null;
+
+    const totalDocs = stats.totalDocuments || 0;
+    const indexed = stats.chunksIndexed || 0;
+    const remaining = totalDocs - indexed;
+
+    if (remaining <= 0) return null;
+
+    const secondsRemaining = Math.ceil(remaining / stats.throughputDocsPerSec);
+
+    if (secondsRemaining < 60) return `${secondsRemaining}s`;
+    if (secondsRemaining < 3600) {
+      const mins = Math.floor(secondsRemaining / 60);
+      const secs = secondsRemaining % 60;
+      return `${mins}m ${secs}s`;
+    }
+    const hours = Math.floor(secondsRemaining / 3600);
+    const mins = Math.floor((secondsRemaining % 3600) / 60);
+    return `${hours}h ${mins}m`;
+  }
+
+  /**
+   * Format duration in milliseconds to human-readable string.
+   */
+  formatVectorDuration(ms: number | undefined | null): string {
+    if (ms === null || ms === undefined) return 'N/A';
+    if (ms < 1000) return ms + 'ms';
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return seconds + 's';
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return minutes + 'm ' + remainingSeconds + 's';
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return hours + 'h ' + remainingMinutes + 'm';
   }
 
   searchKeywordIndex(): void {
@@ -1661,10 +2826,17 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.indexStorageSaveMessage = null;
 
     // Update the active sheet with the new index paths
-    this.factSheetService.updateSheet(this.activeSheet.id, {
-      vectorStorePath: this.editVectorStorePath || undefined,
-      keywordIndexPath: this.editKeywordIndexPath || undefined
-    }).pipe(
+    // Send empty string explicitly to clear paths (backend will normalize to null for global defaults)
+    // Only include paths that have changed to avoid unnecessary updates
+    const request: UpdateFactSheetRequest = {};
+
+    // Always include paths when saving index storage settings
+    // Empty string means "clear to use global defaults"
+    // Non-empty string means "use this specific path"
+    request.vectorStorePath = this.editVectorStorePath || '';
+    request.keywordIndexPath = this.editKeywordIndexPath || '';
+
+    this.factSheetService.updateSheet(this.activeSheet.id, request).pipe(
       finalize(() => {
         this.isIndexStorageSaving = false;
         this.cdr.markForCheck();
@@ -1690,7 +2862,7 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   hasIndexStorageChanges(): boolean {
     if (!this.activeSheet) return false;
     return this.editVectorStorePath !== (this.activeSheet.vectorStorePath || '') ||
-           this.editKeywordIndexPath !== (this.activeSheet.keywordIndexPath || '');
+      this.editKeywordIndexPath !== (this.activeSheet.keywordIndexPath || '');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1803,6 +2975,39 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   }
 
   /**
+   * Refresh archive status and available models.
+   * Called when switching fact sheets to ensure archive display is up to date.
+   */
+  refreshArchiveStatus(): void {
+    // Refresh current archive status
+    this.archiveService.getStatus()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (status) => {
+          if (status?.loaded) {
+            // Refresh models list if archive is loaded
+            this.archiveService.loadModels()
+              .pipe(takeUntil(this.destroy$))
+              .subscribe();
+          }
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          // Silently handle error - archive service may not be available
+          this.cdr.markForCheck();
+        }
+      });
+
+    // Also refresh the list of available archives
+    this.archiveService.listArchives()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: () => this.cdr.markForCheck(),
+        error: () => this.cdr.markForCheck()
+      });
+  }
+
+  /**
    * Get active encoder model name for display
    */
   getActiveEncoderDisplay(): string {
@@ -1854,6 +3059,18 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
   loadSystemConfig(): void {
     this.isLoadingSystemConfig = true;
 
+    // Also load embedding status to get the source (REGISTRY or ARCHIVE)
+    this.localRegistryService.getEmbeddingStatus()
+      .pipe(takeUntil(this.destroy$))
+      .subscribe({
+        next: (status) => {
+          this.embeddingStatus = status;
+        },
+        error: (err) => {
+          console.warn('Could not load embedding status', err);
+        }
+      });
+
     // Call /api/rag/test/status to get the actual loaded models
     this.http.get<any>(`${this.backendUrl}/rag/test/status`)
       .pipe(takeUntil(this.destroy$))
@@ -1863,7 +3080,8 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
             embeddingModel: response.embeddingModel ? {
               className: response.embeddingModel.class || 'Unknown',
               dimensions: response.embeddingModel.dimensions || 0,
-              isNoOp: response.embeddingModel.class?.includes('NoOp') || false
+              isNoOp: response.embeddingModel.class?.includes('NoOp') || false,
+              modelId: response.embeddingModel.modelId || undefined
             } : null,
             reranker: response.reranker ? {
               available: response.reranker.available || false,
@@ -1941,6 +3159,10 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
     this.editCrossEncoderArchiveId = sheet.crossEncoderArchiveId;
     this.editRerankTopK = sheet.rerankTopK ?? 10;
     this.editMmrLambda = sheet.mmrLambda ?? 0.5;
+    // Graph config
+    this.editEnableGraphBuilding = sheet.enableGraphBuilding || false;
+    this.editGraphBuilderType = sheet.graphBuilderType || 'llm';
+    this.editGraphStorageType = sheet.graphStorageType || 'jpa';
   }
 
   saveModelConfig(): void {
@@ -1948,6 +3170,40 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       this.showError('No active fact sheet selected');
       return;
     }
+
+    // Check if embedding model is changing and sheet has indexed facts
+    const embeddingModelChanging = this.editEmbeddingModel !== this.activeSheet.embeddingModel;
+    const hasIndexedFacts = (this.activeSheet.indexedCount || 0) > 0;
+
+    if (embeddingModelChanging && hasIndexedFacts) {
+      const oldModel = this.activeSheet.embeddingModel || 'default';
+      const newModel = this.editEmbeddingModel || 'default';
+      const indexedCount = this.activeSheet.indexedCount;
+
+      const dialogData: ConfirmDialogData = {
+        title: 'Change Embedding Model',
+        message: `WARNING: Changing the embedding model from "${oldModel}" to "${newModel}" will invalidate the existing vector store.\n\n${indexedCount} indexed document(s) will be marked as unindexed and will need to be reindexed with the new model before search will work correctly.\n\nDo you want to proceed?`,
+        confirmText: 'Proceed',
+        confirmColor: 'warn',
+        icon: 'warning'
+      };
+
+      this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+        .afterClosed()
+        .pipe(
+          filter(confirmed => confirmed === true),
+          takeUntil(this.destroy$)
+        )
+        .subscribe(() => {
+          this.doSaveModelConfig();
+        });
+    } else {
+      this.doSaveModelConfig();
+    }
+  }
+
+  private doSaveModelConfig(): void {
+    if (!this.activeSheet) return;
 
     this.isModelConfigSaving = true;
     this.modelConfigSaveMessage = null;
@@ -1975,8 +3231,20 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       )
       .subscribe({
         next: (updatedSheet) => {
-          this.modelConfigSaveMessage = `Model configuration saved for "${updatedSheet.name}"`;
-          this.showSuccess(this.modelConfigSaveMessage);
+          // Check if embedding model changed and facts were marked unindexed
+          const wasModelChanged = this.editEmbeddingModel !== this.activeSheet?.embeddingModel;
+          const needsReindex = updatedSheet.needsReindex;
+
+          if (wasModelChanged && needsReindex) {
+            this.modelConfigSaveMessage = `Model configuration saved. Embedding model changed - ${updatedSheet.unindexedCount} fact(s) marked for reindexing.`;
+            this.showSuccess(this.modelConfigSaveMessage);
+
+            // Refresh the sheet to show the needsReindex warning
+            this.factSheetService.loadActiveSheet().subscribe();
+          } else {
+            this.modelConfigSaveMessage = `Model configuration saved for "${updatedSheet.name}"`;
+            this.showSuccess(this.modelConfigSaveMessage);
+          }
 
           // Clear message after 5 seconds
           setTimeout(() => {
@@ -1991,19 +3259,31 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
       });
   }
 
+  /** Check if the embedding model is being changed */
+  isEmbeddingModelChanging(): boolean {
+    if (!this.activeSheet) return false;
+    return this.editEmbeddingModel !== this.activeSheet.embeddingModel;
+  }
+
+  /** Check if the embedding model change will require reindexing */
+  willEmbeddingChangeRequireReindex(): boolean {
+    if (!this.activeSheet) return false;
+    return this.isEmbeddingModelChanging() && (this.activeSheet.indexedCount || 0) > 0;
+  }
+
   hasModelConfigChanges(): boolean {
     if (!this.activeSheet) return false;
 
     return this.editEmbeddingModel !== this.activeSheet.embeddingModel ||
-           this.editEmbeddingModelSource !== (this.activeSheet.embeddingModelSource || 'default') ||
-           this.editEmbeddingArchiveId !== this.activeSheet.embeddingArchiveId ||
-           this.editRerankingEnabled !== (this.activeSheet.rerankingEnabled || false) ||
-           this.editRerankerType !== (this.activeSheet.rerankerType || 'none') ||
-           this.editCrossEncoderModel !== this.activeSheet.crossEncoderModel ||
-           this.editCrossEncoderModelSource !== (this.activeSheet.crossEncoderModelSource || 'default') ||
-           this.editCrossEncoderArchiveId !== this.activeSheet.crossEncoderArchiveId ||
-           this.editRerankTopK !== (this.activeSheet.rerankTopK ?? 10) ||
-           this.editMmrLambda !== (this.activeSheet.mmrLambda ?? 0.5);
+      this.editEmbeddingModelSource !== (this.activeSheet.embeddingModelSource || 'default') ||
+      this.editEmbeddingArchiveId !== this.activeSheet.embeddingArchiveId ||
+      this.editRerankingEnabled !== (this.activeSheet.rerankingEnabled || false) ||
+      this.editRerankerType !== (this.activeSheet.rerankerType || 'none') ||
+      this.editCrossEncoderModel !== this.activeSheet.crossEncoderModel ||
+      this.editCrossEncoderModelSource !== (this.activeSheet.crossEncoderModelSource || 'default') ||
+      this.editCrossEncoderArchiveId !== this.activeSheet.crossEncoderArchiveId ||
+      this.editRerankTopK !== (this.activeSheet.rerankTopK ?? 10) ||
+      this.editMmrLambda !== (this.activeSheet.mmrLambda ?? 0.5);
   }
 
   onEmbeddingModelSourceChange(): void {
@@ -2041,5 +3321,157 @@ export class FactSheetManagerComponent implements OnInit, OnDestroy {
 
   needsMmrLambda(): boolean {
     return this.editRerankerType === 'mmr';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // KNOWLEDGE GRAPH CONFIGURATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Load available graph storage types from the backend.
+   */
+  loadAvailableStorageTypes(): void {
+    this.http.get<{
+      availableTypes: string[];
+      allTypes: { type: string; available: boolean; description: string }[];
+      defaultType: string;
+    }>(`${this.backendUrl}/knowledge-graph/builder/storage-types`)
+    .subscribe({
+      next: (response) => {
+        // Convert the response to our format
+        if (response.allTypes) {
+          this.availableStorageTypes = response.allTypes;
+        } else {
+          // Build from availableTypes list
+          const available = new Set(response.availableTypes || []);
+          this.availableStorageTypes = this.graphStorageTypes.map(st => ({
+            type: st.value,
+            available: available.has(st.value),
+            description: st.description
+          }));
+        }
+        console.log('[GraphConfig] Available storage types:', this.availableStorageTypes);
+      },
+      error: (err) => {
+        console.warn('[GraphConfig] Failed to load storage types, using defaults:', err);
+        // Fallback to static list
+        this.availableStorageTypes = [
+          { type: 'jpa', available: true, description: 'Local Database (JPA/JDBC)' },
+          { type: 'neo4j', available: false, description: 'Neo4j (not configured)' }
+        ];
+      }
+    });
+  }
+
+  /**
+   * Save knowledge graph configuration for the active sheet.
+   */
+  saveGraphConfig(): void {
+    if (!this.activeSheet) {
+      this.showError('No active fact sheet selected');
+      return;
+    }
+
+    this.isGraphConfigSaving = true;
+    this.graphConfigSaveMessage = null;
+
+    const request: UpdateFactSheetRequest = {
+      enableGraphBuilding: this.editEnableGraphBuilding,
+      graphBuilderType: this.editGraphBuilderType,
+      graphStorageType: this.editGraphStorageType
+    };
+
+    this.factSheetService.updateSheet(this.activeSheet.id, request)
+      .pipe(
+        finalize(() => {
+          this.isGraphConfigSaving = false;
+          this.cdr.markForCheck();
+        })
+      )
+      .subscribe({
+        next: (updatedSheet) => {
+          this.graphConfigSaveMessage = `Knowledge graph settings saved for "${updatedSheet.name}"`;
+          this.showSuccess(this.graphConfigSaveMessage);
+
+          // Clear message after 5 seconds
+          setTimeout(() => {
+            this.graphConfigSaveMessage = null;
+            this.cdr.markForCheck();
+          }, 5000);
+        },
+        error: (err) => {
+          console.error('Failed to save knowledge graph configuration', err);
+          this.showError('Failed to save knowledge graph configuration');
+        }
+      });
+  }
+
+  /**
+   * Check if there are unsaved graph configuration changes.
+   */
+  hasGraphConfigChanges(): boolean {
+    if (!this.activeSheet) return false;
+
+    return this.editEnableGraphBuilding !== (this.activeSheet.enableGraphBuilding || false) ||
+      this.editGraphBuilderType !== (this.activeSheet.graphBuilderType || 'llm') ||
+      this.editGraphStorageType !== (this.activeSheet.graphStorageType || 'jpa');
+  }
+
+  /**
+   * Check if a storage type is available.
+   */
+  isStorageTypeAvailable(type: string): boolean {
+    const storageType = this.availableStorageTypes.find(st => st.type === type);
+    return storageType?.available ?? (type === 'jpa'); // JPA is always available by default
+  }
+
+  /**
+   * Get display label for a storage type.
+   */
+  getStorageTypeLabel(type: string): string {
+    const storageType = this.graphStorageTypes.find(st => st.value === type);
+    return storageType?.label ?? type;
+  }
+
+  /**
+   * Navigate to Model Staging tab to load an embedding model.
+   * Emits an event to the parent app component to switch tabs.
+   */
+  navigateToModelStaging(): void {
+    this.openModelStaging.emit();
+  }
+
+  /**
+   * Check if vector search is ready (embedding model properly initialized).
+   */
+  isVectorSearchReady(): boolean {
+    // Check both embeddingStatus (from LocalRegistryService) and systemConfig
+    if (this.embeddingStatus) {
+      return this.embeddingStatus.initialized &&
+        this.embeddingStatus.dimensions > 0 &&
+        !this.embeddingStatus.modelId?.includes('NOT_INITIALIZED');
+    }
+    // Fallback to systemConfig check
+    return !!(this.systemConfig.embeddingModel &&
+      !this.systemConfig.embeddingModel.isNoOp &&
+      this.systemConfig.embeddingModel.dimensions > 0);
+  }
+
+  /**
+   * Get available reranker methods as a comma-separated string.
+   */
+  getRerankerMethods(): string {
+    if (!this.systemConfig.reranker?.supportedTypes) {
+      return 'Available';
+    }
+    const types = this.systemConfig.reranker.supportedTypes;
+    if (types.length === 0) {
+      return 'Available';
+    }
+    // Show first 3 methods, then "..."
+    if (types.length <= 3) {
+      return types.join(', ');
+    }
+    return types.slice(0, 3).join(', ') + ` +${types.length - 3} more`;
   }
 }

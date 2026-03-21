@@ -24,7 +24,8 @@ export type JobStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELL
 
 export type FailureReason = 'NONE' | 'OUT_OF_MEMORY' | 'MEMORY_KILLED' | 'USER_CANCELLED' |
   'LOAD_ERROR' | 'CONVERSION_ERROR' | 'CHUNKING_ERROR' | 'EMBEDDING_ERROR' |
-  'INDEXING_ERROR' | 'IO_ERROR' | 'INVALID_INPUT' | 'TIMEOUT' | 'UNKNOWN';
+  'INDEXING_ERROR' | 'SUBPROCESS_ERROR' | 'IO_ERROR' | 'INVALID_INPUT' | 'TIMEOUT' |
+  'MODEL_NOT_FOUND' | 'STAGING_ERROR' | 'UNKNOWN';
 
 export type IngestPhase = 'QUEUED' | 'LOADING' | 'CONVERTING' | 'CHUNKING' |
   'EMBEDDING' | 'INDEXING' | 'COMPLETED' | 'FAILED';
@@ -181,13 +182,63 @@ export interface IngestEvent {
   id?: number;
   taskId: string;
   timestamp: string;
-  eventType: 'QUEUED' | 'STARTED' | 'PHASE_CHANGE' | 'PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  eventType: 'QUEUED' | 'STARTED' | 'PHASE_CHANGE' | 'PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+    | 'RESTART_SCHEDULED' | 'RESTART_ATTEMPTED' | 'RESTART_SUCCEEDED' | 'RESTART_FAILED'
+    | 'MEMORY_ANALYSIS' | 'HEAP_ADJUSTED' | 'THREADS_REDUCED' | 'MANUAL_RESTART';
   phase?: IngestPhase;
   message: string;
   details?: string;
   fileName?: string;
   durationMs?: number;
   nd4jEnvironmentSnapshot?: string;
+  // Restart-related fields
+  restartAttempt?: number;
+  maxRestartAttempts?: number;
+  heapSize?: string;
+  batchSize?: number;
+}
+
+// ===================== SUBPROCESS EVENT TYPES =====================
+
+export type SubprocessEventType =
+  | 'SUBPROCESS_STARTED'
+  | 'SUBPROCESS_STOPPED'
+  | 'SUBPROCESS_CRASHED'
+  | 'SUBPROCESS_RESTARTING'
+  | 'SUBPROCESS_RESTART_SUCCESS'
+  | 'SUBPROCESS_RESTART_EXHAUSTED'
+  | 'MODEL_LOADED'
+  | 'MODEL_FAILED';
+
+export interface SubprocessEvent {
+  id: number;
+  eventType: SubprocessEventType;
+  modelId: string;
+  timestamp: string;
+  taskId?: string;
+  restartAttemptNumber?: number;
+  maxRestartAttempts?: number;
+  restartSuccessful?: boolean;
+  failureReason?: string;
+  errorMessage?: string;
+  exitCode?: number;
+  backoffMs?: number;
+  heapBytes?: number;
+  batchSize?: number;
+  threadCount?: number;
+  embeddingDimensions?: number;
+  encoderType?: string;
+}
+
+export interface SubprocessStatistics {
+  available: boolean;
+  totalCrashes?: number;
+  totalRestartAttempts?: number;
+  successfulRestarts?: number;
+  exhaustedRestarts?: number;
+  modelsLoaded?: number;
+  modelsFailed?: number;
+  restartSuccessRate?: number;
 }
 
 @Injectable({
@@ -195,6 +246,7 @@ export interface IngestEvent {
 })
 export class JobHistoryService {
   private readonly apiUrl = `${backendUrl}/indexing/history`;
+  private readonly subprocessApiUrl = `${backendUrl}/subprocess-events`;
 
   private jobsSubject = new BehaviorSubject<IndexingJobHistory[]>([]);
   public jobs$ = this.jobsSubject.asObservable();
@@ -217,8 +269,12 @@ export class JobHistoryService {
     return this.http.get<IndexingJobHistory>(`${this.apiUrl}/${taskId}`);
   }
 
-  getJobsByStatus(status: JobStatus): Observable<IndexingJobHistory[]> {
-    return this.http.get<IndexingJobHistory[]>(`${this.apiUrl}/status/${status}`);
+  getJobsByStatus(status: JobStatus, hours?: number): Observable<IndexingJobHistory[]> {
+    let params = new HttpParams();
+    if (hours !== undefined) {
+      params = params.set('hours', hours.toString());
+    }
+    return this.http.get<IndexingJobHistory[]>(`${this.apiUrl}/status/${status}`, { params });
   }
 
   getJobsByStatusPaged(status: JobStatus, page: number = 0, size: number = 20): Observable<PagedResponse<IndexingJobHistory>> {
@@ -410,5 +466,103 @@ export class JobHistoryService {
       case 'FAILED': return 'error';
       default: return 'help';
     }
+  }
+
+  // ===================== SUBPROCESS EVENT METHODS =====================
+
+  /**
+   * Get recent subprocess events.
+   */
+  getRecentSubprocessEvents(hours: number = 24): Observable<SubprocessEvent[]> {
+    const params = new HttpParams().set('hours', hours.toString());
+    return this.http.get<SubprocessEvent[]>(`${this.subprocessApiUrl}/recent`, { params });
+  }
+
+  /**
+   * Get latest subprocess events (last 100).
+   */
+  getLatestSubprocessEvents(): Observable<SubprocessEvent[]> {
+    return this.http.get<SubprocessEvent[]>(`${this.subprocessApiUrl}/latest`);
+  }
+
+  /**
+   * Get subprocess restart events.
+   */
+  getSubprocessRestartEvents(): Observable<SubprocessEvent[]> {
+    return this.http.get<SubprocessEvent[]>(`${this.subprocessApiUrl}/restarts`);
+  }
+
+  /**
+   * Get subprocess restart events for a specific model.
+   */
+  getSubprocessRestartEventsForModel(modelId: string): Observable<SubprocessEvent[]> {
+    return this.http.get<SubprocessEvent[]>(`${this.subprocessApiUrl}/restarts/${encodeURIComponent(modelId)}`);
+  }
+
+  /**
+   * Get subprocess events for a specific task.
+   */
+  getSubprocessEventsForTask(taskId: string): Observable<SubprocessEvent[]> {
+    return this.http.get<SubprocessEvent[]>(`${this.subprocessApiUrl}/task/${encodeURIComponent(taskId)}`);
+  }
+
+  /**
+   * Get a specific subprocess event by ID.
+   */
+  getSubprocessEventById(id: number): Observable<SubprocessEvent> {
+    return this.http.get<SubprocessEvent>(`${this.subprocessApiUrl}/${id}`);
+  }
+
+  /**
+   * Get subprocess statistics.
+   */
+  getSubprocessStatistics(): Observable<SubprocessStatistics> {
+    return this.http.get<SubprocessStatistics>(`${this.subprocessApiUrl}/statistics`);
+  }
+
+  /**
+   * Get icon for subprocess event type.
+   */
+  getSubprocessEventIcon(eventType: SubprocessEventType): string {
+    switch (eventType) {
+      case 'SUBPROCESS_STARTED': return 'play_arrow';
+      case 'SUBPROCESS_STOPPED': return 'stop';
+      case 'SUBPROCESS_CRASHED': return 'error';
+      case 'SUBPROCESS_RESTARTING': return 'autorenew';
+      case 'SUBPROCESS_RESTART_SUCCESS': return 'check_circle';
+      case 'SUBPROCESS_RESTART_EXHAUSTED': return 'block';
+      case 'MODEL_LOADED': return 'download_done';
+      case 'MODEL_FAILED': return 'error_outline';
+      default: return 'help';
+    }
+  }
+
+  /**
+   * Get CSS class for subprocess event type.
+   */
+  getSubprocessEventClass(eventType: SubprocessEventType): string {
+    switch (eventType) {
+      case 'SUBPROCESS_STARTED':
+      case 'SUBPROCESS_RESTART_SUCCESS':
+      case 'MODEL_LOADED':
+        return 'status-success';
+      case 'SUBPROCESS_RESTARTING':
+        return 'status-info';
+      case 'SUBPROCESS_STOPPED':
+        return 'status-warning';
+      case 'SUBPROCESS_CRASHED':
+      case 'SUBPROCESS_RESTART_EXHAUSTED':
+      case 'MODEL_FAILED':
+        return 'status-error';
+      default:
+        return '';
+    }
+  }
+
+  /**
+   * Format subprocess event type for display.
+   */
+  formatSubprocessEventType(eventType: SubprocessEventType): string {
+    return eventType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
   }
 }

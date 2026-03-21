@@ -123,8 +123,9 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
     public GraphVisualizationData getVisualizationData(Long factSheetId, int maxNodes, int maxEdges) {
         List<GraphNode> nodes;
         if (maxNodes > 0) {
-            nodes = nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SOURCE,
-                PageRequest.of(0, maxNodes)).getContent();
+            // Wrap in ArrayList since Page.getContent() returns an unmodifiable list
+            nodes = new ArrayList<>(nodeRepository.findByFactSheetIdAndNodeType(factSheetId, NodeLevel.SOURCE,
+                PageRequest.of(0, maxNodes)).getContent());
             // Add more node types up to limit
             int remaining = maxNodes - nodes.size();
             if (remaining > 0) {
@@ -137,7 +138,7 @@ public class FactSheetGraphServiceImpl implements FactSheetGraphService {
                     PageRequest.of(0, remaining)).getContent());
             }
         } else {
-            nodes = nodeRepository.findByFactSheetId(factSheetId);
+            nodes = new ArrayList<>(nodeRepository.findByFactSheetId(factSheetId));
         }
 
         List<GraphEdge> edges;

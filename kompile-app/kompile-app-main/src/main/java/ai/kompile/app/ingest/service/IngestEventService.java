@@ -437,6 +437,290 @@ public class IngestEventService {
                 taskId, killedPhase, duration, String.format("%.1f", memoryPercent), killThreshold, itemsProcessed);
     }
 
+    // ========== OOM Restart Event Logging ==========
+
+    /**
+     * Log that a restart has been scheduled after OOM failure.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param currentPhase  The phase when restart was scheduled
+     * @param attemptNumber The restart attempt number (1-based)
+     * @param maxAttempts   Maximum allowed restart attempts
+     * @param backoffMs     Time until restart in milliseconds
+     * @param details       Additional details (JSON with memory analysis)
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logRestartScheduled(String taskId, String fileName, IngestEvent.IngestPhase currentPhase,
+                                     int attemptNumber, int maxAttempts, long backoffMs, String details) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.restartScheduled(taskId, fileName, currentPhase,
+                attemptNumber, maxAttempts, backoffMs, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.warn("[{}] RESTART_SCHEDULED: attempt {}/{} in {}ms - {}",
+                taskId, attemptNumber, maxAttempts, backoffMs, event.getMessage());
+    }
+
+    /**
+     * Log that a restart attempt has started.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logRestartAttempted(String taskId, String fileName,
+                                     int attemptNumber, int maxAttempts, String heapSize, String details) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.restartAttempted(taskId, fileName,
+                attemptNumber, maxAttempts, heapSize, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] RESTART_ATTEMPTED: attempt {}/{} with heap={}",
+                taskId, attemptNumber, maxAttempts, heapSize);
+    }
+
+    /**
+     * Log that a restart attempt succeeded.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logRestartSucceeded(String taskId, String fileName,
+                                     int attemptNumber, long recoveryTimeMs) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.restartSucceeded(taskId, fileName, attemptNumber, recoveryTimeMs);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] RESTART_SUCCEEDED: recovered after {} attempt(s) in {}ms",
+                taskId, attemptNumber, recoveryTimeMs);
+    }
+
+    /**
+     * Log that all restart attempts have been exhausted.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logRestartFailed(String taskId, String fileName,
+                                  int totalAttempts, long totalTimeMs, String errorMessage) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.restartFailed(taskId, fileName, totalAttempts, totalTimeMs, errorMessage);
+        repository.save(event);
+        broadcastEvent(event);
+
+        // Clean up tracking maps
+        cleanupTaskTracking(taskId);
+
+        logger.error("[{}] RESTART_FAILED: all {} attempts exhausted after {}ms - {}",
+                taskId, totalAttempts, totalTimeMs, errorMessage);
+    }
+
+    /**
+     * Log a memory analysis result.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logMemoryAnalysis(String taskId, String fileName, IngestEvent.IngestPhase currentPhase,
+                                   boolean canIncreaseHeap, String reason, String details) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.memoryAnalysis(taskId, fileName, currentPhase, canIncreaseHeap, reason, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        if (canIncreaseHeap) {
+            logger.info("[{}] MEMORY_ANALYSIS: CAN increase heap - {}", taskId, reason);
+        } else {
+            logger.warn("[{}] MEMORY_ANALYSIS: CANNOT increase heap - {}", taskId, reason);
+        }
+    }
+
+    /**
+     * Log a heap adjustment event.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logHeapAdjusted(String taskId, String fileName,
+                                 String oldHeapSize, String newHeapSize, boolean increased, String reason) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.heapAdjusted(taskId, fileName, oldHeapSize, newHeapSize, increased, reason);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] HEAP_ADJUSTED: {} -> {} ({})",
+                taskId, oldHeapSize, newHeapSize, increased ? "increased" : "unchanged");
+    }
+
+    /**
+     * Log a thread reduction event.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logThreadsReduced(String taskId, String fileName,
+                                   int oldThreads, int newThreads, String reason, String details) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.threadsReduced(taskId, fileName, oldThreads, newThreads, reason, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] THREADS_REDUCED: {} -> {} - {}", taskId, oldThreads, newThreads, reason);
+    }
+
+    /**
+     * Log a manual restart event.
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logManualRestart(String taskId, String fileName, String reason) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.manualRestart(taskId, fileName, reason);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] MANUAL_RESTART: {}", taskId, reason);
+    }
+
+    // ========== Extraction Event Logging ==========
+
+    /**
+     * Log that content extraction has started.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param documentCount Number of documents to process
+     * @param extractors    List of extractor names being used
+     * @param details       Additional details (JSON with extractor configuration)
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logExtractionStarted(String taskId, String fileName,
+                                      int documentCount, List<String> extractors, String details) {
+        if (!isEnabled()) return;
+
+        // Track phase start time
+        phaseStartTimes.computeIfAbsent(taskId, k -> new ConcurrentHashMap<>())
+                .put(IngestPhase.EXTRACTION, Instant.now());
+
+        String extractorList = String.join(", ", extractors);
+        IngestEvent event = IngestEvent.extractionStarted(taskId, fileName, documentCount, extractorList, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.info("[{}] EXTRACTION_STARTED: {} documents using extractors: {}",
+                taskId, documentCount, extractorList);
+    }
+
+    /**
+     * Log extraction progress.
+     *
+     * @param taskId          The task identifier
+     * @param fileName        The file being processed
+     * @param extractorName   Name of the extractor reporting progress
+     * @param itemsProcessed  Number of documents processed
+     * @param totalItems      Total number of documents to process
+     * @param chunksCreated   Number of chunks created so far
+     * @param structuredItems Number of structured items extracted so far
+     * @param message         Progress message
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logExtractionProgress(String taskId, String fileName,
+                                       String extractorName, int itemsProcessed, int totalItems,
+                                       int chunksCreated, int structuredItems, String message) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.extractionProgress(taskId, fileName, extractorName,
+                itemsProcessed, totalItems, chunksCreated, structuredItems, message);
+        repository.save(event);
+        broadcastEvent(event);
+        // Don't log at debug level - too verbose
+    }
+
+    /**
+     * Log extraction completed with detailed summary.
+     *
+     * @param taskId              The task identifier
+     * @param fileName            The file being processed
+     * @param documentsProcessed  Number of documents processed
+     * @param chunksCreated       Number of chunks created
+     * @param entitiesExtracted   Number of entities extracted
+     * @param relationshipsExtracted Number of relationships extracted
+     * @param conceptsExtracted   Number of concepts extracted
+     * @param factsExtracted      Number of facts extracted
+     * @param tablesExtracted     Number of tables extracted
+     * @param extractorsUsed      List of extractors used
+     * @param details             Additional details (JSON with full breakdown)
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logExtractionCompleted(String taskId, String fileName,
+                                        int documentsProcessed, int chunksCreated,
+                                        int entitiesExtracted, int relationshipsExtracted,
+                                        int conceptsExtracted, int factsExtracted, int tablesExtracted,
+                                        List<String> extractorsUsed, String details) {
+        if (!isEnabled()) return;
+
+        long durationMs = calculatePhaseDuration(taskId, IngestPhase.EXTRACTION);
+        String extractorList = String.join(", ", extractorsUsed);
+
+        IngestEvent event = IngestEvent.extractionCompleted(taskId, fileName,
+                documentsProcessed, chunksCreated,
+                entitiesExtracted, relationshipsExtracted, conceptsExtracted, factsExtracted, tablesExtracted,
+                durationMs, extractorList, details);
+        repository.save(event);
+        broadcastEvent(event);
+
+        int totalStructured = entitiesExtracted + relationshipsExtracted + conceptsExtracted + factsExtracted + tablesExtracted;
+        logger.info("[{}] EXTRACTION_COMPLETED: {} chunks, {} structured items " +
+                        "(entities={}, relationships={}, concepts={}, facts={}, tables={}) in {}ms",
+                taskId, chunksCreated, totalStructured,
+                entitiesExtracted, relationshipsExtracted, conceptsExtracted, factsExtracted, tablesExtracted,
+                durationMs);
+    }
+
+    /**
+     * Log that an individual extractor completed.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param extractorName Name of the extractor
+     * @param extractorType Type of the extractor
+     * @param itemsProduced Number of items produced
+     * @param durationMs    Time taken by the extractor
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logExtractorCompleted(String taskId, String fileName,
+                                       String extractorName, String extractorType,
+                                       int itemsProduced, long durationMs) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.extractorCompleted(taskId, fileName,
+                extractorName, extractorType, itemsProduced, durationMs);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.debug("[{}] EXTRACTOR_COMPLETED: {} ({}) produced {} items in {}ms",
+                taskId, extractorName, extractorType, itemsProduced, durationMs);
+    }
+
+    /**
+     * Log an extractor error.
+     *
+     * @param taskId        The task identifier
+     * @param fileName      The file being processed
+     * @param extractorName Name of the extractor that failed
+     * @param errorMessage  Error message
+     * @param exception     The exception that occurred (may be null)
+     */
+    @Transactional(transactionManager = "ingestEventTransactionManager")
+    public void logExtractorError(String taskId, String fileName,
+                                   String extractorName, String errorMessage, Throwable exception) {
+        if (!isEnabled()) return;
+
+        IngestEvent event = IngestEvent.extractorError(taskId, fileName, extractorName, errorMessage, exception);
+        repository.save(event);
+        broadcastEvent(event);
+
+        logger.warn("[{}] EXTRACTOR_ERROR: {} - {}", taskId, extractorName, errorMessage);
+    }
+
     // ========== Query Methods ==========
 
     /**

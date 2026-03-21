@@ -17,6 +17,8 @@
 package ai.kompile.core.rag;
 
 import ai.kompile.core.embeddings.ScoredDocument;
+import ai.kompile.core.filter.FilterMutation;
+import ai.kompile.core.filter.FilterTraceEntry;
 import ai.kompile.core.rag.query.ProcessedQuery;
 import ai.kompile.core.rag.retrieval.RetrievalMetrics;
 import org.springframework.ai.chat.messages.Message;
@@ -37,6 +39,13 @@ import java.util.List;
  * @param retrievalMetrics Metrics from the retrieval operation
  * @param generationTimeMs Time spent on LLM generation in milliseconds
  * @param totalTimeMs Total operation time in milliseconds
+ * @param filterTraces Trace entries from filter chain execution
+ * @param filterMutations Mutations made by filters during processing
+ * @param filterTerminated Whether the filter chain terminated early
+ * @param filterTerminationStatus HTTP status code if filter terminated early
+ * @param error Whether this result represents an error
+ * @param errorMessage Error message if error is true
+ * @param errorCode HTTP error code if error is true
  */
 public record ConversationalRagResult(
     String answer,
@@ -46,7 +55,14 @@ public record ConversationalRagResult(
     ProcessedQuery processedQuery,
     RetrievalMetrics retrievalMetrics,
     long generationTimeMs,
-    long totalTimeMs
+    long totalTimeMs,
+    List<FilterTraceEntry> filterTraces,
+    List<FilterMutation> filterMutations,
+    boolean filterTerminated,
+    int filterTerminationStatus,
+    boolean error,
+    String errorMessage,
+    int errorCode
 ) {
 
     /**
@@ -61,7 +77,14 @@ public record ConversationalRagResult(
             null,
             RetrievalMetrics.empty(),
             0,
-            0
+            0,
+            List.of(),  // filterTraces
+            List.of(),  // filterMutations
+            false,      // filterTerminated
+            0,          // filterTerminationStatus
+            true,       // error
+            errorMessage, // errorMessage
+            500         // errorCode
         );
     }
 
@@ -77,7 +100,14 @@ public record ConversationalRagResult(
             null,
             RetrievalMetrics.empty(),
             0,
-            0
+            0,
+            List.of(),  // filterTraces
+            List.of(),  // filterMutations
+            false,      // filterTerminated
+            0,          // filterTerminationStatus
+            false,      // error
+            null,       // errorMessage
+            0           // errorCode
         );
     }
 
@@ -85,7 +115,28 @@ public record ConversationalRagResult(
      * Returns true if this result represents an error.
      */
     public boolean isError() {
-        return answer != null && answer.startsWith("Error:");
+        return error || (answer != null && answer.startsWith("Error:"));
+    }
+
+    /**
+     * Returns true if the filter chain terminated early.
+     */
+    public boolean wasFilterTerminated() {
+        return filterTerminated;
+    }
+
+    /**
+     * Returns true if filters made any mutations.
+     */
+    public boolean hasFilterMutations() {
+        return filterMutations != null && !filterMutations.isEmpty();
+    }
+
+    /**
+     * Returns true if there are filter traces.
+     */
+    public boolean hasFilterTraces() {
+        return filterTraces != null && !filterTraces.isEmpty();
     }
 
     /**
@@ -158,6 +209,13 @@ public record ConversationalRagResult(
         private RetrievalMetrics retrievalMetrics = RetrievalMetrics.empty();
         private long generationTimeMs = 0;
         private long totalTimeMs = 0;
+        private List<FilterTraceEntry> filterTraces = List.of();
+        private List<FilterMutation> filterMutations = List.of();
+        private boolean filterTerminated = false;
+        private int filterTerminationStatus = 0;
+        private boolean error = false;
+        private String errorMessage = null;
+        private int errorCode = 0;
 
         public Builder answer(String answer) {
             this.answer = answer != null ? answer : "";
@@ -199,6 +257,41 @@ public record ConversationalRagResult(
             return this;
         }
 
+        public Builder filterTraces(List<FilterTraceEntry> traces) {
+            this.filterTraces = traces != null ? traces : List.of();
+            return this;
+        }
+
+        public Builder filterMutations(List<FilterMutation> mutations) {
+            this.filterMutations = mutations != null ? mutations : List.of();
+            return this;
+        }
+
+        public Builder filterTerminated(boolean terminated) {
+            this.filterTerminated = terminated;
+            return this;
+        }
+
+        public Builder filterTerminationStatus(int status) {
+            this.filterTerminationStatus = status;
+            return this;
+        }
+
+        public Builder error(boolean error) {
+            this.error = error;
+            return this;
+        }
+
+        public Builder errorMessage(String message) {
+            this.errorMessage = message;
+            return this;
+        }
+
+        public Builder errorCode(int code) {
+            this.errorCode = code;
+            return this;
+        }
+
         public ConversationalRagResult build() {
             return new ConversationalRagResult(
                 answer,
@@ -208,7 +301,14 @@ public record ConversationalRagResult(
                 processedQuery,
                 retrievalMetrics,
                 generationTimeMs,
-                totalTimeMs
+                totalTimeMs,
+                filterTraces,
+                filterMutations,
+                filterTerminated,
+                filterTerminationStatus,
+                error,
+                errorMessage,
+                errorCode
             );
         }
     }

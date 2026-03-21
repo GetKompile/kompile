@@ -19,522 +19,16 @@
     <h1>Index Browser & Search</h1>
     <div class="header-actions">
       <!-- Vector Indexing Controls -->
-      <ng-container *ngIf="isVectorIndexing; else startIndexBtn">
-        <div class="indexing-status-container"
-          style="display: flex; align-items: center; gap: 12px; flex: 1; margin-right: 10px;">
-          <div style="display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 280px;">
-            <!-- Phase indicator -->
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <mat-icon *ngIf="vectorPopulationProgress?.phase === 'LOADING'" style="color: #1976d2; font-size: 18px; width: 18px; height: 18px;">cloud_download</mat-icon>
-                <mat-icon *ngIf="vectorPopulationProgress?.phase === 'EMBEDDING'" style="color: #7b1fa2; font-size: 18px; width: 18px; height: 18px;">memory</mat-icon>
-                <mat-icon *ngIf="vectorPopulationProgress?.phase === 'INDEXING'" style="color: #388e3c; font-size: 18px; width: 18px; height: 18px;">storage</mat-icon>
-                <mat-icon *ngIf="vectorPopulationProgress?.phase === 'COMPLETED'" style="color: #388e3c; font-size: 18px; width: 18px; height: 18px;">check_circle</mat-icon>
-                <span class="indexing-message" style="font-size: 0.85em; color: #1976d2;">
-                  {{ vectorPopulationProgress?.message || vectorIndexJobStatus?.message || 'Processing...' }}
-                </span>
-              </div>
-              <span style="font-size: 0.85em; font-weight: 600; color: #1976d2; white-space: nowrap;">
-                {{ vectorPopulationProgress?.progressPercent || vectorIndexJobStatus?.percentComplete || 0 }}%
-              </span>
-            </div>
-            <!-- Progress bar -->
-            <mat-progress-bar mode="determinate"
-              [value]="vectorPopulationProgress?.progressPercent || vectorIndexJobStatus?.percentComplete || 0"
-              class="indexing-progress" style="height: 8px; border-radius: 4px;"
-              [color]="vectorPopulationProgress?.phase === 'COMPLETED' ? 'accent' : 'primary'">
-            </mat-progress-bar>
-            <!-- Stats row -->
-            <div style="display: flex; justify-content: space-between; font-size: 0.75em; color: #666;">
-              <span *ngIf="vectorPopulationProgress?.stats">
-                {{ vectorPopulationProgress?.stats?.chunksIndexed || 0 }} / {{ vectorPopulationProgress?.stats?.totalDocuments || 0 }} docs
-              </span>
-              <span *ngIf="!vectorPopulationProgress?.stats && vectorIndexJobStatus?.documentsProcessed">
-                {{ vectorIndexJobStatus?.documentsProcessed }} documents
-              </span>
-              <span *ngIf="vectorPopulationProgress?.stats?.throughputDocsPerSec">
-                {{ vectorPopulationProgress?.stats?.throughputDocsPerSec?.toFixed(1) }} docs/sec
-              </span>
-            </div>
-            <!-- Real-time persisted counts (verified in index) -->
-            <div *ngIf="vectorPopulationProgress?.stats?.actualVectorStoreCount != null"
-              style="display: flex; justify-content: space-between; font-size: 0.75em; color: #388e3c; margin-top: 2px; font-weight: 500;">
-              <span>
-                <mat-icon style="font-size: 14px; width: 14px; height: 14px; vertical-align: middle; margin-right: 2px;">verified</mat-icon>
-                Persisted to Vector Store: {{ vectorPopulationProgress?.stats?.actualVectorStoreCount | number }}
-              </span>
-              <span *ngIf="vectorPopulationProgress?.stats?.actualKeywordIndexCount != null">
-                Keyword Index: {{ vectorPopulationProgress?.stats?.actualKeywordIndexCount | number }}
-              </span>
-            </div>
-          </div>
-          <button mat-stroked-button color="warn" (click)="cancelVectorIndexCreation()" matTooltip="Cancel Vector Population">
-            <mat-icon>cancel</mat-icon> Cancel
-          </button>
-        </div>
-
-        <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-        <!-- EXPANDABLE JOB INFO PANEL (reuses document-manager pattern)               -->
-        <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-        <div class="job-info-panel" *ngIf="vectorPopulationProgress">
-          <div class="job-info-header" (click)="toggleJobInfo()">
-            <mat-icon>{{ expandedJobInfo ? 'expand_less' : 'expand_more' }}</mat-icon>
-            <mat-icon class="info-icon">info</mat-icon>
-            <span class="job-info-title">Job Information</span>
-            <span class="job-info-summary">
-              <span *ngIf="vectorPopulationProgress?.stats?.throughputDocsPerSec as throughput">{{ throughput | number:'1.1-1' }}/s</span>
-              <span *ngIf="calculateETA() as eta"> | ETA: {{ eta }}</span>
-            </span>
-          </div>
-
-          <div class="job-info-content" *ngIf="expandedJobInfo">
-            <!-- Stage Progress Chips -->
-            <div class="stage-chips">
-              <div class="stage-chip" [ngClass]="{
-                'active': vectorPopulationProgress?.phase === 'LOADING',
-                'complete': vectorPopulationProgress?.phase !== 'LOADING' && (vectorPopulationProgress?.stats?.totalDocuments || 0) > 0
-              }">
-                <mat-icon>cloud_download</mat-icon>
-                <span>{{ vectorPopulationProgress?.stats?.totalDocuments || 0 }} loaded</span>
-              </div>
-              <div class="stage-chip" [ngClass]="{
-                'active': vectorPopulationProgress?.phase === 'EMBEDDING',
-                'complete': vectorPopulationProgress?.phase === 'INDEXING' || vectorPopulationProgress?.phase === 'COMPLETED'
-              }">
-                <mat-icon>memory</mat-icon>
-                <span>{{ vectorPopulationProgress?.stats?.chunksEmbedded || 0 }}<span *ngIf="vectorPopulationProgress?.stats?.totalDocuments as total">/{{ total }}</span> embedded</span>
-              </div>
-              <div class="stage-chip" [ngClass]="{
-                'active': vectorPopulationProgress?.phase === 'INDEXING',
-                'complete': vectorPopulationProgress?.phase === 'COMPLETED'
-              }">
-                <mat-icon>storage</mat-icon>
-                <span>{{ vectorPopulationProgress?.stats?.chunksIndexed || 0 }}<span *ngIf="vectorPopulationProgress?.stats?.totalDocuments as total">/{{ total }}</span> indexed</span>
-              </div>
-              <!-- Actual persisted count chip -->
-              <div class="stage-chip complete" *ngIf="vectorPopulationProgress?.stats?.actualVectorStoreCount != null"
-                style="background: linear-gradient(135deg, #4caf50 0%, #388e3c 100%); border: 1px solid #2e7d32;">
-                <mat-icon>verified</mat-icon>
-                <span>{{ vectorPopulationProgress?.stats?.actualVectorStoreCount | number }} persisted</span>
-              </div>
-            </div>
-
-            <!-- Worker Status Section -->
-            <div class="worker-status-section" *ngIf="vectorPopulationProgress?.stats?.workerStatuses?.length as workerCount">
-              <div class="worker-section-header">
-                <mat-icon>engineering</mat-icon>
-                <span>Pipeline Workers</span>
-                <span class="worker-count-badge">
-                  {{ workerCount }} active
-                </span>
-              </div>
-
-              <!-- Worker Grid -->
-              <div class="worker-grid">
-                <!-- Embedding Workers -->
-                <div class="worker-card embedding-worker" [ngClass]="{'active': vectorPopulationProgress?.phase === 'EMBEDDING'}">
-                  <div class="worker-header">
-                    <mat-icon>memory</mat-icon>
-                    <span class="worker-type">Embedding</span>
-                  </div>
-                  <div class="worker-metrics">
-                    <div class="metric">
-                      <span class="metric-label">Processed:</span>
-                      <span class="metric-value">{{ getTotalProcessed(vectorPopulationProgress?.stats?.workerStatuses, 'EMBEDDING') }}</span>
-                    </div>
-                    <div class="metric">
-                      <span class="metric-label">Queued:</span>
-                      <span class="metric-value">{{ vectorPopulationProgress?.stats?.queueStatus?.chunkQueueSize || 0 }}</span>
-                    </div>
-                    <div class="metric" *ngIf="vectorPopulationProgress?.stats?.currentEmbeddingBatch as batch">
-                      <span class="metric-label">Batch:</span>
-                      <span class="metric-value">{{ batch.batchNumber || '?' }}</span>
-                    </div>
-                  </div>
-                  <mat-progress-bar class="worker-progress"
-                    [mode]="vectorPopulationProgress?.phase === 'EMBEDDING' ? 'indeterminate' : 'determinate'"
-                    [value]="getEmbeddingProgress()"
-                    color="accent">
-                  </mat-progress-bar>
-                  <div class="worker-status-text">
-                    <span *ngIf="vectorPopulationProgress?.phase === 'EMBEDDING'" class="status-active">
-                      <mat-icon class="spinning-icon-small">sync</mat-icon>
-                      Processing...
-                    </span>
-                    <span *ngIf="vectorPopulationProgress?.phase !== 'EMBEDDING' && getEmbeddingProgress() === 100" class="status-complete">
-                      <mat-icon>check_circle</mat-icon>
-                      Complete
-                    </span>
-                  </div>
-                </div>
-
-                <!-- Indexing Workers -->
-                <div class="worker-card indexing-worker" [ngClass]="{'active': vectorPopulationProgress?.phase === 'INDEXING'}">
-                  <div class="worker-header">
-                    <mat-icon>storage</mat-icon>
-                    <span class="worker-type">Indexing</span>
-                  </div>
-                  <div class="worker-metrics">
-                    <div class="metric">
-                      <span class="metric-label">Indexed:</span>
-                      <span class="metric-value">{{ getTotalProcessed(vectorPopulationProgress?.stats?.workerStatuses, 'INDEXING') }}</span>
-                    </div>
-                    <div class="metric">
-                      <span class="metric-label">Queued:</span>
-                      <span class="metric-value">{{ vectorPopulationProgress?.stats?.queueStatus?.embeddedQueueSize || 0 }}</span>
-                    </div>
-                    <div class="metric" *ngIf="vectorPopulationProgress?.stats?.throughputDocsPerSec as rate">
-                      <span class="metric-label">Rate:</span>
-                      <span class="metric-value">{{ rate | number:'1.1-1' }}/s</span>
-                    </div>
-                  </div>
-                  <mat-progress-bar class="worker-progress"
-                    [mode]="vectorPopulationProgress?.phase === 'INDEXING' ? 'indeterminate' : 'determinate'"
-                    [value]="getIndexingProgress()"
-                    color="primary">
-                  </mat-progress-bar>
-                  <div class="worker-status-text">
-                    <span *ngIf="vectorPopulationProgress?.phase === 'INDEXING'" class="status-active">
-                      <mat-icon class="spinning-icon-small">sync</mat-icon>
-                      Writing to vector store...
-                    </span>
-                    <span *ngIf="vectorPopulationProgress?.phase !== 'INDEXING' && getIndexingProgress() === 100" class="status-complete">
-                      <mat-icon>check_circle</mat-icon>
-                      Complete
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Detailed Worker Status -->
-              <div class="detailed-worker-status" *ngIf="vectorPopulationProgress?.stats?.workerStatuses as workers">
-                <div class="worker-status-row" *ngFor="let worker of workers; trackBy: trackByWorkerId">
-                  <span class="worker-id-badge" [ngClass]="'type-' + worker.workerType">
-                    {{ worker.workerType }}-{{ worker.workerId }}
-                  </span>
-                  <span class="worker-status-indicator" [ngClass]="'status-' + worker.status">
-                    {{ worker.status }}
-                  </span>
-                  <span class="worker-processed-count">
-                    {{ worker.itemsProcessed }} processed
-                  </span>
-                  <span class="worker-batch-info" *ngIf="worker.currentBatchSize && worker.currentBatchSize > 0">
-                    (batch: {{ worker.currentBatchSize }})
-                  </span>
-                  <span class="worker-throughput" *ngIf="worker.throughput && worker.throughput > 0">
-                    {{ worker.throughput | number:'1.1-1' }}/s
-                  </span>
-                </div>
-              </div>
-
-              <!-- Queue Status Visualization -->
-              <div class="queue-status-bar" *ngIf="vectorPopulationProgress?.stats?.queueStatus as qs">
-                <div class="queue-visualization">
-                  <div class="queue-item">
-                    <span class="queue-name">Chunk Queue</span>
-                    <div class="queue-bar-container">
-                      <div class="queue-bar" [style.width.%]="getQueueFillPercent(qs.chunkQueueSize, qs.chunkQueueCapacity)"></div>
-                    </div>
-                    <span class="queue-count">{{ qs.chunkQueueSize }}/{{ qs.chunkQueueCapacity }}</span>
-                  </div>
-                  <mat-icon class="queue-arrow">arrow_forward</mat-icon>
-                  <div class="queue-item">
-                    <span class="queue-name">Embed Queue</span>
-                    <div class="queue-bar-container">
-                      <div class="queue-bar" [style.width.%]="getQueueFillPercent(qs.embeddedQueueSize, qs.embeddedQueueCapacity)"></div>
-                    </div>
-                    <span class="queue-count">{{ qs.embeddedQueueSize }}/{{ qs.embeddedQueueCapacity }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Throughput Summary -->
-              <div class="throughput-summary" *ngIf="vectorPopulationProgress?.stats as stats">
-                <div class="throughput-item" *ngIf="stats.throughputDocsPerSec as throughput">
-                  <mat-icon>speed</mat-icon>
-                  <span>{{ throughput | number:'1.1-1' }} docs/sec</span>
-                </div>
-                <div class="throughput-item" *ngIf="stats.elapsedTimeMs as elapsed">
-                  <mat-icon>schedule</mat-icon>
-                  <span>{{ formatDuration(elapsed) }} elapsed</span>
-                </div>
-                <div class="throughput-item" *ngIf="calculateETA() as eta">
-                  <mat-icon>timer</mat-icon>
-                  <span>ETA: {{ eta }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Embedding Batch Details (collapsible) -->
-            <div class="embedding-batch-details" *ngIf="vectorPopulationProgress?.stats?.currentEmbeddingBatch as batch">
-              <div class="batch-header" [class.stuck]="batch.isStuck" (click)="toggleBatchDetails()">
-                <mat-icon>{{ expandedBatchDetails ? 'expand_less' : 'expand_more' }}</mat-icon>
-                <mat-icon [class.pulsing]="!batch.isStuck" [color]="batch.isStuck ? 'warn' : ''">
-                  {{ batch.isStuck ? 'warning' : 'memory' }}
-                </mat-icon>
-                <span>Batch {{ batch.batchNumber || '?' }}/{{ batch.totalBatches || '?' }}</span>
-                <span class="batch-step" *ngIf="batch.currentStep">[{{ batch.currentStep }}]</span>
-                <span class="batch-elapsed" *ngIf="batch.heartbeatSeconds">{{ batch.heartbeatSeconds }}s</span>
-                <mat-chip *ngIf="batch.isStuck" color="warn" selected class="mini-stuck-chip">STUCK</mat-chip>
-                <span class="batch-summary">
-                  {{ batch.inputTexts || '?' }} texts
-                  <span *ngIf="batch.embeddingDimension">, {{ batch.embeddingDimension }}d</span>
-                  <span *ngIf="batch.inferenceTimeMs"> &#64; {{ batch.inferenceTimeMs }}ms inf</span>
-                </span>
-              </div>
-
-              <div class="batch-details-content" *ngIf="expandedBatchDetails">
-                <!-- Basic metrics -->
-                <div class="batch-metrics-row">
-                  <div class="batch-metric">
-                    <span class="label">Input Texts:</span>
-                    <span class="value">{{ batch.inputTexts }}</span>
-                  </div>
-                  <div class="batch-metric" *ngIf="batch.inputTokens">
-                    <span class="label">Tokens:</span>
-                    <span class="value">{{ batch.inputTokens | number }}</span>
-                  </div>
-                  <div class="batch-metric" *ngIf="batch.embeddingDimension">
-                    <span class="label">Dim:</span>
-                    <span class="value">{{ batch.embeddingDimension }}</span>
-                  </div>
-                  <div class="batch-metric" *ngIf="batch.inferenceTimeMs">
-                    <span class="label">Inference:</span>
-                    <span class="value">{{ batch.inferenceTimeMs }}ms</span>
-                  </div>
-                  <div class="batch-metric" *ngIf="batch.batchThroughput">
-                    <span class="label">Throughput:</span>
-                    <span class="value">{{ batch.batchThroughput | number:'1.1-1' }}/s</span>
-                  </div>
-                </div>
-
-                <!-- Detailed Timing -->
-                <div class="timing-breakdown" *ngIf="batch.forwardPassTimeMs || batch.paddingTimeMs || batch.tensorCreationTimeMs">
-                  <div class="timing-header">
-                    <mat-icon>timer</mat-icon>
-                    <span>Detailed Timing</span>
-                  </div>
-                  <div class="timing-metrics-row">
-                    <div class="timing-metric" *ngIf="batch.tokenizationTimeMs">
-                      <span class="label">Tokenization:</span>
-                      <span class="value">{{ batch.tokenizationTimeMs }}ms</span>
-                    </div>
-                    <div class="timing-metric" *ngIf="batch.paddingTimeMs">
-                      <span class="label">Padding:</span>
-                      <span class="value">{{ batch.paddingTimeMs }}ms</span>
-                    </div>
-                    <div class="timing-metric" *ngIf="batch.tensorCreationTimeMs">
-                      <span class="label">Tensor Creation:</span>
-                      <span class="value">{{ batch.tensorCreationTimeMs }}ms</span>
-                    </div>
-                    <div class="timing-metric" *ngIf="batch.forwardPassTimeMs">
-                      <span class="label">Forward Pass:</span>
-                      <span class="value" [class.warning]="batch.forwardPassTimeMs > 30000">{{ batch.forwardPassTimeMs }}ms</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Model Info -->
-                <div class="model-info" *ngIf="batch.modelName || batch.deviceType">
-                  <div class="batch-metric" *ngIf="batch.modelName">
-                    <span class="label">Model:</span>
-                    <span class="value">{{ batch.modelName }}</span>
-                  </div>
-                  <div class="batch-metric" *ngIf="batch.deviceType">
-                    <span class="label">Device:</span>
-                    <span class="value">{{ batch.deviceType }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-            <!-- SUBPROCESS LOGS PANEL (Real-time logs from vector population subprocess)  -->
-            <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-            <div class="subprocess-logs-panel" *ngIf="currentVectorTaskId">
-              <div class="logs-panel-header" (click)="toggleLogs()">
-                <mat-icon>{{ expandedLogs ? 'expand_less' : 'expand_more' }}</mat-icon>
-                <mat-icon class="logs-icon">terminal</mat-icon>
-                <span class="logs-title">Subprocess Logs</span>
-                <span class="logs-task-id">({{ currentVectorTaskId }})</span>
-                <button mat-icon-button
-                        class="logs-toggle-btn"
-                        (click)="$event.stopPropagation(); toggleSubprocessLogs()"
-                        [matTooltip]="showSubprocessLogs ? 'Hide logs' : 'Show logs'">
-                  <mat-icon>{{ showSubprocessLogs ? 'visibility' : 'visibility_off' }}</mat-icon>
-                </button>
-              </div>
-
-              <div class="logs-panel-content" *ngIf="expandedLogs && showSubprocessLogs">
-                <app-subprocess-logs
-                  #subprocessLogs
-                  [taskId]="currentVectorTaskId"
-                  [logSource]="'vector-population'"
-                  [maxLogs]="500"
-                  [height]="'300px'">
-                </app-subprocess-logs>
-              </div>
-            </div>
-
-            <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-            <!-- ND4J ENVIRONMENT PANEL (Captured at subprocess launch)                     -->
-            <!-- ═══════════════════════════════════════════════════════════════════════════ -->
-            <div class="environment-panel" *ngIf="currentVectorTaskId">
-              <div class="environment-panel-header" (click)="toggleEnvironment()">
-                <mat-icon>{{ expandedEnvironment ? 'expand_less' : 'expand_more' }}</mat-icon>
-                <mat-icon class="environment-icon">memory</mat-icon>
-                <span class="environment-title">ND4J Environment</span>
-                <span class="environment-status" *ngIf="hasTaskEnvironment(currentVectorTaskId)">
-                  <mat-icon class="captured-icon">check_circle</mat-icon>
-                  Captured
-                </span>
-                <span class="environment-status not-captured" *ngIf="!hasTaskEnvironment(currentVectorTaskId) && getTaskEnvironment(currentVectorTaskId)">
-                  <mat-icon class="not-captured-icon">info</mat-icon>
-                  Not Captured
-                </span>
-              </div>
-
-              <div class="environment-panel-content" *ngIf="expandedEnvironment">
-                <ng-container *ngIf="getTaskEnvironment(currentVectorTaskId) as taskEnv">
-                  <ng-container *ngIf="taskEnv.environmentCaptured && taskEnv.nd4jEnvironment as env">
-                    <div class="env-grid">
-                      <!-- Core Settings -->
-                      <div class="env-section">
-                        <div class="env-section-title">Core Settings</div>
-                        <div class="env-item">
-                          <span class="env-label">BLAS Enabled:</span>
-                          <span class="env-value">{{ env.enableBlas ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item">
-                          <span class="env-label">Helpers Allowed:</span>
-                          <span class="env-value">{{ env.helpersAllowed ?? 'N/A' }}</span>
-                        </div>
-                      </div>
-
-                      <!-- Thread Config -->
-                      <div class="env-section">
-                        <div class="env-section-title">Thread Configuration</div>
-                        <div class="env-item">
-                          <span class="env-label">Max Threads:</span>
-                          <span class="env-value">{{ env.maxThreads ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item">
-                          <span class="env-label">Max Master Threads:</span>
-                          <span class="env-value">{{ env.maxMasterThreads ?? 'N/A' }}</span>
-                        </div>
-                      </div>
-
-                      <!-- Debug Settings -->
-                      <div class="env-section">
-                        <div class="env-section-title">Debug Settings</div>
-                        <div class="env-item">
-                          <span class="env-label">Debug:</span>
-                          <span class="env-value" [class.enabled]="env.debug">{{ env.debug ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item">
-                          <span class="env-label">Verbose:</span>
-                          <span class="env-value" [class.enabled]="env.verbose">{{ env.verbose ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item">
-                          <span class="env-label">Profiling:</span>
-                          <span class="env-value" [class.enabled]="env.profiling">{{ env.profiling ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item">
-                          <span class="env-label">Leak Detector:</span>
-                          <span class="env-value" [class.enabled]="env.leaksDetector">{{ env.leaksDetector ?? 'N/A' }}</span>
-                        </div>
-                      </div>
-
-                      <!-- Lifecycle Tracking -->
-                      <div class="env-section">
-                        <div class="env-section-title">Lifecycle Tracking</div>
-                        <div class="env-item">
-                          <span class="env-label">Lifecycle Tracking:</span>
-                          <span class="env-value" [class.enabled]="env.lifecycleTracking">{{ env.lifecycleTracking ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.lifecycleTracking">
-                          <span class="env-label">Track Views:</span>
-                          <span class="env-value">{{ env.trackViews ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.lifecycleTracking">
-                          <span class="env-label">Track Deletions:</span>
-                          <span class="env-value">{{ env.trackDeletions ?? 'N/A' }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.lifecycleTracking">
-                          <span class="env-label">Track Operations:</span>
-                          <span class="env-value">{{ env.trackOperations ?? 'N/A' }}</span>
-                        </div>
-                      </div>
-
-                      <!-- Memory Settings -->
-                      <div class="env-section" *ngIf="env.maxPrimaryMemory || env.maxSpecialMemory || env.maxDeviceMemory">
-                        <div class="env-section-title">Memory Limits</div>
-                        <div class="env-item" *ngIf="env.maxPrimaryMemory">
-                          <span class="env-label">Max Primary:</span>
-                          <span class="env-value">{{ env.maxPrimaryMemory | number }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.maxSpecialMemory">
-                          <span class="env-label">Max Special:</span>
-                          <span class="env-value">{{ env.maxSpecialMemory | number }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.maxDeviceMemory">
-                          <span class="env-label">Max Device:</span>
-                          <span class="env-value">{{ env.maxDeviceMemory | number }}</span>
-                        </div>
-                      </div>
-
-                      <!-- Performance Thresholds -->
-                      <div class="env-section" *ngIf="env.tadThreshold || env.elementwiseThreshold">
-                        <div class="env-section-title">Performance Thresholds</div>
-                        <div class="env-item" *ngIf="env.tadThreshold">
-                          <span class="env-label">TAD Threshold:</span>
-                          <span class="env-value">{{ env.tadThreshold }}</span>
-                        </div>
-                        <div class="env-item" *ngIf="env.elementwiseThreshold">
-                          <span class="env-label">Elementwise Threshold:</span>
-                          <span class="env-value">{{ env.elementwiseThreshold }}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- Raw JSON Toggle -->
-                    <div class="raw-json-section" *ngIf="taskEnv.nd4jEnvironmentRaw">
-                      <button mat-stroked-button (click)="showRawJson = !showRawJson" class="raw-json-toggle">
-                        <mat-icon>{{ showRawJson ? 'visibility_off' : 'code' }}</mat-icon>
-                        {{ showRawJson ? 'Hide Raw JSON' : 'Show Raw JSON' }}
-                      </button>
-                      <pre class="raw-json" *ngIf="showRawJson">{{ taskEnv.nd4jEnvironmentRaw }}</pre>
-                    </div>
-                  </ng-container>
-
-                  <div class="env-not-captured" *ngIf="!taskEnv.environmentCaptured">
-                    <mat-icon>info_outline</mat-icon>
-                    <span>{{ taskEnv.message || 'No ND4J environment snapshot was captured for this task.' }}</span>
-                  </div>
-                </ng-container>
-
-                <div class="env-loading" *ngIf="!getTaskEnvironment(currentVectorTaskId)">
-                  <mat-spinner diameter="24"></mat-spinner>
-                  <span>Loading environment data...</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </ng-container>
-      <ng-template #startIndexBtn>
-        <!-- Pipeline Settings Toggle -->
-        <button mat-icon-button (click)="showPipelineSettings = !showPipelineSettings"
-          [matTooltip]="showPipelineSettings ? 'Hide Pipeline Settings' : 'Show Pipeline Settings'"
-          color="primary">
-          <mat-icon>{{ showPipelineSettings ? 'settings_applications' : 'tune' }}</mat-icon>
-        </button>
-        <button mat-stroked-button color="accent" (click)="createVectorIndexFromLucene()" [disabled]="isLoading"
-          matTooltip="Create Vector Index from existing Keyword Index">
-          <mat-icon>auto_fix_high</mat-icon>
-          Populate Vector Index
-        </button>
-      </ng-template>
+      <button mat-icon-button (click)="showPipelineSettings = !showPipelineSettings"
+        [matTooltip]="showPipelineSettings ? 'Hide Pipeline Settings' : 'Show Pipeline Settings'"
+        color="primary">
+        <mat-icon>{{ showPipelineSettings ? 'settings_applications' : 'tune' }}</mat-icon>
+      </button>
+      <button mat-stroked-button color="accent" (click)="createVectorIndexFromLucene()" [disabled]="isLoading"
+        matTooltip="Create Vector Index from existing Keyword Index">
+        <mat-icon>auto_fix_high</mat-icon>
+        Populate Vector Index
+      </button>
       <button mat-icon-button color="primary" (click)="refreshData(); refreshVectorData()" matTooltip="Refresh" [disabled]="isLoading || isLoadingVector">
         <mat-icon>refresh</mat-icon>
       </button>
@@ -577,71 +71,178 @@
       </div>
 
       <div class="status-details">
-        <div class="status-row">
-          <strong>Indexer:</strong>
-          <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpIndexer">
-            {{ indexBrowserStatus.indexerImplementation }}
-          </span>
-          <mat-icon *ngIf="indexBrowserStatus.isNoOpIndexer" class="warning-icon" color="warn">warning</mat-icon>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- KEYWORD INDEX STATUS -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section">
+          <h4 class="section-title"><mat-icon>text_snippet</mat-icon> Keyword Index</h4>
+
+          <div class="status-row">
+            <strong>Indexer:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpIndexer">
+              {{ indexBrowserStatus.indexerImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpIndexer" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Retriever:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpRetriever">
+              {{ indexBrowserStatus.retrieverImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpRetriever" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Available:</strong>
+            <span [class.text-success]="indexBrowserStatus.indexAvailable"
+              [class.text-error]="!indexBrowserStatus.indexAvailable">
+              {{ indexBrowserStatus.indexAvailable ? 'Yes' : 'No' }}
+            </span>
+          </div>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.indexPath">
+            <strong>Path:</strong>
+            <span class="path-display" [matTooltip]="indexBrowserStatus.indexPath">{{ indexBrowserStatus.indexPath }}</span>
+          </div>
+
+          <div class="status-row">
+            <strong>Document Count:</strong>
+            <span class="count-badge">{{ indexBrowserStatus.approximateDocumentCount !== undefined && indexBrowserStatus.approximateDocumentCount !== null ? indexBrowserStatus.approximateDocumentCount : 0 }}</span>
+          </div>
         </div>
 
-        <div class="status-row">
-          <strong>Retriever:</strong>
-          <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpRetriever">
-            {{ indexBrowserStatus.retrieverImplementation }}
-          </span>
-          <mat-icon *ngIf="indexBrowserStatus.isNoOpRetriever" class="warning-icon" color="warn">warning</mat-icon>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- VECTOR STORE STATUS -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section vector-section">
+          <h4 class="section-title"><mat-icon>hub</mat-icon> Vector Store</h4>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.vectorStoreImplementation">
+            <strong>Implementation:</strong>
+            <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpVectorStore">
+              {{ indexBrowserStatus.vectorStoreImplementation }}
+            </span>
+            <mat-icon *ngIf="indexBrowserStatus.isNoOpVectorStore" class="warning-icon" color="warn">warning</mat-icon>
+          </div>
+
+          <div class="status-row">
+            <strong>Available:</strong>
+            <span [class.text-success]="indexBrowserStatus.vectorStoreAvailable"
+              [class.text-error]="!indexBrowserStatus.vectorStoreAvailable">
+              {{ indexBrowserStatus.vectorStoreAvailable ? 'Yes' : 'No' }}
+            </span>
+          </div>
+
+          <div class="status-row">
+            <strong>Path:</strong>
+            <span class="path-display" [matTooltip]="indexBrowserStatus.vectorStorePath || 'Not configured'">
+              {{ indexBrowserStatus.vectorStorePath || 'Not configured' }}
+            </span>
+          </div>
+
+          <div class="status-row">
+            <strong>Vector Count:</strong>
+            <span class="count-badge">{{ indexBrowserStatus.approximateVectorCount !== undefined && indexBrowserStatus.approximateVectorCount !== -1 ? indexBrowserStatus.approximateVectorCount : 0 }}</span>
+          </div>
+
+          <div class="status-row" *ngIf="indexBrowserStatus.approximateTotalTokens">
+            <strong>Total Tokens:</strong>
+            <span class="count-badge token-count">{{ formatTokenCount(indexBrowserStatus.approximateTotalTokens) }}</span>
+          </div>
         </div>
 
-        <div class="status-row">
-          <strong>Index Available:</strong>
-          <span [class.text-success]="indexBrowserStatus.indexAvailable"
-            [class.text-error]="!indexBrowserStatus.indexAvailable">
-            {{ indexBrowserStatus.indexAvailable ? 'Yes' : 'No' }}
-          </span>
-        </div>
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVE MODEL STATUS (from Staging Manager) -->
+        <!-- ═══════════════════════════════════════════════════════════════════ -->
+        <div class="index-status-section model-section">
+          <h4 class="section-title"><mat-icon>memory</mat-icon> Active Model</h4>
 
-        <div class="status-row" *ngIf="indexBrowserStatus.indexPath">
-          <strong>Index Path:</strong>
-          <span class="path-display" [matTooltip]="indexBrowserStatus.indexPath">{{ indexBrowserStatus.indexPath
-            }}</span>
-        </div>
+          <!-- Local Embedding Model -->
+          <div class="status-row" *ngIf="indexBrowserStatus.activeEmbeddingModel">
+            <strong>Embedding Model:</strong>
+            <span class="model-name active">
+              {{ indexBrowserStatus.activeEmbeddingModel }}
+            </span>
+            <span class="model-dim-badge" *ngIf="indexBrowserStatus.embeddingDimensions">
+              {{ indexBrowserStatus.embeddingDimensions }}d
+            </span>
+          </div>
 
-        <div class="status-row" *ngIf="indexBrowserStatus.approximateDocumentCount !== undefined">
-          <strong>Document Count:</strong>
-          <span>{{ indexBrowserStatus.approximateDocumentCount }}</span>
-        </div>
+          <!-- Model Loading Progress -->
+          <div class="status-row model-loading-row" *ngIf="indexBrowserStatus.embeddingModelLoading">
+            <strong>Embedding Model:</strong>
+            <div class="model-loading-status">
+              <mat-spinner diameter="18" class="inline-spinner"></mat-spinner>
+              <span class="loading-phase-badge">{{ getLoadingPhaseDisplay(indexBrowserStatus.embeddingModelLoadingPhase) }}</span>
+              <span class="loading-message">{{ indexBrowserStatus.embeddingModelLoadingMessage || 'Initializing...' }}</span>
+            </div>
+          </div>
 
-        <!-- Vector Store Status -->
-        <div class="status-divider" *ngIf="indexBrowserStatus.vectorStoreImplementation"></div>
+          <!-- Model Not Initialized (and not loading) -->
+          <div class="status-row" *ngIf="!indexBrowserStatus.embeddingModelLoading && (!indexBrowserStatus.activeEmbeddingModel || indexBrowserStatus.embeddingModelInitialized === false)">
+            <strong>Embedding Model:</strong>
+            <span class="text-warning" *ngIf="indexBrowserStatus.embeddingModelWarning">
+              <mat-icon class="inline-icon status-icon-warning">warning</mat-icon>
+              {{ indexBrowserStatus.embeddingModelWarning }}
+            </span>
+            <span class="text-warning" *ngIf="!indexBrowserStatus.embeddingModelWarning">
+              Not loaded
+            </span>
+            <mat-spinner *ngIf="isPollingEmbeddingModel" diameter="16" class="inline-spinner" matTooltip="Checking for model initialization..."></mat-spinner>
+          </div>
 
-        <div class="status-row" *ngIf="indexBrowserStatus.vectorStoreImplementation">
-          <strong>Vector Store:</strong>
-          <span class="implementation-name" [class.no-op]="indexBrowserStatus.isNoOpVectorStore">
-            {{ indexBrowserStatus.vectorStoreImplementation }}
-          </span>
-          <mat-icon *ngIf="indexBrowserStatus.isNoOpVectorStore" class="warning-icon" color="warn">warning</mat-icon>
-        </div>
+          <!-- Staging Service Connection -->
+          <div class="status-row">
+            <strong>Staging Service:</strong>
+            <span *ngIf="indexBrowserStatus.stagingServiceConfigured && indexBrowserStatus.stagingConnected"
+                  class="text-success">
+              <mat-icon class="inline-icon status-icon-connected">check_circle</mat-icon>
+              {{ indexBrowserStatus.stagingServiceName || 'Connected' }}
+            </span>
+            <span *ngIf="indexBrowserStatus.stagingServiceConfigured && !indexBrowserStatus.stagingConnected"
+                  class="text-warning">
+              <mat-icon class="inline-icon status-icon-warning">warning</mat-icon>
+              {{ indexBrowserStatus.stagingServiceName || 'Configured' }} (Disconnected)
+            </span>
+            <span *ngIf="!indexBrowserStatus.stagingServiceConfigured" class="text-muted">
+              Not configured
+            </span>
+          </div>
 
-        <div class="status-row" *ngIf="indexBrowserStatus.vectorStoreImplementation">
-          <strong>Vector Store Available:</strong>
-          <span [class.text-success]="indexBrowserStatus.vectorStoreAvailable"
-            [class.text-error]="!indexBrowserStatus.vectorStoreAvailable">
-            {{ indexBrowserStatus.vectorStoreAvailable ? 'Yes' : 'No' }}
-          </span>
-        </div>
+          <!-- Active Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeEncoder">
+            <strong>Active Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeEncoder }}
+            </span>
+          </div>
 
-        <div class="status-row"
-          *ngIf="indexBrowserStatus.vectorStorePath && indexBrowserStatus.vectorStorePath !== 'N/A'">
-          <strong>Vector Store Path:</strong>
-          <span class="path-display" [matTooltip]="indexBrowserStatus.vectorStorePath">{{
-            indexBrowserStatus.vectorStorePath }}</span>
-        </div>
+          <!-- Active Cross-Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeCrossEncoder">
+            <strong>Active Cross-Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeCrossEncoder }}
+            </span>
+          </div>
 
-        <div class="status-row"
-          *ngIf="indexBrowserStatus.approximateVectorCount !== undefined && indexBrowserStatus.approximateVectorCount !== -1">
-          <strong>Vector Count:</strong>
-          <span>{{ indexBrowserStatus.approximateVectorCount }}</span>
+          <!-- Active Sparse Encoder from Staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && indexBrowserStatus.activeSparseEncoder">
+            <strong>Active Sparse Encoder:</strong>
+            <span class="model-name active">
+              <mat-icon class="inline-icon model-active-icon">verified</mat-icon>
+              {{ indexBrowserStatus.activeSparseEncoder }}
+            </span>
+          </div>
+
+          <!-- No active models from staging -->
+          <div class="status-row" *ngIf="indexBrowserStatus.stagingConnected && !indexBrowserStatus.activeEncoder && !indexBrowserStatus.activeCrossEncoder">
+            <span class="text-muted" style="font-style: italic;">
+              No active models in staging registry
+            </span>
+          </div>
         </div>
       </div>
 
@@ -682,7 +283,7 @@
         <mat-form-field appearance="outline" class="full-width-field content-textarea">
           <mat-label>Content (Editable for Debug - Keyword Index Only)</mat-label>
           <textarea matInput cdkTextareaAutosize #autosize="cdkTextareaAutosize" cdkAutosizeMinRows="10"
-            cdkAutosizeMaxRows="25" [(ngModel)]="editedContent" [disabled]="isLoading || selectedTabIndex !== 0"></textarea>
+            cdkAutosizeMaxRows="25" [(ngModel)]="editedContent" [ngModelOptions]="{standalone: true}" [disabled]="isLoading || selectedTabIndex !== 0"></textarea>
         </mat-form-field>
 
         <div *ngIf="selectedDoc.metadata && objectKeys(selectedDoc.metadata).length > 0" class="metadata-section">
@@ -723,13 +324,38 @@
       <ng-template mat-tab-label>
         <mat-icon class="tab-icon">text_snippet</mat-icon>
         Keyword Index
-        <span class="tab-badge" *ngIf="indexBrowserStatus?.approximateDocumentCount">
-          ({{ indexBrowserStatus?.approximateDocumentCount }})
+        <span class="tab-badge" *ngIf="indexBrowserStatus && indexBrowserStatus.approximateDocumentCount !== undefined && indexBrowserStatus.approximateDocumentCount !== null">
+          ({{ indexBrowserStatus.approximateDocumentCount }})
         </span>
       </ng-template>
 
-      <!-- Search Section -->
-      <div class="search-section mat-elevation-z2" *ngIf="!indexBrowserStatus?.isNoOpRetriever">
+      <!-- Mode Toggle (Browse/Search) -->
+      <div class="mode-toggle-section mat-elevation-z2">
+        <mat-button-toggle-group [value]="keywordViewMode" (change)="setKeywordViewMode($event.value)" class="view-mode-toggle">
+          <mat-button-toggle value="browse" matTooltip="Browse all documents with pagination">
+            <mat-icon>list</mat-icon>
+            Browse
+          </mat-button-toggle>
+          <mat-button-toggle value="search" matTooltip="Search documents using BM25" [disabled]="indexBrowserStatus?.isNoOpRetriever">
+            <mat-icon>search</mat-icon>
+            Search
+          </mat-button-toggle>
+        </mat-button-toggle-group>
+
+        <p class="mode-description">
+          <span *ngIf="keywordViewMode === 'browse'">
+            <mat-icon class="inline-icon">list</mat-icon>
+            Browse all indexed documents/chunks from the Lucene keyword index with pagination.
+          </span>
+          <span *ngIf="keywordViewMode === 'search'">
+            <mat-icon class="inline-icon">search</mat-icon>
+            Search documents using BM25 relevance ranking. Results are ranked by score.
+          </span>
+        </p>
+      </div>
+
+      <!-- Search Section (only visible in search mode) -->
+      <div class="search-section mat-elevation-z2" *ngIf="keywordViewMode === 'search' && !indexBrowserStatus?.isNoOpRetriever">
         <mat-form-field appearance="outline" class="search-field">
           <mat-label>Search keyword index...</mat-label>
           <input matInput [formControl]="searchControl" placeholder="Enter your search query">
@@ -749,15 +375,13 @@
       </div>
 
       <!-- Disabled Search Notice -->
-      <div class="disabled-search-notice mat-elevation-z2" *ngIf="indexBrowserStatus?.isNoOpRetriever">
+      <div class="disabled-search-notice mat-elevation-z2" *ngIf="keywordViewMode === 'search' && indexBrowserStatus?.isNoOpRetriever">
         <mat-icon color="warn">search_off</mat-icon>
         <span>Search functionality is disabled because the system is using a NoOp retriever implementation.</span>
       </div>
 
       <p class="component-description">
         <small>
-          <span *ngIf="!isSearchMode">Browse indexed documents/chunks from the Lucene keyword index.</span>
-          <span *ngIf="isSearchMode">Search results ranked by BM25 relevance score.</span>
           Edits here modify the live keyword index directly.
         </small>
       </p>
@@ -853,7 +477,12 @@
         <!-- Search Results Info -->
         <div *ngIf="isSearchMode" class="search-results-info">
           <mat-icon>info_outline</mat-icon>
-          <span>{{ dataSource.data.length }} search results (pagination disabled for search)</span>
+          <span>
+            {{ dataSource.data.length }} search results
+            <ng-container *ngIf="indexBrowserStatus && indexBrowserStatus.approximateDocumentCount !== undefined && indexBrowserStatus.approximateDocumentCount !== null">
+              out of {{ indexBrowserStatus.approximateDocumentCount }} documents in index
+            </ng-container>
+          </span>
         </div>
       </div>
     </mat-tab>
@@ -872,8 +501,56 @@
           matTooltip="Vector Store is using NoOp implementation">warning</mat-icon>
       </ng-template>
 
-      <!-- Vector Store Search Section -->
-      <div class="search-section mat-elevation-z2" *ngIf="!indexBrowserStatus?.isNoOpVectorStore">
+      <!-- Mode Toggle (Browse/Search) for Vector Store -->
+      <div class="mode-toggle-section mat-elevation-z2">
+        <div class="mode-toggle-row">
+          <mat-button-toggle-group [value]="vectorViewMode" (change)="setVectorViewMode($event.value)" class="view-mode-toggle">
+            <mat-button-toggle value="browse" matTooltip="Browse all vector documents with pagination">
+              <mat-icon>list</mat-icon>
+              Browse
+            </mat-button-toggle>
+            <mat-button-toggle value="search" matTooltip="Semantic search using vector similarity" [disabled]="indexBrowserStatus?.isNoOpVectorStore">
+              <mat-icon>search</mat-icon>
+              Search
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+
+          <!-- Populate from Keyword Index button -->
+          <button mat-stroked-button color="accent"
+                  (click)="createVectorIndexFromLucene()"
+                  [disabled]="isLoading || isVectorIndexing"
+                  *ngIf="!isVectorIndexing"
+                  matTooltip="Populate Vector Store from existing Keyword Index documents"
+                  class="populate-vector-btn">
+            <mat-icon>auto_fix_high</mat-icon>
+            Populate from Keyword Index
+          </button>
+
+          <!-- Deduplicate button -->
+          <button mat-stroked-button color="primary"
+                  (click)="openDedupDialog()"
+                  [disabled]="isLoading || isVectorIndexing || isDeduplicating"
+                  matTooltip="Find and remove duplicate chunks from the vector store"
+                  class="deduplicate-btn">
+            <mat-icon>content_copy</mat-icon>
+            Deduplicate
+          </button>
+        </div>
+
+        <p class="mode-description">
+          <span *ngIf="vectorViewMode === 'browse'">
+            <mat-icon class="inline-icon">list</mat-icon>
+            Browse all documents from the vector store (HNSW index) with pagination.
+          </span>
+          <span *ngIf="vectorViewMode === 'search'">
+            <mat-icon class="inline-icon">hub</mat-icon>
+            Semantic search using vector similarity. Results are ranked by cosine similarity.
+          </span>
+        </p>
+      </div>
+
+      <!-- Vector Store Search Section (only visible in search mode) -->
+      <div class="search-section mat-elevation-z2" *ngIf="vectorViewMode === 'search' && !indexBrowserStatus?.isNoOpVectorStore">
         <div class="search-row">
           <mat-form-field appearance="outline" class="search-field">
             <mat-label>Semantic search in vector store...</mat-label>
@@ -886,7 +563,7 @@
               Min Similarity: {{ vectorSimilarityThreshold.toFixed(2) }}
             </label>
             <mat-slider min="0" max="1" step="0.05" discrete [displayWith]="formatThreshold">
-              <input matSliderThumb [(ngModel)]="vectorSimilarityThreshold">
+              <input matSliderThumb [(ngModel)]="vectorSimilarityThreshold" [ngModelOptions]="{standalone: true}">
             </mat-slider>
           </div>
         </div>
@@ -904,15 +581,13 @@
       </div>
 
       <!-- Disabled Vector Store Notice -->
-      <div class="disabled-search-notice mat-elevation-z2" *ngIf="indexBrowserStatus?.isNoOpVectorStore">
+      <div class="disabled-search-notice mat-elevation-z2" *ngIf="vectorViewMode === 'search' && indexBrowserStatus?.isNoOpVectorStore">
         <mat-icon color="warn">search_off</mat-icon>
         <span>Vector Store is disabled because the system is using a NoOp implementation. Use "Populate Vector Index" to create the vector index.</span>
       </div>
 
       <p class="component-description">
         <small>
-          <span *ngIf="!isVectorSearchMode">Browse documents from the vector store (HNSW index).</span>
-          <span *ngIf="isVectorSearchMode">Semantic search results ranked by cosine similarity.</span>
           Vector store is read-only from this interface.
         </small>
       </p>
@@ -925,12 +600,22 @@
           No documents available - system is using a NoOp vector store implementation.
         </span>
         <span *ngIf="!isVectorSearchMode && !indexBrowserStatus?.isNoOpVectorStore && !indexBrowserStatus?.vectorStoreAvailable">
-          No documents found - the vector index may need to be built. Use "Populate Vector Index" to create it from the keyword index.
+          No documents found - the vector index may need to be built.
         </span>
         <span *ngIf="!isVectorSearchMode && !indexBrowserStatus?.isNoOpVectorStore && indexBrowserStatus?.vectorStoreAvailable">
           No documents found in the vector store.
         </span>
         <span *ngIf="isVectorSearchMode">No vector search results found for "{{ currentVectorSearchQuery }}".</span>
+
+        <!-- Populate from Keyword Index button in empty state -->
+        <button mat-raised-button color="accent"
+                (click)="createVectorIndexFromLucene()"
+                [disabled]="isLoading || isVectorIndexing"
+                *ngIf="!isVectorSearchMode && !isVectorIndexing"
+                class="empty-state-action-btn">
+          <mat-icon>auto_fix_high</mat-icon>
+          Populate from Keyword Index
+        </button>
       </div>
 
       <div *ngIf="vectorDataSource.data.length > 0" class="table-container mat-elevation-z4">
@@ -1005,7 +690,12 @@
         <!-- Search Results Info -->
         <div *ngIf="isVectorSearchMode" class="search-results-info">
           <mat-icon>info_outline</mat-icon>
-          <span>{{ vectorDataSource.data.length }} vector search results (pagination disabled for search)</span>
+          <span>
+            {{ vectorDataSource.data.length }} vector search results
+            <ng-container *ngIf="indexBrowserStatus && indexBrowserStatus.approximateVectorCount !== undefined && indexBrowserStatus.approximateVectorCount !== -1">
+              out of {{ indexBrowserStatus.approximateVectorCount }} vectors in store
+            </ng-container>
+          </span>
         </div>
       </div>
     </mat-tab>
@@ -1225,4 +915,123 @@
     </mat-tab>
 
   </mat-tab-group>
+
+  <!-- Deduplication Dialog Overlay -->
+  <div class="dedup-dialog-overlay" *ngIf="showDedupDialog" (click)="closeDedupDialog()">
+    <div class="dedup-dialog-content" (click)="$event.stopPropagation()">
+      <div class="dedup-dialog-header">
+        <h2>
+          <mat-icon>content_copy</mat-icon>
+          Deduplicate Vector Store
+        </h2>
+        <button mat-icon-button (click)="closeDedupDialog()" class="close-dialog-btn">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+
+      <div class="dedup-dialog-body">
+        <p class="dedup-description">
+          Find and remove duplicate chunks from the vector store. Choose a strategy and preview duplicates before removing them.
+        </p>
+
+        <!-- Strategy Selection -->
+        <div class="dedup-form-section">
+          <label class="section-label">Deduplication Strategy</label>
+          <mat-button-toggle-group [(ngModel)]="dedupStrategy" [ngModelOptions]="{standalone: true}" class="strategy-toggle-group">
+            <mat-button-toggle value="content_hash" matTooltip="Find chunks with identical text content (SHA-256 hash)">
+              <mat-icon>fingerprint</mat-icon>
+              Content Hash
+            </mat-button-toggle>
+            <mat-button-toggle value="source_and_index" matTooltip="Find chunks from the same source file with matching chunk index (useful for re-indexed files)">
+              <mat-icon>source</mat-icon>
+              Source + Index
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+          <p class="strategy-description" *ngIf="dedupStrategy === 'content_hash'">
+            Finds chunks with identical text content using SHA-256 hash comparison.
+          </p>
+          <p class="strategy-description" *ngIf="dedupStrategy === 'source_and_index'">
+            Finds chunks from the same source file with matching chunk index (useful when files are re-indexed).
+          </p>
+        </div>
+
+        <!-- Keep Policy -->
+        <div class="dedup-form-section">
+          <label class="section-label">When duplicates are found, keep:</label>
+          <mat-button-toggle-group [(ngModel)]="dedupKeepPolicy" [ngModelOptions]="{standalone: true}" class="keep-policy-toggle-group">
+            <mat-button-toggle value="first" matTooltip="Keep the oldest chunk (first indexed)">
+              <mat-icon>first_page</mat-icon>
+              First (Oldest)
+            </mat-button-toggle>
+            <mat-button-toggle value="latest" matTooltip="Keep the newest chunk (most recently indexed)">
+              <mat-icon>last_page</mat-icon>
+              Latest (Newest)
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+
+        <!-- Dry Run Toggle -->
+        <div class="dedup-form-section">
+          <mat-slide-toggle [(ngModel)]="dedupDryRun" [ngModelOptions]="{standalone: true}" color="primary">
+            <span class="toggle-label">
+              <mat-icon>preview</mat-icon>
+              Dry Run (preview only, no actual deletion)
+            </span>
+          </mat-slide-toggle>
+        </div>
+
+        <!-- Analysis Results -->
+        <div class="analysis-results" *ngIf="duplicateAnalysis">
+          <div class="analysis-header">
+            <mat-icon color="primary">analytics</mat-icon>
+            <h3>Analysis Results</h3>
+          </div>
+          <div class="analysis-stats">
+            <div class="stat-item">
+              <span class="stat-value">{{ duplicateAnalysis.totalDuplicateChunks }}</span>
+              <span class="stat-label">Total Duplicate Chunks</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value highlight">{{ duplicateAnalysis.totalDuplicateGroups }}</span>
+              <span class="stat-label">Duplicate Groups</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value warning">{{ duplicateAnalysis.chunksToRemove }}</span>
+              <span class="stat-label">Chunks to Remove</span>
+            </div>
+          </div>
+          <p class="analysis-message" *ngIf="duplicateAnalysis.chunksToRemove > 0">
+            <mat-icon color="warn">warning</mat-icon>
+            {{ duplicateAnalysis.chunksToRemove }} duplicate chunks can be removed.
+          </p>
+          <p class="analysis-message success" *ngIf="duplicateAnalysis.chunksToRemove === 0">
+            <mat-icon color="primary">check_circle</mat-icon>
+            No duplicates found using the {{ dedupStrategy === 'content_hash' ? 'Content Hash' : 'Source + Index' }} strategy.
+          </p>
+        </div>
+
+        <!-- Loading State -->
+        <div class="dedup-loading" *ngIf="isDeduplicating">
+          <mat-spinner diameter="32"></mat-spinner>
+          <span>{{ duplicateAnalysis ? 'Running deduplication...' : 'Analyzing duplicates...' }}</span>
+        </div>
+      </div>
+
+      <div class="dedup-dialog-actions">
+        <button mat-button (click)="closeDedupDialog()">Cancel</button>
+        <button mat-stroked-button color="primary"
+                (click)="analyzeDuplicates()"
+                [disabled]="isDeduplicating">
+          <mat-icon>analytics</mat-icon>
+          Analyze
+        </button>
+        <button mat-raised-button color="warn"
+                (click)="runDeduplication()"
+                [disabled]="isDeduplicating || !duplicateAnalysis || duplicateAnalysis.chunksToRemove === 0">
+          <mat-icon>{{ dedupDryRun ? 'preview' : 'delete_sweep' }}</mat-icon>
+          {{ dedupDryRun ? 'Preview Removal' : 'Remove Duplicates' }}
+        </button>
+      </div>
+    </div>
+  </div>
 </div>

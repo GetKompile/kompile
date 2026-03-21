@@ -16,7 +16,14 @@
 package ai.kompile.orchestrator.service.impl;
 
 import ai.kompile.orchestrator.config.OrchestratorProperties;
-import ai.kompile.orchestrator.model.event.*;
+import ai.kompile.orchestrator.model.event.ConversationMessageEvent;
+import ai.kompile.orchestrator.model.event.LlmSessionEvent;
+import ai.kompile.orchestrator.model.event.LlmTokenEvent;
+import ai.kompile.orchestrator.model.event.OrchestratorEvent;
+import ai.kompile.orchestrator.model.event.StateChangeEvent;
+import ai.kompile.orchestrator.model.event.TaskEvent;
+import ai.kompile.orchestrator.model.event.TaskOutputEvent;
+import ai.kompile.orchestrator.model.event.WorkflowEvent;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -48,6 +55,8 @@ public class EventBroadcastService {
     private static final String TOPIC_STATE = TOPIC_BASE + "/state";
     private static final String TOPIC_TASK = TOPIC_BASE + "/task";
     private static final String TOPIC_LLM = TOPIC_BASE + "/llm";
+    private static final String TOPIC_LLM_TOKENS = TOPIC_BASE + "/llm/tokens";
+    private static final String TOPIC_CONVERSATION = TOPIC_BASE + "/conversation";
     private static final String TOPIC_WORKFLOW = TOPIC_BASE + "/workflow";
     private static final String TOPIC_OUTPUT = TOPIC_BASE + "/output";
 
@@ -249,5 +258,123 @@ public class EventBroadcastService {
             log.warn("Failed to serialize event: {}", e.getMessage());
             return null;
         }
+    }
+
+    // ==================== Conversation & Chat Streaming ====================
+
+    @EventListener
+    public void onConversationMessage(ConversationMessageEvent event) {
+        if (!isEnabled()) return;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", event.getEventType().name());
+        payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
+        payload.put("sessionId", event.getSessionId());
+        payload.put("messageId", event.getMessageId());
+        payload.put("role", event.getRole() != null ? event.getRole().name() : null);
+        payload.put("content", event.getContent());
+        payload.put("sequenceNumber", event.getSequenceNumber());
+        payload.put("timestamp", event.getEventTimestamp());
+        payload.put("message", event.getMessage());
+
+        // Include tool-related fields if present
+        if (event.getToolName() != null) {
+            payload.put("toolName", event.getToolName());
+            payload.put("toolInput", event.getToolInput());
+            payload.put("toolOutput", event.getToolOutput());
+        }
+
+        // Include feedback iteration if present
+        if (event.getFeedbackIteration() != null) {
+            payload.put("feedbackIteration", event.getFeedbackIteration());
+        }
+
+        // Include task instance if present
+        if (event.getTaskInstanceId() != null) {
+            payload.put("taskInstanceId", event.getTaskInstanceId());
+        }
+
+        // Broadcast to session-specific topic
+        String sessionTopic = TOPIC_CONVERSATION + "/" + event.getSessionId();
+        broadcast(sessionTopic, event.getOrchestratorInstanceId(), payload);
+
+        // Also broadcast to general conversation topic
+        broadcast(TOPIC_CONVERSATION, event.getOrchestratorInstanceId(), payload);
+    }
+
+    @EventListener
+    public void onLlmToken(LlmTokenEvent event) {
+        if (!isEnabled()) return;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", event.getEventType().name());
+        payload.put("orchestratorInstanceId", event.getOrchestratorInstanceId());
+        payload.put("sessionId", event.getSessionId());
+        payload.put("token", event.getToken());
+        payload.put("tokenIndex", event.getTokenIndex());
+        payload.put("isComplete", event.isComplete());
+        payload.put("providerId", event.getProviderId());
+        payload.put("timestamp", event.getEventTimestamp());
+
+        // Broadcast to session-specific token topic for high-frequency updates
+        String tokenTopic = TOPIC_LLM_TOKENS + "/" + event.getSessionId();
+        broadcast(tokenTopic, event.getOrchestratorInstanceId(), payload);
+    }
+
+    /**
+     * Broadcast a conversation message directly (without event).
+     */
+    public void broadcastConversationMessage(String orchestratorInstanceId, Long sessionId,
+                                              String role, String content, Integer sequenceNumber) {
+        if (!isEnabled()) return;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "CONVERSATION_MESSAGE");
+        payload.put("orchestratorInstanceId", orchestratorInstanceId);
+        payload.put("sessionId", sessionId);
+        payload.put("role", role);
+        payload.put("content", content);
+        payload.put("sequenceNumber", sequenceNumber);
+        payload.put("timestamp", System.currentTimeMillis());
+
+        String sessionTopic = TOPIC_CONVERSATION + "/" + sessionId;
+        broadcast(sessionTopic, orchestratorInstanceId, payload);
+    }
+
+    /**
+     * Broadcast an LLM token directly (for streaming responses).
+     */
+    public void broadcastLlmToken(String orchestratorInstanceId, Long sessionId,
+                                   String token, int tokenIndex, boolean isComplete) {
+        if (!isEnabled()) return;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", isComplete ? "STREAM_COMPLETE" : "TOKEN");
+        payload.put("orchestratorInstanceId", orchestratorInstanceId);
+        payload.put("sessionId", sessionId);
+        payload.put("token", token);
+        payload.put("tokenIndex", tokenIndex);
+        payload.put("isComplete", isComplete);
+        payload.put("timestamp", System.currentTimeMillis());
+
+        String tokenTopic = TOPIC_LLM_TOKENS + "/" + sessionId;
+        broadcast(tokenTopic, orchestratorInstanceId, payload);
+    }
+
+    /**
+     * Broadcast a streaming error.
+     */
+    public void broadcastStreamError(String orchestratorInstanceId, Long sessionId, String error) {
+        if (!isEnabled()) return;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("type", "STREAM_ERROR");
+        payload.put("orchestratorInstanceId", orchestratorInstanceId);
+        payload.put("sessionId", sessionId);
+        payload.put("error", error);
+        payload.put("timestamp", System.currentTimeMillis());
+
+        String tokenTopic = TOPIC_LLM_TOKENS + "/" + sessionId;
+        broadcast(tokenTopic, orchestratorInstanceId, payload);
     }
 }

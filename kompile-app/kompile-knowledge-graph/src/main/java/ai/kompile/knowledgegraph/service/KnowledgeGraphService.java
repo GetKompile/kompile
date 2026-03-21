@@ -162,6 +162,16 @@ public interface KnowledgeGraphService {
      */
     boolean edgeExists(String sourceNodeId, String targetNodeId);
 
+    /**
+     * Search edges by description or connected node titles
+     *
+     * @param query Search query
+     * @param edgeType Optional edge type filter
+     * @param limit Maximum results
+     * @return List of matching edges
+     */
+    List<GraphEdge> searchEdges(String query, EdgeType edgeType, int limit);
+
     // ═══════════════════════════════════════════════════════════════════════════
     // GRAPH TRAVERSAL
     // ═══════════════════════════════════════════════════════════════════════════

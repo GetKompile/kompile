@@ -819,22 +819,6 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             System.err.println("[BgeEncoder] Lock acquired, processing " + texts.size() + " texts");
             System.err.flush();
 
-            // For single text, tokenize and encode directly (we already have the lock)
-            if (texts.size() == 1) {
-                System.err.println("[BgeEncoder] Single text - encoding directly...");
-                System.err.flush();
-                long start = System.currentTimeMillis();
-                String text = texts.get(0);
-                String textToEncode = this.instruction + text;
-                SamediffBertTokenizerPreProcessor.BertEncoding encoding = this.tokenizerPreProcessor.encode(textToEncode);
-                float[] result = encodeFromTokenized(text, encoding);
-                System.err.println("[BgeEncoder] Single text encoded: " + (result != null ? result.length + " dims" : "null") + " in " + (System.currentTimeMillis() - start) + "ms");
-                System.err.flush();
-                List<float[]> results = new java.util.ArrayList<>(1);
-                results.add(result);
-                return results;
-            }
-
             // If batch inference is not supported, fall back to sequential
             if (!batchInferenceSupported) {
                 return encodeSequential(texts);
@@ -859,19 +843,22 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
      * <ol>
      *   <li>Tokenize all texts upfront</li>
      *   <li>Find max sequence length across all texts</li>
-     *   <li>Calculate optimal batch size for this sequence length</li>
+     *   <li>Sort by sequence length to minimize padding waste</li>
+     *   <li>Calculate optimal batch size for each sub-batch</li>
      *   <li>Split into sub-batches and process</li>
+     *   <li>Reorder results back to original order</li>
      * </ol>
      */
     private List<float[]> encodeBatchWithDynamicSizing(List<String> texts) {
         long totalStartTime = System.currentTimeMillis();
         int numTexts = texts.size();
 
-        // Step 1: Tokenize all texts and track sequence lengths
+        // Step 1: Tokenize all texts and track sequence lengths with original indices
         System.err.println("[DYNAMIC-BATCH] Step 1: Tokenizing " + numTexts + " texts to determine sequence lengths...");
         System.err.flush();
 
-        List<SamediffBertTokenizerPreProcessor.BertEncoding> allEncodings = new java.util.ArrayList<>(numTexts);
+        // Create indexed entries for sorting
+        List<IndexedEncoding> indexedEncodings = new java.util.ArrayList<>(numTexts);
         int maxSeqLength = 0;
         int totalTokens = 0;
         int minSeqLength = Integer.MAX_VALUE;
@@ -887,9 +874,10 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             String textToEncode = (instruction != null && !instruction.isEmpty())
                     ? instruction + text : text;
             SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(textToEncode);
-            allEncodings.add(enc);
 
             int seqLen = enc.inputIds.length;
+            indexedEncodings.add(new IndexedEncoding(i, text, enc, seqLen));
+
             totalTokens += seqLen;
             if (seqLen > maxSeqLength) maxSeqLength = seqLen;
             if (seqLen < minSeqLength) minSeqLength = seqLen;
@@ -901,27 +889,59 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                 "minSeq=" + minSeqLength + ", maxSeq=" + maxSeqLength + ", avgSeq=" + String.format("%.1f", avgSeqLength));
         System.err.flush();
 
-        // Step 2: Calculate optimal batch size based on max sequence length
-        int optimalBatch = calculateOptimalBatchSize(maxSeqLength);
-        int maxBatch = calculateMaxBatchSize(maxSeqLength);
-        long estimatedCost = estimateBatchCost(numTexts, maxSeqLength);
+        // Step 2: Sort by sequence length to minimize padding waste
+        // Sorting groups similar-length sequences together, reducing wasted padding in each sub-batch
+        long sortStart = System.currentTimeMillis();
+        indexedEncodings.sort((a, b) -> Integer.compare(a.seqLength, b.seqLength));
+        long sortTime = System.currentTimeMillis() - sortStart;
 
-        System.err.println("[DYNAMIC-BATCH] For maxSeq=" + maxSeqLength + ": optimalBatch=" + optimalBatch +
-                ", maxBatch=" + maxBatch + ", estimatedCost=" + estimatedCost);
+        // Calculate padding savings from sorting
+        int unsortedPaddingCost = numTexts * maxSeqLength; // Without sorting: all pad to global max
+        int sortedPaddingCost = 0; // Will calculate based on sub-batch maxes
+
+        System.err.println("[DYNAMIC-BATCH] Sorted by sequence length in " + sortTime + "ms");
         System.err.flush();
 
-        // Step 3: Determine if we need to sub-batch
-        if (numTexts <= optimalBatch) {
-            // Process all in one batch
-            System.err.println("[DYNAMIC-BATCH] Processing all " + numTexts + " texts in single batch");
+        // Step 3: Calculate initial optimal batch size based on average sequence length
+        // Using average gives better estimate than max for sorted batches
+        int avgBasedOptimal = calculateOptimalBatchSize((int) avgSeqLength);
+        int globalOptimalBatch = calculateOptimalBatchSize(maxSeqLength);
+
+        System.err.println("[DYNAMIC-BATCH] Batch sizing: avgSeq-based=" + avgBasedOptimal +
+                ", maxSeq-based=" + globalOptimalBatch + ", using adaptive per-bucket");
+        System.err.flush();
+
+        // Step 4: Determine if we need to sub-batch
+        if (numTexts <= avgBasedOptimal) {
+            // Process all in one batch - sorting still helps reduce padding
+            int actualMaxSeq = indexedEncodings.get(numTexts - 1).seqLength; // Last element after sort
+            System.err.println("[DYNAMIC-BATCH] Processing all " + numTexts + " texts in single batch (maxSeq=" + actualMaxSeq + ")");
             System.err.flush();
 
-            List<float[]> results = encodeSingleInferenceBatchFromEncodings(texts, allEncodings, maxSeqLength);
+            // Extract sorted texts and encodings
+            List<String> sortedTexts = new java.util.ArrayList<>(numTexts);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> sortedEncodings = new java.util.ArrayList<>(numTexts);
+            for (IndexedEncoding ie : indexedEncodings) {
+                sortedTexts.add(ie.text);
+                sortedEncodings.add(ie.encoding);
+            }
 
-            if (results == null && batchInferenceSupported) {
+            List<float[]> sortedResults = encodeSingleInferenceBatchFromEncodings(sortedTexts, sortedEncodings, actualMaxSeq);
+
+            if (sortedResults == null && batchInferenceSupported) {
                 LOG.warn("[{}] Batch inference failed - falling back to sequential", modelIdentifier);
                 batchInferenceSupported = false;
-                return encodeSequentialFromEncodings(texts, allEncodings);
+                sortedResults = encodeSequentialFromEncodings(sortedTexts, sortedEncodings);
+            }
+
+            if (sortedResults == null) {
+                return null;
+            }
+
+            // Reorder results back to original order
+            float[][] reorderedResults = new float[numTexts][];
+            for (int i = 0; i < numTexts; i++) {
+                reorderedResults[indexedEncodings.get(i).originalIndex] = sortedResults.get(i);
             }
 
             long totalTime = System.currentTimeMillis() - totalStartTime;
@@ -929,41 +949,72 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                     "(" + String.format("%.2f", (double)totalTime / numTexts) + " ms/text)");
             System.err.flush();
 
-            return results;
+            return java.util.Arrays.asList(reorderedResults);
         }
 
-        // Step 4: Sub-batch processing
-        int numSubBatches = (numTexts + optimalBatch - 1) / optimalBatch;
-        System.err.println("[DYNAMIC-BATCH] Splitting into " + numSubBatches + " sub-batches of ~" + optimalBatch + " texts");
-        System.err.flush();
-
-        List<float[]> allResults = new java.util.ArrayList<>(numTexts);
+        // Step 5: Adaptive sub-batch processing with length-aware grouping
+        // Process sorted sequences in groups, calculating optimal batch size for each group
+        float[][] reorderedResults = new float[numTexts][];
         long embeddingStartTime = System.currentTimeMillis();
+        int processedCount = 0;
+        int subBatchNum = 0;
 
-        for (int batchIdx = 0; batchIdx < numSubBatches; batchIdx++) {
+        while (processedCount < numTexts) {
             if (Thread.currentThread().isInterrupted()) {
-                LOG.info("[{}] Sub-batch processing interrupted at batch {}/{}", modelIdentifier, batchIdx + 1, numSubBatches);
+                LOG.info("[{}] Sub-batch processing interrupted at {}/{}", modelIdentifier, processedCount, numTexts);
                 return null;
             }
 
-            int startIdx = batchIdx * optimalBatch;
-            int endIdx = Math.min(startIdx + optimalBatch, numTexts);
-            int subBatchSize = endIdx - startIdx;
+            // Look at remaining items and find optimal batch size based on their sequence lengths
+            int remaining = numTexts - processedCount;
 
-            // Get sub-lists for this batch
-            List<String> subTexts = texts.subList(startIdx, endIdx);
-            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = allEncodings.subList(startIdx, endIdx);
+            // Sample the max sequence length in the next potential batch
+            // Start with a reasonable guess and adjust
+            int sampleEnd = Math.min(processedCount + 32, numTexts); // Sample first 32 or remaining
+            int sampleMaxSeq = indexedEncodings.get(sampleEnd - 1).seqLength;
+            int optimalForSample = calculateOptimalBatchSize(sampleMaxSeq);
 
-            // Find max sequence length for this sub-batch (may be shorter than global max)
-            int subBatchMaxSeq = 0;
-            for (SamediffBertTokenizerPreProcessor.BertEncoding enc : subEncodings) {
-                if (enc.inputIds.length > subBatchMaxSeq) {
-                    subBatchMaxSeq = enc.inputIds.length;
+            // Now determine actual sub-batch size
+            int subBatchSize = Math.min(optimalForSample, remaining);
+
+            // Recalculate with actual sub-batch max sequence length
+            int subBatchMaxSeq = indexedEncodings.get(processedCount + subBatchSize - 1).seqLength;
+            int refinedOptimal = calculateOptimalBatchSize(subBatchMaxSeq);
+
+            // If we can fit more items at this sequence length, expand the batch
+            while (subBatchSize < remaining && subBatchSize < refinedOptimal) {
+                int nextIdx = processedCount + subBatchSize;
+                int nextSeqLen = indexedEncodings.get(nextIdx).seqLength;
+                int newOptimal = calculateOptimalBatchSize(nextSeqLen);
+                if (subBatchSize + 1 <= newOptimal) {
+                    subBatchSize++;
+                    subBatchMaxSeq = nextSeqLen;
+                    refinedOptimal = newOptimal;
+                } else {
+                    break;
                 }
             }
 
-            System.err.println("[DYNAMIC-BATCH] Sub-batch " + (batchIdx + 1) + "/" + numSubBatches +
-                    ": " + subBatchSize + " texts, maxSeq=" + subBatchMaxSeq);
+            // Track padding cost for this sub-batch
+            sortedPaddingCost += subBatchSize * subBatchMaxSeq;
+
+            subBatchNum++;
+
+            // Extract sub-batch
+            List<String> subTexts = new java.util.ArrayList<>(subBatchSize);
+            List<SamediffBertTokenizerPreProcessor.BertEncoding> subEncodings = new java.util.ArrayList<>(subBatchSize);
+            List<Integer> subOriginalIndices = new java.util.ArrayList<>(subBatchSize);
+
+            for (int i = 0; i < subBatchSize; i++) {
+                IndexedEncoding ie = indexedEncodings.get(processedCount + i);
+                subTexts.add(ie.text);
+                subEncodings.add(ie.encoding);
+                subOriginalIndices.add(ie.originalIndex);
+            }
+
+            System.err.println("[DYNAMIC-BATCH] Sub-batch " + subBatchNum + ": " + subBatchSize +
+                    " texts, seqRange=[" + indexedEncodings.get(processedCount).seqLength +
+                    "-" + subBatchMaxSeq + "]");
             System.err.flush();
 
             long subBatchStart = System.currentTimeMillis();
@@ -974,33 +1025,60 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                 if (Thread.currentThread().isInterrupted()) {
                     return null;
                 }
-                // Fall back to sequential for this sub-batch
-                LOG.warn("[{}] Sub-batch {} failed - using sequential encoding", modelIdentifier, batchIdx + 1);
+                // FAIL-FAST: Don't silently fall back to sequential - fail immediately
+                if (SameDiffEncoder.isFailFastOnError()) {
+                    String errMsg = String.format("Sub-batch %d failed (batch inference returned null)", subBatchNum);
+                    LOG.error("[{}] {}", modelIdentifier, errMsg);
+                    throw new SameDiffEncoder.EncodingException(modelIdentifier, "sub-batch encoding", errMsg, null);
+                }
+                // Fall back to sequential for this sub-batch (only when fail-fast is disabled)
+                LOG.warn("[{}] Sub-batch {} failed - using sequential encoding", modelIdentifier, subBatchNum);
                 subResults = encodeSequentialFromEncodings(subTexts, subEncodings);
                 if (subResults == null) {
                     return null;
                 }
             }
 
-            allResults.addAll(subResults);
+            // Store results in original order positions
+            for (int i = 0; i < subBatchSize; i++) {
+                reorderedResults[subOriginalIndices.get(i)] = subResults.get(i);
+            }
 
             double throughput = subBatchTime > 0 ? (subBatchSize * 1000.0 / subBatchTime) : 0;
-            System.err.println("[DYNAMIC-BATCH] Sub-batch " + (batchIdx + 1) + " complete: " +
+            System.err.println("[DYNAMIC-BATCH] Sub-batch " + subBatchNum + " complete: " +
                     subBatchTime + "ms (" + String.format("%.1f", throughput) + " texts/sec)");
             System.err.flush();
+
+            processedCount += subBatchSize;
         }
 
         long totalTime = System.currentTimeMillis() - totalStartTime;
         long embeddingTime = System.currentTimeMillis() - embeddingStartTime;
         double overallThroughput = totalTime > 0 ? (numTexts * 1000.0 / totalTime) : 0;
 
-        System.err.println("[DYNAMIC-BATCH] All sub-batches complete: " + numTexts + " texts in " + totalTime + "ms " +
-                "(tokenize=" + tokenizeTime + "ms, embed=" + embeddingTime + "ms, " +
-                String.format("%.1f", overallThroughput) + " texts/sec)");
+        // Calculate padding savings percentage
+        double paddingSavings = unsortedPaddingCost > 0
+                ? (1.0 - (double) sortedPaddingCost / unsortedPaddingCost) * 100.0
+                : 0.0;
+
+        System.err.println("[DYNAMIC-BATCH] All " + subBatchNum + " sub-batches complete: " + numTexts +
+                " texts in " + totalTime + "ms (tokenize=" + tokenizeTime + "ms, sort=" + sortTime +
+                "ms, embed=" + embeddingTime + "ms, " + String.format("%.1f", overallThroughput) +
+                " texts/sec, padding saved: " + String.format("%.1f", paddingSavings) + "%)");
         System.err.flush();
 
-        return allResults;
+        return java.util.Arrays.asList(reorderedResults);
     }
+
+    /**
+     * Helper record to track original index during sorting.
+     */
+    private record IndexedEncoding(
+            int originalIndex,
+            String text,
+            SamediffBertTokenizerPreProcessor.BertEncoding encoding,
+            int seqLength
+    ) {}
 
     /**
      * Encode texts using pre-computed encodings (avoids re-tokenization).
@@ -1037,8 +1115,8 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         }
         long elapsed = System.currentTimeMillis() - startTime;
         if (texts.size() > 10) {
-            LOG.debug("[{}] Sequential encoding: {} texts in {}ms ({:.1f} ms/text)",
-                    modelIdentifier, texts.size(), elapsed, (double) elapsed / texts.size());
+            LOG.debug("[{}] Sequential encoding: {} texts in {}ms ({} ms/text)",
+                    modelIdentifier, texts.size(), elapsed, String.format("%.1f", (double) elapsed / texts.size()));
         }
         return results;
     }
@@ -1099,9 +1177,9 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         }
 
         long totalElapsed = System.currentTimeMillis() - totalStartTime;
-        LOG.info("[{}] All {} sub-batches complete: {} texts in {}ms ({:.1f} ms/text)",
+        LOG.info("[{}] All {} sub-batches complete: {} texts in {}ms ({} ms/text)",
                 modelIdentifier, numSubBatches, numTexts, totalElapsed,
-                (double) totalElapsed / numTexts);
+                String.format("%.1f", (double) totalElapsed / numTexts));
 
         return allResults;
     }
@@ -1115,13 +1193,6 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             return new java.util.ArrayList<>();
         }
 
-        if (texts.size() == 1) {
-            float[] result = encode(texts.get(0));
-            List<float[]> results = new java.util.ArrayList<>(1);
-            results.add(result);
-            return results;
-        }
-
         long startTime = System.currentTimeMillis();
         long stepStart;
 
@@ -1133,15 +1204,18 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         List<SamediffBertTokenizerPreProcessor.BertEncoding> encodings = new java.util.ArrayList<>(texts.size());
         int maxLen = 0;
         int totalTokens = 0;
+        int[] passageTokenCounts = new int[texts.size()];
 
-        for (String text : texts) {
+        for (int i = 0; i < texts.size(); i++) {
             if (Thread.currentThread().isInterrupted()) {
                 return null;
             }
+            String text = texts.get(i);
             String textToEncode = (instruction != null && !instruction.isEmpty())
                     ? instruction + text : text;
             SamediffBertTokenizerPreProcessor.BertEncoding enc = this.tokenizerPreProcessor.encode(textToEncode);
             encodings.add(enc);
+            passageTokenCounts[i] = enc.inputIds.length;
             totalTokens += enc.inputIds.length;
             if (enc.inputIds.length > maxLen) {
                 maxLen = enc.inputIds.length;
@@ -1259,8 +1333,18 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                     "tensorCreate=" + tensorCreateTime + "ms, forward=" + (elapsed - tokenizeTime - paddingTime - tensorCreateTime - extractTime) + "ms, extract=" + extractTime + "ms)");
             System.err.flush();
 
-            LOG.debug("[{}] Inference batch: {} texts in {}ms ({:.1f} ms/text)",
-                    modelIdentifier, batchSize, elapsed, (double) elapsed / batchSize);
+            LOG.debug("[{}] Inference batch: {} texts in {}ms ({} ms/text)",
+                    modelIdentifier, batchSize, elapsed, String.format("%.1f", (double) elapsed / batchSize));
+
+            // ========== COMPLETE: Update batch info with final timing and token counts ==========
+            // outputShape already defined above at line 1313
+            int actualEmbDim = outputShape.length > 1 ? (int) outputShape[outputShape.length - 1] : 768;
+            double tokensPerSecond = forwardTime > 0 ? (totalTokens * 1000.0 / forwardTime) : 0;
+            double chunksPerSecond = elapsed > 0 ? (batchSize * 1000.0 / elapsed) : 0;
+            updateBatchInfoWithTiming(batchSize, maxLen, actualEmbDim, totalTokens,
+                    new long[]{batchSize, maxLen}, outputShape,
+                    "COMPLETE", startTime, tokenizeTime, paddingTime, tensorCreateTime,
+                    forwardTime, extractTime, elapsed, tokensPerSecond, chunksPerSecond, passageTokenCounts);
 
             return results;
 
@@ -1269,6 +1353,10 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
             LOG.error("[{}] Error in inference batch: {}", modelIdentifier, e.getMessage(), e);
+            // FAIL-FAST: Throw exception instead of silently returning null
+            if (SameDiffEncoder.isFailFastOnError()) {
+                throw new SameDiffEncoder.EncodingException(modelIdentifier, "inference batch", e.getMessage(), e);
+            }
             return null;
         } finally {
             for (INDArray arr : placeholderMap.values()) {
@@ -1301,13 +1389,6 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             return new java.util.ArrayList<>();
         }
 
-        if (encodings.size() == 1) {
-            float[] result = encodeFromTokenized(texts.get(0), encodings.get(0));
-            List<float[]> results = new java.util.ArrayList<>(1);
-            results.add(result);
-            return results;
-        }
-
         long startTime = System.currentTimeMillis();
         long stepStart;
         int batchSize = encodings.size();
@@ -1317,16 +1398,19 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
         System.err.println("[INFERENCE-FROM-ENCODINGS] Creating padded tensors [" + batchSize + " x " + maxSeqLength + "]...");
         System.err.flush();
 
-        // Calculate total tokens for batch info
+        // Calculate total tokens and per-passage token counts for batch info
         int totalTokens = 0;
-        for (SamediffBertTokenizerPreProcessor.BertEncoding enc : encodings) {
+        int[] passageTokenCounts = new int[encodings.size()];
+        for (int i = 0; i < encodings.size(); i++) {
+            SamediffBertTokenizerPreProcessor.BertEncoding enc = encodings.get(i);
+            passageTokenCounts[i] = enc.inputIds.length;
             totalTokens += enc.inputIds.length;
         }
 
         // Update batch info - PADDING step
         int embDim = this.normalizeEmbeddings ? 768 : 768; // Default BERT dimension, will be updated after output
         updateBatchInfo(batchSize, maxSeqLength, embDim, totalTokens,
-                new long[]{batchSize, maxSeqLength}, new long[]{batchSize, embDim}, "PADDING");
+                new long[]{batchSize, maxSeqLength}, new long[]{batchSize, embDim}, "PADDING", passageTokenCounts);
 
         long[][] batchInputIds = new long[batchSize][maxSeqLength];
         long[][] batchAttentionMask = new long[batchSize][maxSeqLength];
@@ -1383,7 +1467,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
 
             // Update batch info - FORWARD_PASS step (this is where the work happens)
             updateBatchInfo(batchSize, maxSeqLength, embDim, totalTokens,
-                    new long[]{batchSize, maxSeqLength}, new long[]{batchSize, embDim}, "FORWARD_PASS");
+                    new long[]{batchSize, maxSeqLength}, new long[]{batchSize, embDim}, "FORWARD_PASS", passageTokenCounts);
 
             outputMap = this.sameDiffModel.output(placeholderMap, outputName);
 
@@ -1407,7 +1491,7 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
             long[] actualOutputShape = batchOutput.shape();
             int actualEmbDim = actualOutputShape.length > 1 ? (int) actualOutputShape[actualOutputShape.length - 1] : embDim;
             updateBatchInfo(batchSize, maxSeqLength, actualEmbDim, totalTokens,
-                    new long[]{batchSize, maxSeqLength}, actualOutputShape, "EXTRACTING");
+                    new long[]{batchSize, maxSeqLength}, actualOutputShape, "EXTRACTING", passageTokenCounts);
 
             // ========== STEP 4: EXTRACT EMBEDDINGS ==========
             stepStart = System.currentTimeMillis();
@@ -1426,6 +1510,15 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                     "(pad=" + paddingTime + "ms, tensor=" + tensorCreateTime + "ms, forward=" + forwardTime + "ms, extract=" + extractTime + "ms)");
             System.err.flush();
 
+            // ========== COMPLETE: Update batch info with final timing ==========
+            // Keep this info available for the heartbeat thread - don't clear it!
+            double tokensPerSecond = forwardTime > 0 ? (totalTokens * 1000.0 / forwardTime) : 0;
+            double chunksPerSecond = elapsed > 0 ? (batchSize * 1000.0 / elapsed) : 0;
+            updateBatchInfoWithTiming(batchSize, maxSeqLength, actualEmbDim, totalTokens,
+                    new long[]{batchSize, maxSeqLength}, actualOutputShape,
+                    "COMPLETE", startTime, 0, paddingTime, tensorCreateTime,
+                    forwardTime, extractTime, elapsed, tokensPerSecond, chunksPerSecond, passageTokenCounts);
+
             return results;
 
         } catch (Exception e) {
@@ -1433,10 +1526,14 @@ public class BgeSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
             LOG.error("[{}] Error in inference batch: {}", modelIdentifier, e.getMessage(), e);
+            // FAIL-FAST: Throw exception instead of silently returning null
+            if (SameDiffEncoder.isFailFastOnError()) {
+                throw new SameDiffEncoder.EncodingException(modelIdentifier, "inference batch (from encodings)", e.getMessage(), e);
+            }
             return null;
         } finally {
-            // Clear batch info now that we're done
-            clearBatchInfo();
+            // DON'T clear batch info - keep it available for UI polling
+            // The next batch will overwrite it when it starts
 
             for (INDArray arr : placeholderMap.values()) {
                 if (arr != null) try { arr.close(); } catch (Exception ignored) {}

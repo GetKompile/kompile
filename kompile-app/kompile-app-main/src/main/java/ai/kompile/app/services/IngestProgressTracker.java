@@ -16,7 +16,11 @@
 
 package ai.kompile.app.services;
 
+import ai.kompile.app.ingest.domain.JobLogEntry.LogLevel;
+import ai.kompile.app.ingest.domain.JobLogEntry.LogSource;
+import ai.kompile.app.ingest.service.JobLogService;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
+import ai.kompile.app.web.dto.IngestProgressUpdate.FailureReason;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestLogEntry;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestPhase;
 import ai.kompile.app.web.dto.IngestProgressUpdate.IngestStats;
@@ -48,6 +52,7 @@ public class IngestProgressTracker implements DisposableBean {
     private static final Logger logger = LoggerFactory.getLogger(IngestProgressTracker.class);
 
     private final SimpMessagingTemplate messagingTemplate;
+    private final JobLogService jobLogService;
     private final Map<String, IngestProgressUpdate> activeTasks = new ConcurrentHashMap<>();
     private final Map<String, Long> taskStartTimes = new ConcurrentHashMap<>();
     private final Map<String, Long> taskFactSheetIds = new ConcurrentHashMap<>();
@@ -57,8 +62,11 @@ public class IngestProgressTracker implements DisposableBean {
     // Keep completed tasks for 5 minutes before cleanup
     private static final long COMPLETED_TASK_RETENTION_MS = 5 * 60 * 1000;
 
-    public IngestProgressTracker(@org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate) {
+    public IngestProgressTracker(
+            @org.springframework.beans.factory.annotation.Autowired(required = false) SimpMessagingTemplate messagingTemplate,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) JobLogService jobLogService) {
         this.messagingTemplate = messagingTemplate; // May be null if WebSocket not configured
+        this.jobLogService = jobLogService; // May be null if job logging not configured
 
         // Schedule periodic cleanup of old completed tasks
         cleanupScheduler.scheduleAtFixedRate(this::cleanupOldTasks, 1, 1, TimeUnit.MINUTES);
@@ -102,21 +110,40 @@ public class IngestProgressTracker implements DisposableBean {
 
     /**
      * Starts tracking a new ingest task.
+     *
+     * @return true if this was the first call for this taskId, false if already started
      */
-    public void startTask(String taskId, String fileName) {
-        startTask(taskId, fileName, null);
+    public boolean startTask(String taskId, String fileName) {
+        return startTask(taskId, fileName, null);
     }
 
     /**
      * Starts tracking a new ingest task associated with a specific fact sheet.
+     * This method is idempotent - calling it multiple times for the same taskId
+     * will only send the QUEUED event once (on the first call).
+     *
+     * @return true if this was the first call for this taskId, false if already started
      */
-    public void startTask(String taskId, String fileName, Long factSheetId) {
-        taskStartTimes.put(taskId, System.currentTimeMillis());
+    public boolean startTask(String taskId, String fileName, Long factSheetId) {
+        // Use putIfAbsent to make this idempotent - only the first call will succeed
+        Long previousStartTime = taskStartTimes.putIfAbsent(taskId, System.currentTimeMillis());
+
+        if (previousStartTime != null) {
+            // Task was already started - update factSheetId if provided but don't send duplicate QUEUED event
+            if (factSheetId != null && !taskFactSheetIds.containsKey(taskId)) {
+                taskFactSheetIds.put(taskId, factSheetId);
+            }
+            logger.debug("[Task {}] Already started, skipping duplicate startTask call", taskId);
+            return false;
+        }
+
+        // First call for this taskId - send QUEUED event
         if (factSheetId != null) {
             taskFactSheetIds.put(taskId, factSheetId);
         }
         sendProgress(IngestProgressUpdate.queued(taskId, fileName, factSheetId));
         logger.info("[Task {}] Started tracking: {} (factSheetId={})", taskId, fileName, factSheetId);
+        return true;
     }
 
     /**
@@ -166,7 +193,8 @@ public class IngestProgressTracker implements DisposableBean {
                 updateWithFactSheet = new IngestProgressUpdate(
                         update.taskId(), update.fileName(), update.phase(), update.status(),
                         update.progressPercent(), update.currentStep(), update.message(),
-                        update.stats(), update.errorMessage(), update.timestamp(), factSheetId);
+                        update.stats(), update.errorMessage(), update.timestamp(), factSheetId,
+                        update.failureReason(), update.restartInfo());
             }
         }
 
@@ -213,12 +241,38 @@ public class IngestProgressTracker implements DisposableBean {
      * Marks a task as failed.
      */
     public void failTask(String taskId, String fileName, IngestPhase failedPhase, String errorMessage) {
+        failTask(taskId, fileName, failedPhase, errorMessage, FailureReason.UNKNOWN);
+    }
+
+    /**
+     * Marks a task as failed with a specific failure reason.
+     */
+    public void failTask(String taskId, String fileName, IngestPhase failedPhase, String errorMessage,
+                         FailureReason failureReason) {
         long elapsedMs = getElapsedTime(taskId);
         Long factSheetId = taskFactSheetIds.get(taskId);
         IngestStats stats = IngestStats.builder().totalProcessingTimeMs(elapsedMs).build();
-        IngestProgressUpdate update = IngestProgressUpdate.failed(taskId, fileName, failedPhase, errorMessage, stats, factSheetId);
+        IngestProgressUpdate update = IngestProgressUpdate.failed(taskId, fileName, failedPhase, errorMessage,
+                stats, factSheetId, failureReason);
         sendProgress(update);
-        logger.error("[Task {}] Failed at {}: {} - {} (factSheetId={})", taskId, failedPhase, fileName, errorMessage, factSheetId);
+        logger.error("[Task {}] Failed at {}: {} - {} (reason={}, factSheetId={})",
+                taskId, failedPhase, fileName, errorMessage, failureReason, factSheetId);
+        scheduleTaskCleanup(taskId);
+    }
+
+    /**
+     * Marks a task as failed due to out of memory error in subprocess.
+     * This provides a clear OOM indicator to the UI.
+     */
+    public void failTaskOutOfMemory(String taskId, String fileName, IngestPhase failedPhase, String errorMessage) {
+        long elapsedMs = getElapsedTime(taskId);
+        Long factSheetId = taskFactSheetIds.get(taskId);
+        IngestStats stats = IngestStats.builder().totalProcessingTimeMs(elapsedMs).build();
+        IngestProgressUpdate update = IngestProgressUpdate.outOfMemory(taskId, fileName, failedPhase,
+                errorMessage, stats, factSheetId);
+        sendProgress(update);
+        logger.error("[Task {}] OUT OF MEMORY at {}: {} - {} (factSheetId={})",
+                taskId, failedPhase, fileName, errorMessage, factSheetId);
         scheduleTaskCleanup(taskId);
     }
 
@@ -234,8 +288,100 @@ public class IngestProgressTracker implements DisposableBean {
     }
 
     /**
+     * Notifies the UI that a restart is scheduled for a task after OOM.
+     * This keeps the task in IN_PROGRESS state but provides restart info.
+     */
+    public void notifyRestartScheduled(String taskId, String fileName, IngestPhase currentPhase,
+                                        int attemptNumber, int maxAttempts, long nextRestartTimeMs,
+                                        String heapSize, boolean heapIncreased,
+                                        Integer ompThreads, Integer blasThreads, String memoryAnalysisReason) {
+        Long factSheetId = taskFactSheetIds.get(taskId);
+        long elapsedMs = getElapsedTime(taskId);
+
+        IngestProgressUpdate.RestartInfo restartInfo = IngestProgressUpdate.RestartInfo.builder()
+                .attemptNumber(attemptNumber)
+                .maxAttempts(maxAttempts)
+                .restartScheduled(true)
+                .nextRestartTime(nextRestartTimeMs)
+                .currentHeapSize(heapSize)
+                .heapIncreased(heapIncreased)
+                .ompThreads(ompThreads)
+                .blasThreads(blasThreads)
+                .memoryAnalysisReason(memoryAnalysisReason)
+                .build();
+
+        IngestStats stats = IngestStats.builder()
+                .totalProcessingTimeMs(elapsedMs)
+                .memoryStatus("RESTARTING")
+                .pipelineStatus("RESTARTING")
+                .build();
+
+        // Create update with restart info - status stays IN_PROGRESS
+        IngestProgressUpdate update = new IngestProgressUpdate(
+                taskId,
+                fileName,
+                currentPhase,
+                IngestProgressUpdate.IngestStatus.IN_PROGRESS,
+                0, // Reset progress for restart
+                String.format("Restart %d/%d scheduled", attemptNumber, maxAttempts),
+                String.format("OOM detected - restarting with %s heap in %.1fs",
+                        heapSize, (nextRestartTimeMs - System.currentTimeMillis()) / 1000.0),
+                stats,
+                null, // No error - we're recovering
+                java.time.Instant.now(),
+                factSheetId,
+                null, // No failure reason - we're recovering
+                restartInfo
+        );
+
+        sendProgress(update);
+        logger.info("[Task {}] RESTART SCHEDULED: attempt {}/{}, heap={}, nextRestart={}ms (factSheetId={})",
+                taskId, attemptNumber, maxAttempts, heapSize, nextRestartTimeMs, factSheetId);
+    }
+
+    /**
+     * Notifies the UI that a restart is now executing for a task.
+     */
+    public void notifyRestartExecuting(String taskId, String fileName, int attemptNumber, int maxAttempts,
+                                        String heapSize) {
+        Long factSheetId = taskFactSheetIds.get(taskId);
+
+        IngestProgressUpdate.RestartInfo restartInfo = IngestProgressUpdate.RestartInfo.builder()
+                .attemptNumber(attemptNumber)
+                .maxAttempts(maxAttempts)
+                .restartScheduled(false) // No longer scheduled, executing now
+                .currentHeapSize(heapSize)
+                .build();
+
+        IngestStats stats = IngestStats.builder()
+                .memoryStatus("RESTARTING")
+                .pipelineStatus("INITIALIZING")
+                .build();
+
+        IngestProgressUpdate update = new IngestProgressUpdate(
+                taskId,
+                fileName,
+                IngestPhase.LOADING,
+                IngestProgressUpdate.IngestStatus.IN_PROGRESS,
+                5, // Small progress to show we're starting
+                String.format("Restart attempt %d/%d", attemptNumber, maxAttempts),
+                String.format("Launching subprocess with %s heap...", heapSize),
+                stats,
+                null,
+                java.time.Instant.now(),
+                factSheetId,
+                null,
+                restartInfo
+        );
+
+        sendProgress(update);
+        logger.info("[Task {}] RESTART EXECUTING: attempt {}/{}, heap={} (factSheetId={})",
+                taskId, attemptNumber, maxAttempts, heapSize, factSheetId);
+    }
+
+    /**
      * Sends a log entry from the subprocess to WebSocket clients.
-     * Logs are sent to /topic/ingest/{taskId}/logs
+     * Logs are sent to /topic/ingest/{taskId}/logs and persisted to the database.
      *
      * @param taskId Task ID
      * @param source Source of the log (STDOUT, STDERR, SYSTEM)
@@ -254,10 +400,16 @@ public class IngestProgressTracker implements DisposableBean {
         IngestLogEntry logEntry;
         if ("STDOUT".equals(source)) {
             logEntry = IngestLogEntry.stdout(taskId, message, seq);
+            // Persist to database
+            persistLogEntry(taskId, LogLevel.INFO, LogSource.STDOUT, message);
         } else if ("STDERR".equals(source)) {
             logEntry = IngestLogEntry.stderr(taskId, message, seq);
+            // Persist to database
+            persistLogEntry(taskId, LogLevel.ERROR, LogSource.STDERR, message);
         } else {
             logEntry = IngestLogEntry.system(taskId, "INFO", message, seq);
+            // Persist to database
+            persistLogEntry(taskId, LogLevel.INFO, LogSource.SYSTEM, message);
         }
 
         sendLogEntry(logEntry);
@@ -278,6 +430,51 @@ public class IngestProgressTracker implements DisposableBean {
         IngestLogEntry logEntry = new IngestLogEntry(taskId, level, source, message, null,
                 java.time.Instant.now(), seq);
         sendLogEntry(logEntry);
+
+        // Persist to database
+        LogLevel logLevel = mapStringToLogLevel(level);
+        LogSource logSource = mapStringToLogSource(source);
+        persistLogEntry(taskId, logLevel, logSource, message);
+    }
+
+    /**
+     * Persists a log entry to the database via JobLogService.
+     */
+    private void persistLogEntry(String taskId, LogLevel level, LogSource source, String message) {
+        if (jobLogService != null && jobLogService.isEnabled()) {
+            try {
+                jobLogService.logEntry(taskId, level, source, message, null, Thread.currentThread().getName());
+            } catch (Exception e) {
+                logger.warn("[Task {}] Failed to persist log to database: {}", taskId, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Maps string log level to LogLevel enum.
+     */
+    private LogLevel mapStringToLogLevel(String level) {
+        if (level == null) return LogLevel.INFO;
+        return switch (level.toUpperCase()) {
+            case "TRACE" -> LogLevel.TRACE;
+            case "DEBUG" -> LogLevel.DEBUG;
+            case "WARN", "WARNING" -> LogLevel.WARN;
+            case "ERROR" -> LogLevel.ERROR;
+            default -> LogLevel.INFO;
+        };
+    }
+
+    /**
+     * Maps string source to LogSource enum.
+     */
+    private LogSource mapStringToLogSource(String source) {
+        if (source == null) return LogSource.APPLICATION;
+        return switch (source.toUpperCase()) {
+            case "STDOUT" -> LogSource.STDOUT;
+            case "STDERR" -> LogSource.STDERR;
+            case "SYSTEM" -> LogSource.SYSTEM;
+            default -> LogSource.APPLICATION;
+        };
     }
 
     /**

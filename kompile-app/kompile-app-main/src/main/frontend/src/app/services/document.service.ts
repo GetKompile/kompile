@@ -280,14 +280,6 @@ export class DocumentService extends BaseService {
     return throwError(() => new Error(errorMessage));
   }
 
-  /**
-   * Get the warmup status of the system (embedding model, chunker).
-   */
-  getWarmupStatus(): Observable<any> {
-    return this.http.get<any>(`${this.backendUrl}/system/warmup`)
-      .pipe(catchError(this.handleError));
-  }
-
   // ═══════════════════════════════════════════════════════════════════════════════
   // FACT SHEET INTEGRATION METHODS
   // ═══════════════════════════════════════════════════════════════════════════════

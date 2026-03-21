@@ -171,6 +171,145 @@
   padding-top: 8px;
 }
 
+/* Index Status Section */
+.index-status-section {
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 12px;
+}
+
+.index-status-section.vector-section {
+  background: linear-gradient(135deg, #f5f5f5 0%, #fafafa 100%);
+  border-color: #1976d2;
+  border-left: 4px solid #1976d2;
+}
+
+.index-status-section.model-section {
+  background: linear-gradient(135deg, #f3e5f5 0%, #fafafa 100%);
+  border-color: #7b1fa2;
+  border-left: 4px solid #7b1fa2;
+}
+
+.model-name {
+  font-weight: 500;
+  color: #424242;
+}
+
+.model-name.active {
+  color: #7b1fa2;
+}
+
+.model-dim-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #7b1fa2;
+  padding: 2px 8px;
+  border-radius: 12px;
+  margin-left: 8px;
+}
+
+.inline-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.status-icon-connected {
+  color: #4caf50;
+}
+
+.status-icon-warning {
+  color: #ff9800;
+}
+
+.inline-spinner {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+}
+
+/* Model Loading Status */
+.model-loading-row {
+  background: linear-gradient(90deg, rgba(33, 150, 243, 0.05) 0%, transparent 100%);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 4px 0;
+}
+
+.model-loading-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.loading-phase-badge {
+  background: #2196f3;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.loading-message {
+  color: #1976d2;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.model-active-icon {
+  color: #7b1fa2;
+}
+
+.text-success {
+  color: #4caf50;
+}
+
+.text-warning {
+  color: #ff9800;
+}
+
+.text-error {
+  color: #f44336;
+}
+
+.text-muted {
+  color: #9e9e9e;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.section-title mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #1976d2;
+}
+
+.count-badge {
+  font-weight: 600;
+  color: #1976d2;
+  background: #e3f2fd;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /* TAB STYLES */
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -351,6 +490,19 @@
   width: 48px;
   height: 48px;
   color: #ccc;
+}
+
+/* Empty state action button */
+.empty-state-action-btn {
+  margin-top: 16px;
+}
+
+.empty-state-action-btn mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  color: inherit;
 }
 
 /* Table Container */
@@ -1698,5 +1850,418 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* MODE TOGGLE STYLES (Browse/Search)                                             */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+.mode-toggle-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecef 100%);
+  border: 1px solid #e0e0e0;
+}
+
+.mode-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* Populate from Keyword Index button */
+.populate-vector-btn {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.populate-vector-btn mat-icon {
+  margin-right: 4px;
+}
+
+.view-mode-toggle {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.view-mode-toggle ::ng-deep .mat-button-toggle {
+  background: #fff;
+  border: none;
+}
+
+.view-mode-toggle ::ng-deep .mat-button-toggle-checked {
+  background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+  color: white;
+}
+
+.view-mode-toggle ::ng-deep .mat-button-toggle-checked .mat-button-toggle-label-content {
+  color: white;
+}
+
+.view-mode-toggle ::ng-deep .mat-button-toggle-checked mat-icon {
+  color: white;
+}
+
+.view-mode-toggle ::ng-deep .mat-button-toggle-label-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.view-mode-toggle ::ng-deep mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.mode-description {
+  margin: 0;
+  font-size: 13px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.mode-description span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inline-icon {
+  font-size: 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  color: #1976d2;
+  vertical-align: middle;
+}
+
+/* Responsive adjustments for mode toggle */
+@media (max-width: 768px) {
+  .mode-toggle-section {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .mode-toggle-row {
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .populate-vector-btn {
+    margin-left: 0;
+    margin-top: 8px;
+    width: 100%;
+  }
+
+  .mode-description {
+    font-size: 12px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+/* DEDUPLICATION DIALOG STYLES                                                     */
+/* ═══════════════════════════════════════════════════════════════════════════════ */
+
+.deduplicate-btn {
+  margin-left: 8px;
+}
+
+.deduplicate-btn mat-icon {
+  margin-right: 4px;
+}
+
+.dedup-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.dedup-dialog-content {
+  background: white;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.dedup-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid #e0e0e0;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecef 100%);
+  border-radius: 12px 12px 0 0;
+}
+
+.dedup-dialog-header h2 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.dedup-dialog-header h2 mat-icon {
+  color: #1976d2;
+}
+
+.close-dialog-btn {
+  color: #666;
+}
+
+.dedup-dialog-body {
+  padding: 24px;
+}
+
+.dedup-description {
+  margin: 0 0 24px 0;
+  color: #666;
+  line-height: 1.5;
+}
+
+.dedup-form-section {
+  margin-bottom: 24px;
+}
+
+.section-label {
+  display: block;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.strategy-toggle-group,
+.keep-policy-toggle-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.strategy-toggle-group ::ng-deep .mat-button-toggle,
+.keep-policy-toggle-group ::ng-deep .mat-button-toggle {
+  flex: 1;
+  min-width: 140px;
+}
+
+.strategy-toggle-group ::ng-deep .mat-button-toggle-label-content,
+.keep-policy-toggle-group ::ng-deep .mat-button-toggle-label-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.strategy-toggle-group ::ng-deep .mat-button-toggle-checked,
+.keep-policy-toggle-group ::ng-deep .mat-button-toggle-checked {
+  background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%);
+  color: white;
+}
+
+.strategy-toggle-group ::ng-deep .mat-button-toggle-checked .mat-button-toggle-label-content,
+.keep-policy-toggle-group ::ng-deep .mat-button-toggle-checked .mat-button-toggle-label-content {
+  color: white;
+}
+
+.strategy-toggle-group ::ng-deep .mat-button-toggle-checked mat-icon,
+.keep-policy-toggle-group ::ng-deep .mat-button-toggle-checked mat-icon {
+  color: white;
+}
+
+.strategy-description {
+  margin: 12px 0 0 0;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #666;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.toggle-label mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #1976d2;
+}
+
+/* Analysis Results */
+.analysis-results {
+  margin-top: 24px;
+  padding: 16px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.analysis-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.analysis-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.analysis-stats {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #333;
+}
+
+.stat-value.highlight {
+  color: #1976d2;
+}
+
+.stat-value.warning {
+  color: #f57c00;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.analysis-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: #fff3e0;
+  border-radius: 6px;
+  color: #e65100;
+  font-size: 14px;
+}
+
+.analysis-message.success {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.analysis-message mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+/* Loading State */
+.dedup-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px;
+  color: #666;
+}
+
+/* Dialog Actions */
+.dedup-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid #e0e0e0;
+  background: #fafafa;
+  border-radius: 0 0 12px 12px;
+}
+
+.dedup-dialog-actions button mat-icon {
+  margin-right: 4px;
+}
+
+/* Responsive adjustments for dedup dialog */
+@media (max-width: 600px) {
+  .dedup-dialog-overlay {
+    padding: 16px;
+  }
+
+  .dedup-dialog-content {
+    max-height: 85vh;
+  }
+
+  .dedup-dialog-header {
+    padding: 12px 16px;
+  }
+
+  .dedup-dialog-body {
+    padding: 16px;
+  }
+
+  .strategy-toggle-group,
+  .keep-policy-toggle-group {
+    flex-direction: column;
+  }
+
+  .strategy-toggle-group ::ng-deep .mat-button-toggle,
+  .keep-policy-toggle-group ::ng-deep .mat-button-toggle {
+    width: 100%;
+  }
+
+  .analysis-stats {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .dedup-dialog-actions {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dedup-dialog-actions button {
+    width: 100%;
   }
 }

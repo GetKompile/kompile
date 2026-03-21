@@ -25,13 +25,10 @@ import ai.kompile.orchestrator.service.registry.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
-import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import jakarta.annotation.PostConstruct;
 import java.util.Arrays;
@@ -40,12 +37,12 @@ import java.util.stream.Collectors;
 
 /**
  * Auto-configuration for the orchestrator.
+ *
+ * Note: JPA repositories and entities are configured in PrimaryDataSourceConfig
+ * to avoid duplicate bean registration conflicts.
  */
 @AutoConfiguration
-@ConditionalOnProperty(prefix = "kompile.orchestrator", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(OrchestratorProperties.class)
-@EnableJpaRepositories(basePackages = "ai.kompile.orchestrator.repository")
-@EntityScan(basePackages = "ai.kompile.orchestrator.model")
 @ComponentScan(basePackages = "ai.kompile.orchestrator")
 public class OrchestratorAutoConfiguration {
 

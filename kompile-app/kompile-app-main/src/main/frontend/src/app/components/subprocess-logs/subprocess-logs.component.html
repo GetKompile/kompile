@@ -60,9 +60,9 @@
       <input
         type="text"
         class="search-input"
+        #searchInput
         placeholder="Filter logs..."
-        [(ngModel)]="searchTerm"
-        (input)="applyFilter()">
+        [value]="searchTerm">
     </div>
 
     <div class="toolbar-right">

@@ -16,7 +16,7 @@
 
 package ai.kompile.staging.cli;
 
-import ai.kompile.staging.registry.ModelMetadata;
+import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.staging.staging.StagingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;

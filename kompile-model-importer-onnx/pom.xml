@@ -60,11 +60,7 @@
             <artifactId>nd4j-api</artifactId>
             <version>${nd4j.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.eclipse.deeplearning4j</groupId>
-            <artifactId>${nd4j.backend}</artifactId>
-            <version>${nd4j.version}</version>
-        </dependency>
+
 
         <!-- SameDiff ONNX Import -->
         <dependency>

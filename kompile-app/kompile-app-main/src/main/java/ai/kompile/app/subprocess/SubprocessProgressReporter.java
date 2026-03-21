@@ -238,15 +238,19 @@ public class SubprocessProgressReporter implements AutoCloseable {
      * @param chunksCreated Number of chunks created
      * @param chunksEmbedded Number of chunks embedded
      * @param documentsIndexed Number of documents indexed
+     * @param tokensProcessed Number of tokens processed in this run
+     * @param totalTokensInIndex Total tokens in the index after completion
      * @param indexPath Path to the index
      * @param phaseDurations Duration of each phase in milliseconds
      */
     public void reportCompleted(int documentsLoaded, int chunksCreated,
                                 int chunksEmbedded, int documentsIndexed,
+                                long tokensProcessed, long totalTokensInIndex,
                                 String indexPath, Map<String, Long> phaseDurations) {
         long totalDuration = System.currentTimeMillis() - startTimeMs;
         send(SubprocessMessage.completed(taskId, documentsLoaded, chunksCreated,
                                         chunksEmbedded, documentsIndexed,
+                                        tokensProcessed, totalTokensInIndex,
                                         totalDuration, indexPath, phaseDurations));
     }
 

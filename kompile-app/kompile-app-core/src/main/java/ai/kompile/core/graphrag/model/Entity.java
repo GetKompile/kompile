@@ -36,6 +36,12 @@ public class Entity {
     private String title;
 
     /**
+     * The entity type/label (e.g., "PERSON", "ORGANIZATION", "LOCATION", "CONCEPT").
+     * This is used for categorization and graph visualization.
+     */
+    private String type;
+
+    /**
      * A short, generated description or summary of the entity.
      */
     private String description;
@@ -49,4 +55,9 @@ public class Entity {
      * Additional metadata associated with the entity.
      */
     private Map<String, Object> metadata;
+
+    /**
+     * Confidence score for the entity extraction (0.0 to 1.0).
+     */
+    private Double confidence;
 }

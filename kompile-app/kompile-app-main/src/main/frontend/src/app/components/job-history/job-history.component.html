@@ -3,7 +3,7 @@
   <div class="header">
     <h2>
       <span class="material-icons">history</span>
-      Indexing Job History
+      Job History
     </h2>
     <div class="header-actions">
       <button class="btn btn-icon" [class.active]="autoRefresh" (click)="toggleAutoRefresh()" title="Toggle auto-refresh">
@@ -36,13 +36,16 @@
     <button *ngIf="selectedJob" class="tab active">
       <span class="material-icons">description</span> Job Details
     </button>
+    <button *ngIf="selectedSubprocessEvent" class="tab active">
+      <span class="material-icons">autorenew</span> Subprocess Event Details
+    </button>
   </div>
 
   <!-- Stats Summary (always visible in list view) -->
   <div class="stats-summary" *ngIf="viewMode === 'list' && statistics">
     <div class="stat-card">
       <span class="stat-value">{{ statistics.totalJobs }}</span>
-      <span class="stat-label">Total</span>
+      <span class="stat-label">Total Jobs</span>
     </div>
     <div class="stat-card success">
       <span class="stat-value">{{ statistics.completedJobs }}</span>
@@ -56,6 +59,11 @@
       <span class="stat-value">{{ statistics.activeJobs }}</span>
       <span class="stat-label">Active</span>
     </div>
+    <!-- Subprocess stats -->
+    <div class="stat-card subprocess" *ngIf="subprocessStatistics?.available && (jobTypeFilter === 'ALL' || jobTypeFilter === 'subprocess')">
+      <span class="stat-value">{{ getSubprocessRestartCount() }}</span>
+      <span class="stat-label">Subprocess Restarts</span>
+    </div>
   </div>
 
   <!-- List View -->
@@ -64,30 +72,35 @@
     <div class="filters">
       <div class="filter-group">
         <label>Status:</label>
-        <select [(ngModel)]="statusFilter" (change)="onStatusFilterChange()">
+        <select [(ngModel)]="statusFilter" [ngModelOptions]="{standalone: true}" (change)="onStatusFilterChange()">
           <option *ngFor="let status of statusOptions" [value]="status">{{ status }}</option>
         </select>
       </div>
       <div class="filter-group">
         <label>Type:</label>
-        <select [(ngModel)]="jobTypeFilter" (change)="onJobTypeFilterChange()">
+        <select [(ngModel)]="jobTypeFilter" [ngModelOptions]="{standalone: true}" (change)="onJobTypeFilterChange()">
           <option value="ALL">All Jobs</option>
           <option value="ingest">Document Ingest</option>
           <option value="vector-population">Vector Population</option>
+          <option value="embedding">Embedding Model</option>
+          <option value="subprocess">Subprocess Events</option>
         </select>
       </div>
       <div class="filter-group">
         <label>Last:</label>
-        <select [(ngModel)]="lookbackHours" (change)="onLookbackChange()">
+        <select [(ngModel)]="lookbackHours" [ngModelOptions]="{standalone: true}" (change)="onLookbackChange()">
           <option [value]="1">1 hour</option>
           <option [value]="6">6 hours</option>
           <option [value]="24">24 hours</option>
           <option [value]="48">2 days</option>
           <option [value]="168">1 week</option>
+          <option [value]="720">30 days</option>
+          <option [value]="8760">1 year</option>
+          <option [value]="87600">All time</option>
         </select>
       </div>
       <div class="filter-group search">
-        <input type="text" placeholder="Search by file, task ID, model..." [(ngModel)]="searchTerm" (input)="onSearchChange()">
+        <input type="text" placeholder="Search by file, task ID, model..." [(ngModel)]="searchTerm" [ngModelOptions]="{standalone: true}" (input)="onSearchChange()">
         <span class="material-icons search-icon">search</span>
       </div>
     </div>
@@ -98,7 +111,7 @@
       Loading jobs...
     </div>
 
-    <!-- Jobs Table -->
+    <!-- Jobs Table (shows all jobs including subprocess events when ALL is selected) -->
     <div class="jobs-table" *ngIf="!loading">
       <table>
         <thead>
@@ -115,7 +128,10 @@
           </tr>
         </thead>
         <tbody>
-          <tr *ngFor="let job of paginatedJobs; trackBy: trackByTaskId" (click)="showDetail(job)" class="clickable">
+          <tr *ngFor="let job of paginatedJobs; trackBy: trackByTaskId"
+              (click)="showDetail(job)"
+              class="clickable"
+              [class.subprocess-row]="job.contentType === 'subprocess'">
             <td>
               <span class="status-badge" [ngClass]="getStatusClass(job.status)">
                 <span class="material-icons">{{ getStatusIcon(job.status) }}</span>
@@ -123,7 +139,10 @@
               </span>
             </td>
             <td>
-              <span class="type-badge" [class.vector-pop]="job.contentType === 'vector-population'">
+              <span class="type-badge"
+                    [class.vector-pop]="job.contentType === 'vector-population'"
+                    [class.embedding]="job.contentType === 'embedding'"
+                    [class.subprocess]="job.contentType === 'subprocess'">
                 <span class="material-icons small">{{ getJobTypeIcon(job.contentType) }}</span>
                 {{ getJobTypeDisplay(job.contentType) }}
               </span>
@@ -151,11 +170,31 @@
               </button>
             </td>
           </tr>
-          <tr *ngIf="jobs.length === 0">
+          <tr *ngIf="paginatedJobs.length === 0">
             <td colspan="9" class="no-data">No jobs found</td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Subprocess Stats Summary (shown when subprocess filter is active) -->
+    <div class="subprocess-stats-summary" *ngIf="isSubprocessView() && subprocessStatistics?.available">
+      <div class="stat-card info">
+        <span class="stat-value">{{ getSubprocessRestartCount() }}</span>
+        <span class="stat-label">Restart Attempts</span>
+      </div>
+      <div class="stat-card error">
+        <span class="stat-value">{{ getSubprocessCrashCount() }}</span>
+        <span class="stat-label">Crashes</span>
+      </div>
+      <div class="stat-card success">
+        <span class="stat-value">{{ getSubprocessRestartSuccessRate() | number:'1.0-1' }}%</span>
+        <span class="stat-label">Success Rate</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">{{ subprocessStatistics?.modelsLoaded || 0 }}</span>
+        <span class="stat-label">Models Loaded</span>
+      </div>
     </div>
 
     <!-- Pagination -->
@@ -565,7 +604,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let event of events">
+            <tr *ngFor="let event of events; trackBy: trackByEventIndex" [class.restart-event-row]="isRestartEvent(event.eventType)">
               <td class="timestamp">{{ formatTimestamp(event.timestamp) }}</td>
               <td>
                 <span class="phase-badge small" *ngIf="event.phase">
@@ -573,12 +612,20 @@
                 </span>
               </td>
               <td>
-                <span class="event-type-badge" [ngClass]="event.eventType.toLowerCase()">
+                <span class="event-type-badge" [ngClass]="getEventTypeClass(event.eventType)">
+                  <span class="material-icons small" *ngIf="isRestartEvent(event.eventType)">{{ getRestartEventIcon(event.eventType) }}</span>
                   {{ event.eventType }}
+                </span>
+                <span *ngIf="event.restartAttempt" class="restart-attempt-chip">
+                  {{ event.restartAttempt }}/{{ event.maxRestartAttempts || 3 }}
                 </span>
               </td>
               <td class="message">{{ event.message }}</td>
-              <td class="details" [title]="event.details || ''">{{ event.details || '-' }}</td>
+              <td class="details" [title]="event.details || ''">
+                <span *ngIf="event.heapSize" class="detail-chip">Heap: {{ event.heapSize }}</span>
+                <span *ngIf="event.batchSize" class="detail-chip">Batch: {{ event.batchSize }}</span>
+                {{ event.details || (event.heapSize || event.batchSize ? '' : '-') }}
+              </td>
             </tr>
             <tr *ngIf="events.length === 0">
               <td colspan="5" class="no-data">No events recorded for this job.</td>
@@ -586,6 +633,165 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- Job Logs Viewer -->
+    <div class="detail-card full-width logs-card">
+      <div class="card-header">
+        <h4>
+          <span class="material-icons">article</span>
+          Job Logs
+        </h4>
+      </div>
+      <app-job-log-viewer [taskId]="selectedJob.taskId"></app-job-log-viewer>
+    </div>
+  </div>
+
+  <!-- Subprocess Event Detail View -->
+  <div class="detail-view subprocess-detail" *ngIf="viewMode === 'detail' && selectedSubprocessEvent">
+    <button class="btn btn-back" (click)="showList()">
+      <span class="material-icons">arrow_back</span> Back to List
+    </button>
+
+    <div class="detail-header">
+      <h3>
+        <span class="material-icons">{{ getSubprocessEventIcon(selectedSubprocessEvent.eventType) }}</span>
+        {{ formatSubprocessEventType(selectedSubprocessEvent.eventType) }}
+      </h3>
+      <span class="status-badge large" [ngClass]="getSubprocessEventClass(selectedSubprocessEvent.eventType)">
+        <span class="material-icons">{{ getSubprocessEventIcon(selectedSubprocessEvent.eventType) }}</span>
+        {{ selectedSubprocessEvent.eventType }}
+      </span>
+    </div>
+
+    <div class="detail-grid">
+      <!-- Basic Info -->
+      <div class="detail-card">
+        <h4>Basic Information</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Event ID:</span>
+            <span class="value code">{{ selectedSubprocessEvent.id }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Model ID:</span>
+            <span class="value">{{ selectedSubprocessEvent.modelId }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Event Type:</span>
+            <span class="value">{{ formatSubprocessEventType(selectedSubprocessEvent.eventType) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Timestamp:</span>
+            <span class="value">{{ formatTimestamp(selectedSubprocessEvent.timestamp) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.taskId">
+            <span class="label">Associated Task ID:</span>
+            <span class="value code">{{ selectedSubprocessEvent.taskId }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Restart Info (if applicable) -->
+      <div class="detail-card" *ngIf="selectedSubprocessEvent.restartAttemptNumber !== undefined">
+        <h4>Restart Information</h4>
+        <div class="detail-list">
+          <div class="detail-row">
+            <span class="label">Attempt Number:</span>
+            <span class="value">{{ selectedSubprocessEvent.restartAttemptNumber }} / {{ selectedSubprocessEvent.maxRestartAttempts || '?' }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.restartSuccessful !== undefined">
+            <span class="label">Successful:</span>
+            <span class="value" [class.success]="selectedSubprocessEvent.restartSuccessful" [class.error]="!selectedSubprocessEvent.restartSuccessful">
+              {{ selectedSubprocessEvent.restartSuccessful ? 'Yes' : 'No' }}
+            </span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.backoffMs">
+            <span class="label">Backoff Delay:</span>
+            <span class="value">{{ formatDuration(selectedSubprocessEvent.backoffMs) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.failureReason">
+            <span class="label">Failure Reason:</span>
+            <span class="value error">{{ selectedSubprocessEvent.failureReason }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Error Info (if applicable) -->
+      <div class="detail-card error-card" *ngIf="selectedSubprocessEvent.errorMessage || selectedSubprocessEvent.exitCode !== undefined">
+        <h4>Error Information</h4>
+        <div class="detail-list">
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.exitCode !== undefined">
+            <span class="label">Exit Code:</span>
+            <span class="value error">{{ selectedSubprocessEvent.exitCode }}</span>
+          </div>
+          <div class="detail-row error-message" *ngIf="selectedSubprocessEvent.errorMessage">
+            <span class="label">Error Message:</span>
+            <span class="value error">{{ selectedSubprocessEvent.errorMessage }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resource Configuration -->
+      <div class="detail-card" *ngIf="selectedSubprocessEvent.heapBytes || selectedSubprocessEvent.batchSize || selectedSubprocessEvent.threadCount">
+        <h4>Resource Configuration</h4>
+        <div class="detail-list">
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.heapBytes">
+            <span class="label">Heap Size:</span>
+            <span class="value">{{ formatBytes(selectedSubprocessEvent.heapBytes) }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.batchSize">
+            <span class="label">Batch Size:</span>
+            <span class="value">{{ selectedSubprocessEvent.batchSize }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.threadCount">
+            <span class="label">Thread Count:</span>
+            <span class="value">{{ selectedSubprocessEvent.threadCount }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Model Info (if model loaded event) -->
+      <div class="detail-card" *ngIf="selectedSubprocessEvent.embeddingDimensions || selectedSubprocessEvent.encoderType">
+        <h4>Model Information</h4>
+        <div class="detail-list">
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.encoderType">
+            <span class="label">Encoder Type:</span>
+            <span class="value">{{ selectedSubprocessEvent.encoderType }}</span>
+          </div>
+          <div class="detail-row" *ngIf="selectedSubprocessEvent.embeddingDimensions">
+            <span class="label">Embedding Dimensions:</span>
+            <span class="value">{{ selectedSubprocessEvent.embeddingDimensions }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error Details (if present) -->
+    <div class="detail-card full-width error-card" *ngIf="selectedSubprocessEvent.errorMessage && !selectedSubprocessEvent.taskId">
+      <div class="card-header">
+        <h4>
+          <span class="material-icons">error</span>
+          Error Details
+        </h4>
+      </div>
+      <div class="error-details-content">
+        <code class="error-code-block">{{ selectedSubprocessEvent.errorMessage }}</code>
+      </div>
+    </div>
+
+    <!-- Subprocess Logs Viewer - Uses taskId if available, otherwise embedding-{modelId} -->
+    <div class="detail-card full-width logs-card">
+      <div class="card-header">
+        <h4>
+          <span class="material-icons">article</span>
+          {{ selectedSubprocessEvent.taskId ? 'Associated Job Logs' : 'Embedding Subprocess Logs' }}
+        </h4>
+        <span class="task-id-hint" *ngIf="!selectedSubprocessEvent.taskId && selectedSubprocessEvent.modelId">
+          (embedding-{{ selectedSubprocessEvent.modelId }})
+        </span>
+      </div>
+      <app-job-log-viewer [taskId]="selectedSubprocessEvent.taskId || ('embedding-' + selectedSubprocessEvent.modelId)"></app-job-log-viewer>
     </div>
   </div>
 
@@ -595,7 +801,7 @@
       <h3>Cleanup Job History</h3>
       <p>Delete job history records older than:</p>
       <div class="dialog-input">
-        <input type="number" [(ngModel)]="cleanupDays" min="1" max="365">
+        <input type="number" [(ngModel)]="cleanupDays" [ngModelOptions]="{standalone: true}" min="1" max="365">
         <span>days</span>
       </div>
       <div class="dialog-actions">

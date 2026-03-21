@@ -16,8 +16,8 @@
 
 package ai.kompile.staging.export;
 
-import ai.kompile.staging.registry.ModelEntry;
-import ai.kompile.staging.registry.RegistryService;
+import ai.kompile.modelmanager.registry.ModelEntry;
+import ai.kompile.modelmanager.registry.RegistryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;

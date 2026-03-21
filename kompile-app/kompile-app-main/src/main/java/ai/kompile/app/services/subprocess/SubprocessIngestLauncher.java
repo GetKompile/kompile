@@ -16,13 +16,19 @@
 
 package ai.kompile.app.services.subprocess;
 
+import ai.kompile.app.config.IngestConfiguration;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.config.SubprocessExecutableConfig;
+import ai.kompile.cli.main.util.NativeImageInfo;
 import ai.kompile.app.facts.domain.FactSheet;
 import ai.kompile.app.facts.service.FactSheetService;
 import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.IngestEventService;
+import ai.kompile.app.services.AppIndexConfigService;
 import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.config.DeviceRoutingConfig;
+import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessArgs;
@@ -90,23 +96,30 @@ public class SubprocessIngestLauncher {
     @Value("${kompile.ingest.subprocess.heartbeat-interval-seconds:10}")
     private int heartbeatIntervalSeconds;
 
+    @Value("${kompile.ingest.subprocess.progress-stall-threshold-seconds:60}")
+    private int progressStallThresholdSeconds;
+
     @Value("${kompile.ingest.subprocess.stale-threshold-seconds:120}")
     private int staleThresholdSeconds;
-
-    @Value("${kompile.vectorstore.anserini.index-path:${user.home}/.kompile/anserini-vector-index}")
-    private String keywordIndexPath;
 
     private final IngestProgressTracker progressTracker;
     private final IngestEventService eventService;
     private final IndexingJobHistoryService jobHistoryService;
     private final ServerPortService serverPortService;
     private final Nd4jEnvironmentConfigService nd4jEnvironmentConfigService;
+    private final DeviceRoutingConfigService deviceRoutingConfigService;
     private final SubprocessConfigService subprocessConfigService;
+    private final SubprocessExecutableConfig subprocessExecutableConfig;
     private final FactSheetService factSheetService;
+    private final AppIndexConfigService appIndexConfigService;
+    private final IngestConfiguration ingestConfiguration;
     private final ObjectMapper objectMapper;
 
     // Active subprocess tracking
     private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
+
+    // Store file paths by taskId for fact creation on completion
+    private final Map<String, Path> taskFilePaths = new ConcurrentHashMap<>();
 
     // Store worker statuses per task for inclusion in progress updates (parity with
     // in-process mode)
@@ -116,6 +129,41 @@ public class SubprocessIngestLauncher {
     // avoid spam)
     private final Set<String> warnedTaskIds = ConcurrentHashMap.newKeySet();
 
+    // === Adaptive Recovery Tracking ===
+
+    /** Checkpoint paths by jobId (persists across retries) */
+    private final Map<String, Path> jobCheckpointPaths = new ConcurrentHashMap<>();
+
+    /** Retry state per jobId */
+    private final Map<String, RetryState> jobRetryState = new ConcurrentHashMap<>();
+
+    /** Original launch options per jobId (for retry) */
+    private final Map<String, LaunchContext> jobLaunchContexts = new ConcurrentHashMap<>();
+
+    /** Map from taskId to jobId (for looking up job context on completion) */
+    private final Map<String, String> taskToJobId = new ConcurrentHashMap<>();
+
+    /** Directory for checkpoint storage */
+    private Path checkpointBaseDir;
+
+    /** Record to track retry state for adaptive recovery */
+    private record RetryState(
+            String jobId,
+            int attemptNumber,
+            ai.kompile.app.subprocess.AdaptiveRecoverySettings currentSettings,
+            ai.kompile.app.subprocess.IngestCheckpoint checkpoint
+    ) {}
+
+    /** Record to store original launch context for retry */
+    private record LaunchContext(
+            String jobId,
+            Path filePath,
+            String loaderName,
+            String chunkerName,
+            Map<String, Object> originalOptions,
+            CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture
+    ) {}
+
     @Autowired
     public SubprocessIngestLauncher(
             @Autowired(required = false) IngestProgressTracker progressTracker,
@@ -123,16 +171,27 @@ public class SubprocessIngestLauncher {
             @Autowired(required = false) IndexingJobHistoryService jobHistoryService,
             @Autowired(required = false) ServerPortService serverPortService,
             @Autowired(required = false) Nd4jEnvironmentConfigService nd4jEnvironmentConfigService,
+            @Autowired(required = false) DeviceRoutingConfigService deviceRoutingConfigService,
             @Autowired(required = false) SubprocessConfigService subprocessConfigService,
-            @Autowired(required = false) FactSheetService factSheetService) {
+            @Autowired(required = false) SubprocessExecutableConfig subprocessExecutableConfig,
+            @Autowired(required = false) FactSheetService factSheetService,
+            @Autowired(required = false) AppIndexConfigService appIndexConfigService,
+            @Autowired(required = false) IngestConfiguration ingestConfiguration) {
         this.progressTracker = progressTracker;
         this.eventService = eventService;
         this.jobHistoryService = jobHistoryService;
         this.serverPortService = serverPortService;
         this.nd4jEnvironmentConfigService = nd4jEnvironmentConfigService;
+        this.deviceRoutingConfigService = deviceRoutingConfigService;
         this.subprocessConfigService = subprocessConfigService;
+        this.subprocessExecutableConfig = subprocessExecutableConfig;
         this.factSheetService = factSheetService;
+        this.appIndexConfigService = appIndexConfigService;
+        this.ingestConfiguration = ingestConfiguration;
         this.objectMapper = new ObjectMapper();
+
+        // Initialize checkpoint directory
+        initializeCheckpointDirectory();
 
         // Warn if progress tracking dependencies are missing
         if (progressTracker == null) {
@@ -141,6 +200,35 @@ public class SubprocessIngestLauncher {
         } else {
             logger.info("SubprocessIngestLauncher initialized with progress tracking enabled");
         }
+    }
+
+    /**
+     * Initialize the checkpoint directory for storing progress state.
+     */
+    private void initializeCheckpointDirectory() {
+        try {
+            // Use ~/.kompile/checkpoints as the base directory
+            Path kompileHome = Path.of(System.getProperty("user.home"), ".kompile");
+            this.checkpointBaseDir = kompileHome.resolve("checkpoints");
+            Files.createDirectories(checkpointBaseDir);
+            logger.info("Checkpoint directory initialized: {}", checkpointBaseDir);
+        } catch (IOException e) {
+            logger.warn("Failed to create checkpoint directory, will use temp dir: {}", e.getMessage());
+            try {
+                this.checkpointBaseDir = Files.createTempDirectory("kompile-checkpoints-");
+            } catch (IOException ex) {
+                logger.error("Failed to create temp checkpoint directory", ex);
+                this.checkpointBaseDir = Path.of(System.getProperty("java.io.tmpdir"));
+            }
+        }
+    }
+
+    /**
+     * Get or create checkpoint path for a job.
+     */
+    private Path getCheckpointPath(String jobId) {
+        return jobCheckpointPaths.computeIfAbsent(jobId, id ->
+                checkpointBaseDir.resolve("ingest-" + id + ".checkpoint.json"));
     }
 
     /**
@@ -159,9 +247,39 @@ public class SubprocessIngestLauncher {
             String loaderName,
             String chunkerName,
             Map<String, Object> options) {
-        logger.info("Launching ingest subprocess for task: {} file: {}", taskId, filePath);
+        // Generate a unique jobId that persists across retries
+        String jobId = taskId; // Use taskId as jobId for the initial attempt
+        return launchIngestInternal(taskId, jobId, filePath, loaderName, chunkerName, options, null);
+    }
 
-        CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture = new CompletableFuture<>();
+    /**
+     * Internal method to launch ingest with full control over settings.
+     * Used for both initial launch and retry with adaptive settings.
+     */
+    private CompletableFuture<SubprocessHandle.SubprocessResult> launchIngestInternal(
+            String taskId,
+            String jobId,
+            Path filePath,
+            String loaderName,
+            String chunkerName,
+            Map<String, Object> options,
+            ai.kompile.app.subprocess.AdaptiveRecoverySettings recoverySettings) {
+        logger.info("Launching ingest subprocess for task: {} (jobId: {}) file: {}", taskId, jobId, filePath);
+
+        // For initial launch, create a new future; for retry, we reuse the original
+        CompletableFuture<SubprocessHandle.SubprocessResult> resultFuture;
+        LaunchContext existingContext = jobLaunchContexts.get(jobId);
+        if (existingContext != null) {
+            resultFuture = existingContext.resultFuture();
+        } else {
+            resultFuture = new CompletableFuture<>();
+            // Store launch context for potential retry
+            jobLaunchContexts.put(jobId, new LaunchContext(jobId, filePath, loaderName, chunkerName,
+                    options != null ? new java.util.HashMap<>(options) : new java.util.HashMap<>(), resultFuture));
+        }
+
+        // Store file path for fact creation on completion
+        taskFilePaths.put(taskId, filePath);
 
         try {
             String fileName = filePath.getFileName().toString();
@@ -173,15 +291,101 @@ public class SubprocessIngestLauncher {
                     ? serverPortService.getBaseUrl()
                     : "http://localhost:8080";
 
+            // Get model source configuration from AnseriniEncoderFactory (inherits from
+            // parent)
+            String modelSourceType = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getSourceType();
+            String modelIdentifier = ai.kompile.embedding.anserini.AnseriniEncoderFactory
+                    .getSelectedDenseRetrievalModel()
+                    .orElse(null);
+
+            // Get staging URL/API key or archive path directly from the parent's registry
+            // manager
+            String stagingUrl = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getStagingUrl();
+            String stagingApiKey = ai.kompile.embedding.anserini.AnseriniEncoderFactory.getStagingApiKey();
+            java.nio.file.Path archivePathObj = ai.kompile.embedding.anserini.AnseriniEncoderFactory
+                    .getLoadedArchivePath();
+            String archivePath = archivePathObj != null ? archivePathObj.toString() : null;
+
+            logger.info(
+                    "Subprocess model source (inherited from parent): type={}, modelId={}, stagingUrl={}, archivePath={}",
+                    modelSourceType, modelIdentifier, stagingUrl, archivePath);
+
+            // Get memory thresholds from IngestConfiguration (or use defaults)
+            int memoryThresholdPercent = ingestConfiguration != null
+                    ? ingestConfiguration.getMemoryThresholdPercent()
+                    : SubprocessArgs.DEFAULT_MEMORY_THRESHOLD_PERCENT;
+            int memoryCriticalPercent = ingestConfiguration != null
+                    ? ingestConfiguration.getMemoryCriticalPercent()
+                    : SubprocessArgs.DEFAULT_MEMORY_CRITICAL_PERCENT;
+            int memoryKillThresholdPercent = ingestConfiguration != null
+                    ? ingestConfiguration.getMemoryKillThresholdPercent()
+                    : SubprocessArgs.DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT;
+
+            logger.debug("Subprocess memory thresholds: stop={}%, critical={}%, kill={}%",
+                    memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent);
+
+            // Resolve paths from active FactSheet via AppIndexConfigService
+            String resolvedVectorPath = null;
+            String resolvedKeywordPath = null;
+            if (appIndexConfigService != null) {
+                ai.kompile.app.config.AppIndexConfig config = appIndexConfigService.getActualConfiguration();
+                if (config != null) {
+                    resolvedVectorPath = config.getVectorStorePath();
+                    resolvedKeywordPath = config.getKeywordIndexPath();
+                }
+            }
+
+            logger.info("Resolving paths for ingest subprocess: vector={}, keyword={}",
+                    resolvedVectorPath, resolvedKeywordPath);
+
+            // Get checkpoint path for this job
+            Path checkpointPath = getCheckpointPath(jobId);
+            boolean shouldResume = recoverySettings != null && Files.exists(checkpointPath);
+
+            // Determine effective batch size and other settings
+            int effectiveBatchSize = SubprocessArgs.DEFAULT_EMBEDDING_BATCH_SIZE;
+            if (recoverySettings != null) {
+                effectiveBatchSize = recoverySettings.getBatchSize();
+                logger.info("Using adaptive recovery settings: {}", recoverySettings.toSummary());
+            } else if (options != null && options.containsKey("embeddingBatchSize")) {
+                effectiveBatchSize = ((Number) options.get("embeddingBatchSize")).intValue();
+            }
+
+            // Build subprocess options with adaptive settings
+            Map<String, Object> effectiveOptions = new java.util.HashMap<>(options != null ? options : Map.of());
+            effectiveOptions.put("jobId", jobId);
+            if (recoverySettings != null) {
+                effectiveOptions.put("nd4jThreads", recoverySettings.getNd4jThreads());
+                effectiveOptions.put("ompThreads", recoverySettings.getOmpThreads());
+                effectiveOptions.put("embeddingWorkers", recoverySettings.getEmbeddingWorkers());
+                effectiveOptions.put("retryAttempt", recoverySettings.getRetryAttempt());
+                // Override heap size in options for buildCommand to use
+                effectiveOptions.put("heapSize", recoverySettings.getHeapSize());
+            }
+
             SubprocessArgs args = SubprocessArgs.builder()
                     .taskId(taskId)
                     .filePath(filePath.toString())
                     .loaderName(loaderName)
                     .chunkerName(chunkerName)
-                    .indexPath(keywordIndexPath)
+                    .embeddingBatchSize(effectiveBatchSize)
+                    .vectorStorePath(resolvedVectorPath)
+                    .keywordIndexPath(resolvedKeywordPath)
+                    .indexPath(resolvedKeywordPath) // Keep for legacy if needed
                     .callbackBaseUrl(callbackBaseUrl)
                     .nd4jConfigJson(nd4jConfigJson)
-                    .options(options != null ? options : Map.of())
+                    .checkpointPath(checkpointPath.toString())
+                    .resume(shouldResume)
+                    .modelSourceType(modelSourceType)
+                    .modelIdentifier(modelIdentifier)
+                    .stagingUrl(stagingUrl)
+                    .stagingApiKey(stagingApiKey)
+                    .archivePath(archivePath)
+                    .memoryThresholdPercent(memoryThresholdPercent)
+                    .memoryCriticalPercent(memoryCriticalPercent)
+                    .memoryKillThresholdPercent(memoryKillThresholdPercent)
+                    .memoryCheckIntervalMs(SubprocessArgs.DEFAULT_MEMORY_CHECK_INTERVAL_MS)
+                    .options(effectiveOptions)
                     .build();
 
             logger.debug("Using callback URL: {}", callbackBaseUrl);
@@ -196,9 +400,12 @@ public class SubprocessIngestLauncher {
             Path argsFile = args.writeToTempFile();
             logger.debug("Wrote subprocess args to: {}", argsFile);
 
-            // Build command with per-request options
-            List<String> command = buildCommand(argsFile, options);
+            // Build command with effective options (includes adaptive settings)
+            List<String> command = buildCommand(argsFile, effectiveOptions);
             logger.info("Subprocess command: {}", String.join(" ", command));
+            if (shouldResume) {
+                logger.info("ADAPTIVE RETRY: Resuming from checkpoint at {}", checkpointPath);
+            }
 
             // Start process
             ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -207,8 +414,19 @@ public class SubprocessIngestLauncher {
             // Propagate ND4J environment variables from parent process
             propagateNd4jEnvironment(processBuilder.environment());
 
+            // Apply thread settings from recovery if specified
+            if (recoverySettings != null) {
+                processBuilder.environment().put("OMP_NUM_THREADS", String.valueOf(recoverySettings.getOmpThreads()));
+                processBuilder.environment().put("MKL_NUM_THREADS", String.valueOf(recoverySettings.getOmpThreads()));
+                processBuilder.environment().put("OPENBLAS_NUM_THREADS", String.valueOf(recoverySettings.getOmpThreads()));
+                logger.info("Applied adaptive thread settings: OMP_NUM_THREADS={}", recoverySettings.getOmpThreads());
+            }
+
             Process process = processBuilder.start();
             logger.info("Started subprocess with PID: {}", process.pid());
+
+            // Track taskId -> jobId mapping for retry handling
+            taskToJobId.put(taskId, jobId);
 
             // Create handle
             SubprocessHandle handle = createHandle(taskId, fileName,
@@ -319,10 +537,74 @@ public class SubprocessIngestLauncher {
 
     /**
      * Build the subprocess command.
+     *
      * @param argsFile Path to the args file
-     * @param options Per-request options (heapSize, timeoutMinutes, etc.)
+     * @param options  Per-request options (heapSize, timeoutMinutes, etc.)
      */
     private List<String> buildCommand(Path argsFile, Map<String, Object> options) {
+        // Check if we should use native executable mode
+        if (shouldUseNativeExecutableMode()) {
+            return buildNativeCommand(argsFile);
+        }
+
+        // JVM classpath mode
+        return buildJvmCommand(argsFile, options);
+    }
+
+    /**
+     * Check if native executable mode should be used.
+     * Uses SubprocessConfigService (UI-configured) for the decision.
+     */
+    private boolean shouldUseNativeExecutableMode() {
+        // Use SubprocessConfigService (UI-managed) for the decision
+        if (subprocessConfigService != null) {
+            return subprocessConfigService.shouldUseNativeExecutableMode();
+        }
+
+        // Fallback: If running in native image and no classpath available, native mode is required
+        if (NativeImageInfo.isRunningInNativeImage() && !NativeImageInfo.hasClasspath()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Build command for native executable mode.
+     * Uses SubprocessConfigService (UI-configured) for executable paths.
+     */
+    private List<String> buildNativeCommand(Path argsFile) {
+        if (subprocessConfigService == null) {
+            throw new IllegalStateException(
+                "Native executable mode required but SubprocessConfigService not available.");
+        }
+
+        String executablePath = subprocessConfigService.getExecutablePathForType("ingest");
+        if (executablePath == null || executablePath.isBlank()) {
+            throw new IllegalStateException(
+                "Native executable mode required but no executable path configured. " +
+                "Configure the native executable path in Processing Settings (Developer Hub).");
+        }
+
+        List<String> command = new ArrayList<>();
+        command.add(executablePath);
+
+        // Add subprocess type flag if using unified executable
+        if (subprocessConfigService.useUnifiedExecutable("ingest")) {
+            command.add(subprocessConfigService.getSubprocessTypeFlag() + "ingest");
+        }
+
+        // Add args file
+        command.add(argsFile.toString());
+
+        logger.info("Using native executable mode for ingest subprocess: {}", executablePath);
+        return command;
+    }
+
+    /**
+     * Build command for JVM classpath mode.
+     */
+    private List<String> buildJvmCommand(Path argsFile, Map<String, Object> options) {
         List<String> command = new ArrayList<>();
 
         // Java executable
@@ -506,13 +788,16 @@ public class SubprocessIngestLauncher {
     /**
      * Build a comprehensive classpath for the subprocess.
      *
-     * This method extracts URLs from the classloader hierarchy to handle cases where
-     * Spring Boot or other frameworks use custom classloaders that don't expose their
+     * This method extracts URLs from the classloader hierarchy to handle cases
+     * where
+     * Spring Boot or other frameworks use custom classloaders that don't expose
+     * their
      * classpath via java.class.path system property.
      *
      * When running via `mvn spring-boot:run`, the java.class.path may only contain
      * a small launcher JAR, while the actual application classes are loaded by
-     * Spring Boot's RestartClassLoader or similar. This method traverses the classloader
+     * Spring Boot's RestartClassLoader or similar. This method traverses the
+     * classloader
      * chain to extract all URLs.
      *
      * @return A path-separator delimited string of classpath entries
@@ -531,7 +816,8 @@ public class SubprocessIngestLauncher {
             }
         }
 
-        // 2. Extract URLs from classloader hierarchy (handles Spring Boot's classloaders)
+        // 2. Extract URLs from classloader hierarchy (handles Spring Boot's
+        // classloaders)
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         if (classLoader == null) {
             classLoader = getClass().getClassLoader();
@@ -558,7 +844,8 @@ public class SubprocessIngestLauncher {
 
             // Also check for Spring Boot's specialized classloaders using reflection
             try {
-                // Spring Boot RestartClassLoader and LaunchedURLClassLoader have getURLs() method
+                // Spring Boot RestartClassLoader and LaunchedURLClassLoader have getURLs()
+                // method
                 java.lang.reflect.Method getUrlsMethod = classLoader.getClass().getMethod("getURLs");
                 Object result = getUrlsMethod.invoke(classLoader);
                 if (result instanceof java.net.URL[] urls) {
@@ -583,21 +870,22 @@ public class SubprocessIngestLauncher {
             classLoader = classLoader.getParent();
         }
 
-        // 3. Check for target/classes directories (important when running from IDE/Maven)
+        // 3. Check for target/classes directories (important when running from
+        // IDE/Maven)
         String userDir = System.getProperty("user.dir");
         if (userDir != null) {
             // Add common class output directories
             String[] possibleClassDirs = {
-                userDir + "/target/classes",
-                userDir + "/target/test-classes",
-                userDir + "/../kompile-app-core/target/classes",
-                userDir + "/../kompile-embedding-anserini/target/classes",
-                userDir + "/../kompile-vectorstore-anserini/target/classes",
-                userDir + "/../kompile-app-anserini/target/classes",
-                userDir + "/../kompile-model-manager/target/classes",
-                userDir + "/../kompile-loader-pdf-extended/target/classes",
-                userDir + "/../kompile-loader-microsoft/target/classes",
-                userDir + "/../kompile-app-loaders-orchestrator/target/classes"
+                    userDir + "/target/classes",
+                    userDir + "/target/test-classes",
+                    userDir + "/../kompile-app-core/target/classes",
+                    userDir + "/../kompile-embedding-anserini/target/classes",
+                    userDir + "/../kompile-vectorstore-anserini/target/classes",
+                    userDir + "/../kompile-app-anserini/target/classes",
+                    userDir + "/../kompile-model-manager/target/classes",
+                    userDir + "/../kompile-loader-pdf-extended/target/classes",
+                    userDir + "/../kompile-loader-microsoft/target/classes",
+                    userDir + "/../kompile-app-loaders-orchestrator/target/classes"
             };
 
             for (String dir : possibleClassDirs) {
@@ -813,6 +1101,15 @@ public class SubprocessIngestLauncher {
             int exitCode = process.waitFor();
             logger.info("Subprocess {} exited with code: {}", handle.getTaskId(), exitCode);
 
+            // Give stderr/stdout readers time to finish processing output
+            // This is important for OOM detection - the JVM prints the OOM message to stderr
+            // right before exiting, and we need to read it before calling handleCompletion
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+
             // Handle completion
             handleCompletion(handle, exitCode);
 
@@ -859,11 +1156,25 @@ public class SubprocessIngestLauncher {
             } else if (message instanceof SubprocessMessage.Failed failed) {
                 logger.error("Task {} failed in phase {}: {}",
                         handle.getTaskId(), failed.phase(), failed.errorMessage());
-                handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
-                        handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false));
-                // Forward failure to UI
-                forwardFailure(handle, failed);
-                taskWorkerStatuses.remove(handle.getTaskId());
+
+                // Check if this is an OOM failure - if so, DON'T complete the future yet
+                // Let handleCompletion() trigger the adaptive retry when the process actually exits
+                boolean isOom = isOutOfMemoryError(failed.errorMessage(), failed.errorType());
+                if (isOom) {
+                    logger.info("OOM failure detected for task {} - deferring to handleCompletion for retry logic",
+                            handle.getTaskId());
+                    handle.setOomDetected(true);
+                    // Store the failure info on the handle for later use
+                    handle.setCurrentPhase(failed.phase());
+                    // DON'T complete the future - let handleCompletion do it after retry attempt
+                } else {
+                    // Non-OOM failure - complete immediately
+                    handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                            handle.getTaskId(), 1, failed.errorMessage(), failed.phase(), false, false));
+                    // Forward failure to UI
+                    forwardFailure(handle, failed);
+                    taskWorkerStatuses.remove(handle.getTaskId());
+                }
             } else if (message instanceof SubprocessMessage.WorkerStatus workerStatus) {
                 // Store worker status for inclusion in progress updates
                 taskWorkerStatuses
@@ -899,7 +1210,7 @@ public class SubprocessIngestLauncher {
         }
 
         try {
-            IngestProgressUpdate.IngestPhase phase = IngestProgressUpdate.IngestPhase.valueOf(progress.phase());
+            IngestProgressUpdate.IngestPhase phase = toProgressPhase(progress.phase());
 
             // Convert subprocess stats to IngestStats for UI display
             // Pass the phase so we can populate activeStage correctly
@@ -977,19 +1288,19 @@ public class SubprocessIngestLauncher {
             Integer totalChunks = parseTotalChunksFromStep(currentStep);
 
             // Create minimal subprocess runtime info so UI knows this is subprocess mode
-            // Uses same pattern as SubprocessRuntimeInfo.empty() but with processMode = "SUBPROCESS"
-            IngestProgressUpdate.SubprocessRuntimeInfo minimalRuntimeInfo =
-                    new IngestProgressUpdate.SubprocessRuntimeInfo(
-                            null, null, "SUBPROCESS",  // processMode = SUBPROCESS
-                            null, null, null, null, null,
-                            null, null, null, null, null,
-                            null, null,
-                            null, null, null,
-                            null, List.of(), List.of(),
-                            null, null, null, null,
-                            null, null,
-                            null, null, null, null,
-                            null, null, null);
+            // Uses same pattern as SubprocessRuntimeInfo.empty() but with processMode =
+            // "SUBPROCESS"
+            IngestProgressUpdate.SubprocessRuntimeInfo minimalRuntimeInfo = new IngestProgressUpdate.SubprocessRuntimeInfo(
+                    null, null, "SUBPROCESS", // processMode = SUBPROCESS
+                    null, null, null, null, null,
+                    null, null, null, null, null,
+                    null, null,
+                    null, null, null,
+                    null, List.of(), List.of(),
+                    null, null, null, null,
+                    null, null,
+                    null, null, null, null,
+                    null, null, null);
 
             return IngestProgressUpdate.IngestStats.builder()
                     .activeStage(phase != null ? phase : "EMBEDDING")
@@ -1070,9 +1381,34 @@ public class SubprocessIngestLauncher {
                 .embeddingQueueDepth(subStats.embeddingQueueSize())
                 // Embedding batch metrics - detailed like parallel mode
                 .currentEmbeddingBatch(batchMetrics)
+                // Batch history - last N completed batches for UI visibility
+                .batchHistory(convertBatchHistory(subStats.batchHistory()))
                 // Subprocess-specific runtime info
                 .subprocessRuntimeInfo(subprocessRuntimeInfo)
                 .build();
+    }
+
+    /**
+     * Convert batch history from subprocess format to UI DTO format.
+     */
+    private List<IngestProgressUpdate.BatchHistoryEntry> convertBatchHistory(
+            java.util.List<SubprocessMessage.BatchHistoryEntry> subHistory) {
+        if (subHistory == null || subHistory.isEmpty()) {
+            return null;
+        }
+        return subHistory.stream()
+                .map(h -> new IngestProgressUpdate.BatchHistoryEntry(
+                        h.batchNumber(),
+                        h.inputTexts(),
+                        h.maxSequenceLength(),
+                        h.embeddingDimension(),
+                        h.actualInputShape(),
+                        h.actualOutputShape(),
+                        h.totalBatchTimeMs(),
+                        h.currentStep(),
+                        h.tokensPerSecond(),
+                        h.passageTokenCounts()))
+                .toList();
     }
 
     private IngestProgressUpdate.WorkerStatusDto convertWorkerStatus(SubprocessMessage.WorkerStatus ws) {
@@ -1180,10 +1516,18 @@ public class SubprocessIngestLauncher {
             return null;
         }
 
+        // Prefer batch numbers from subprocess stats (fixed values) over parsed values
+        Integer effectiveBatch = (subStats != null && subStats.currentBatchNumber() != null && subStats.currentBatchNumber() > 0)
+                ? subStats.currentBatchNumber()
+                : currentBatch;
+        Integer effectiveTotal = (subStats != null && subStats.totalBatches() != null && subStats.totalBatches() > 0)
+                ? subStats.totalBatches()
+                : totalBatches;
+
         IngestProgressUpdate.EmbeddingBatchMetrics.Builder builder = IngestProgressUpdate.EmbeddingBatchMetrics
                 .builder()
-                .batchNumber(currentBatch)
-                .totalBatches(totalBatches)
+                .batchNumber(effectiveBatch)
+                .totalBatches(effectiveTotal)
                 .currentStep(currentStep);
 
         // Parse throughput from step string like "Embedded 50/200 chunks (12.5/sec)"
@@ -1202,8 +1546,8 @@ public class SubprocessIngestLauncher {
             }
 
             // Determine status level based on batch progress
-            if (currentBatch != null && totalBatches != null && totalBatches > 0) {
-                double progress = (double) currentBatch / totalBatches;
+            if (effectiveBatch != null && effectiveTotal != null && effectiveTotal > 0) {
+                double progress = (double) effectiveBatch / effectiveTotal;
                 if (progress >= 0.9) {
                     builder.statusLevel("COMPLETING");
                 } else if (progress >= 0.5) {
@@ -1214,7 +1558,7 @@ public class SubprocessIngestLauncher {
 
                 // Calculate ETA message
                 if (subStats != null && subStats.chunksPerSecond() > 0) {
-                    int remaining = totalBatches - currentBatch;
+                    int remaining = effectiveTotal - effectiveBatch;
                     int batchSize = subStats.batchSize() > 0 ? subStats.batchSize() : 8;
                     int remainingChunks = remaining * batchSize;
                     double etaSeconds = remainingChunks / subStats.chunksPerSecond();
@@ -1227,11 +1571,57 @@ public class SubprocessIngestLauncher {
             }
         }
 
-        // Add additional info from subprocess stats if available
+        // ========== Use actual tensor shapes from subprocess when available ==========
+        // These come directly from the SameDiff encoder during inference
         if (subStats != null) {
+            // Use actual tensor shapes from encoder if provided
+            if (subStats.actualInputShape() != null) {
+                builder.actualInputShape(subStats.actualInputShape());
+            }
+            if (subStats.actualOutputShape() != null) {
+                builder.actualOutputShape(subStats.actualOutputShape());
+            }
+
+            // Use actual batch metrics from subprocess
+            if (subStats.inputTexts() != null && subStats.inputTexts() > 0) {
+                builder.inputTexts(subStats.inputTexts());
+            } else if (subStats.batchSize() > 0) {
+                builder.inputTexts(subStats.batchSize());
+            }
+
+            if (subStats.maxSequenceLength() != null && subStats.maxSequenceLength() > 0) {
+                builder.maxSequenceLength(subStats.maxSequenceLength());
+            }
+
+            if (subStats.embeddingDimension() != null && subStats.embeddingDimension() > 0) {
+                builder.embeddingDimension(subStats.embeddingDimension());
+            }
+
+            // Detailed timing from encoder
+            if (subStats.tokenizationTimeMs() != null && subStats.tokenizationTimeMs() > 0) {
+                builder.tokenizationTimeMs(subStats.tokenizationTimeMs());
+            }
+            if (subStats.paddingTimeMs() != null && subStats.paddingTimeMs() > 0) {
+                builder.paddingTimeMs(subStats.paddingTimeMs());
+            }
+            if (subStats.tensorCreationTimeMs() != null && subStats.tensorCreationTimeMs() > 0) {
+                builder.tensorCreationTimeMs(subStats.tensorCreationTimeMs());
+            }
+            if (subStats.forwardPassTimeMs() != null && subStats.forwardPassTimeMs() > 0) {
+                builder.forwardPassTimeMs(subStats.forwardPassTimeMs());
+            }
+            if (subStats.extractionTimeMs() != null && subStats.extractionTimeMs() > 0) {
+                builder.extractionTimeMs(subStats.extractionTimeMs());
+            }
+
+            // Override currentStep if provided in stats
+            if (subStats.currentStep() != null) {
+                builder.currentStep(subStats.currentStep());
+            }
+
             builder.isBatched(true);
 
-            // If we have runtime info with embedding model details, add them
+            // If we have runtime info with embedding model details, use them
             if (subStats.runtimeInfo() != null) {
                 SubprocessMessage.RuntimeInfo ri = subStats.runtimeInfo();
                 if (ri.embeddingModelId() != null) {
@@ -1242,6 +1632,32 @@ public class SubprocessIngestLauncher {
                 }
                 builder.deviceType(ri.nd4jBackend() != null ? ri.nd4jBackend() : "CPU");
             }
+
+            // Fallback: Build tensor shape strings from metrics if actual shapes not available
+            if (subStats.actualInputShape() == null) {
+                int batchSize = subStats.inputTexts() != null ? subStats.inputTexts() :
+                               (subStats.batchSize() > 0 ? subStats.batchSize() : 32);
+                int maxSeqLen = subStats.maxSequenceLength() != null ? subStats.maxSequenceLength() : 512;
+                builder.inputTensorShape("[" + batchSize + " x " + maxSeqLen + "]");
+            }
+            if (subStats.actualOutputShape() == null) {
+                int batchSize = subStats.inputTexts() != null ? subStats.inputTexts() :
+                               (subStats.batchSize() > 0 ? subStats.batchSize() : 32);
+                int embDim = subStats.embeddingDimension() != null ? subStats.embeddingDimension() : 768;
+                builder.outputTensorShape("[" + batchSize + " x " + embDim + "]");
+            }
+        } else {
+            // No stats available - use defaults but still provide tensor shapes
+            int batchSize = 32;
+            int maxSeqLen = 512;
+            int embDim = 768;
+            builder.isBatched(true);
+            builder.inputTexts(batchSize);
+            builder.maxSequenceLength(maxSeqLen);
+            builder.embeddingDimension(embDim);
+            builder.deviceType("CPU");
+            builder.inputTensorShape("[" + batchSize + " x " + maxSeqLen + "]");
+            builder.outputTensorShape("[" + batchSize + " x " + embDim + "]");
         }
 
         return builder.build();
@@ -1343,12 +1759,10 @@ public class SubprocessIngestLauncher {
 
     /**
      * Forward completion to IngestProgressTracker for WebSocket broadcast.
+     * Also creates a Fact in the active sheet for the successfully processed file.
      */
     private void forwardCompletion(SubprocessHandle handle, SubprocessMessage.Completed completed) {
-        if (progressTracker == null) {
-            logger.debug("Cannot forward completion: progressTracker is null");
-            return;
-        }
+        String taskId = handle.getTaskId();
 
         try {
             // Build IngestStats from completed message using builder pattern
@@ -1366,37 +1780,227 @@ public class SubprocessIngestLauncher {
                     .indexingTimeMs(durations != null ? durations.get("INDEXING") : null)
                     .build();
 
-            progressTracker.completeTask(
-                    handle.getTaskId(),
-                    handle.getFileName(),
-                    stats);
-            logger.info("Forwarded completion to UI: task {} - {} docs, {} chunks indexed",
-                    handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
+            // Forward to UI via progress tracker
+            if (progressTracker != null) {
+                progressTracker.completeTask(
+                        taskId,
+                        handle.getFileName(),
+                        stats);
+                logger.info("Forwarded completion to UI: task {} - {} docs, {} chunks indexed",
+                        taskId, completed.documentsLoaded(), completed.documentsIndexed());
+            }
+
+            // Update job history with final stats and mark as completed
+            if (jobHistoryService != null) {
+                jobHistoryService.updateJobStats(taskId,
+                        completed.documentsLoaded(),
+                        completed.chunksCreated(),
+                        completed.chunksEmbedded(),
+                        completed.documentsIndexed());
+                jobHistoryService.markJobCompleted(taskId);
+                logger.debug("Updated job history for task {}: {} docs loaded, {} chunks created, {} embedded, {} indexed",
+                        taskId, completed.documentsLoaded(), completed.chunksCreated(),
+                        completed.chunksEmbedded(), completed.documentsIndexed());
+            }
+
+            // Create a Fact entry for the processed file in the active sheet
+            createFactForCompletedJob(taskId, handle.getFileName());
+
         } catch (Exception e) {
-            logger.warn("Failed to forward completion for task {}: {}", handle.getTaskId(), e.getMessage(), e);
+            logger.warn("Failed to forward completion for task {}: {}", taskId, e.getMessage(), e);
+        } finally {
+            // Clean up file path tracking
+            taskFilePaths.remove(taskId);
         }
+    }
+
+    /**
+     * Create a Fact entry for a successfully processed file.
+     */
+    private void createFactForCompletedJob(String taskId, String fileName) {
+        if (factSheetService == null) {
+            logger.debug("Cannot create fact: factSheetService is null");
+            return;
+        }
+
+        Path filePath = taskFilePaths.get(taskId);
+        if (filePath == null) {
+            logger.warn("Cannot create fact for task {}: file path not found", taskId);
+            return;
+        }
+
+        try {
+            // Gather file metadata
+            String extension = getFileExtension(fileName);
+            Long sizeBytes = null;
+            String mimeType = null;
+            String checksum = null;
+
+            if (Files.exists(filePath)) {
+                try {
+                    sizeBytes = Files.size(filePath);
+                    mimeType = Files.probeContentType(filePath);
+                } catch (IOException e) {
+                    logger.debug("Could not read file metadata for {}: {}", filePath, e.getMessage());
+                }
+            }
+
+            // Determine view mode based on extension
+            ai.kompile.app.facts.domain.Fact.ViewMode viewMode = determineViewMode(extension, mimeType);
+            boolean canPreview = viewMode == ai.kompile.app.facts.domain.Fact.ViewMode.TEXT ||
+                    viewMode == ai.kompile.app.facts.domain.Fact.ViewMode.IMAGE ||
+                    viewMode == ai.kompile.app.facts.domain.Fact.ViewMode.EMBEDDED;
+
+            // Create the fact
+            ai.kompile.app.facts.domain.Fact fact = factSheetService.addFactToActiveSheet(
+                    fileName,
+                    filePath.toString(),
+                    checksum,
+                    ai.kompile.app.facts.domain.Fact.SourceType.UPLOAD,
+                    extension,
+                    mimeType,
+                    sizeBytes,
+                    viewMode,
+                    canPreview,
+                    null // sourceUrl
+            );
+
+            // Mark as indexed since we just finished indexing it
+            if (fact != null) {
+                factSheetService.markFactAsIndexed(fact.getId());
+                logger.info("Created and indexed fact for task {}: factId={}, fileName={}",
+                        taskId, fact.getId(), fileName);
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to create fact for task {}: {}", taskId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Extract file extension from filename.
+     */
+    private String getFileExtension(String fileName) {
+        if (fileName == null)
+            return null;
+        int lastDot = fileName.lastIndexOf('.');
+        if (lastDot > 0 && lastDot < fileName.length() - 1) {
+            return fileName.substring(lastDot + 1).toLowerCase();
+        }
+        return null;
+    }
+
+    /**
+     * Determine the appropriate view mode based on file extension and mime type.
+     */
+    private ai.kompile.app.facts.domain.Fact.ViewMode determineViewMode(String extension, String mimeType) {
+        if (extension == null && mimeType == null) {
+            return ai.kompile.app.facts.domain.Fact.ViewMode.DOWNLOAD_ONLY;
+        }
+
+        // Check by extension first
+        if (extension != null) {
+            switch (extension.toLowerCase()) {
+                case "txt", "md", "json", "xml", "html", "css", "js", "java", "py", "c", "cpp", "h", "yaml", "yml",
+                        "log":
+                    return ai.kompile.app.facts.domain.Fact.ViewMode.TEXT;
+                case "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp":
+                    return ai.kompile.app.facts.domain.Fact.ViewMode.IMAGE;
+                case "pdf":
+                    return ai.kompile.app.facts.domain.Fact.ViewMode.EMBEDDED;
+            }
+        }
+
+        // Fall back to mime type
+        if (mimeType != null) {
+            if (mimeType.startsWith("text/")) {
+                return ai.kompile.app.facts.domain.Fact.ViewMode.TEXT;
+            }
+            if (mimeType.startsWith("image/")) {
+                return ai.kompile.app.facts.domain.Fact.ViewMode.IMAGE;
+            }
+            if (mimeType.equals("application/pdf")) {
+                return ai.kompile.app.facts.domain.Fact.ViewMode.EMBEDDED;
+            }
+        }
+
+        return ai.kompile.app.facts.domain.Fact.ViewMode.DOWNLOAD_ONLY;
     }
 
     /**
      * Forward failure to IngestProgressTracker for WebSocket broadcast.
      */
     private void forwardFailure(SubprocessHandle handle, SubprocessMessage.Failed failed) {
-        if (progressTracker == null) {
-            logger.debug("Cannot forward failure: progressTracker is null");
-            return;
-        }
+        String taskId = handle.getTaskId();
 
         try {
-            progressTracker.failTask(
-                    handle.getTaskId(),
-                    handle.getFileName(),
-                    toProgressPhase(failed.phase()),
-                    failed.errorMessage());
-            logger.info("Forwarded failure to UI: task {} failed at phase {} - {}",
-                    handle.getTaskId(), failed.phase(), failed.errorMessage());
+            // Detect OOM from error message or error type
+            boolean isOom = isOutOfMemoryError(failed.errorMessage(), failed.errorType());
+            if (isOom) {
+                handle.setOomDetected(true);
+            }
+
+            IngestProgressUpdate.IngestPhase phase = toProgressPhase(failed.phase());
+
+            // Update job history with failure
+            if (jobHistoryService != null) {
+                ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason reason = isOom
+                        ? ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason.OUT_OF_MEMORY
+                        : ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason.UNKNOWN;
+                jobHistoryService.markJobFailed(taskId, toEventPhase(failed.phase()),
+                        failed.errorMessage(), null, reason);
+                logger.debug("Updated job history for failed task {}: phase={}, reason={}",
+                        taskId, failed.phase(), reason);
+            }
+
+            // Forward to UI via progress tracker
+            if (progressTracker != null) {
+                if (isOom) {
+                    // Use OOM-specific failure with prominent indicator for UI
+                    progressTracker.failTaskOutOfMemory(
+                            taskId,
+                            handle.getFileName(),
+                            phase,
+                            failed.errorMessage());
+                    logger.error("Forwarded OOM failure to UI: task {} failed at phase {} - {}",
+                            taskId, failed.phase(), failed.errorMessage());
+                } else {
+                    // Regular failure
+                    progressTracker.failTask(
+                            taskId,
+                            handle.getFileName(),
+                            phase,
+                            failed.errorMessage());
+                    logger.info("Forwarded failure to UI: task {} failed at phase {} - {}",
+                            taskId, failed.phase(), failed.errorMessage());
+                }
+            }
         } catch (Exception e) {
-            logger.warn("Failed to forward failure for task {}: {}", handle.getTaskId(), e.getMessage(), e);
+            logger.warn("Failed to forward failure for task {}: {}", taskId, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Detect if an error is an OutOfMemoryError based on message and type.
+     */
+    private boolean isOutOfMemoryError(String errorMessage, String errorType) {
+        if (errorType != null) {
+            String typeUpper = errorType.toUpperCase();
+            if (typeUpper.contains("OUTOFMEMORY") || typeUpper.equals("OUTOFMEMORYERROR")) {
+                return true;
+            }
+        }
+        if (errorMessage != null) {
+            String msgUpper = errorMessage.toUpperCase();
+            if (msgUpper.contains("OUTOFMEMORY") ||
+                msgUpper.contains("OUT OF MEMORY") ||
+                msgUpper.contains("JAVA HEAP SPACE") ||
+                msgUpper.contains("GC OVERHEAD LIMIT") ||
+                msgUpper.contains("HEAP EXHAUSTED")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1450,13 +2054,25 @@ public class SubprocessIngestLauncher {
             String errorMessage;
             String failureReason;
             boolean isNativeCrash = false;
+            boolean isOomFailure = false;
 
             if (handle.isCancelled()) {
                 errorMessage = "Process cancelled";
                 failureReason = "USER_CANCELLED";
-            } else if (handle.isOomDetected()) {
-                errorMessage = "Out of memory";
+            } else if (handle.isOomDetected() || exitCode == 137) {
+                // OOM detected via stderr parsing or exit code 137 (SIGKILL from OOM killer)
+                // Exit code 1 with isOomDetected=true means -XX:+ExitOnOutOfMemoryError triggered
+                if (exitCode == 137) {
+                    errorMessage = "Process killed (SIGKILL) - OOM killer";
+                } else if (exitCode == 1 && handle.isOomDetected()) {
+                    errorMessage = "Out of memory - JVM exited via -XX:+ExitOnOutOfMemoryError";
+                } else {
+                    errorMessage = "Out of memory";
+                }
                 failureReason = "OUT_OF_MEMORY";
+                isOomFailure = true;
+                logger.info("OOM failure confirmed for task {}: exitCode={}, oomDetected={}",
+                        handle.getTaskId(), exitCode, handle.isOomDetected());
             } else if (exitCode == 130) {
                 errorMessage = "Process interrupted (SIGINT)";
                 failureReason = "USER_CANCELLED";
@@ -1475,10 +2091,6 @@ public class SubprocessIngestLauncher {
                 errorMessage = "Native crash (SIGSEGV) - segmentation fault in ND4J/native code";
                 failureReason = "UNKNOWN";
                 isNativeCrash = true;
-            } else if (exitCode == 137) {
-                // SIGKILL - killed (often OOM killer)
-                errorMessage = "Process killed (SIGKILL) - likely OOM killer or manual termination";
-                failureReason = "OUT_OF_MEMORY";
             } else if (exitCode == 143) {
                 // SIGTERM - terminated
                 errorMessage = "Process terminated (SIGTERM)";
@@ -1494,17 +2106,30 @@ public class SubprocessIngestLauncher {
                 failureReason = "UNKNOWN";
             }
 
-            // Log with appropriate level - native crashes are critical
+            // Log with appropriate level
             if (isNativeCrash) {
                 logger.error("NATIVE CRASH in subprocess {} during phase {}: {} (exit code {}). " +
                         "This indicates a crash in ND4J or native libraries. " +
                         "The parent process is unaffected due to subprocess isolation.",
+                        handle.getTaskId(), handle.getCurrentPhase(), errorMessage, exitCode);
+            } else if (isOomFailure) {
+                logger.error("OOM in subprocess {} during phase {}: {} (exit code {})",
                         handle.getTaskId(), handle.getCurrentPhase(), errorMessage, exitCode);
             } else {
                 logger.error("Subprocess {} failed: {} (exit code {})",
                         handle.getTaskId(), errorMessage, exitCode);
             }
 
+            // === ADAPTIVE RETRY LOGIC ===
+            if (isOomFailure && !handle.isCancelled()) {
+                boolean retryInitiated = attemptAdaptiveRetry(handle, exitCode, errorMessage);
+                if (retryInitiated) {
+                    // Retry was started - don't complete the future yet
+                    return;
+                }
+            }
+
+            // No retry (or retry exhausted) - complete with failure
             handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
                     handle.getTaskId(), exitCode, errorMessage, handle.getCurrentPhase(),
                     handle.isCancelled(), handle.isOomDetected()));
@@ -1515,12 +2140,18 @@ public class SubprocessIngestLauncher {
                         ? "Native crash in embedding/indexing - see logs for details"
                         : errorMessage;
 
+                IngestProgressUpdate.IngestPhase phase = toProgressPhase(handle.getCurrentPhase());
+
                 if (handle.isCancelled()) {
                     progressTracker.cancelTask(handle.getTaskId(), handle.getFileName(),
-                            toProgressPhase(handle.getCurrentPhase()), uiMessage, null);
+                            phase, uiMessage, null);
+                } else if (isOomFailure) {
+                    // Use OOM-specific failure with prominent indicator for UI
+                    progressTracker.failTaskOutOfMemory(handle.getTaskId(), handle.getFileName(),
+                            phase, uiMessage);
                 } else {
                     progressTracker.failTask(handle.getTaskId(), handle.getFileName(),
-                            toProgressPhase(handle.getCurrentPhase()), uiMessage);
+                            phase, uiMessage);
                 }
             }
 
@@ -1530,7 +2161,142 @@ public class SubprocessIngestLauncher {
                         errorMessage, null,
                         ai.kompile.app.ingest.domain.IndexingJobHistory.FailureReason.valueOf(failureReason));
             }
+
+            // Cleanup job tracking on final failure
+            String jobId = taskToJobId.remove(handle.getTaskId());
+            if (jobId != null) {
+                jobLaunchContexts.remove(jobId);
+                jobRetryState.remove(jobId);
+                // Keep checkpoint for debugging, but could delete here if desired
+            }
         }
+    }
+
+    /**
+     * Attempt adaptive retry after OOM failure.
+     *
+     * @return true if retry was initiated, false if retry exhausted or not applicable
+     */
+    private boolean attemptAdaptiveRetry(SubprocessHandle handle, int exitCode, String errorMessage) {
+        String taskId = handle.getTaskId();
+        String jobId = taskToJobId.get(taskId);
+
+        if (jobId == null) {
+            logger.warn("Cannot retry task {}: no jobId found", taskId);
+            return false;
+        }
+
+        LaunchContext context = jobLaunchContexts.get(jobId);
+        if (context == null) {
+            logger.warn("Cannot retry task {}: no launch context found for job {}", taskId, jobId);
+            return false;
+        }
+
+        // Load or create checkpoint
+        Path checkpointPath = getCheckpointPath(jobId);
+        ai.kompile.app.subprocess.IngestCheckpoint checkpoint =
+                ai.kompile.app.subprocess.IngestCheckpoint.loadOrCreate(
+                        checkpointPath, jobId, taskId, context.filePath().toString());
+
+        // Record this OOM failure in checkpoint
+        String currentHeapSize = getEffectiveHeapSize(context.originalOptions());
+        int currentBatchSize = SubprocessArgs.DEFAULT_EMBEDDING_BATCH_SIZE;
+        if (context.originalOptions() != null && context.originalOptions().containsKey("embeddingBatchSize")) {
+            currentBatchSize = ((Number) context.originalOptions().get("embeddingBatchSize")).intValue();
+        }
+        int currentNd4jThreads = Runtime.getRuntime().availableProcessors() / 2;
+        int currentOmpThreads = currentNd4jThreads;
+
+        // If we have previous retry state, use those settings
+        RetryState previousState = jobRetryState.get(jobId);
+        if (previousState != null && previousState.currentSettings() != null) {
+            currentHeapSize = previousState.currentSettings().getHeapSize();
+            currentBatchSize = previousState.currentSettings().getBatchSize();
+            currentNd4jThreads = previousState.currentSettings().getNd4jThreads();
+            currentOmpThreads = previousState.currentSettings().getOmpThreads();
+        }
+
+        checkpoint.recordOomFailure(currentHeapSize, currentBatchSize, currentNd4jThreads,
+                currentOmpThreads, errorMessage, handle.getCurrentPhase());
+
+        // Save checkpoint
+        try {
+            checkpoint.save(checkpointPath);
+        } catch (IOException e) {
+            logger.error("Failed to save checkpoint for job {}: {}", jobId, e.getMessage());
+        }
+
+        // Calculate next settings using adaptive recovery
+        String maxHeapSize = getMaxAllowedHeapSize();
+        ai.kompile.app.subprocess.AdaptiveRecoverySettings newSettings =
+                ai.kompile.app.subprocess.AdaptiveRecoverySettings.fromCheckpoint(
+                        checkpoint, maxHeapSize, SubprocessArgs.DEFAULT_EMBEDDING_BATCH_SIZE);
+
+        if (!newSettings.shouldRetry() || newSettings.isShouldGiveUp()) {
+            logger.error("ADAPTIVE RETRY EXHAUSTED for job {}: {}", jobId, newSettings.getGiveUpReason());
+            // Let the normal failure handling proceed
+            return false;
+        }
+
+        // Initiate retry
+        logger.info("========================================");
+        logger.info("ADAPTIVE RETRY #{} for job {}", newSettings.getRetryAttempt(), jobId);
+        logger.info("Previous settings failed: heap={}, batch={}, threads={}",
+                currentHeapSize, currentBatchSize, currentNd4jThreads);
+        logger.info("New settings: {}", newSettings.toSummary());
+        logger.info("Checkpoint: {} embedded, {} indexed of {} chunks",
+                checkpoint.getEmbeddedCount(), checkpoint.getIndexedCount(), checkpoint.getTotalChunks());
+        logger.info("========================================");
+
+        // Store new retry state
+        jobRetryState.put(jobId, new RetryState(jobId, newSettings.getRetryAttempt(), newSettings, checkpoint));
+
+        // Notify UI about retry
+        if (progressTracker != null) {
+            progressTracker.sendLog(taskId, "RETRY",
+                    String.format("Adaptive retry #%d: Adjusting settings (heap=%s, batch=%d, threads=%d)",
+                            newSettings.getRetryAttempt(), newSettings.getHeapSize(),
+                            newSettings.getBatchSize(), newSettings.getNd4jThreads()));
+        }
+
+        // Generate new taskId for retry (keeps jobId the same)
+        String newTaskId = taskId + "-retry" + newSettings.getRetryAttempt();
+
+        // Launch new subprocess asynchronously
+        CompletableFuture.runAsync(() -> {
+            try {
+                // Small delay to allow cleanup
+                Thread.sleep(1000);
+
+                launchIngestInternal(
+                        newTaskId,
+                        jobId,
+                        context.filePath(),
+                        context.loaderName(),
+                        context.chunkerName(),
+                        context.originalOptions(),
+                        newSettings
+                );
+            } catch (Exception e) {
+                logger.error("Failed to launch retry subprocess for job {}: {}", jobId, e.getMessage(), e);
+                // Complete the original future with failure
+                context.resultFuture().complete(SubprocessHandle.SubprocessResult.failure(
+                        taskId, exitCode, "Retry failed: " + e.getMessage(), handle.getCurrentPhase(),
+                        false, true));
+            }
+        });
+
+        return true;
+    }
+
+    /**
+     * Get maximum allowed heap size for subprocess retry.
+     */
+    private String getMaxAllowedHeapSize() {
+        // Could be configurable - for now, use 16GB or system max, whichever is lower
+        long maxSystemMemory = Runtime.getRuntime().maxMemory();
+        long targetMax = Math.min(16L * 1024 * 1024 * 1024, maxSystemMemory * 2);
+        return ai.kompile.app.subprocess.AdaptiveRecoverySettings.formatHeapSize(targetMax);
     }
 
     /**
@@ -1569,6 +2335,19 @@ public class SubprocessIngestLauncher {
      * to reading from environment variables.
      */
     private String captureNd4jConfig() {
+        // Check if device routing provides a service-specific config for ingest
+        if (deviceRoutingConfigService != null && deviceRoutingConfigService.isEnabled()) {
+            try {
+                Nd4jEnvironmentConfig routedConfig = deviceRoutingConfigService
+                        .resolveNd4jConfigForService(DeviceRoutingConfig.SERVICE_INGEST);
+                logger.info("Using device-routed ND4J config for ingest: maxThreads={}, cudaDevice={}",
+                        routedConfig.maxThreads(), routedConfig.cudaCurrentDevice());
+                return objectMapper.writeValueAsString(routedConfig);
+            } catch (Exception e) {
+                logger.warn("Failed to resolve device-routed config for ingest, falling back: {}", e.getMessage());
+            }
+        }
+
         Nd4jEnvironmentConfig config = null;
 
         // Prefer capturing the live ND4J config if the service is available, but fall
@@ -1701,6 +2480,24 @@ public class SubprocessIngestLauncher {
             }
         }
 
+        // Set OMP_NUM_THREADS to ND4J's maxThreads if not already set
+        // This ensures OpenMP uses the same thread count as ND4J
+        if (!env.containsKey("OMP_NUM_THREADS")) {
+            try {
+                int maxThreads = (int) org.nd4j.linalg.factory.Nd4j.getEnvironment().maxThreads();
+                if (maxThreads > 0) {
+                    env.put("OMP_NUM_THREADS", String.valueOf(maxThreads));
+                    env.put("MKL_NUM_THREADS", String.valueOf(maxThreads));
+                    env.put("OPENBLAS_NUM_THREADS", String.valueOf(maxThreads));
+                    env.put("GOTO_NUM_THREADS", String.valueOf(maxThreads));
+                    logger.info("Set OMP_NUM_THREADS={} from ND4J maxThreads", maxThreads);
+                    propagated += 4;
+                }
+            } catch (Exception e) {
+                logger.debug("Could not get ND4J maxThreads: {}", e.getMessage());
+            }
+        }
+
         logger.info("Propagated {} ND4J environment variables to subprocess", propagated);
     }
 
@@ -1719,10 +2516,11 @@ public class SubprocessIngestLauncher {
 
                 handle.cancel();
 
-                // Update status
+                // Update status with specific failure reason for stuck processes
                 if (progressTracker != null) {
                     progressTracker.failTask(handle.getTaskId(), handle.getFileName(),
-                            toProgressPhase(handle.getCurrentPhase()), "Process became unresponsive (no heartbeat)");
+                            toProgressPhase(handle.getCurrentPhase()), "Process became unresponsive (no heartbeat)",
+                            IngestProgressUpdate.FailureReason.PROCESS_STUCK);
                 }
             }
         }
@@ -1802,10 +2600,12 @@ public class SubprocessIngestLauncher {
 
     /**
      * Normalize phase names to match enum values.
-     * Handles common variations like "COMPLETE" -> "COMPLETED", "STARTING" -> "LOADING".
+     * Handles common variations like "COMPLETE" -> "COMPLETED", "STARTING" ->
+     * "LOADING".
      */
     private String normalizePhase(String phase) {
-        if (phase == null) return "QUEUED";
+        if (phase == null)
+            return "QUEUED";
         String upper = phase.toUpperCase().trim();
         return switch (upper) {
             case "COMPLETE" -> "COMPLETED";
@@ -1818,6 +2618,7 @@ public class SubprocessIngestLauncher {
             case "LOAD" -> "LOADING";
             case "CONVERT" -> "CONVERTING";
             case "FAIL", "ERROR" -> "FAILED";
+            case "INDEXING+EMBEDDING", "INDEX+EMBED" -> "INDEXING_AND_EMBEDDING";
             default -> upper;
         };
     }

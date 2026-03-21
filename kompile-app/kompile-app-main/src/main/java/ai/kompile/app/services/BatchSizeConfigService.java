@@ -65,19 +65,23 @@ public class BatchSizeConfigService {
             "Retrieval-augmented generation combines the strengths of dense retrieval systems with large language models, allowing the model to access external knowledge bases during inference, thereby reducing hallucinations and improving factual accuracy in generated responses.",
             "Vector databases have become essential infrastructure for modern AI applications, providing efficient similarity search capabilities through algorithms like HNSW (Hierarchical Navigable Small World) graphs and inverted file indexes, enabling sub-linear time complexity for nearest neighbor queries in high-dimensional spaces.",
             "The emergence of foundation models has transformed the landscape of artificial intelligence, with large pre-trained models serving as the basis for numerous downstream applications across vision, language, and multimodal domains. These models, trained on vast amounts of data using self-supervised objectives, exhibit remarkable transfer learning capabilities, allowing practitioners to achieve strong performance on specialized tasks with minimal fine-tuning. The scaling laws observed in these models suggest that performance continues to improve with increased model size, data volume, and computational resources, driving the development of ever larger systems.",
-            "Natural language understanding encompasses a broad range of tasks including named entity recognition, sentiment analysis, question answering, and semantic role labeling."
-    );
+            "Natural language understanding encompasses a broad range of tasks including named entity recognition, sentiment analysis, question answering, and semantic role labeling.");
 
     @Autowired
     public BatchSizeConfigService(
             @Autowired(required = false) List<EmbeddingModel> embeddingModels,
             @Autowired(required = false) AnseriniEmbeddingProperties embeddingProperties,
-            @Value("${kompile.data.dir:#{systemProperties['user.home'] + '/.kompile'}}") String dataDir
-    ) {
+            @Value("${kompile.data.dir:#{null}}") String dataDir) {
         this.embeddingModels = embeddingModels != null ? embeddingModels : List.of();
         this.embeddingProperties = embeddingProperties;
         this.objectMapper = new ObjectMapper();
-        this.configFilePath = Paths.get(dataDir, "config", CONFIG_FILENAME);
+
+        // Use provided dataDir, or fall back to ~/.kompile if not set
+        String effectiveDataDir = dataDir;
+        if (effectiveDataDir == null || effectiveDataDir.isBlank()) {
+            effectiveDataDir = System.getProperty("user.home") + "/.kompile";
+        }
+        this.configFilePath = Paths.get(effectiveDataDir, "config", CONFIG_FILENAME);
         log.info("BatchSizeConfigService initialized with {} embedding models, config path: {}",
                 this.embeddingModels.size(), configFilePath);
     }
@@ -87,6 +91,12 @@ public class BatchSizeConfigService {
      */
     @PostConstruct
     public void loadPersistedConfig() {
+        // Skip loading if configFilePath is null (dataDir not configured)
+        if (configFilePath == null) {
+            log.warn("Cannot load batch config - kompile.data.dir not configured. Using defaults.");
+            return;
+        }
+
         log.info("Loading persisted batch config from: {}", configFilePath);
 
         if (embeddingProperties == null) {
@@ -95,7 +105,8 @@ public class BatchSizeConfigService {
         }
 
         if (!Files.exists(configFilePath)) {
-            log.info("No persisted batch config found at {} - will use defaults until benchmark is run", configFilePath);
+            log.info("No persisted batch config found at {} - will use defaults until benchmark is run",
+                    configFilePath);
             return;
         }
 
@@ -103,9 +114,11 @@ public class BatchSizeConfigService {
             String json = Files.readString(configFilePath);
             log.info("Read batch config file, content length: {} bytes", json.length());
 
-            // Use simple Map<String, Map<String, Object>> for reliable Jackson deserialization
+            // Use simple Map<String, Map<String, Object>> for reliable Jackson
+            // deserialization
             Map<String, Map<String, Object>> configs = objectMapper.readValue(
-                    json, new TypeReference<Map<String, Map<String, Object>>>() {});
+                    json, new TypeReference<Map<String, Map<String, Object>>>() {
+                    });
 
             int loadedCount = 0;
             for (Map.Entry<String, Map<String, Object>> entry : configs.entrySet()) {
@@ -113,17 +126,69 @@ public class BatchSizeConfigService {
                 Map<String, Object> config = entry.getValue();
 
                 Integer optimalBatchSize = config.get("optimalBatchSize") != null
-                        ? ((Number) config.get("optimalBatchSize")).intValue() : null;
+                        ? ((Number) config.get("optimalBatchSize")).intValue()
+                        : null;
                 Integer maxBatchSize = config.get("maxBatchSize") != null
-                        ? ((Number) config.get("maxBatchSize")).intValue() : null;
+                        ? ((Number) config.get("maxBatchSize")).intValue()
+                        : null;
                 Double memoryScaleFactor = config.get("memoryScaleFactor") != null
-                        ? ((Number) config.get("memoryScaleFactor")).doubleValue() : null;
+                        ? ((Number) config.get("memoryScaleFactor")).doubleValue()
+                        : null;
 
-                BatchSizeOverride override = new BatchSizeOverride(optimalBatchSize, maxBatchSize, memoryScaleFactor);
-                embeddingProperties.setModelOverride(modelId, override);
+                // Handle global settings (special key "__global__")
+                if ("__global__".equals(modelId)) {
+                    if (optimalBatchSize != null) {
+                        embeddingProperties.setBaseOptimalBatchSize(optimalBatchSize);
+                        log.info("SET baseOptimalBatchSize = {} (from persisted config)", optimalBatchSize);
+                    }
+                    if (maxBatchSize != null) {
+                        embeddingProperties.setBaseMaxBatchSize(maxBatchSize);
+                        log.info("SET baseMaxBatchSize = {} (from persisted config)", maxBatchSize);
+                    }
+                    if (memoryScaleFactor != null) {
+                        embeddingProperties.setMemoryScaleFactor(memoryScaleFactor);
+                    }
+
+                    // Load timeout settings
+                    Long modelLoadTimeoutSeconds = config.get("modelLoadTimeoutSeconds") != null
+                            ? ((Number) config.get("modelLoadTimeoutSeconds")).longValue() : null;
+                    Long requestTimeoutMs = config.get("requestTimeoutMs") != null
+                            ? ((Number) config.get("requestTimeoutMs")).longValue() : null;
+                    Long heartbeatTimeoutMs = config.get("heartbeatTimeoutMs") != null
+                            ? ((Number) config.get("heartbeatTimeoutMs")).longValue() : null;
+                    Long embedTimeoutSeconds = config.get("embedTimeoutSeconds") != null
+                            ? ((Number) config.get("embedTimeoutSeconds")).longValue() : null;
+                    Long embedBatchTimeoutSeconds = config.get("embedBatchTimeoutSeconds") != null
+                            ? ((Number) config.get("embedBatchTimeoutSeconds")).longValue() : null;
+
+                    if (modelLoadTimeoutSeconds != null) {
+                        embeddingProperties.setModelLoadTimeoutSeconds(modelLoadTimeoutSeconds);
+                    }
+                    if (requestTimeoutMs != null) {
+                        embeddingProperties.setRequestTimeoutMs(requestTimeoutMs);
+                    }
+                    if (heartbeatTimeoutMs != null) {
+                        embeddingProperties.setHeartbeatTimeoutMs(heartbeatTimeoutMs);
+                    }
+                    if (embedTimeoutSeconds != null) {
+                        embeddingProperties.setEmbedTimeoutSeconds(embedTimeoutSeconds);
+                    }
+                    if (embedBatchTimeoutSeconds != null) {
+                        embeddingProperties.setEmbedBatchTimeoutSeconds(embedBatchTimeoutSeconds);
+                    }
+
+                    log.info("Loaded persisted GLOBAL batch config: optimal={}, max={}, scale={}",
+                            optimalBatchSize, maxBatchSize, memoryScaleFactor);
+                    log.info("Loaded persisted GLOBAL timeout config: modelLoad={}s, request={}ms, heartbeat={}ms, embed={}s, embedBatch={}s",
+                            modelLoadTimeoutSeconds, requestTimeoutMs, heartbeatTimeoutMs, embedTimeoutSeconds, embedBatchTimeoutSeconds);
+                } else {
+                    // Per-model override
+                    BatchSizeOverride override = new BatchSizeOverride(optimalBatchSize, maxBatchSize, memoryScaleFactor);
+                    embeddingProperties.setModelOverride(modelId, override);
+                    log.info("Loaded persisted batch config for model '{}': optimal={}, max={}, scale={}",
+                            modelId, optimalBatchSize, maxBatchSize, memoryScaleFactor);
+                }
                 loadedCount++;
-                log.info("Loaded persisted batch config for model '{}': optimal={}, max={}, scale={}",
-                        modelId, optimalBatchSize, maxBatchSize, memoryScaleFactor);
             }
 
             log.info("Successfully loaded {} persisted batch size configurations from {}", loadedCount, configFilePath);
@@ -136,6 +201,7 @@ public class BatchSizeConfigService {
 
     /**
      * Persist current batch size configurations to file.
+     * Saves both global settings and per-model overrides.
      */
     private void persistConfig() {
         if (embeddingProperties == null) {
@@ -153,6 +219,21 @@ public class BatchSizeConfigService {
 
             // Use simple Map structure for reliable Jackson serialization
             Map<String, Map<String, Object>> configs = new HashMap<>();
+
+            // Save global settings under special key "__global__"
+            Map<String, Object> globalConfig = new HashMap<>();
+            globalConfig.put("optimalBatchSize", embeddingProperties.getBaseOptimalBatchSize());
+            globalConfig.put("maxBatchSize", embeddingProperties.getBaseMaxBatchSize());
+            globalConfig.put("memoryScaleFactor", embeddingProperties.getMemoryScaleFactor());
+            // Save timeout settings
+            globalConfig.put("modelLoadTimeoutSeconds", embeddingProperties.getModelLoadTimeoutSeconds());
+            globalConfig.put("requestTimeoutMs", embeddingProperties.getRequestTimeoutMs());
+            globalConfig.put("heartbeatTimeoutMs", embeddingProperties.getHeartbeatTimeoutMs());
+            globalConfig.put("embedTimeoutSeconds", embeddingProperties.getEmbedTimeoutSeconds());
+            globalConfig.put("embedBatchTimeoutSeconds", embeddingProperties.getEmbedBatchTimeoutSeconds());
+            configs.put("__global__", globalConfig);
+
+            // Save per-model overrides
             for (Map.Entry<String, BatchSizeOverride> entry : embeddingProperties.getAllModelOverrides().entrySet()) {
                 String modelId = entry.getKey();
                 BatchSizeOverride override = entry.getValue();
@@ -166,7 +247,8 @@ public class BatchSizeConfigService {
 
             String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(configs);
             Files.writeString(configFilePath, json);
-            log.info("Persisted batch config for {} models to {}", configs.size(), configFilePath);
+            log.info("Persisted batch config (global + {} model overrides) to {}",
+                    configs.size() - 1, configFilePath);
         } catch (IOException e) {
             log.error("Failed to persist batch config to {}: {}", configFilePath, e.getMessage(), e);
         }
@@ -244,9 +326,9 @@ public class BatchSizeConfigService {
             memoryScaleFactor = embeddingProperties.getEffectiveMemoryScaleFactor(modelId);
             hasOverride = embeddingProperties.hasModelOverride(modelId);
         } else {
-            // Defaults if no properties available
-            optimalBatchSize = 8;
-            maxBatchSize = 16;
+            // Defaults if no properties available - use reasonable batch sizes
+            optimalBatchSize = 32;
+            maxBatchSize = 64;
             memoryScaleFactor = -1.0;
         }
 
@@ -257,7 +339,7 @@ public class BatchSizeConfigService {
                 .modelId(modelId)
                 .currentOptimalBatchSize(optimalBatchSize)
                 .currentMaxBatchSize(maxBatchSize)
-                .absoluteMaxBatchSize(embeddingProperties != null ? embeddingProperties.getAbsoluteMaxBatchSize() : 128)
+                .absoluteMaxBatchSize(embeddingProperties != null ? embeddingProperties.getAbsoluteMaxBatchSize() : getDefaultAbsoluteMaxBatchSize())
                 .memoryScaleFactor(memoryScaleFactor)
                 .isAutoScaled(memoryScaleFactor < 0)
                 .availableMemoryMb(availableMemoryMb)
@@ -285,12 +367,12 @@ public class BatchSizeConfigService {
             // Get existing override or create new
             BatchSizeOverride currentOverride = embeddingProperties.getModelOverride(modelId);
 
-            Integer newOptimal = optimalBatchSize != null ? optimalBatchSize :
-                    (currentOverride != null ? currentOverride.optimalBatchSize() : null);
-            Integer newMax = maxBatchSize != null ? maxBatchSize :
-                    (currentOverride != null ? currentOverride.maxBatchSize() : null);
-            Double newScale = memoryScaleFactor != null ? memoryScaleFactor :
-                    (currentOverride != null ? currentOverride.memoryScaleFactor() : null);
+            Integer newOptimal = optimalBatchSize != null ? optimalBatchSize
+                    : (currentOverride != null ? currentOverride.optimalBatchSize() : null);
+            Integer newMax = maxBatchSize != null ? maxBatchSize
+                    : (currentOverride != null ? currentOverride.maxBatchSize() : null);
+            Double newScale = memoryScaleFactor != null ? memoryScaleFactor
+                    : (currentOverride != null ? currentOverride.memoryScaleFactor() : null);
 
             embeddingProperties.setModelOverride(modelId, new BatchSizeOverride(newOptimal, newMax, newScale));
             log.info("Updated batch size override for model {}: optimal={}, max={}, scale={}",
@@ -306,6 +388,17 @@ public class BatchSizeConfigService {
             if (memoryScaleFactor != null) {
                 embeddingProperties.setMemoryScaleFactor(memoryScaleFactor);
             }
+
+            // IMPORTANT: Clear all per-model overrides when updating global settings
+            // Otherwise per-model overrides would take precedence over the new global value
+            Map<String, BatchSizeOverride> allOverrides = embeddingProperties.getAllModelOverrides();
+            if (!allOverrides.isEmpty()) {
+                log.info("Clearing {} per-model overrides to apply global settings", allOverrides.size());
+                for (String overrideModelId : allOverrides.keySet()) {
+                    embeddingProperties.clearModelOverride(overrideModelId);
+                }
+            }
+
             log.info("Updated global batch size settings: optimal={}, max={}, scale={}",
                     optimalBatchSize, maxBatchSize, memoryScaleFactor);
         }
@@ -339,6 +432,124 @@ public class BatchSizeConfigService {
         persistConfig();
 
         return getConfiguration(modelId);
+    }
+
+    // ========== TIMEOUT CONFIGURATION ==========
+
+    /**
+     * Gets current timeout configuration.
+     *
+     * @return map containing all timeout settings
+     */
+    public Map<String, Object> getTimeoutConfiguration() {
+        Map<String, Object> config = new LinkedHashMap<>();
+
+        if (embeddingProperties != null) {
+            config.put("modelLoadTimeoutSeconds", embeddingProperties.getModelLoadTimeoutSeconds());
+            config.put("requestTimeoutMs", embeddingProperties.getRequestTimeoutMs());
+            config.put("heartbeatTimeoutMs", embeddingProperties.getHeartbeatTimeoutMs());
+            config.put("embedTimeoutSeconds", embeddingProperties.getEmbedTimeoutSeconds());
+            config.put("embedBatchTimeoutSeconds", embeddingProperties.getEmbedBatchTimeoutSeconds());
+        } else {
+            // Defaults when properties not available - match AnseriniEmbeddingConfiguration defaults
+            config.put("modelLoadTimeoutSeconds", 300L);  // 5 minutes
+            config.put("requestTimeoutMs", 60000L);       // 60 seconds
+            config.put("heartbeatTimeoutMs", 60000L);     // 60 seconds
+            config.put("embedTimeoutSeconds", 120L);      // 2 minutes
+            config.put("embedBatchTimeoutSeconds", 300L); // 5 minutes
+        }
+
+        config.put("timeoutsEnabled", isAnyTimeoutEnabled());
+
+        return config;
+    }
+
+    /**
+     * Updates timeout configuration.
+     *
+     * @param modelLoadTimeoutSeconds timeout for model loading (0 = no timeout)
+     * @param requestTimeoutMs timeout for subprocess requests (0 = no timeout)
+     * @param heartbeatTimeoutMs timeout for heartbeat detection (0 = no timeout)
+     * @param embedTimeoutSeconds timeout for single embed (0 = no timeout)
+     * @param embedBatchTimeoutSeconds timeout for batch embed (0 = no timeout)
+     * @return updated timeout configuration
+     */
+    public Map<String, Object> updateTimeoutConfiguration(
+            Long modelLoadTimeoutSeconds,
+            Long requestTimeoutMs,
+            Long heartbeatTimeoutMs,
+            Long embedTimeoutSeconds,
+            Long embedBatchTimeoutSeconds) {
+
+        if (embeddingProperties == null) {
+            throw new IllegalStateException("Anserini embedding is not enabled - cannot update timeout configuration");
+        }
+
+        if (modelLoadTimeoutSeconds != null) {
+            embeddingProperties.setModelLoadTimeoutSeconds(modelLoadTimeoutSeconds);
+        }
+        if (requestTimeoutMs != null) {
+            embeddingProperties.setRequestTimeoutMs(requestTimeoutMs);
+        }
+        if (heartbeatTimeoutMs != null) {
+            embeddingProperties.setHeartbeatTimeoutMs(heartbeatTimeoutMs);
+        }
+        if (embedTimeoutSeconds != null) {
+            embeddingProperties.setEmbedTimeoutSeconds(embedTimeoutSeconds);
+        }
+        if (embedBatchTimeoutSeconds != null) {
+            embeddingProperties.setEmbedBatchTimeoutSeconds(embedBatchTimeoutSeconds);
+        }
+
+        log.info("Updated timeout configuration: modelLoad={}s, request={}ms, heartbeat={}ms, embed={}s, embedBatch={}s",
+                embeddingProperties.getModelLoadTimeoutSeconds(),
+                embeddingProperties.getRequestTimeoutMs(),
+                embeddingProperties.getHeartbeatTimeoutMs(),
+                embeddingProperties.getEmbedTimeoutSeconds(),
+                embeddingProperties.getEmbedBatchTimeoutSeconds());
+
+        // Persist configuration
+        persistConfig();
+
+        return getTimeoutConfiguration();
+    }
+
+    /**
+     * Resets timeout configuration to defaults (no timeouts).
+     *
+     * @return updated timeout configuration
+     */
+    public Map<String, Object> resetTimeoutConfiguration() {
+        if (embeddingProperties == null) {
+            throw new IllegalStateException("Anserini embedding is not enabled");
+        }
+
+        embeddingProperties.setModelLoadTimeoutSeconds(0);
+        embeddingProperties.setRequestTimeoutMs(0);
+        embeddingProperties.setHeartbeatTimeoutMs(0);
+        embeddingProperties.setEmbedTimeoutSeconds(0);
+        embeddingProperties.setEmbedBatchTimeoutSeconds(0);
+
+        log.info("Reset timeout configuration to defaults (no timeouts)");
+
+        // Persist configuration
+        persistConfig();
+
+        return getTimeoutConfiguration();
+    }
+
+    /**
+     * Checks if any timeout is enabled.
+     */
+    private boolean isAnyTimeoutEnabled() {
+        if (embeddingProperties == null) {
+            return false;
+        }
+        return embeddingProperties.getModelLoadTimeoutSeconds() > 0 ||
+                embeddingProperties.getRequestTimeoutMs() > 0 ||
+                embeddingProperties.getHeartbeatTimeoutMs() > 0 ||
+                embeddingProperties.getEmbedTimeoutSeconds() > 0 ||
+                embeddingProperties.getEmbedBatchTimeoutSeconds() > 0;
     }
 
     /**
@@ -377,8 +588,7 @@ public class BatchSizeConfigService {
 
         for (int batchSize : batchSizes) {
             BatchSizeTestResult result = runSingleBatchTest(
-                    model, sampleTexts, batchSize, iterations, warmupIterations, timeoutSeconds
-            );
+                    model, sampleTexts, batchSize, iterations, warmupIterations, timeoutSeconds);
             results.add(result);
 
             if (result.success()) {
@@ -421,8 +631,7 @@ public class BatchSizeConfigService {
             int batchSize,
             int iterations,
             int warmupIterations,
-            int timeoutSeconds
-    ) {
+            int timeoutSeconds) {
         log.debug("Testing batch size: {}", batchSize);
 
         // Prepare batch of texts
@@ -490,8 +699,7 @@ public class BatchSizeConfigService {
                     memoryUsed,
                     peakMemory - memoryBefore,
                     estimatedTokens * iterations,
-                    batchSize * iterations
-            );
+                    batchSize * iterations);
 
         } catch (OutOfMemoryError e) {
             System.gc(); // Try to recover
@@ -511,12 +719,12 @@ public class BatchSizeConfigService {
         int recommended = 1;
 
         for (BatchSizeTestResult result : results) {
-            if (!result.success()) continue;
+            if (!result.success())
+                continue;
 
             // Score = throughput / variance factor
             // Prefer stable performance (low stdDev)
-            double varianceFactor = result.stdDevMs() > 0 ?
-                    Math.max(1.0, result.stdDevMs() / result.avgTimeMs()) : 1.0;
+            double varianceFactor = result.stdDevMs() > 0 ? Math.max(1.0, result.stdDevMs() / result.avgTimeMs()) : 1.0;
             double score = result.tokensPerSecond() / varianceFactor;
 
             // Penalize very high memory usage
@@ -565,7 +773,8 @@ public class BatchSizeConfigService {
      * Gets display name for a model.
      */
     private String getDisplayName(String modelId) {
-        if (modelId == null) return "Unknown";
+        if (modelId == null)
+            return "Unknown";
 
         return switch (modelId.toLowerCase()) {
             case "bge-base-en-v1.5" -> "BGE Base English v1.5";
@@ -599,6 +808,31 @@ public class BatchSizeConfigService {
     }
 
     /**
+     * Calculates default absolute max batch size based on available memory.
+     * Used when embeddingProperties is not available.
+     */
+    private int getDefaultAbsoluteMaxBatchSize() {
+        Runtime runtime = Runtime.getRuntime();
+        long maxHeapMb = runtime.maxMemory() / (1024 * 1024);
+
+        if (maxHeapMb >= 64 * 1024) {      // 64GB+
+            return 8192;
+        } else if (maxHeapMb >= 32 * 1024) { // 32GB
+            return 4096;
+        } else if (maxHeapMb >= 16 * 1024) { // 16GB
+            return 2048;
+        } else if (maxHeapMb >= 8 * 1024) {  // 8GB
+            return 1024;
+        } else if (maxHeapMb >= 4 * 1024) {  // 4GB
+            return 512;
+        } else if (maxHeapMb >= 2 * 1024) {  // 2GB
+            return 256;
+        } else {
+            return 128;
+        }
+    }
+
+    /**
      * Builds system information string.
      */
     private String buildSystemInfo() {
@@ -607,8 +841,7 @@ public class BatchSizeConfigService {
                 runtime.availableProcessors(),
                 runtime.maxMemory() / (1024 * 1024),
                 (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024),
-                System.getProperty("os.name")
-        );
+                System.getProperty("os.name"));
     }
 
     /**
@@ -623,7 +856,8 @@ public class BatchSizeConfigService {
      * Calculates standard deviation.
      */
     private double calculateStdDev(List<Long> values, double mean) {
-        if (values.size() < 2) return 0;
+        if (values.size() < 2)
+            return 0;
         double variance = values.stream()
                 .mapToDouble(v -> Math.pow(v - mean, 2))
                 .average()

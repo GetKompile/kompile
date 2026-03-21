@@ -61,9 +61,9 @@ public class KnowledgeGraphController {
 
     @GetMapping("/nodes")
     public ResponseEntity<List<GraphNode>> listNodes(
-            @RequestParam(required = false) String type,
-            @RequestParam(required = false) String query,
-            @RequestParam(defaultValue = "50") int limit) {
+            @RequestParam(required = false, name = "type") String type,
+            @RequestParam(required = false, name = "query") String query,
+            @RequestParam(defaultValue = "50", name = "limit") int limit) {
 
         List<GraphNode> nodes;
         if (query != null && !query.isBlank()) {
@@ -79,28 +79,28 @@ public class KnowledgeGraphController {
     }
 
     @GetMapping("/nodes/{nodeId}")
-    public ResponseEntity<?> getNode(@PathVariable String nodeId) {
+    public ResponseEntity<?> getNode(@PathVariable("nodeId") String nodeId) {
         return graphService.getNode(nodeId)
             .map(ResponseEntity::ok)
             .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/nodes/{nodeId}/children")
-    public ResponseEntity<List<GraphNode>> getNodeChildren(@PathVariable String nodeId) {
+    public ResponseEntity<List<GraphNode>> getNodeChildren(@PathVariable("nodeId") String nodeId) {
         return ResponseEntity.ok(graphService.getChildren(nodeId));
     }
 
     @GetMapping("/nodes/{nodeId}/connected")
     public ResponseEntity<List<GraphNode>> getConnectedNodes(
-            @PathVariable String nodeId,
-            @RequestParam(defaultValue = "2") int depth) {
+            @PathVariable("nodeId") String nodeId,
+            @RequestParam(defaultValue = "2", name = "depth") int depth) {
         return ResponseEntity.ok(graphService.getConnectedNodes(nodeId, depth));
     }
 
     @GetMapping("/nodes/{nodeId}/related")
     public ResponseEntity<List<GraphNode>> getRelatedNodes(
-            @PathVariable String nodeId,
-            @RequestParam(defaultValue = "10") int maxResults) {
+            @PathVariable("nodeId") String nodeId,
+            @RequestParam(defaultValue = "10", name = "maxResults") int maxResults) {
         return ResponseEntity.ok(graphService.findRelatedNodes(nodeId, maxResults));
     }
 
@@ -118,7 +118,7 @@ public class KnowledgeGraphController {
 
     @PatchMapping("/nodes/{nodeId}")
     public ResponseEntity<GraphNode> updateNode(
-            @PathVariable String nodeId,
+            @PathVariable("nodeId") String nodeId,
             @RequestBody UpdateNodeRequest request) {
         GraphNode node = graphService.updateNode(
             nodeId,
@@ -130,7 +130,7 @@ public class KnowledgeGraphController {
     }
 
     @DeleteMapping("/nodes/{nodeId}")
-    public ResponseEntity<Void> deleteNode(@PathVariable String nodeId) {
+    public ResponseEntity<Void> deleteNode(@PathVariable("nodeId") String nodeId) {
         graphService.deleteNode(nodeId);
         return ResponseEntity.noContent().build();
     }
@@ -141,8 +141,10 @@ public class KnowledgeGraphController {
 
     @GetMapping("/edges")
     public ResponseEntity<List<GraphEdge>> listEdges(
-            @RequestParam(required = false) String nodeId,
-            @RequestParam(required = false) String type) {
+            @RequestParam(required = false, name = "nodeId") String nodeId,
+            @RequestParam(required = false, name = "type") String type,
+            @RequestParam(required = false, name = "query") String query,
+            @RequestParam(defaultValue = "100", name = "limit") int limit) {
 
         if (nodeId != null) {
             if (type != null) {
@@ -151,12 +153,30 @@ public class KnowledgeGraphController {
             }
             return ResponseEntity.ok(graphService.getEdgesForNode(nodeId));
         }
-        // Return empty if no nodeId specified (too many edges otherwise)
+
+        // Search across all edges if query is provided
+        if (query != null && !query.isBlank()) {
+            List<GraphEdge> edges = graphService.searchEdges(query,
+                type != null ? EdgeType.valueOf(type.toUpperCase()) : null, limit);
+            return ResponseEntity.ok(edges);
+        }
+
+        // Return empty if no nodeId or query specified (too many edges otherwise)
         return ResponseEntity.ok(List.of());
     }
 
+    @GetMapping("/edges/search")
+    public ResponseEntity<List<GraphEdge>> searchEdges(
+            @RequestParam(name = "query") String query,
+            @RequestParam(required = false, name = "type") String type,
+            @RequestParam(defaultValue = "50", name = "limit") int limit) {
+        EdgeType edgeType = type != null ? EdgeType.valueOf(type.toUpperCase()) : null;
+        List<GraphEdge> edges = graphService.searchEdges(query, edgeType, limit);
+        return ResponseEntity.ok(edges);
+    }
+
     @GetMapping("/edges/{edgeId}")
-    public ResponseEntity<?> getEdge(@PathVariable String edgeId) {
+    public ResponseEntity<?> getEdge(@PathVariable("edgeId") String edgeId) {
         return graphService.getEdge(edgeId)
             .map(ResponseEntity::ok)
             .orElse(ResponseEntity.notFound().build());
@@ -176,14 +196,14 @@ public class KnowledgeGraphController {
 
     @PatchMapping("/edges/{edgeId}")
     public ResponseEntity<GraphEdge> updateEdge(
-            @PathVariable String edgeId,
+            @PathVariable("edgeId") String edgeId,
             @RequestBody UpdateEdgeRequest request) {
         GraphEdge edge = graphService.updateEdge(edgeId, request.weight(), request.description());
         return ResponseEntity.ok(edge);
     }
 
     @DeleteMapping("/edges/{edgeId}")
-    public ResponseEntity<Void> deleteEdge(@PathVariable String edgeId) {
+    public ResponseEntity<Void> deleteEdge(@PathVariable("edgeId") String edgeId) {
         graphService.deleteEdge(edgeId);
         return ResponseEntity.noContent().build();
     }
@@ -194,7 +214,7 @@ public class KnowledgeGraphController {
 
     @GetMapping("/weights")
     public ResponseEntity<List<SourceWeight>> listWeights(
-            @RequestParam(required = false) String sourceId) {
+            @RequestParam(required = false, name = "sourceId") String sourceId) {
         if (sourceId != null) {
             return ResponseEntity.ok(weightingService.getAllWeightsForSource(sourceId));
         }
@@ -204,8 +224,8 @@ public class KnowledgeGraphController {
 
     @GetMapping("/weights/{sourceId}")
     public ResponseEntity<SourceWeight> getWeight(
-            @PathVariable String sourceId,
-            @RequestParam(required = false) String topic) {
+            @PathVariable("sourceId") String sourceId,
+            @RequestParam(required = false, name = "topic") String topic) {
         return ResponseEntity.ok(weightingService.getSourceWeight(sourceId, topic));
     }
 
@@ -222,9 +242,9 @@ public class KnowledgeGraphController {
 
     @DeleteMapping("/weights/{sourceId}")
     public ResponseEntity<Void> removeWeight(
-            @PathVariable String sourceId,
-            @RequestParam(required = false) String topic,
-            @RequestParam(required = false) String userId) {
+            @PathVariable("sourceId") String sourceId,
+            @RequestParam(required = false, name = "topic") String topic,
+            @RequestParam(required = false, name = "userId") String userId) {
         weightingService.removeWeight(sourceId, topic, userId);
         return ResponseEntity.noContent().build();
     }
@@ -255,14 +275,14 @@ public class KnowledgeGraphController {
 
     @PostMapping("/topics/{sourceId}")
     public ResponseEntity<Void> assignTopic(
-            @PathVariable String sourceId,
+            @PathVariable("sourceId") String sourceId,
             @RequestBody AssignTopicRequest request) {
         weightingService.assignTopic(sourceId, request.topic());
         return ResponseEntity.ok().build();
     }
 
     @GetMapping("/topics/{topic}/sources")
-    public ResponseEntity<List<String>> getSourcesForTopic(@PathVariable String topic) {
+    public ResponseEntity<List<String>> getSourcesForTopic(@PathVariable("topic") String topic) {
         return ResponseEntity.ok(weightingService.getSourcesForTopic(topic));
     }
 
@@ -277,9 +297,9 @@ public class KnowledgeGraphController {
 
     @GetMapping("/visualization")
     public ResponseEntity<Map<String, Object>> getVisualizationData(
-            @RequestParam(required = false) String rootNodeId,
-            @RequestParam(defaultValue = "2") int depth,
-            @RequestParam(defaultValue = "100") int maxNodes) {
+            @RequestParam(required = false, name = "rootNodeId") String rootNodeId,
+            @RequestParam(defaultValue = "2", name = "depth") int depth,
+            @RequestParam(defaultValue = "100", name = "maxNodes") int maxNodes) {
         return ResponseEntity.ok(graphService.getVisualizationData(rootNodeId, depth, maxNodes));
     }
 
@@ -304,7 +324,7 @@ public class KnowledgeGraphController {
     }
 
     @GetMapping("/build/status/{jobId}")
-    public ResponseEntity<BuildStatus> getBuildStatus(@PathVariable String jobId) {
+    public ResponseEntity<BuildStatus> getBuildStatus(@PathVariable("jobId") String jobId) {
         BuildStatus status = graphBuildingService.getBuildStatus(jobId);
         if (status == null) {
             return ResponseEntity.notFound().build();
@@ -313,7 +333,7 @@ public class KnowledgeGraphController {
     }
 
     @PostMapping("/build/cancel/{jobId}")
-    public ResponseEntity<Map<String, Object>> cancelBuild(@PathVariable String jobId) {
+    public ResponseEntity<Map<String, Object>> cancelBuild(@PathVariable("jobId") String jobId) {
         boolean cancelled = graphBuildingService.cancelBuild(jobId);
         return ResponseEntity.ok(Map.of(
             "jobId", jobId,
@@ -333,7 +353,7 @@ public class KnowledgeGraphController {
 
     @PostMapping("/build/shared-entity-edges")
     public ResponseEntity<Map<String, Object>> createSharedEntityEdges(
-            @RequestParam(defaultValue = "1") int minSharedEntities) {
+            @RequestParam(defaultValue = "1", name = "minSharedEntities") int minSharedEntities) {
         int edgesCreated = graphBuildingService.createSharedEntityEdges(minSharedEntities);
         return ResponseEntity.ok(Map.of(
             "edgesCreated", edgesCreated,
@@ -355,7 +375,7 @@ public class KnowledgeGraphController {
 
     @PostMapping("/links/sources")
     public ResponseEntity<LinkingResult> linkSourcesBySharedConcepts(
-            @RequestParam(required = false) Long factSheetId,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId,
             @RequestBody(required = false) LinkingConfigRequest config) {
         LinkingConfig linkingConfig = config != null ? config.toConfig() : LinkingConfig.defaults();
         LinkingResult result = sourceLinkingService.linkSourcesBySharedConcepts(factSheetId, linkingConfig);
@@ -364,7 +384,7 @@ public class KnowledgeGraphController {
 
     @PostMapping("/links/sources/similarity")
     public ResponseEntity<LinkingResult> linkSourcesByEmbeddingSimilarity(
-            @RequestParam(required = false) Long factSheetId,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId,
             @RequestBody(required = false) LinkingConfigRequest config) {
         LinkingConfig linkingConfig = config != null ? config.toConfig() : LinkingConfig.defaults();
         LinkingResult result = sourceLinkingService.linkSourcesByEmbeddingSimilarity(factSheetId, linkingConfig);
@@ -373,7 +393,7 @@ public class KnowledgeGraphController {
 
     @PostMapping("/links/sources/all")
     public ResponseEntity<LinkingResult> linkAllSources(
-            @RequestParam(required = false) Long factSheetId,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId,
             @RequestBody(required = false) LinkingConfigRequest config) {
         LinkingConfig linkingConfig = config != null ? config.toConfig() : LinkingConfig.defaults();
         LinkingResult result = sourceLinkingService.linkAllSources(factSheetId, linkingConfig);
@@ -382,15 +402,15 @@ public class KnowledgeGraphController {
 
     @GetMapping("/links/sources")
     public ResponseEntity<List<SourceLink>> getSourceLinks(
-            @RequestParam(required = false) Long factSheetId) {
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
         List<SourceLink> links = sourceLinkingService.getSourceLinks(factSheetId);
         return ResponseEntity.ok(links);
     }
 
     @GetMapping("/links/sources/{sourceNodeId}")
     public ResponseEntity<List<SourceLink>> getLinksForSource(
-            @PathVariable String sourceNodeId,
-            @RequestParam(required = false) Long factSheetId) {
+            @PathVariable("sourceNodeId") String sourceNodeId,
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
         List<SourceLink> links = sourceLinkingService.getLinksForSource(factSheetId, sourceNodeId);
         return ResponseEntity.ok(links);
     }
@@ -409,9 +429,9 @@ public class KnowledgeGraphController {
 
     @DeleteMapping("/links")
     public ResponseEntity<Map<String, Object>> removeLink(
-            @RequestParam Long factSheetId,
-            @RequestParam String sourceNodeId1,
-            @RequestParam String sourceNodeId2) {
+            @RequestParam(name = "factSheetId") Long factSheetId,
+            @RequestParam(name = "sourceNodeId1") String sourceNodeId1,
+            @RequestParam(name = "sourceNodeId2") String sourceNodeId2) {
         boolean removed = sourceLinkingService.removeLink(factSheetId, sourceNodeId1, sourceNodeId2);
         return ResponseEntity.ok(Map.of(
             "removed", removed,
@@ -422,22 +442,22 @@ public class KnowledgeGraphController {
 
     @GetMapping("/links/connectivity")
     public ResponseEntity<Map<String, Object>> getConnectivitySummary(
-            @RequestParam(required = false) Long factSheetId) {
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
         Map<String, Object> summary = sourceLinkingService.getConnectivitySummary(factSheetId);
         return ResponseEntity.ok(summary);
     }
 
     @GetMapping("/links/isolated")
     public ResponseEntity<List<String>> findIsolatedSources(
-            @RequestParam(required = false) Long factSheetId) {
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId) {
         List<String> isolated = sourceLinkingService.findIsolatedSources(factSheetId);
         return ResponseEntity.ok(isolated);
     }
 
     @GetMapping("/links/most-connected")
     public ResponseEntity<List<Map<String, Object>>> findMostConnectedSources(
-            @RequestParam(required = false) Long factSheetId,
-            @RequestParam(defaultValue = "10") int limit) {
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "10", name = "limit") int limit) {
         List<Map<String, Object>> connected = sourceLinkingService.findMostConnectedSources(factSheetId, limit);
         return ResponseEntity.ok(connected);
     }
@@ -487,26 +507,26 @@ public class KnowledgeGraphController {
 
     @GetMapping("/terms/nodes")
     public ResponseEntity<List<String>> findNodesWithTerm(
-            @RequestParam String term,
-            @RequestParam(required = false) Long factSheetId,
-            @RequestParam(defaultValue = "100") int limit) {
+            @RequestParam(name = "term") String term,
+            @RequestParam(name = "factSheetId", required = false) Long factSheetId,
+            @RequestParam(name = "limit", defaultValue = "100") int limit) {
         List<String> nodeIds = sourceLinkingService.findNodesWithTerm(term, factSheetId, limit);
         return ResponseEntity.ok(nodeIds);
     }
 
     @GetMapping("/terms")
     public ResponseEntity<List<Map<String, Object>>> getAllTerms(
-            @RequestParam(required = false) Long factSheetId,
-            @RequestParam(defaultValue = "100") int limit) {
+            @RequestParam(required = false, name = "factSheetId") Long factSheetId,
+            @RequestParam(defaultValue = "100", name = "limit") int limit) {
         List<Map<String, Object>> terms = sourceLinkingService.getAllTerms(factSheetId, limit);
         return ResponseEntity.ok(terms);
     }
 
     @GetMapping("/terms/shared")
     public ResponseEntity<List<String>> getSharedTerms(
-            @RequestParam String nodeId1,
-            @RequestParam String nodeId2,
-            @RequestParam(required = false) Long factSheetId) {
+            @RequestParam(name = "nodeId1") String nodeId1,
+            @RequestParam(name = "nodeId2") String nodeId2,
+            @RequestParam(name = "factSheetId", required = false) Long factSheetId) {
         List<String> sharedTerms = sourceLinkingService.getSharedTerms(nodeId1, nodeId2, factSheetId);
         return ResponseEntity.ok(sharedTerms);
     }

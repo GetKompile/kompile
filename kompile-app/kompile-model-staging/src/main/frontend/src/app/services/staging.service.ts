@@ -32,6 +32,14 @@ import {
   ApiResponse
 } from '../models/api-models';
 
+export interface RestoreResult {
+  modelId: string;
+  success: boolean;
+  message?: string;
+  restoredPath?: string;
+  error?: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -427,6 +435,48 @@ export class StagingService {
    */
   loadArchive(archivePath: string): Observable<any> {
     return this.http.post<any>(`${this.baseUrl}/config/archive/load`, { archivePath })
+      .pipe(catchError(this.handleError));
+  }
+
+  // ==================== Optimization Operations ====================
+
+  /**
+   * Get available optimization types.
+   */
+  getAvailableOptimizations(): Observable<any> {
+    return this.http.get<any>(`${this.baseUrl}/optimizations`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Get details for a specific optimization type.
+   */
+  getOptimizationDetails(optimizationId: string): Observable<any> {
+    return this.http.get<any>(`${this.baseUrl}/optimizations/${optimizationId}`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Optimize a model with configurable optimization options.
+   */
+  optimizeModelConfigurable(modelId: string, request: any): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/optimize-configurable/${encodeURIComponent(modelId)}`, request)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Restore an optimized model to its original unoptimized state.
+   */
+  restoreUnoptimized(modelId: string): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/restore/${modelId}`, {})
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Compare optimized vs original model.
+   */
+  compareModels(modelId: string, request?: any): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/compare/${encodeURIComponent(modelId)}`, request || {})
       .pipe(catchError(this.handleError));
   }
 

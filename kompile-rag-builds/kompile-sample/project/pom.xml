@@ -30,8 +30,33 @@
     <log4j.version>2.24.3</log4j.version>
     <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
     <kompile.opennlp.sentence.language>en</kompile.opennlp.sentence.language>
+    <!-- Debug/Memory testing properties -->
+    <test.runner.prefix></test.runner.prefix>
+    <libjvm.path></libjvm.path>
+    <jemalloc.path></jemalloc.path>
+    <jemalloc.mallocconf></jemalloc.mallocconf>
+    <preload></preload>
+    <backend>nd4j-cuda-12.9</backend>
+    <test.asan.options></test.asan.options>
+    <jdk9.exports>--add-opens java.base/java.lang.ref=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-exports java.base/jdk.internal.misc=ALL-UNNAMED --add-exports java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED</jdk9.exports>
   </properties>
   <dependencies>
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>${backend}</artifactId>
+      <version>1.0.0-SNAPSHOT</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-pipeline-management</artifactId>
+     <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>${backend}</artifactId>
+      <version>1.0.0-SNAPSHOT</version>
+      <classifier>linux-x86_64</classifier>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -54,6 +79,12 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-validation</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-quartz</artifactId>
       <version>${spring-boot.version}</version>
       <scope>compile</scope>
     </dependency>
@@ -169,6 +200,18 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-knowledge-graph</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-kvcache</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>
       <version>${lombok.version}</version>
@@ -259,6 +302,17 @@
         </executions>
         <configuration>
           <mainClass>${start-class}</mainClass>
+          <jvmArguments>${jdk9.exports}</jvmArguments>
+          <environmentVariables>
+            <OPENBLAS_CORETYPE>Haswell</OPENBLAS_CORETYPE>
+            <OMP_NUM_THREADS>1</OMP_NUM_THREADS>
+            <MKL_NUM_THREADS>1</MKL_NUM_THREADS>
+            <LD_PRELOAD>${preload}</LD_PRELOAD>
+            <MALLOC_CONF>${jemalloc.mallocconf}</MALLOC_CONF>
+            <ASAN_OPTIONS>${test.asan.options}</ASAN_OPTIONS>
+            <TEST_RUNNER_PREFIX>${test.runner.prefix}</TEST_RUNNER_PREFIX>
+            <LIBJVM_PATH>${libjvm.path}</LIBJVM_PATH>
+          </environmentVariables>
           <excludes>
             <exclude>
               <groupId>org.projectlombok</groupId>
@@ -409,6 +463,65 @@
           </plugin>
         </plugins>
       </build>
+    </profile>
+
+    <!-- Profile for running with Valgrind memory checker -->
+    <profile>
+      <id>valgrind</id>
+      <properties>
+        <test.runner.prefix>valgrind --leak-check=full --show-leak-kinds=all</test.runner.prefix>
+      </properties>
+    </profile>
+
+    <!-- Profile for minimal valgrind (faster, less detail) -->
+    <profile>
+      <id>valgrind-minimal</id>
+      <properties>
+        <test.runner.prefix>valgrind --leak-check=summary --show-leak-kinds=definite</test.runner.prefix>
+      </properties>
+    </profile>
+
+    <!-- Profile for running with AddressSanitizer -->
+    <profile>
+      <id>asan</id>
+      <properties>
+        <test.runner.prefix>asan</test.runner.prefix>
+        <test.asan.options>alloc_dealloc_mismatch=0:detect_leaks=1:new_delete_type_mismatch=0:halt_on_error=0:exitcode=0</test.asan.options>
+      </properties>
+    </profile>
+
+    <!-- Profile for running with CUDA compute-sanitizer -->
+    <profile>
+      <id>compute-sanitizer</id>
+      <properties>
+        <test.runner.prefix>compute-sanitizer --tool memcheck</test.runner.prefix>
+      </properties>
+    </profile>
+
+    <!-- Profile for CUDA compute-sanitizer with race detection -->
+    <profile>
+      <id>compute-sanitizer-racecheck</id>
+      <properties>
+        <test.runner.prefix>compute-sanitizer --tool racecheck</test.runner.prefix>
+      </properties>
+    </profile>
+
+    <!-- Profile for running with jemalloc memory profiling -->
+    <profile>
+      <id>jemalloc</id>
+      <properties>
+        <preload>${jemalloc.path}</preload>
+        <jemalloc.mallocconf>prof:true,lg_prof_interval:31,lg_prof_sample:17,prof_prefix:jeprof.out</jemalloc.mallocconf>
+      </properties>
+    </profile>
+
+    <!-- Profile for jemalloc leak detection -->
+    <profile>
+      <id>jemalloc-leak</id>
+      <properties>
+        <preload>${jemalloc.path}</preload>
+        <jemalloc.mallocconf>prof_leak:true,lg_prof_sample:0,prof_final:true</jemalloc.mallocconf>
+      </properties>
     </profile>
   </profiles>
 </project>

@@ -22,6 +22,7 @@ import ai.kompile.pipelines.framework.api.data.Image;
 import ai.kompile.pipelines.framework.api.data.NDArray;
 import ai.kompile.pipelines.framework.api.data.Point;
 import ai.kompile.pipelines.framework.api.data.ValueType;
+import ai.kompile.pipelines.framework.api.kvcache.KVCache;
 import ai.kompile.pipelines.framework.core.data.serde.ObjectMappers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -168,6 +169,7 @@ public class JData implements Data {
         else if (value instanceof Image) put(key, (Image) value);
         else if (value instanceof Point) put(key, (Point) value);
         else if (value instanceof BoundingBox) put(key, (BoundingBox) value);
+        else if (value instanceof KVCache) putKVCache(key, (KVCache) value);
         else if (value instanceof Data) put(key, (Data) value);
         else if (value instanceof List) {
             // Infer list element type if possible, otherwise it's an untyped list (problematic)
@@ -282,6 +284,22 @@ public class JData implements Data {
         values.put(key, new JDataValueWrapper(ValueType.DATA, value));
         listElementTypes.remove(key);
     }
+
+    @Override
+    public void put(String key, KVCache value) {
+        putKVCache(key, value);
+    }
+
+    private void putKVCache(String key, KVCache value) {
+        values.put(key, new JDataValueWrapper(ValueType.KV_CACHE, value));
+        listElementTypes.remove(key);
+    }
+
+    @Override
+    public KVCache getKVCache(String key) { return get(key); }
+
+    @Override
+    public KVCache getKVCache(String key, KVCache defaultValue) { return get(key, defaultValue); }
 
     @Override
     public <T> void putList(String key, List<T> value, ValueType listElementType) {
@@ -584,6 +602,7 @@ class JDataValueInferer {
         if (value instanceof Image) return ValueType.IMAGE;
         if (value instanceof Point) return ValueType.POINT;
         if (value instanceof BoundingBox) return ValueType.BOUNDING_BOX;
+        if (value instanceof KVCache) return ValueType.KV_CACHE;
         if (value instanceof Data) return ValueType.DATA;
         if (value instanceof List) return ValueType.LIST;
         // Add more specific inferences if needed

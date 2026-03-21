@@ -20,7 +20,13 @@ import ai.kompile.core.embeddings.EmbeddingModel;
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.SDVariable;
 import org.nd4j.autodiff.samediff.VariableType;
+import org.nd4j.linalg.api.device.DeviceDescriptor;
+import org.nd4j.linalg.api.device.DeviceMemoryManager;
+import org.nd4j.linalg.api.device.DeviceRoutingConfiguration;
+import org.nd4j.linalg.api.device.DeviceType;
 import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.api.ops.executioner.DeviceAwareOpExecutioner;
+import org.nd4j.linalg.api.ops.executioner.TransferMetrics;
 import org.nd4j.linalg.factory.Nd4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,9 +40,36 @@ import java.lang.reflect.Method;
 import java.util.*;
 
 /**
- * MCP Tool for model debugging operations.
- * Exposes functionality to inspect SameDiff models, variables, operations,
- * and ND4J environment configuration.
+ * MCP Tool for model debugging and device monitoring operations.
+ *
+ * <p>Exposes functionality to:
+ * <ul>
+ *   <li>Inspect SameDiff models, variables, and operations</li>
+ *   <li>Query and configure ND4J environment settings</li>
+ *   <li>Monitor hybrid/multi-device execution (CPU, GPU, etc.)</li>
+ *   <li>Track cross-device data transfers and bandwidth</li>
+ *   <li>Analyze multi-backend execution (CPU vs GPU op distribution)</li>
+ *   <li>Configure device routing policies and memory caps</li>
+ * </ul>
+ *
+ * <p>New in this version: Comprehensive hybrid and multi-device monitoring tools:
+ * <ul>
+ *   <li>{@code get_device_info} - List all compute devices with capabilities</li>
+ *   <li>{@code get_device_memory_stats} - Per-device memory allocation tracking</li>
+ *   <li>{@code get_transfer_metrics} - Cross-device transfer bandwidth and overhead</li>
+ *   <li>{@code get_multi_backend_summary} - CPU vs GPU execution breakdown</li>
+ *   <li>{@code get_routing_configuration} - Current routing policy settings</li>
+ *   <li>{@code set_routing_configuration} - Apply preset routing configs</li>
+ *   <li>{@code get_multi_backend_status} - Multi-backend execution status</li>
+ *   <li>{@code enable_multi_backend} - Enable automatic CPU fallback</li>
+ *   <li>{@code reset_transfer_metrics} - Reset transfer measurements</li>
+ *   <li>{@code reset_device_memory_peaks} - Reset peak memory tracking</li>
+ * </ul>
+ *
+ * @see org.nd4j.linalg.api.device.DeviceMemoryManager
+ * @see org.nd4j.linalg.api.device.DeviceRoutingConfiguration
+ * @see org.nd4j.linalg.api.ops.executioner.TransferMetrics
+ * @see org.nd4j.linalg.api.ops.executioner.DeviceAwareOpExecutioner
  */
 @Component
 public class ModelDebugTool {
@@ -65,6 +98,18 @@ public class ModelDebugTool {
     public record SetNd4jConfigInput(String config, Integer value) {}
     public record EnableAllNd4jTogglesInput() {}
     public record DisableAllNd4jTogglesInput() {}
+
+    // Input records for hybrid/multi-device monitoring
+    public record GetDeviceInfoInput(Boolean includeCapabilities) {}
+    public record GetDeviceMemoryStatsInput(String deviceId) {}
+    public record GetTransferMetricsInput(Boolean includeRoutes) {}
+    public record GetMultiBackendSummaryInput() {}
+    public record GetRoutingConfigurationInput() {}
+    public record SetRoutingConfigurationInput(String preset) {}
+    public record EnableMultiBackendInput() {}
+    public record GetMultiBackendStatusInput() {}
+    public record ResetTransferMetricsInput() {}
+    public record ResetDeviceMemoryPeaksInput() {}
 
     /**
      * Lists all SameDiff-based embedding models.
@@ -696,6 +741,558 @@ public class ModelDebugTool {
         } catch (Exception e) {
             logger.error("Error disabling ND4J toggles: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", "Failed to disable toggles: " + e.getMessage());
+        }
+    }
+
+    // ========================================================================
+    // Hybrid and Multi-Device/Multi-Backend Monitoring
+    // ========================================================================
+
+    /**
+     * Gets information about all registered compute devices.
+     */
+    @Tool(name = "get_device_info",
+            description = "Gets information about all registered compute devices including CPU and GPU. Returns device types, names, memory, compute capability, and optionally hardware capabilities (FP16, tensor cores, AVX512, etc.).")
+    public Map<String, Object> getDeviceInfo(GetDeviceInfoInput input) {
+        boolean includeCapabilities = input.includeCapabilities() == null || input.includeCapabilities();
+
+        logger.info("Getting device information");
+
+        try {
+            DeviceMemoryManager mgr = DeviceMemoryManager.getInstance();
+            Collection<DeviceDescriptor> devices = mgr.getRegisteredDevices();
+
+            List<Map<String, Object>> deviceList = new ArrayList<>();
+
+            for (DeviceDescriptor device : devices) {
+                Map<String, Object> deviceInfo = new LinkedHashMap<>();
+                deviceInfo.put("deviceId", device.getDeviceId());
+                deviceInfo.put("deviceType", device.getDeviceType().toString());
+                deviceInfo.put("deviceIndex", device.getDeviceIndex());
+                deviceInfo.put("deviceName", device.getDeviceName());
+                deviceInfo.put("backendId", device.getBackendId());
+                deviceInfo.put("isDefault", device.isDefault());
+                deviceInfo.put("isAvailable", device.isAvailable());
+
+                // Memory info
+                Map<String, Object> memoryInfo = new LinkedHashMap<>();
+                memoryInfo.put("totalMemoryMB", device.getTotalMemory() / (1024 * 1024));
+                memoryInfo.put("availableMemoryMB", device.getAvailableMemory() / (1024 * 1024));
+                memoryInfo.put("memoryBandwidthGBps", device.getMemoryBandwidth() / (1024.0 * 1024 * 1024));
+                deviceInfo.put("memory", memoryInfo);
+
+                // Compute info
+                Map<String, Object> computeInfo = new LinkedHashMap<>();
+                computeInfo.put("computeUnits", device.getComputeUnits());
+                computeInfo.put("computeCapability", device.getComputeCapability());
+                computeInfo.put("estimatedTFLOPS", device.getEstimatedFlops() / 1e12);
+                deviceInfo.put("compute", computeInfo);
+
+                // Capabilities
+                if (includeCapabilities) {
+                    Set<String> capabilities = device.getCapabilities();
+                    deviceInfo.put("capabilities", new ArrayList<>(capabilities));
+
+                    // Highlight key capabilities
+                    Map<String, Boolean> keyCapabilities = new LinkedHashMap<>();
+                    keyCapabilities.put("fp16", device.hasCapability(DeviceDescriptor.CAPABILITY_FP16));
+                    keyCapabilities.put("fp64", device.hasCapability(DeviceDescriptor.CAPABILITY_FP64));
+                    keyCapabilities.put("int8", device.hasCapability(DeviceDescriptor.CAPABILITY_INT8));
+                    keyCapabilities.put("tensorCores", device.hasCapability(DeviceDescriptor.CAPABILITY_TENSOR_CORES));
+                    keyCapabilities.put("unifiedMemory", device.hasCapability(DeviceDescriptor.CAPABILITY_UNIFIED_MEMORY));
+                    keyCapabilities.put("avx2", device.hasCapability(DeviceDescriptor.CAPABILITY_AVX2));
+                    keyCapabilities.put("avx512", device.hasCapability(DeviceDescriptor.CAPABILITY_AVX512));
+                    deviceInfo.put("keyCapabilities", keyCapabilities);
+                }
+
+                // Device properties
+                Map<String, Object> properties = device.getProperties();
+                if (properties != null && !properties.isEmpty()) {
+                    deviceInfo.put("properties", properties);
+                }
+
+                deviceList.add(deviceInfo);
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("deviceCount", deviceList.size());
+            result.put("defaultDevice", mgr.getDefaultDevice() != null ? mgr.getDefaultDevice().getDeviceId() : "none");
+            result.put("fallbackDevice", mgr.getFallbackDevice() != null ? mgr.getFallbackDevice().getDeviceId() : "none");
+            result.put("autoFallbackEnabled", mgr.isAutoFallbackEnabled());
+            result.put("devices", deviceList);
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting device info: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get device info: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets memory statistics for all devices or a specific device.
+     */
+    @Tool(name = "get_device_memory_stats",
+            description = "Gets detailed memory statistics for compute devices. Shows allocated, available, peak memory, memory caps, and utilization percentage. Optionally filter by deviceId (e.g., 'cuda:gpu:0' or 'native:cpu:0').")
+    public Map<String, Object> getDeviceMemoryStats(GetDeviceMemoryStatsInput input) {
+        String deviceId = input.deviceId();
+
+        logger.info("Getting device memory stats{}", deviceId != null ? " for device: " + deviceId : "");
+
+        try {
+            DeviceMemoryManager mgr = DeviceMemoryManager.getInstance();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+
+            if (deviceId != null && !deviceId.isEmpty()) {
+                // Get stats for specific device
+                DeviceDescriptor device = DeviceDescriptor.fromId(deviceId);
+                if (!mgr.isDeviceRegistered(device)) {
+                    return Map.of("status", "error", "error", "Device not registered: " + deviceId,
+                            "registeredDevices", mgr.getRegisteredDevices().stream()
+                                    .map(DeviceDescriptor::getDeviceId).toList());
+                }
+
+                DeviceMemoryManager.DeviceMemoryStats stats = mgr.getMemoryStats(device);
+                result.put("deviceId", stats.deviceId);
+                result.put("stats", formatMemoryStats(stats));
+
+            } else {
+                // Get stats for all devices
+                Map<String, DeviceMemoryManager.DeviceMemoryStats> allStats = mgr.getMemoryStats();
+                List<Map<String, Object>> statsList = new ArrayList<>();
+
+                for (Map.Entry<String, DeviceMemoryManager.DeviceMemoryStats> entry : allStats.entrySet()) {
+                    Map<String, Object> deviceStats = new LinkedHashMap<>();
+                    deviceStats.put("deviceId", entry.getKey());
+                    deviceStats.putAll(formatMemoryStats(entry.getValue()));
+                    statsList.add(deviceStats);
+                }
+
+                result.put("deviceCount", statsList.size());
+                result.put("memoryPressureThreshold", mgr.getMemoryPressureThreshold());
+                result.put("devices", statsList);
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting device memory stats: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get memory stats: " + e.getMessage());
+        }
+    }
+
+    private Map<String, Object> formatMemoryStats(DeviceMemoryManager.DeviceMemoryStats stats) {
+        Map<String, Object> formatted = new LinkedHashMap<>();
+        formatted.put("totalMemoryMB", stats.total / (1024 * 1024));
+        formatted.put("allocatedMemoryMB", stats.allocated / (1024 * 1024));
+        formatted.put("availableMemoryMB", stats.available / (1024 * 1024));
+        formatted.put("peakMemoryMB", stats.peak / (1024 * 1024));
+        formatted.put("memoryCapMB", stats.cap > 0 ? stats.cap / (1024 * 1024) : "unlimited");
+        formatted.put("utilizationPercent", String.format("%.1f", stats.utilization * 100));
+        return formatted;
+    }
+
+    /**
+     * Gets transfer metrics for cross-device data movement.
+     */
+    @Tool(name = "get_transfer_metrics",
+            description = "Gets metrics for data transfers between devices. Shows total transfers, bytes moved, bandwidth, transfer overhead percentage, and optionally per-route breakdown (e.g., CPU->GPU, GPU->GPU).")
+    public Map<String, Object> getTransferMetrics(GetTransferMetricsInput input) {
+        boolean includeRoutes = input.includeRoutes() == null || input.includeRoutes();
+
+        logger.info("Getting transfer metrics");
+
+        try {
+            TransferMetrics metrics = TransferMetrics.getInstance();
+            Map<String, Object> stats = metrics.getStatistics();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+
+            // Summary statistics
+            result.put("totalTransfers", stats.get("totalTransfers"));
+            result.put("totalBytesMB", ((Long) stats.get("totalBytes")) / (1024.0 * 1024));
+            result.put("totalTimeMs", stats.get("totalTimeMs"));
+            result.put("overheadPercent", String.format("%.1f", (Double) stats.get("overheadPercent")));
+            result.put("averageBandwidthGBps", String.format("%.2f", (Double) stats.get("averageBandwidthGBps")));
+
+            // Warning threshold info
+            result.put("warningThresholdPercent", metrics.getWarningThresholdPercent());
+            result.put("loggingIndividualTransfers", metrics.isLogIndividualTransfers());
+            result.put("minBytesForLoggingMB", metrics.getMinBytesForLogging() / (1024 * 1024));
+
+            // CPU fallback stats
+            result.put("cpuFallbackCount", metrics.getCpuFallbackCount());
+            result.put("cpuFallbackTimeMs", metrics.getCpuFallbackTimeNanos() / 1_000_000.0);
+
+            // Per-route breakdown
+            if (includeRoutes) {
+                @SuppressWarnings("unchecked")
+                Map<String, Map<String, Object>> routes = (Map<String, Map<String, Object>>) stats.get("routes");
+                if (routes != null && !routes.isEmpty()) {
+                    List<Map<String, Object>> routeList = new ArrayList<>();
+                    for (Map.Entry<String, Map<String, Object>> entry : routes.entrySet()) {
+                        Map<String, Object> routeInfo = new LinkedHashMap<>();
+                        routeInfo.put("route", entry.getKey());
+                        routeInfo.put("transfers", entry.getValue().get("transfers"));
+                        routeInfo.put("bytesMB", ((Long) entry.getValue().get("bytes")) / (1024.0 * 1024));
+                        routeInfo.put("avgBandwidthGBps", String.format("%.2f", entry.getValue().get("avgBandwidthGBps")));
+                        routeList.add(routeInfo);
+                    }
+                    result.put("routes", routeList);
+                }
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting transfer metrics: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get transfer metrics: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets multi-backend execution summary.
+     */
+    @Tool(name = "get_multi_backend_summary",
+            description = "Gets a summary of multi-backend (CPU vs GPU) execution. Shows operation counts, execution times, CPU fallback statistics, and data transfer overhead. Useful for analyzing hybrid execution performance.")
+    public Map<String, Object> getMultiBackendSummary(GetMultiBackendSummaryInput input) {
+        logger.info("Getting multi-backend execution summary");
+
+        try {
+            TransferMetrics metrics = TransferMetrics.getInstance();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+
+            // Get backend execution stats
+            Map<String, Object> cpuStats = metrics.getBackendExecutionStats(DeviceType.CPU);
+            Map<String, Object> gpuStats = metrics.getBackendExecutionStats(DeviceType.CUDA_GPU);
+
+            long cpuOps = (Long) cpuStats.get("opCount");
+            long gpuOps = (Long) gpuStats.get("opCount");
+            long totalOps = cpuOps + gpuOps;
+
+            // CPU stats
+            Map<String, Object> cpuInfo = new LinkedHashMap<>();
+            cpuInfo.put("opCount", cpuOps);
+            cpuInfo.put("opPercent", totalOps > 0 ? String.format("%.1f", 100.0 * cpuOps / totalOps) : "0.0");
+            cpuInfo.put("totalTimeMs", cpuStats.get("totalTimeMs"));
+            cpuInfo.put("avgTimeMs", cpuOps > 0 ? ((Long) cpuStats.get("totalTimeNanos")) / (cpuOps * 1_000_000.0) : 0);
+            result.put("cpu", cpuInfo);
+
+            // GPU stats
+            Map<String, Object> gpuInfo = new LinkedHashMap<>();
+            gpuInfo.put("opCount", gpuOps);
+            gpuInfo.put("opPercent", totalOps > 0 ? String.format("%.1f", 100.0 * gpuOps / totalOps) : "0.0");
+            gpuInfo.put("totalTimeMs", gpuStats.get("totalTimeMs"));
+            gpuInfo.put("avgTimeMs", gpuOps > 0 ? ((Long) gpuStats.get("totalTimeNanos")) / (gpuOps * 1_000_000.0) : 0);
+            result.put("gpu", gpuInfo);
+
+            // CPU fallback stats
+            Map<String, Object> fallbackInfo = new LinkedHashMap<>();
+            fallbackInfo.put("count", metrics.getCpuFallbackCount());
+            fallbackInfo.put("totalTimeMs", metrics.getCpuFallbackTimeNanos() / 1_000_000.0);
+            result.put("cpuFallback", fallbackInfo);
+
+            // Transfer overhead
+            Map<String, Object> transferInfo = new LinkedHashMap<>();
+            transferInfo.put("overheadPercent", String.format("%.1f", metrics.getOverheadPercent()));
+            transferInfo.put("averageBandwidthGBps", String.format("%.2f", metrics.getAverageBandwidthGBps()));
+            result.put("transferOverhead", transferInfo);
+
+            // Overall summary
+            result.put("totalOperations", totalOps);
+            result.put("summaryText", metrics.getMultiBackendSummary());
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting multi-backend summary: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get multi-backend summary: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets current device routing configuration.
+     */
+    @Tool(name = "get_routing_configuration",
+            description = "Gets the current device routing configuration including routing policy, auto-transfer settings, memory caps, and logging options.")
+    public Map<String, Object> getRoutingConfiguration(GetRoutingConfigurationInput input) {
+        logger.info("Getting routing configuration");
+
+        try {
+            DeviceRoutingConfiguration config = DeviceRoutingConfiguration.current();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+
+            // Device selection
+            Map<String, Object> selection = new LinkedHashMap<>();
+            selection.put("defaultPolicy", config.getDefaultPolicy().toString());
+            selection.put("autoFallbackEnabled", config.isAutoFallbackEnabled());
+            selection.put("preferredDeviceTypes", config.getPreferredDeviceTypes().stream()
+                    .map(DeviceType::toString).toList());
+            result.put("deviceSelection", selection);
+
+            // Auto transfer settings
+            Map<String, Object> transfer = new LinkedHashMap<>();
+            transfer.put("autoTransferEnabled", config.isAutoTransferEnabled());
+            transfer.put("asyncTransferEnabled", config.isAsyncTransferEnabled());
+            transfer.put("asyncTransferThresholdKB", config.getAsyncTransferThresholdBytes() / 1024);
+            transfer.put("cacheTransferredData", config.isCacheTransferredData());
+            transfer.put("maxCachePerDeviceMB", config.getMaxCachePerDevice() / (1024 * 1024));
+            transfer.put("prefetchEnabled", config.isPrefetchEnabled());
+            transfer.put("prefetchDepth", config.getPrefetchDepth());
+            result.put("autoTransfer", transfer);
+
+            // Memory management
+            Map<String, Object> memory = new LinkedHashMap<>();
+            memory.put("gpuMemoryCapPercent", (int) (config.getGpuMemoryCapFraction() * 100));
+            memory.put("cpuMemoryCapPercent", (int) (config.getCpuMemoryCapFraction() * 100));
+            memory.put("memoryPressureThresholdPercent", (int) (config.getMemoryPressureThreshold() * 100));
+            memory.put("evictOnPressure", config.isEvictOnPressure());
+            result.put("memoryManagement", memory);
+
+            // Op execution
+            Map<String, Object> opExec = new LinkedHashMap<>();
+            opExec.put("routeOpsByInputLocation", config.isRouteOpsByInputLocation());
+            opExec.put("minSizeForDeviceRoutingBytes", config.getMinSizeForDeviceRouting());
+            opExec.put("cpuOnlyOpsCount", config.getCpuOnlyOps().size());
+            opExec.put("gpuPreferredOpsCount", config.getGpuPreferredOps().size());
+            result.put("opExecution", opExec);
+
+            // Synchronization
+            Map<String, Object> sync = new LinkedHashMap<>();
+            sync.put("syncAfterOp", config.isSyncAfterOp());
+            sync.put("syncBeforeHostRead", config.isSyncBeforeHostRead());
+            sync.put("useEvents", config.isUseEvents());
+            result.put("synchronization", sync);
+
+            // Logging and debugging
+            Map<String, Object> logging = new LinkedHashMap<>();
+            logging.put("logRoutingDecisions", config.isLogRoutingDecisions());
+            logging.put("logDataTransfers", config.isLogDataTransfers());
+            logging.put("collectStatistics", config.isCollectStatistics());
+            logging.put("transferOverheadWarningThresholdPercent", (int) config.getTransferOverheadWarningThreshold());
+            result.put("logging", logging);
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting routing configuration: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get routing configuration: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Sets device routing configuration using a preset.
+     */
+    @Tool(name = "set_routing_configuration",
+            description = "Applies a preset device routing configuration. Available presets: 'default', 'gpu_optimized', 'cpu_only', 'multi_gpu_balanced', 'memory_constrained', 'debug'. Each preset optimizes for different workload patterns.")
+    public Map<String, Object> setRoutingConfiguration(SetRoutingConfigurationInput input) {
+        if (input.preset() == null || input.preset().isEmpty()) {
+            return Map.of("status", "error", "error", "Preset name is required",
+                    "availablePresets", Arrays.asList("default", "gpu_optimized", "cpu_only",
+                            "multi_gpu_balanced", "memory_constrained", "debug"));
+        }
+
+        String preset = input.preset().toLowerCase().replace("-", "_");
+        logger.info("Setting routing configuration preset: {}", preset);
+
+        try {
+            DeviceRoutingConfiguration config;
+
+            switch (preset) {
+                case "default":
+                    config = DeviceRoutingConfiguration.defaultConfig();
+                    break;
+                case "gpu_optimized":
+                    config = DeviceRoutingConfiguration.gpuOptimized();
+                    break;
+                case "cpu_only":
+                    config = DeviceRoutingConfiguration.cpuOnly();
+                    break;
+                case "multi_gpu_balanced":
+                    config = DeviceRoutingConfiguration.multiGpuBalanced();
+                    break;
+                case "memory_constrained":
+                    config = DeviceRoutingConfiguration.memoryConstrained();
+                    break;
+                case "debug":
+                    config = DeviceRoutingConfiguration.debug();
+                    break;
+                default:
+                    return Map.of("status", "error", "error", "Unknown preset: " + preset,
+                            "availablePresets", Arrays.asList("default", "gpu_optimized", "cpu_only",
+                                    "multi_gpu_balanced", "memory_constrained", "debug"));
+            }
+
+            config.apply();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("preset", preset);
+            result.put("message", "Routing configuration preset '" + preset + "' applied");
+
+            // Return key settings of applied config
+            Map<String, Object> applied = new LinkedHashMap<>();
+            applied.put("policy", config.getDefaultPolicy().toString());
+            applied.put("autoTransfer", config.isAutoTransferEnabled());
+            applied.put("gpuMemoryCapPercent", (int) (config.getGpuMemoryCapFraction() * 100));
+            applied.put("logTransfers", config.isLogDataTransfers());
+            result.put("appliedSettings", applied);
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error setting routing configuration: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to set configuration: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets multi-backend execution status.
+     */
+    @Tool(name = "get_multi_backend_status",
+            description = "Gets the current status of multi-backend execution. Shows whether DeviceAwareOpExecutioner is installed, which backends are registered, and if multi-backend mode is active.")
+    public Map<String, Object> getMultiBackendStatus(GetMultiBackendStatusInput input) {
+        logger.info("Getting multi-backend status");
+
+        try {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+
+            boolean installed = DeviceAwareOpExecutioner.isInstalled();
+            result.put("deviceAwareExecutionerInstalled", installed);
+
+            if (installed) {
+                DeviceAwareOpExecutioner executor = DeviceAwareOpExecutioner.getInstance();
+                result.put("multiBackendEnabled", executor.isMultiBackendEnabled());
+                result.put("enabled", executor.isEnabled());
+                result.put("backendInfo", executor.getBackendInfo());
+            } else {
+                result.put("multiBackendEnabled", false);
+                result.put("message", "DeviceAwareOpExecutioner not installed. Use enable_multi_backend to install.");
+            }
+
+            // Auto-enable setting
+            result.put("autoMultiBackendEnabled", DeviceAwareOpExecutioner.isAutoMultiBackendEnabled());
+            result.put("autoEnableProperty", "nd4j.multibackend.enabled");
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error getting multi-backend status: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to get status: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Enables multi-backend execution.
+     */
+    @Tool(name = "enable_multi_backend",
+            description = "Enables multi-backend execution by installing the DeviceAwareOpExecutioner. This allows automatic CPU fallback when GPU memory is constrained and enables transparent cross-device data transfers.")
+    public Map<String, Object> enableMultiBackend(EnableMultiBackendInput input) {
+        logger.info("Enabling multi-backend execution");
+
+        try {
+            if (DeviceAwareOpExecutioner.isInstalled()) {
+                DeviceAwareOpExecutioner executor = DeviceAwareOpExecutioner.getInstance();
+                return Map.of("status", "success",
+                        "message", "DeviceAwareOpExecutioner already installed",
+                        "multiBackendEnabled", executor.isMultiBackendEnabled(),
+                        "backendInfo", executor.getBackendInfo());
+            }
+
+            boolean multiBackendSuccess = DeviceAwareOpExecutioner.installWithMultiBackend();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("installed", true);
+            result.put("multiBackendEnabled", multiBackendSuccess);
+
+            if (multiBackendSuccess) {
+                result.put("message", "Multi-backend execution enabled with CPU fallback support");
+            } else {
+                result.put("message", "Single-backend mode installed (CPU fallback not available)");
+            }
+
+            if (DeviceAwareOpExecutioner.isInstalled()) {
+                result.put("backendInfo", DeviceAwareOpExecutioner.getInstance().getBackendInfo());
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error enabling multi-backend: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to enable multi-backend: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Resets transfer metrics.
+     */
+    @Tool(name = "reset_transfer_metrics",
+            description = "Resets all transfer metrics (transfer counts, bytes, timing, routes). Use this to start fresh measurements for a specific workload or benchmark.")
+    public Map<String, Object> resetTransferMetrics(ResetTransferMetricsInput input) {
+        logger.info("Resetting transfer metrics");
+
+        try {
+            TransferMetrics metrics = TransferMetrics.getInstance();
+
+            // Get current stats before reset
+            long transfersBefore = (Long) metrics.getStatistics().get("totalTransfers");
+            long bytesBefore = (Long) metrics.getStatistics().get("totalBytes");
+
+            metrics.reset();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("message", "Transfer metrics reset");
+            result.put("clearedTransfers", transfersBefore);
+            result.put("clearedBytesMB", bytesBefore / (1024.0 * 1024));
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error resetting transfer metrics: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to reset metrics: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Resets device memory peak tracking.
+     */
+    @Tool(name = "reset_device_memory_peaks",
+            description = "Resets peak memory tracking for all devices. Useful for measuring peak memory usage of a specific workload or operation sequence.")
+    public Map<String, Object> resetDeviceMemoryPeaks(ResetDeviceMemoryPeaksInput input) {
+        logger.info("Resetting device memory peak tracking");
+
+        try {
+            DeviceMemoryManager mgr = DeviceMemoryManager.getInstance();
+
+            // Get current peaks before reset
+            Map<String, Long> peaksBefore = new LinkedHashMap<>();
+            for (DeviceDescriptor device : mgr.getRegisteredDevices()) {
+                peaksBefore.put(device.getDeviceId(), mgr.getPeakMemory(device) / (1024 * 1024));
+            }
+
+            mgr.resetPeakMemory();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("message", "Peak memory tracking reset for all devices");
+            result.put("previousPeaksMB", peaksBefore);
+
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error resetting memory peaks: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", "Failed to reset peaks: " + e.getMessage());
         }
     }
 

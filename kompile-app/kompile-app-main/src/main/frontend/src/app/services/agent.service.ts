@@ -21,6 +21,7 @@ import { tap, catchError, map } from 'rxjs/operators';
 import { BaseService } from './base.service';
 import {
   AgentProvider,
+  ApiAgentConfigRequest,
   ProcessStatus,
   AgentDiagnosticSummary,
   AgentFullDiagnosticReport,
@@ -307,5 +308,51 @@ export class AgentService extends BaseService {
    */
   clearError(): void {
     this.errorSubject.next(null);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // API AGENT CONFIGURATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * List configured API agents.
+   */
+  getApiAgentConfigs(): Observable<AgentProvider[]> {
+    return this.http.get<AgentProvider[]>(`${this.agentsUrl}/api-config`);
+  }
+
+  /**
+   * Add a new API agent endpoint.
+   */
+  addApiAgentConfig(config: ApiAgentConfigRequest): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/api-config`, config);
+  }
+
+  /**
+   * Update an existing API agent configuration.
+   */
+  updateApiAgentConfig(name: string, config: ApiAgentConfigRequest): Observable<any> {
+    return this.http.put(`${this.agentsUrl}/api-config/${name}`, config);
+  }
+
+  /**
+   * Delete an API agent configuration.
+   */
+  deleteApiAgentConfig(name: string): Observable<any> {
+    return this.http.delete(`${this.agentsUrl}/api-config/${name}`);
+  }
+
+  /**
+   * Test connectivity to a named API agent.
+   */
+  testApiAgentConnection(name: string): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/api-config/${name}/test`, {});
+  }
+
+  /**
+   * Test connectivity to an arbitrary endpoint.
+   */
+  testApiEndpoint(config: ApiAgentConfigRequest): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/api-config/test-endpoint`, config);
   }
 }

@@ -37,7 +37,7 @@
         </button>
 
         <mat-slide-toggle
-          [(ngModel)]="autoRefresh"
+          [(ngModel)]="autoRefresh" [ngModelOptions]="{standalone: true}"
           (change)="toggleAutoRefresh()"
           matTooltip="Auto-refresh">
         </mat-slide-toggle>
@@ -137,7 +137,7 @@
       <!-- Search -->
       <mat-form-field appearance="outline" class="search-field">
         <mat-label>Search</mat-label>
-        <input matInput [(ngModel)]="searchTerm" (ngModelChange)="onFilterChange()" placeholder="Search by file, task ID, or message">
+        <input matInput [(ngModel)]="searchTerm" [ngModelOptions]="{standalone: true}" (ngModelChange)="onFilterChange()" placeholder="Search by file, task ID, or message">
         <mat-icon matSuffix>search</mat-icon>
       </mat-form-field>
 
@@ -154,7 +154,7 @@
       </mat-form-field>
 
       <!-- Errors only toggle -->
-      <mat-slide-toggle [(ngModel)]="showErrorsOnly" (change)="loadEvents()">
+      <mat-slide-toggle [(ngModel)]="showErrorsOnly" [ngModelOptions]="{standalone: true}" (change)="loadEvents()">
         Errors only
       </mat-slide-toggle>
 
@@ -233,12 +233,25 @@
           <div
             *ngFor="let event of liveEvents; trackBy: trackByEventId"
             class="log-line"
-            [ngClass]="getLogLineClass(event)">
+            [ngClass]="getLogLineClassEnhanced(event)">
             <span class="log-timestamp">{{ formatLogTimestamp(event.timestamp) }}</span>
             <span class="log-message">
-              <strong>[{{ event.phase ? getPhaseDisplayName(event.phase) : 'SYSTEM' }}]</strong>
+              <strong>[{{ event.phase ? getPhaseDisplayName(event.phase) : (isRestartEvent(event) ? 'RESTART' : 'SYSTEM') }}]</strong>
               {{ event.fileName }} - {{ event.message }}
+              <span *ngIf="event.restartAttempt" class="restart-attempt-badge">
+                Attempt {{ event.restartAttempt }}/{{ event.maxRestartAttempts }}
+              </span>
+              <span *ngIf="event.eventType === 'RESTART_SCHEDULED'" class="restart-countdown">
+                (in {{ getRestartCountdown(event) }})
+              </span>
             </span>
+            <button *ngIf="canManuallyRestart(event)"
+                    mat-icon-button
+                    class="inline-restart-btn"
+                    (click)="manualRestart(event.taskId, $event)"
+                    matTooltip="Retry this task">
+              <mat-icon>refresh</mat-icon>
+            </button>
           </div>
         </div>
       </div>
@@ -275,10 +288,42 @@
           <div
             *ngFor="let event of getErrorEvents(); trackBy: trackByEventId"
             class="log-line"
-            [ngClass]="getLogLineClass(event)">
+            [ngClass]="getLogLineClassEnhanced(event)">
             <span class="log-timestamp">{{ formatLogTimestamp(event.timestamp) }}</span>
             <span class="log-message">
               <strong>{{ event.fileName }}</strong> - {{ event.errorMessage || event.message }}
+            </span>
+            <button *ngIf="canManuallyRestart(event)"
+                    mat-icon-button
+                    class="inline-restart-btn"
+                    (click)="manualRestart(event.taskId, $event)"
+                    matTooltip="Retry this task">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Restarts Panel -->
+      <div class="log-panel" *ngIf="activeRestarts.size > 0">
+        <div class="log-panel-header">
+          <mat-icon>autorenew</mat-icon>
+          Active Restarts
+          <span class="event-count-badge">({{ activeRestarts.size }})</span>
+        </div>
+        <div class="log-content">
+          <div *ngFor="let restart of activeRestarts | keyvalue" class="log-line log-restart-active">
+            <span class="log-message">
+              <strong>{{ restart.value.taskId | slice:0:8 }}...</strong>
+              - Attempt {{ restart.value.attemptNumber }}/{{ restart.value.maxAttempts }}
+              <span *ngIf="restart.value.heapSize" class="restart-detail">
+                Heap: {{ restart.value.heapSize }}
+                <mat-icon *ngIf="restart.value.heapIncreased" class="heap-increased">arrow_upward</mat-icon>
+                <mat-icon *ngIf="restart.value.heapIncreased === false" class="heap-unchanged">block</mat-icon>
+              </span>
+              <span *ngIf="restart.value.ompThreads" class="restart-detail">
+                OMP: {{ restart.value.ompThreads }}
+              </span>
             </span>
           </div>
         </div>
@@ -301,7 +346,18 @@
           </mat-icon>
 
           <div class="task-info">
-            <div class="task-filename">{{ group.fileName }}</div>
+            <div class="task-filename">
+              {{ group.fileName }}
+              <!-- Restart indicator badge -->
+              <span *ngIf="hasActiveRestart(group.taskId)" class="restart-badge pulsing">
+                <mat-icon>autorenew</mat-icon>
+                Restart {{ getRestartInfo(group.taskId)?.attemptNumber }}/{{ getRestartInfo(group.taskId)?.maxAttempts }}
+              </span>
+              <span *ngIf="getRestartAttemptCount(group) > 0 && !hasActiveRestart(group.taskId)" class="restart-badge completed">
+                <mat-icon>history</mat-icon>
+                {{ getRestartAttemptCount(group) }} restart(s)
+              </span>
+            </div>
             <div class="task-meta">
               <span class="task-id">{{ group.taskId }}</span>
               <span class="task-time">{{ getRelativeTime(group.latestEvent.timestamp) }}</span>

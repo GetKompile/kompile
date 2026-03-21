@@ -15,7 +15,10 @@
  */
 
 import { Component, OnInit } from '@angular/core';
+import { MatDialog } from '@angular/material/dialog';
+import { filter } from 'rxjs/operators';
 import { PromptTemplateService } from '../../services/prompt-template.service';
+import { ConfirmDialogComponent, ConfirmDialogData } from '../confirm-dialog/confirm-dialog.component';
 import {
   PromptTemplate,
   TemplateCategoryInfo,
@@ -57,7 +60,10 @@ export class PromptTemplateManagerComponent implements OnInit {
   previewVariables: { [key: string]: string } = {};
   previewResult: string | null = null;
 
-  constructor(private templateService: PromptTemplateService) {}
+  constructor(
+    private templateService: PromptTemplateService,
+    private dialog: MatDialog
+  ) {}
 
   ngOnInit(): void {
     this.loadTemplates();
@@ -240,20 +246,31 @@ export class PromptTemplateManagerComponent implements OnInit {
   }
 
   deleteTemplate(template: PromptTemplate): void {
-    if (!confirm(`Are you sure you want to delete "${template.name}"?`)) return;
+    const dialogData: ConfirmDialogData = {
+      title: 'Delete Template',
+      message: `Are you sure you want to delete "${template.name}"?`,
+      confirmText: 'Delete',
+      confirmColor: 'warn',
+      icon: 'delete'
+    };
 
-    this.isLoading = true;
-    this.templateService.deleteTemplate(template.name).subscribe({
-      next: () => {
-        this.closeTemplate();
-        this.showSuccess('Template deleted successfully');
-        this.loadTemplates();
-      },
-      error: (err) => {
-        this.errorMessage = `Failed to delete template: ${err.message}`;
-        this.isLoading = false;
-      }
-    });
+    this.dialog.open(ConfirmDialogComponent, { data: dialogData })
+      .afterClosed()
+      .pipe(filter(confirmed => confirmed === true))
+      .subscribe(() => {
+        this.isLoading = true;
+        this.templateService.deleteTemplate(template.name).subscribe({
+          next: () => {
+            this.closeTemplate();
+            this.showSuccess('Template deleted successfully');
+            this.loadTemplates();
+          },
+          error: (err) => {
+            this.errorMessage = `Failed to delete template: ${err.message}`;
+            this.isLoading = false;
+          }
+        });
+      });
   }
 
   duplicateTemplate(template: PromptTemplate): void {

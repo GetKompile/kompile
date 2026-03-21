@@ -24,6 +24,7 @@ import java.util.List;
  * @param documentsProcessed Number of documents processed
  * @param chunksCreated      Total chunks created from chunking
  * @param chunksIndexed      Total chunks indexed
+ * @param tokensProcessed    Total tokens processed during tokenization
  * @param totalTimeMs        Total processing time in milliseconds
  * @param indexedDocumentIds List of indexed document IDs
  */
@@ -31,6 +32,7 @@ public record PipelineResult(
         int documentsProcessed,
         int chunksCreated,
         int chunksIndexed,
+        long tokensProcessed,
         long totalTimeMs,
         List<String> indexedDocumentIds
 ) {

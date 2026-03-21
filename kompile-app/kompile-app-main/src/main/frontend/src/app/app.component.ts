@@ -19,10 +19,13 @@ import { Subscription } from 'rxjs';
 import { environment } from '../environments/environment';
 import { ConfigService } from './services/config.service';
 import { FactSheetService } from './services/fact-sheet.service';
-import { FactSheet, CreateFactSheetRequest } from './models/api-models';
+import { DocumentService } from './services/document.service';
+import { WebSocketService } from './services/websocket.service';
+import { MainPanelNavigationService } from './services/main-panel-navigation.service';
+import { FactSheet, CreateFactSheetRequest, IngestProgressUpdate, IngestStatus } from './models/api-models';
 
 // Define a type for the possible tab values
-export type ActiveTabType = 'unifiedChat' | 'sources' | 'mcp' | 'orchestrator' | 'developer' | 'batchConfig' | 'subprocessConfig' | 'graph' | 'connections' | 'stagingConfig' | 'archiveAssembly';
+export type ActiveTabType = 'unifiedChat' | 'sources' | 'tools' | 'developer' | 'openclaw';
 
 @Component({
   standalone: false,
@@ -41,11 +44,18 @@ export class AppComponent implements OnInit, OnDestroy {
   newFactSheetName = '';
   newFactSheetDescription = '';
 
+  // Active jobs tracking for notification indicator
+  activeJobsCount = 0;
+  activeJobs: Map<string, IngestProgressUpdate> = new Map();
+
   private subscriptions: Subscription[] = [];
 
   constructor(
     private configService: ConfigService,
-    private factSheetService: FactSheetService
+    private factSheetService: FactSheetService,
+    private documentService: DocumentService,
+    private webSocketService: WebSocketService,
+    private mainPanelNavigationService: MainPanelNavigationService
   ) { }
 
   ngOnInit(): void {
@@ -67,8 +77,73 @@ export class AppComponent implements OnInit, OnDestroy {
     });
     this.subscriptions.push(activeSub);
 
+    const focusSub = this.mainPanelNavigationService.focusMainPanel$.subscribe(() => {
+      this.activeTab = 'sources';
+    });
+    this.subscriptions.push(focusSub);
+
     // Load initial data
     this.loadFactSheets();
+
+    // Load initial active jobs and subscribe to updates
+    this.loadActiveJobs();
+    this.subscribeToJobUpdates();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ACTIVE JOBS TRACKING
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private loadActiveJobs(): void {
+    this.documentService.getAllIngestTasks().subscribe({
+      next: (tasks) => {
+        this.activeJobs.clear();
+        tasks.forEach(task => {
+          if (this.isActiveJob(task)) {
+            this.activeJobs.set(task.taskId, task);
+          }
+        });
+        this.activeJobsCount = this.activeJobs.size;
+      },
+      error: (err) => console.error('Failed to load active jobs:', err)
+    });
+  }
+
+  private subscribeToJobUpdates(): void {
+    // Connect to WebSocket and subscribe to all task updates
+    this.webSocketService.connect();
+
+    const progressSub = this.webSocketService.subscribeToAllTasks().subscribe({
+      next: (update) => {
+        if (this.isActiveJob(update)) {
+          this.activeJobs.set(update.taskId, update);
+        } else {
+          // Job completed or failed - remove from active
+          this.activeJobs.delete(update.taskId);
+        }
+        this.activeJobsCount = this.activeJobs.size;
+      },
+      error: (err) => console.error('WebSocket error:', err)
+    });
+    this.subscriptions.push(progressSub);
+  }
+
+  private isActiveJob(update: IngestProgressUpdate): boolean {
+    return update.status === IngestStatus.IN_PROGRESS ||
+           update.status === IngestStatus.PENDING;
+  }
+
+  /** Get a summary of active jobs for tooltip */
+  getActiveJobsSummary(): string {
+    if (this.activeJobsCount === 0) {
+      return 'No active jobs';
+    }
+    const jobs = Array.from(this.activeJobs.values());
+    const summary = jobs.slice(0, 3).map(j => j.fileName).join(', ');
+    if (jobs.length > 3) {
+      return `${summary} +${jobs.length - 3} more`;
+    }
+    return summary;
   }
 
   ngOnDestroy(): void {
@@ -124,5 +199,25 @@ export class AppComponent implements OnInit, OnDestroy {
       },
       error: (err) => console.error('Failed to create fact sheet:', err)
     });
+  }
+
+  /**
+   * Handle navigation from the index status banner.
+   * Safely casts the tab name to the ActiveTabType.
+   */
+  handleBannerNavigation(tabName: string): void {
+    const validTabs: ActiveTabType[] = ['unifiedChat', 'sources', 'tools', 'developer', 'openclaw'];
+    if (validTabs.includes(tabName as ActiveTabType)) {
+      this.activeTab = tabName as ActiveTabType;
+    }
+  }
+
+  /**
+   * Open the model staging configuration interface.
+   * Called from the model status indicator.
+   * Staging Manager is now under the Developer tab.
+   */
+  openModelStaging(): void {
+    this.activeTab = 'developer';
   }
 }
