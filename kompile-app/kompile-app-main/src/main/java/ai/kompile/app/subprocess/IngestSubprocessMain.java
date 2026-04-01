@@ -165,14 +165,24 @@ public class IngestSubprocessMain {
             reporter = new SubprocessProgressReporter(subprocessArgs.taskId(), originalStdout);
             httpCallback = new HttpIngestCallback(subprocessArgs.callbackBaseUrl());
 
-            // Initialize and start memory watchdog
-            memoryWatchdog = SubprocessMemoryWatchdog.fromArgs(subprocessArgs);
-            memoryWatchdog.setProgressReporter(reporter);
-            memoryWatchdog.start();
-            logger.info("Memory watchdog started: thresholds stop={}%, critical={}%, kill={}%",
+            // Initialize and start memory watchdog with GPU thresholds
+            memoryWatchdog = new SubprocessMemoryWatchdog(
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
-                    subprocessArgs.memoryKillThresholdPercent());
+                    subprocessArgs.memoryKillThresholdPercent(),
+                    subprocessArgs.memoryCheckIntervalMs(),
+                    subprocessArgs.gpuMemoryThresholdPercent(),
+                    subprocessArgs.gpuMemoryCriticalPercent(),
+                    subprocessArgs.gpuMemoryKillThresholdPercent()
+            );
+            memoryWatchdog.start();
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+                    subprocessArgs.memoryThresholdPercent(),
+                    subprocessArgs.memoryCriticalPercent(),
+                    subprocessArgs.memoryKillThresholdPercent(),
+                    subprocessArgs.gpuMemoryThresholdPercent(),
+                    subprocessArgs.gpuMemoryCriticalPercent(),
+                    subprocessArgs.gpuMemoryKillThresholdPercent());
 
             // Start heartbeat immediately
             reporter.startHeartbeat();

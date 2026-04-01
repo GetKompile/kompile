@@ -16,6 +16,7 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.anserini.encoder.samediff.GenericDenseSameDiffEncoder;
@@ -88,6 +89,9 @@ public class EmbeddingSubprocessMain {
     // Heartbeat
     private static ScheduledExecutorService heartbeatExecutor;
     private static long startTime;
+    
+    // Memory watchdog for monitoring heap and GPU memory
+    private static volatile SubprocessMemoryWatchdog memoryWatchdog;
 
     // Current phase tracking
     private static volatile String currentPhase = "INITIALIZING";
@@ -121,6 +125,15 @@ public class EmbeddingSubprocessMain {
             logger.info("Initializing ND4J environment...");
             initializeNd4j();
             sendProgress("INITIALIZING", 40, "ND4J ready", "Native backend initialized");
+
+            // Initialize memory watchdog with default thresholds (GPU monitoring auto-enabled for CUDA)
+            memoryWatchdog = new SubprocessMemoryWatchdog(
+                    80, 90, 95,  // Heap thresholds: stop=80%, critical=90%, kill=95%
+                    2000,        // Check interval: 2 seconds
+                    75, 85, 92   // GPU thresholds: stop=75%, critical=85%, kill=92%
+            );
+            memoryWatchdog.start();
+            logger.info("Memory watchdog started: heap stop=80%, critical=90%, kill=95%; GPU stop=75%, critical=85%, kill=92%");
 
             // Configure model source from system properties (passed from main process)
             // MUST happen AFTER ND4J init since registry may use ND4J
@@ -1133,6 +1146,16 @@ public class EmbeddingSubprocessMain {
      */
     private static void cleanup() {
         logger.info("Cleaning up...");
+
+        // Stop memory watchdog first
+        if (memoryWatchdog != null) {
+            try {
+                memoryWatchdog.close();
+            } catch (Exception e) {
+                logger.debug("Error closing memory watchdog: {}", e.getMessage());
+            }
+            memoryWatchdog = null;
+        }
 
         if (heartbeatExecutor != null) {
             try {

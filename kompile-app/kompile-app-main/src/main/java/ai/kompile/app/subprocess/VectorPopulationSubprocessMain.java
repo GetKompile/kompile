@@ -143,8 +143,6 @@ public class VectorPopulationSubprocessMain {
 
             // Initialize progress reporter and HTTP callback FIRST so we can report progress during setup
             reporter = new SubprocessProgressReporter(subprocessArgs.taskId(), originalStdout);
-            // Allow the memory watchdog to surface warnings via the same progress/log channel
-            memoryWatchdog.setProgressReporter(reporter);
 
             // Start heartbeat immediately
             reporter.startHeartbeat();
