@@ -116,26 +116,6 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
     // Last recorded memory info
     private volatile MemorySnapshot lastSnapshot;
 
-    // Optional progress reporter for logging
-    private SubprocessProgressReporter progressReporter;
-
-    /**
-     * Create a memory watchdog with specified thresholds.
-     *
-     * @param memoryThresholdPercent     Percentage at which to signal graceful stop (0-100)
-     * @param memoryCriticalPercent      Percentage at which to trigger GC and warn (0-100)
-     * @param memoryKillThresholdPercent Percentage at which to signal immediate termination (0-100, 0 to disable)
-     * @param checkIntervalMs            How often to check memory in milliseconds
-     */
-    public SubprocessMemoryWatchdog(
-            int memoryThresholdPercent,
-            int memoryCriticalPercent,
-            int memoryKillThresholdPercent,
-            long checkIntervalMs) {
-        this(memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent, checkIntervalMs,
-                75, 85, 92);  // Default GPU thresholds (more conservative than heap)
-    }
-
     /**
      * Create a memory watchdog with specified thresholds for both heap and GPU.
      *
@@ -192,28 +172,6 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         });
 
         this.lastSnapshot = captureSnapshot();
-    }
-
-    /**
-     * Create a memory watchdog from SubprocessArgs.
-     */
-    public static SubprocessMemoryWatchdog fromArgs(SubprocessArgs args) {
-        return new SubprocessMemoryWatchdog(
-                args.memoryThresholdPercent(),
-                args.memoryCriticalPercent(),
-                args.memoryKillThresholdPercent(),
-                args.memoryCheckIntervalMs(),
-                args.gpuMemoryThresholdPercent(),
-                args.gpuMemoryCriticalPercent(),
-                args.gpuMemoryKillThresholdPercent()
-        );
-    }
-
-    /**
-     * Set an optional progress reporter for logging memory events.
-     */
-    public void setProgressReporter(SubprocessProgressReporter reporter) {
-        this.progressReporter = reporter;
     }
 
     /**
@@ -582,10 +540,6 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     snapshot.usagePercent, snapshot.usedMB, snapshot.maxMB);
         }
         logger.warn(msg);
-
-        if (progressReporter != null) {
-            progressReporter.reportLog("WARN", "memory-watchdog", msg);
-        }
     }
 
     private void logMemoryKill(MemorySnapshot snapshot, String memoryType) {
@@ -600,10 +554,6 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     snapshot.usagePercent, snapshot.usedMB, snapshot.maxMB);
         }
         logger.error(msg);
-
-        if (progressReporter != null) {
-            progressReporter.reportLog("ERROR", "memory-watchdog", msg);
-        }
     }
 
     private MemorySnapshot captureSnapshot() {

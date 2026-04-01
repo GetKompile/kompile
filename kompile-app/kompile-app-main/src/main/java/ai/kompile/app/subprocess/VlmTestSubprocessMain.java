@@ -109,7 +109,6 @@ public class VlmTestSubprocessMain {
 
             reporter = new SubprocessProgressReporter(vlmArgs.taskId(), originalStdout);
             reporter.startHeartbeat();
-            memoryWatchdog.setProgressReporter(reporter);
 
             // Initialize ND4J
             reporter.reportProgress("INIT", 5, "ND4J", "Initializing ND4J environment");
