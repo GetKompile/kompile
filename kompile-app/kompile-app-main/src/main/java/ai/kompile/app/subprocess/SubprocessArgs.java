@@ -114,6 +114,23 @@ public record SubprocessArgs(
         /** Memory check interval in milliseconds. Default: 2000 */
         long memoryCheckIntervalMs,
 
+        // === GPU Memory Monitoring Configuration ===
+
+        /**
+         * GPU memory threshold percentage (0-100) at which to trigger graceful stop.
+         * Default: 75 (more conservative than heap since CUDA OOM is unrecoverable)
+         */
+        int gpuMemoryThresholdPercent,
+
+        /** GPU memory critical percentage (0-100) at which to warn. Default: 85 */
+        int gpuMemoryCriticalPercent,
+
+        /**
+         * GPU memory kill threshold percentage (0-100) at which to forcibly terminate.
+         * Default: 92. Set to 0 to disable.
+         */
+        int gpuMemoryKillThresholdPercent,
+
         /** Additional options as key-value pairs */
         Map<String, Object> options) {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -154,6 +171,21 @@ public record SubprocessArgs(
     public static final long DEFAULT_MEMORY_CHECK_INTERVAL_MS = 2000;
 
     /**
+     * Default GPU memory threshold percentage at which to trigger graceful stop.
+     */
+    public static final int DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT = 75;
+
+    /**
+     * Default GPU memory critical percentage at which to warn.
+     */
+    public static final int DEFAULT_GPU_MEMORY_CRITICAL_PERCENT = 85;
+
+    /**
+     * Default GPU memory kill threshold percentage at which to forcibly terminate.
+     */
+    public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
+
+    /**
      * Create SubprocessArgs with default values for unspecified parameters.
      */
     public static SubprocessArgs create(
@@ -190,6 +222,9 @@ public record SubprocessArgs(
                 DEFAULT_MEMORY_CRITICAL_PERCENT,
                 DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT,
                 DEFAULT_MEMORY_CHECK_INTERVAL_MS,
+                DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT,
+                DEFAULT_GPU_MEMORY_CRITICAL_PERCENT,
+                DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT,
                 new HashMap<>());
     }
 
@@ -292,6 +327,10 @@ public record SubprocessArgs(
         private int memoryCriticalPercent = DEFAULT_MEMORY_CRITICAL_PERCENT;
         private int memoryKillThresholdPercent = DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT;
         private long memoryCheckIntervalMs = DEFAULT_MEMORY_CHECK_INTERVAL_MS;
+        // GPU memory monitoring config
+        private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
+        private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
+        private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
         private Map<String, Object> options = new HashMap<>();
 
         public Builder taskId(String taskId) {
@@ -409,6 +448,21 @@ public record SubprocessArgs(
             return this;
         }
 
+        public Builder gpuMemoryThresholdPercent(int gpuMemoryThresholdPercent) {
+            this.gpuMemoryThresholdPercent = Math.max(0, Math.min(gpuMemoryThresholdPercent, 100));
+            return this;
+        }
+
+        public Builder gpuMemoryCriticalPercent(int gpuMemoryCriticalPercent) {
+            this.gpuMemoryCriticalPercent = Math.max(0, Math.min(gpuMemoryCriticalPercent, 100));
+            return this;
+        }
+
+        public Builder gpuMemoryKillThresholdPercent(int gpuMemoryKillThresholdPercent) {
+            this.gpuMemoryKillThresholdPercent = Math.max(0, Math.min(gpuMemoryKillThresholdPercent, 100));
+            return this;
+        }
+
         public Builder options(Map<String, Object> options) {
             this.options = options != null ? new HashMap<>(options) : new HashMap<>();
             return this;
@@ -456,6 +510,9 @@ public record SubprocessArgs(
                     memoryCriticalPercent,
                     memoryKillThresholdPercent,
                     memoryCheckIntervalMs,
+                    gpuMemoryThresholdPercent,
+                    gpuMemoryCriticalPercent,
+                    gpuMemoryKillThresholdPercent,
                     options);
         }
     }

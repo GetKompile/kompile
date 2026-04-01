@@ -56,6 +56,7 @@ public class SubprocessHandle {
 
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicBoolean oomDetected = new AtomicBoolean(false);
+    private final AtomicBoolean gpuOomDetected = new AtomicBoolean(false);
 
     private volatile Instant lastHeartbeat;
     private volatile String currentPhase = "STARTING";
@@ -222,6 +223,20 @@ public class SubprocessHandle {
     }
 
     /**
+     * Mark that GPU OOM was detected in stderr.
+     */
+    public void setGpuOomDetected(boolean detected) {
+        gpuOomDetected.set(detected);
+    }
+
+    /**
+     * Check if GPU OOM was detected.
+     */
+    public boolean isGpuOomDetected() {
+        return gpuOomDetected.get();
+    }
+
+    /**
      * Get the result future.
      */
     public CompletableFuture<SubprocessResult> getResultFuture() {
@@ -356,7 +371,8 @@ public class SubprocessHandle {
         String errorMessage,
         String errorPhase,
         boolean cancelled,
-        boolean oomKilled
+        boolean oomKilled,
+        boolean gpuOomKilled
     ) {
         public static SubprocessResult success(String taskId, SubprocessMessage.Completed completed) {
             return new SubprocessResult(
@@ -372,12 +388,18 @@ public class SubprocessHandle {
                 null,
                 null,
                 false,
+                false,
                 false
             );
         }
 
         public static SubprocessResult failure(String taskId, int exitCode, String errorMessage,
                                                String errorPhase, boolean cancelled, boolean oomKilled) {
+            return failure(taskId, exitCode, errorMessage, errorPhase, cancelled, oomKilled, false);
+        }
+
+        public static SubprocessResult failure(String taskId, int exitCode, String errorMessage,
+                                               String errorPhase, boolean cancelled, boolean oomKilled, boolean gpuOomKilled) {
             return new SubprocessResult(
                 taskId,
                 false,
@@ -387,7 +409,8 @@ public class SubprocessHandle {
                 errorMessage,
                 errorPhase,
                 cancelled,
-                oomKilled
+                oomKilled,
+                gpuOomKilled
             );
         }
     }
