@@ -24,6 +24,7 @@ import org.springframework.ai.chat.messages.UserMessage; // Correct UserMessage 
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +33,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service("openAiLanguageModel")
+@ConditionalOnClass(name = "ai.kompile.llm.openai.OpenAiLanguageModelImpl")
 @ConditionalOnProperty(name = "spring.ai.openai.api-key")
 public class OpenAiLanguageModelImpl implements LanguageModel {
 

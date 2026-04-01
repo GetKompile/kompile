@@ -1,0 +1,16 @@
+.eval-dataset-manager { padding: 16px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.upload-form { margin-bottom: 16px; }
+.full-width { width: 100%; }
+.file-input { display: flex; align-items: center; gap: 12px; margin: 8px 0 16px 0; flex-wrap: wrap; }
+.hint { font-size: 12px; color: #999; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.loading-spinner { display: flex; justify-content: center; padding: 40px; }
+.empty-state { text-align: center; padding: 60px 20px; color: #888; }
+.empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; margin-bottom: 16px; }
+.dataset-list { display: grid; gap: 16px; }
+.dataset-card { }
+.meta { display: flex; gap: 16px; font-size: 13px; color: #666; margin-top: 8px; }
+.preview-section { margin-top: 16px; }
+.preview-table { width: 100%; }
+.truncate { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

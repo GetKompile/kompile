@@ -1,0 +1,82 @@
+.device-routing-container {
+  padding: 16px;
+}
+
+.master-toggle {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.master-toggle .description {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+}
+
+.service-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.service-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.service-card.disabled-card {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.service-card mat-card-header {
+  margin-bottom: 12px;
+}
+
+.service-card mat-card-title {
+  font-size: 16px;
+}
+
+.service-card mat-card-subtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.config-field {
+  margin-bottom: 16px;
+  width: 100%;
+}
+
+.config-field mat-form-field {
+  width: 100%;
+}
+
+.memory-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 4px;
+}
+
+.action-bar {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-message {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}

@@ -27,6 +27,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -43,6 +44,7 @@ import org.springframework.ai.chat.metadata.RateLimit;
 
 
 @Service("anthropicLanguageModel")
+@ConditionalOnClass(name = "ai.kompile.llm.anthropic.AnthropicLanguageModelImpl")
 @ConditionalOnProperty(name = "spring.ai.anthropic.api-key")
 public class AnthropicLanguageModelImpl implements LanguageModel {
 

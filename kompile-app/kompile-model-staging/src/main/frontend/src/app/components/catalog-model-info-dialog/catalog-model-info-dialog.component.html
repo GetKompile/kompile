@@ -1,0 +1,149 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<h2 mat-dialog-title class="dialog-title">
+  <mat-icon class="title-icon">{{ getSourceIcon(model.source) }}</mat-icon>
+  {{ model.id }}
+  <span class="type-badge" *ngIf="model.modelType">{{ getModelTypeLabel(model.modelType) }}</span>
+  <span class="installed-chip" *ngIf="model.installed">
+    <mat-icon>check_circle</mat-icon> Installed
+  </span>
+</h2>
+
+<mat-dialog-content>
+  <mat-tab-group>
+    <!-- Overview Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>info</mat-icon>
+        <span>Overview</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Description -->
+        <div class="info-section" *ngIf="model.metadata?.description">
+          <h4>Description</h4>
+          <p class="description">{{ model.metadata.description }}</p>
+        </div>
+
+        <!-- General Info -->
+        <div class="info-section">
+          <h4>General Information</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item" *ngFor="let item of getOverviewItems()">
+              <mat-icon>{{ item.icon }}</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">{{ item.label }}</span>
+                <span class="metadata-value">{{ item.value }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model Metadata -->
+        <div class="info-section" *ngIf="getMetadataItems().length > 0">
+          <h4>Model Metadata</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item" *ngFor="let item of getMetadataItems()">
+              <mat-icon>{{ item.icon }}</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">{{ item.label }}</span>
+                <span class="metadata-value">{{ item.value }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Files -->
+        <div class="info-section" *ngIf="getFileItems().length > 0">
+          <h4>Files</h4>
+          <div class="file-list">
+            <div class="file-item" *ngFor="let file of getFileItems()">
+              <mat-icon>{{ file.icon }}</mat-icon>
+              <div class="file-content">
+                <span class="file-label">{{ file.label }}</span>
+                <span class="file-value">{{ file.value }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Optimization Tab -->
+    <mat-tab *ngIf="hasOptimizationData()">
+      <ng-template mat-tab-label>
+        <mat-icon>speed</mat-icon>
+        <span>Optimization</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <h4>Optimization Details</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item" *ngFor="let item of getOptimizationItems()">
+              <mat-icon>{{ item.icon }}</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">{{ item.label }}</span>
+                <span class="metadata-value">{{ item.value }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-section" *ngIf="getResolvedPasses().length > 0">
+          <h4>Applied Optimization Passes</h4>
+          <div class="pass-detail-list">
+            <div class="pass-detail-item" *ngFor="let pass of getResolvedPasses()">
+              <div class="pass-detail-header">
+                <mat-icon [style.color]="getCategoryColor(pass.category)">{{ pass.icon }}</mat-icon>
+                <span class="pass-detail-name">{{ pass.name }}</span>
+                <span class="pass-detail-category" [style.background]="getCategoryColor(pass.category)">{{ pass.category }}</span>
+              </div>
+              <div class="pass-detail-desc">{{ pass.description }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-section" *ngIf="model.metadata?.optimization_config?.enabled_passes?.length">
+          <h4>Enabled Passes (Config)</h4>
+          <div class="pass-detail-list">
+            <div class="pass-detail-item" *ngFor="let pass of getResolvedConfigPasses()">
+              <div class="pass-detail-header">
+                <mat-icon [style.color]="getCategoryColor(pass.category)">{{ pass.icon }}</mat-icon>
+                <span class="pass-detail-name">{{ pass.name }}</span>
+                <span class="pass-detail-category" [style.background]="getCategoryColor(pass.category)">{{ pass.category }}</span>
+              </div>
+              <div class="pass-detail-desc">{{ pass.description }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- JSON Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>data_object</mat-icon>
+        <span>JSON</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <div class="section-header">
+            <h4>Raw Catalog Entry</h4>
+            <button mat-icon-button (click)="copyModelJson()" matTooltip="Copy JSON">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </div>
+          <pre class="json-view">{{ model | json }}</pre>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="close()">Close</button>
+</mat-dialog-actions>

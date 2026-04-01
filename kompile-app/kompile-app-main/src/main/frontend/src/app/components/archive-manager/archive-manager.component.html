@@ -1,0 +1,264 @@
+<div class="archive-manager-container">
+  <!-- Header -->
+  <div class="page-header">
+    <h1>
+      <mat-icon>archive</mat-icon>
+      Archive Manager
+    </h1>
+    <p class="subtitle">Manage Kompile Archives (.karch) for offline model deployment</p>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading archives...</p>
+  </div>
+
+  <!-- Content -->
+  <div class="archive-content" *ngIf="!loading">
+    <!-- Archive Status Card -->
+    <mat-card class="status-card" *ngIf="status">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [class.loaded]="status.loaded">
+          {{ status.loaded ? 'check_circle' : 'cancel' }}
+        </mat-icon>
+        <mat-card-title>Archive Status</mat-card-title>
+        <mat-card-subtitle>{{ status.loaded ? 'Archive Loaded' : 'No Archive Loaded' }}</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content *ngIf="status.loaded">
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="label">Archive ID</span>
+            <span class="value">{{ status.archiveId }}</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Version</span>
+            <span class="value">{{ status.contentVersion }}</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Total Models</span>
+            <span class="value">{{ status.modelCount }}</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Encoders</span>
+            <span class="value">{{ status.encoderCount }}</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Cross-Encoders</span>
+            <span class="value">{{ status.crossEncoderCount }}</span>
+          </div>
+          <div class="status-item" *ngIf="status.loadedAt">
+            <span class="label">Loaded At</span>
+            <span class="value">{{ status.loadedAt | date:'short' }}</span>
+          </div>
+        </div>
+        <div class="status-description" *ngIf="status.description">
+          <span class="label">Description</span>
+          <p>{{ status.description }}</p>
+        </div>
+      </mat-card-content>
+      <mat-card-actions *ngIf="status.loaded">
+        <button mat-button color="warn" (click)="unloadArchive()" [disabled]="loadingArchive">
+          <mat-icon>close</mat-icon>
+          Unload Archive
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Tabs -->
+    <mat-tab-group [(selectedIndex)]="selectedTab">
+      <!-- Available Archives Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon class="tab-icon">folder</mat-icon>
+          Available Archives ({{ archives.length }})
+        </ng-template>
+        <div class="tab-content">
+          <!-- Load Archive Form -->
+          <mat-card class="load-archive-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>add</mat-icon>
+              <mat-card-title>Load Archive</mat-card-title>
+              <mat-card-subtitle>Load an archive from a file path</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <form [formGroup]="loadArchiveForm" (ngSubmit)="submitLoadArchive()" class="load-archive-form">
+                <mat-form-field class="archive-path-field" appearance="outline">
+                  <mat-label>Archive Path</mat-label>
+                  <input matInput formControlName="archivePath" placeholder="/path/to/archive.karch">
+                  <mat-icon matSuffix>folder_open</mat-icon>
+                </mat-form-field>
+                <button mat-raised-button color="primary" type="submit"
+                        [disabled]="loadArchiveForm.invalid || loadingArchive">
+                  <mat-icon>cloud_download</mat-icon>
+                  {{ loadingArchive ? 'Loading...' : 'Load Archive' }}
+                </button>
+              </form>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Archives List -->
+          <div class="archives-list" *ngIf="archives.length > 0">
+            <h3>Discovered Archives</h3>
+            <mat-list>
+              <mat-list-item *ngFor="let archive of archives" class="archive-item"
+                             [class.loaded]="archive.loaded">
+                <mat-icon matListItemIcon>{{ archive.loaded ? 'check_circle' : 'archive' }}</mat-icon>
+                <div matListItemTitle>{{ archive.name }}</div>
+                <div matListItemLine>
+                  <span class="archive-meta">
+                    {{ archive.archiveId }} v{{ archive.version }} |
+                    {{ archive.modelCount }} models |
+                    {{ formatSize(archive.sizeBytes) }}
+                  </span>
+                </div>
+                <div matListItemMeta>
+                  <button mat-icon-button color="primary" (click)="loadArchiveFromList(archive)"
+                          [disabled]="archive.loaded || loadingArchive"
+                          matTooltip="Load this archive">
+                    <mat-icon>play_circle</mat-icon>
+                  </button>
+                </div>
+              </mat-list-item>
+            </mat-list>
+          </div>
+
+          <div class="no-archives" *ngIf="archives.length === 0">
+            <mat-icon>inbox</mat-icon>
+            <p>No archives found</p>
+            <span>Place .karch files in ~/.kompile/archives/ or load one manually above</span>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Models Tab -->
+      <mat-tab [disabled]="!status?.loaded">
+        <ng-template mat-tab-label>
+          <mat-icon class="tab-icon">memory</mat-icon>
+          Models ({{ models.length }})
+        </ng-template>
+        <div class="tab-content">
+          <!-- Encoders Section -->
+          <div class="models-section" *ngIf="encoders.length > 0">
+            <h3>
+              <mat-icon>memory</mat-icon>
+              Encoders ({{ encoders.length }})
+            </h3>
+            <div class="models-grid">
+              <mat-card class="model-card" *ngFor="let model of encoders">
+                <mat-card-header>
+                  <mat-icon mat-card-avatar>memory</mat-icon>
+                  <mat-card-title>{{ model.modelId }}</mat-card-title>
+                  <mat-card-subtitle>
+                    <span *ngIf="model.embeddingDim">{{ model.embeddingDim }}d</span>
+                    <span *ngIf="model.maxSequenceLength"> | max {{ model.maxSequenceLength }} tokens</span>
+                  </mat-card-subtitle>
+                </mat-card-header>
+                <mat-card-content *ngIf="model.description">
+                  <p class="model-description">{{ model.description }}</p>
+                </mat-card-content>
+                <mat-card-actions>
+                  <button mat-button color="primary" (click)="extractModelFromList(model)"
+                          [disabled]="extractingModel">
+                    <mat-icon>download</mat-icon>
+                    Extract
+                  </button>
+                </mat-card-actions>
+              </mat-card>
+            </div>
+          </div>
+
+          <!-- Cross-Encoders Section -->
+          <div class="models-section" *ngIf="crossEncoders.length > 0">
+            <h3>
+              <mat-icon>swap_horiz</mat-icon>
+              Cross-Encoders ({{ crossEncoders.length }})
+            </h3>
+            <div class="models-grid">
+              <mat-card class="model-card" *ngFor="let model of crossEncoders">
+                <mat-card-header>
+                  <mat-icon mat-card-avatar>swap_horiz</mat-icon>
+                  <mat-card-title>{{ model.modelId }}</mat-card-title>
+                  <mat-card-subtitle>
+                    <span *ngIf="model.maxSequenceLength">max {{ model.maxSequenceLength }} tokens</span>
+                  </mat-card-subtitle>
+                </mat-card-header>
+                <mat-card-content *ngIf="model.description">
+                  <p class="model-description">{{ model.description }}</p>
+                </mat-card-content>
+                <mat-card-actions>
+                  <button mat-button color="primary" (click)="extractModelFromList(model)"
+                          [disabled]="extractingModel">
+                    <mat-icon>download</mat-icon>
+                    Extract
+                  </button>
+                </mat-card-actions>
+              </mat-card>
+            </div>
+          </div>
+
+          <div class="no-models" *ngIf="models.length === 0 && status?.loaded">
+            <mat-icon>extension_off</mat-icon>
+            <p>No models in this archive</p>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Extract Tab -->
+      <mat-tab [disabled]="!status?.loaded">
+        <ng-template mat-tab-label>
+          <mat-icon class="tab-icon">download</mat-icon>
+          Extract Model
+        </ng-template>
+        <div class="tab-content">
+          <mat-card class="extract-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>download</mat-icon>
+              <mat-card-title>Extract Model to Disk</mat-card-title>
+              <mat-card-subtitle>Extract a model from the archive for use</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <form [formGroup]="extractForm" (ngSubmit)="submitExtract()" class="extract-form">
+                <mat-form-field appearance="outline">
+                  <mat-label>Model</mat-label>
+                  <mat-select formControlName="modelId">
+                    <mat-optgroup label="Encoders">
+                      <mat-option *ngFor="let model of encoders" [value]="model.modelId">
+                        {{ model.modelId }}
+                        <span *ngIf="model.embeddingDim"> ({{ model.embeddingDim }}d)</span>
+                      </mat-option>
+                    </mat-optgroup>
+                    <mat-optgroup label="Cross-Encoders">
+                      <mat-option *ngFor="let model of crossEncoders" [value]="model.modelId">
+                        {{ model.modelId }}
+                      </mat-option>
+                    </mat-optgroup>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Destination Path (optional)</mat-label>
+                  <input matInput formControlName="destinationPath"
+                         placeholder="Leave empty for default (~/.kompile/models/)">
+                  <mat-icon matSuffix>folder</mat-icon>
+                </mat-form-field>
+
+                <button mat-raised-button color="primary" type="submit"
+                        [disabled]="extractForm.invalid || extractingModel">
+                  <mat-icon>download</mat-icon>
+                  {{ extractingModel ? 'Extracting...' : 'Extract Model' }}
+                </button>
+              </form>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </mat-tab>
+    </mat-tab-group>
+  </div>
+
+  <!-- Refresh Button -->
+  <button mat-fab color="primary" class="refresh-fab" (click)="refreshArchives()"
+          matTooltip="Refresh archives">
+    <mat-icon>refresh</mat-icon>
+  </button>
+</div>

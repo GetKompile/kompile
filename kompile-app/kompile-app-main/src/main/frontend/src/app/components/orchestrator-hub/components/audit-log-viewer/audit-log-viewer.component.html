@@ -1,0 +1,250 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0
+-->
+<div class="audit-log-viewer">
+  <!-- Stats Summary -->
+  <div class="stats-cards" *ngIf="stats">
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.totalEvents | number }}</div>
+      <div class="stat-label">Total Events</div>
+    </div>
+    <div class="stat-card error">
+      <div class="stat-value">{{ stats.errorCount | number }}</div>
+      <div class="stat-label">Errors</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ formatDuration(stats.avgDurationMs) }}</div>
+      <div class="stat-label">Avg Duration</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ getEventTypeCount(stats.eventsByType) }}</div>
+      <div class="stat-label">Event Types</div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters-bar">
+    <mat-form-field appearance="outline" class="filter-field search-field">
+      <mat-label>Search</mat-label>
+      <input matInput #searchInput [value]="searchCriteria.search || ''"
+             placeholder="Search messages...">
+      <mat-icon matSuffix>search</mat-icon>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="filter-field">
+      <mat-label>Event Type</mat-label>
+      <mat-select [ngModel]="searchCriteria.eventType" [ngModelOptions]="{standalone: true}" (ngModelChange)="setEventTypeFilter($event)">
+        <mat-option [value]="''">All Events</mat-option>
+        <mat-option *ngFor="let type of eventTypes" [value]="type">{{ type }}</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="filter-field">
+      <mat-label>Entity Type</mat-label>
+      <mat-select [ngModel]="searchCriteria.entityType" [ngModelOptions]="{standalone: true}" (ngModelChange)="setEntityTypeFilter($event)">
+        <mat-option [value]="''">All Entities</mat-option>
+        <mat-option *ngFor="let type of entityTypes" [value]="type">{{ type }}</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="filter-field date-field">
+      <mat-label>From</mat-label>
+      <input matInput type="datetime-local" [ngModel]="searchCriteria.fromTime" [ngModelOptions]="{standalone: true}"
+             (ngModelChange)="setDateRange($event, searchCriteria.toTime || '')">
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="filter-field date-field">
+      <mat-label>To</mat-label>
+      <input matInput type="datetime-local" [ngModel]="searchCriteria.toTime" [ngModelOptions]="{standalone: true}"
+             (ngModelChange)="setDateRange(searchCriteria.fromTime || '', $event)">
+    </mat-form-field>
+
+    <button mat-stroked-button [color]="searchCriteria.errorsOnly ? 'warn' : ''"
+            (click)="toggleErrorsOnly()">
+      <mat-icon>error</mat-icon>
+      Errors Only
+    </button>
+
+    <button mat-stroked-button (click)="clearFilters()" *ngIf="searchCriteria.eventType || searchCriteria.entityType || searchCriteria.search || searchCriteria.fromTime || searchCriteria.toTime || searchCriteria.errorsOnly">
+      <mat-icon>clear</mat-icon>
+      Clear
+    </button>
+
+    <div class="spacer"></div>
+
+    <button mat-icon-button [color]="autoRefresh ? 'primary' : ''" (click)="toggleAutoRefresh()"
+            [matTooltip]="autoRefresh ? 'Auto-refresh ON' : 'Auto-refresh OFF'">
+      <mat-icon>{{ autoRefresh ? 'sync' : 'sync_disabled' }}</mat-icon>
+    </button>
+
+    <button mat-icon-button (click)="refresh()" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+    </button>
+
+    <button mat-icon-button [matMenuTriggerFor]="exportMenu" matTooltip="Export">
+      <mat-icon>download</mat-icon>
+    </button>
+    <mat-menu #exportMenu="matMenu">
+      <button mat-menu-item (click)="exportLogs('json')">
+        <mat-icon>code</mat-icon>
+        <span>Export as JSON</span>
+      </button>
+      <button mat-menu-item (click)="exportLogs('csv')">
+        <mat-icon>table_chart</mat-icon>
+        <span>Export as CSV</span>
+      </button>
+    </mat-menu>
+  </div>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="clearError()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading Indicator -->
+  <div class="loading-overlay" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <!-- Audit Log Table -->
+  <div class="table-container" *ngIf="!loading">
+    <table mat-table [dataSource]="auditLogs" class="audit-table">
+      <!-- Timestamp Column -->
+      <ng-container matColumnDef="timestamp">
+        <th mat-header-cell *matHeaderCellDef>Timestamp</th>
+        <td mat-cell *matCellDef="let log">
+          <span class="timestamp">{{ formatTimestamp(log.timestamp) }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Event Type Column -->
+      <ng-container matColumnDef="eventType">
+        <th mat-header-cell *matHeaderCellDef>Event</th>
+        <td mat-cell *matCellDef="let log">
+          <span class="event-badge" [ngClass]="getEventTypeClass(log.eventType)">
+            {{ log.eventType }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Entity Type Column -->
+      <ng-container matColumnDef="entityType">
+        <th mat-header-cell *matHeaderCellDef>Entity</th>
+        <td mat-cell *matCellDef="let log">
+          <span class="entity-type" *ngIf="log.entityType">{{ log.entityType }}</span>
+          <span class="entity-id" *ngIf="log.entityId">#{{ log.entityId }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Action Column -->
+      <ng-container matColumnDef="action">
+        <th mat-header-cell *matHeaderCellDef>Action</th>
+        <td mat-cell *matCellDef="let log">{{ log.action }}</td>
+      </ng-container>
+
+      <!-- Message Column -->
+      <ng-container matColumnDef="message">
+        <th mat-header-cell *matHeaderCellDef>Message</th>
+        <td mat-cell *matCellDef="let log" class="message-cell">
+          <span class="message-text">{{ log.message }}</span>
+          <button mat-icon-button *ngIf="log.detailsJson" (click)="toggleRowExpansion(log.id)"
+                  class="expand-btn">
+            <mat-icon>{{ isRowExpanded(log.id) ? 'expand_less' : 'expand_more' }}</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+
+      <!-- Actor Column -->
+      <ng-container matColumnDef="actor">
+        <th mat-header-cell *matHeaderCellDef>Actor</th>
+        <td mat-cell *matCellDef="let log">
+          <span class="actor" *ngIf="log.actorId">
+            <mat-icon class="actor-icon">{{ log.actorType === 'SYSTEM' ? 'computer' : 'person' }}</mat-icon>
+            {{ log.actorId }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Duration Column -->
+      <ng-container matColumnDef="duration">
+        <th mat-header-cell *matHeaderCellDef>Duration</th>
+        <td mat-cell *matCellDef="let log">{{ formatDuration(log.durationMs) }}</td>
+      </ng-container>
+
+      <!-- Status Column -->
+      <ng-container matColumnDef="status">
+        <th mat-header-cell *matHeaderCellDef>Status</th>
+        <td mat-cell *matCellDef="let log">
+          <mat-icon *ngIf="log.error" class="status-error" matTooltip="{{ log.errorMessage }}">error</mat-icon>
+          <mat-icon *ngIf="!log.error" class="status-ok">check_circle</mat-icon>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns; sticky: true"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;"
+          [class.error-row]="row.error"
+          [class.expanded]="isRowExpanded(row.id)"></tr>
+    </table>
+
+    <!-- Expanded Details -->
+    <div class="row-details" *ngFor="let log of auditLogs; trackBy: trackByLogId" [hidden]="!isRowExpanded(log.id)">
+      <div class="details-content" *ngIf="isRowExpanded(log.id)">
+        <div class="details-section" *ngIf="log.errorMessage">
+          <h4>Error Message</h4>
+          <pre class="error-text">{{ log.errorMessage }}</pre>
+        </div>
+
+        <div class="details-section" *ngIf="log.previousValue">
+          <h4>Previous Value</h4>
+          <pre>{{ log.previousValue }}</pre>
+        </div>
+
+        <div class="details-section" *ngIf="log.newValue">
+          <h4>New Value</h4>
+          <pre>{{ log.newValue }}</pre>
+        </div>
+
+        <div class="details-section" *ngIf="parseDetails(log.detailsJson)">
+          <h4>Details</h4>
+          <pre>{{ parseDetails(log.detailsJson) | json }}</pre>
+        </div>
+
+        <div class="details-meta">
+          <span *ngIf="log.triggerId">Trigger: {{ log.triggerId }}</span>
+          <span *ngIf="log.hookId">Hook: {{ log.hookId }}</span>
+          <span *ngIf="log.source">Source: {{ log.source }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state" *ngIf="auditLogs.length === 0 && !loading">
+      <mat-icon>history</mat-icon>
+      <p>No audit logs found</p>
+      <span *ngIf="searchCriteria.eventType || searchCriteria.entityType || searchCriteria.search">
+        Try adjusting your filters
+      </span>
+    </div>
+  </div>
+
+  <!-- Pagination -->
+  <div class="pagination" *ngIf="totalPages > 1">
+    <button mat-icon-button [disabled]="currentPage === 0" (click)="previousPage()">
+      <mat-icon>chevron_left</mat-icon>
+    </button>
+
+    <span class="page-info">
+      Page {{ currentPage + 1 }} of {{ totalPages }}
+      <span class="total-info">({{ totalElements }} total)</span>
+    </span>
+
+    <button mat-icon-button [disabled]="currentPage >= totalPages - 1" (click)="nextPage()">
+      <mat-icon>chevron_right</mat-icon>
+    </button>
+  </div>
+</div>

@@ -1,0 +1,383 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.backup-manager-container {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* Page Header */
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px 0;
+  font-weight: 400;
+  font-size: 28px;
+  color: #333;
+}
+
+.page-header h1 mat-icon {
+  color: #1976d2;
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+}
+
+.page-header .subtitle {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+}
+
+/* Loading State */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: #666;
+}
+
+.loading-state p {
+  margin-top: 16px;
+}
+
+/* Content Layout */
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Cards */
+.status-card,
+.backups-card,
+.info-card {
+  margin-bottom: 0;
+}
+
+mat-card-header {
+  margin-bottom: 16px;
+}
+
+mat-card-header mat-icon[mat-card-avatar] {
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 50%;
+  padding: 8px;
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+mat-card-header mat-icon[mat-card-avatar].active {
+  background: #e8f5e9;
+  color: #4caf50;
+}
+
+/* Status Grid */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-item .label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-item .value {
+  font-size: 14px;
+  color: #333;
+}
+
+.status-item .value.path {
+  font-family: monospace;
+  font-size: 13px;
+  background: #f5f5f5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status Badges */
+.status-enabled {
+  color: #4caf50;
+  font-weight: 500;
+}
+
+.status-disabled {
+  color: #f44336;
+  font-weight: 500;
+}
+
+.status-in-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #1976d2;
+  margin-left: 12px;
+}
+
+/* Section Divider */
+.section-divider {
+  margin: 24px 0;
+}
+
+/* Last Backup Section */
+.last-backup-section h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+.last-backup-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.last-backup-time,
+.last-backup-result,
+.last-backup-errors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.last-backup-time mat-icon {
+  color: #666;
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.last-backup-result mat-icon.success {
+  color: #4caf50;
+}
+
+.last-backup-result mat-icon.error {
+  color: #f44336;
+}
+
+.last-backup-result .details {
+  color: #666;
+  font-size: 13px;
+}
+
+.last-backup-errors {
+  color: #ff9800;
+}
+
+.last-backup-errors mat-icon.warning {
+  color: #ff9800;
+}
+
+.no-backups-yet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #666;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.no-backups-yet mat-icon {
+  color: #1976d2;
+}
+
+/* Card Actions */
+mat-card-actions {
+  padding: 16px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+mat-card-actions button mat-icon {
+  margin-right: 4px;
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: #666;
+  text-align: center;
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  color: #ccc;
+  margin-bottom: 16px;
+}
+
+.empty-state p {
+  margin: 0;
+}
+
+.empty-state .hint {
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* Backup List */
+.backup-item {
+  border-bottom: 1px solid #eee;
+  padding: 12px 0 !important;
+  height: auto !important;
+}
+
+.backup-item:last-child {
+  border-bottom: none;
+}
+
+.backup-name {
+  font-weight: 500;
+  font-family: monospace;
+}
+
+.backup-details {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+  font-size: 13px;
+  color: #666;
+}
+
+.backup-date,
+.backup-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.backup-date mat-icon,
+.backup-size mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.backup-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Info Card */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 24px;
+}
+
+.info-item {
+  display: flex;
+  gap: 16px;
+}
+
+.info-item mat-icon {
+  color: #1976d2;
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+}
+
+.info-item strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #333;
+}
+
+.info-item p {
+  margin: 0;
+  font-size: 13px;
+  color: #666;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .backup-manager-container {
+    padding: 16px;
+  }
+
+  .page-header h1 {
+    font-size: 24px;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .backup-details {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .backup-actions {
+    flex-direction: column;
+  }
+
+  mat-card-actions {
+    flex-direction: column;
+  }
+
+  mat-card-actions button {
+    width: 100%;
+  }
+}
+
+/* Snackbar Classes */
+::ng-deep .success-snackbar {
+  background-color: #4caf50;
+  color: white;
+}
+
+::ng-deep .error-snackbar {
+  background-color: #f44336;
+  color: white;
+}

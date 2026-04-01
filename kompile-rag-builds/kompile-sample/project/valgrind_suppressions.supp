@@ -1,0 +1,60 @@
+{
+    SuppressLibJVMAddr1
+    Memcheck:Addr1
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMAddr2
+    Memcheck:Addr2
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMAddr4
+    Memcheck:Addr4
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMAddr8
+    Memcheck:Addr8
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMValue1
+    Memcheck:Value1
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMValue2
+    Memcheck:Value2
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMValue4
+    Memcheck:Value4
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMValue8
+    Memcheck:Value8
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMJump
+    Memcheck:Jump
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}
+{
+    SuppressLibJVMCond
+    Memcheck:Cond
+    ...
+    obj:/home/agibsonccc/.sdkman/candidates/java/17.0.17-amzn/lib/server/libjvm.so
+}

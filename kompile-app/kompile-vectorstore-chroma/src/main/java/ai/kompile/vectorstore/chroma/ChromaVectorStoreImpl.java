@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest; // Correct import
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Service("chromaVectorStoreImpl")
+@ConditionalOnClass(name = "ai.kompile.vectorstore.chroma.ChromaVectorStoreImpl")
 @ConditionalOnProperty(prefix = "spring.ai.vectorstore.chroma.client", name = "host")
 public class ChromaVectorStoreImpl implements VectorStore {
 

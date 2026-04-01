@@ -1,0 +1,14 @@
+.evaluation-viewer { padding: 16px; max-width: 1000px; }
+.evaluation-viewer h2 { margin-bottom: 16px; }
+.section-card { margin-bottom: 16px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.metrics-selection { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0; }
+.actions { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.result-card { background: rgba(0,0,0,0.02); border-radius: 8px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(0,0,0,0.08); }
+.result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.result-time { font-size: 0.8rem; color: rgba(0,0,0,0.5); }
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.metric-item { background: white; border-radius: 8px; padding: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.metric-label { display: block; font-size: 0.75rem; color: rgba(0,0,0,0.6); text-transform: uppercase; margin-bottom: 4px; }
+.metric-value { display: block; font-size: 1.4rem; font-weight: 500; color: #1976d2; }
+.result-error { display: flex; align-items: center; gap: 8px; color: #f44336; margin-top: 8px; }

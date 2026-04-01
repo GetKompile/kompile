@@ -725,7 +725,7 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
     private void loadSameDiffModel(Path modelPath) throws IOException {
         try {
-            this.sameDiffModel = SDZSerializer.load(modelPath.toFile(), true);
+            this.sameDiffModel = SameDiff.load(modelPath.toFile(), true);
 
             if (this.sameDiffModel == null) {
                 throw new IOException("Failed to import model to SameDiff from " + modelPath + ". Importer returned null.");

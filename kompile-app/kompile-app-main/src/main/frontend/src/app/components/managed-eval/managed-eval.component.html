@@ -1,0 +1,442 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0
+-->
+
+<div class="managed-eval-container">
+  <!-- Loading Spinner -->
+  <div class="loading-overlay" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading evaluation data...</span>
+  </div>
+
+  <!-- Main 3-Column Layout -->
+  <div class="three-column-layout" *ngIf="!loading">
+
+    <!-- Column 1: Suites -->
+    <div class="column suites-column">
+      <div class="column-header">
+        <h3>Evaluation Suites</h3>
+        <div class="header-actions">
+          <button mat-icon-button matTooltip="Import Suite" (click)="fileInput.click()">
+            <mat-icon>upload</mat-icon>
+          </button>
+          <input #fileInput type="file" accept=".json" (change)="importSuite($event)" style="display: none">
+          <button mat-icon-button matTooltip="Create Suite" color="primary" (click)="createSuite()">
+            <mat-icon>add</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <div class="suite-list">
+        <mat-card *ngFor="let suite of suites"
+                  class="suite-card"
+                  [class.selected]="selectedSuite?.id === suite.id"
+                  (click)="selectSuite(suite)">
+          <mat-card-content>
+            <div class="suite-header">
+              <span class="suite-name">{{ suite.name }}</span>
+              <mat-icon *ngIf="!suite.enabled" class="disabled-icon" matTooltip="Disabled">block</mat-icon>
+            </div>
+            <div class="suite-meta">
+              <span class="test-count">{{ suite.testCaseCount }} tests</span>
+              <span class="pass-rate">{{ formatPercentage(suite.requiredPassRate) }} required</span>
+            </div>
+            <div class="suite-tags" *ngIf="suite.tags?.length">
+              <mat-chip-set>
+                <mat-chip *ngFor="let tag of suite.tags?.slice(0, 3)" size="small">{{ tag }}</mat-chip>
+              </mat-chip-set>
+            </div>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-icon-button matTooltip="Edit" (click)="editSuite(); $event.stopPropagation()">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Export" (click)="exportSuite(); $event.stopPropagation()">
+              <mat-icon>download</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Delete" color="warn" (click)="deleteSuite(suite); $event.stopPropagation()">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <div class="empty-state" *ngIf="suites.length === 0">
+          <mat-icon>folder_open</mat-icon>
+          <p>No evaluation suites</p>
+          <button mat-stroked-button color="primary" (click)="createSuite()">
+            <mat-icon>add</mat-icon> Create Suite
+          </button>
+        </div>
+      </div>
+
+      <!-- Metrics Summary -->
+      <div class="metrics-summary" *ngIf="metrics">
+        <mat-divider></mat-divider>
+        <h4>Fact Sheet Metrics</h4>
+        <div class="metric-row">
+          <span class="metric-label">Test Runs</span>
+          <span class="metric-value">{{ metrics.totalTestRuns || 0 }}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Pass Rate</span>
+          <span class="metric-value">{{ formatPercentage(metrics.testPassRate) }}</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">Avg Score</span>
+          <span class="metric-value">{{ formatScore(metrics.averageTestScore) }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Column 2: Test Cases -->
+    <div class="column test-cases-column">
+      <div class="column-header">
+        <h3>Test Cases</h3>
+        <div class="header-actions" *ngIf="selectedSuite">
+          <button mat-icon-button matTooltip="Create Test Case" color="primary" (click)="createTestCase()">
+            <mat-icon>add</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <div class="test-case-list" *ngIf="selectedSuite">
+        <mat-card *ngFor="let tc of testCases"
+                  class="test-case-card"
+                  [class.selected]="selectedTestCase?.id === tc.id"
+                  [class.disabled]="!tc.enabled"
+                  (click)="selectTestCase(tc)">
+          <mat-card-content>
+            <div class="test-case-header">
+              <span class="priority-indicator" [style.background-color]="getPriorityColor(tc.priority)"></span>
+              <span class="test-case-name">{{ tc.name }}</span>
+              <mat-icon *ngIf="!tc.enabled" class="disabled-icon">block</mat-icon>
+            </div>
+            <div class="test-case-query">{{ tc.query | slice:0:80 }}{{ tc.query.length > 80 ? '...' : '' }}</div>
+            <div class="test-case-meta">
+              <span *ngIf="tc.expectedFacts?.length">{{ tc.expectedFacts?.length }} facts</span>
+              <span *ngIf="tc.evaluationTypes?.length">{{ tc.evaluationTypes?.length }} evals</span>
+            </div>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-icon-button matTooltip="Edit" (click)="editTestCase(); $event.stopPropagation()">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Duplicate" (click)="duplicateTestCase(tc); $event.stopPropagation()">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Delete" color="warn" (click)="deleteTestCase(tc); $event.stopPropagation()">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <div class="empty-state" *ngIf="testCases.length === 0">
+          <mat-icon>quiz</mat-icon>
+          <p>No test cases in this suite</p>
+          <button mat-stroked-button color="primary" (click)="createTestCase()">
+            <mat-icon>add</mat-icon> Create Test Case
+          </button>
+        </div>
+      </div>
+
+      <div class="empty-state" *ngIf="!selectedSuite">
+        <mat-icon>arrow_back</mat-icon>
+        <p>Select a suite to view test cases</p>
+      </div>
+    </div>
+
+    <!-- Column 3: Details -->
+    <div class="column details-column">
+      <div class="column-header">
+        <h3>Details</h3>
+        <div class="header-actions">
+          <mat-button-toggle-group [(ngModel)]="detailsView" [ngModelOptions]="{standalone: true}" appearance="standard">
+            <mat-button-toggle value="editor" matTooltip="Editor">
+              <mat-icon>edit</mat-icon>
+            </mat-button-toggle>
+            <mat-button-toggle value="results" matTooltip="Results">
+              <mat-icon>history</mat-icon>
+            </mat-button-toggle>
+            <mat-button-toggle value="metrics" matTooltip="Metrics">
+              <mat-icon>bar_chart</mat-icon>
+            </mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+      </div>
+
+      <!-- Editor View -->
+      <div class="details-content editor-view" *ngIf="detailsView === 'editor'">
+
+        <!-- Suite Editor -->
+        <div class="suite-editor" *ngIf="editingSuite">
+          <h4>{{ selectedSuite?.id ? 'Edit Suite' : 'New Suite' }}</h4>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput [(ngModel)]="editedSuite.name" [ngModelOptions]="{standalone: true}" placeholder="Suite name">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput [(ngModel)]="editedSuite.description" [ngModelOptions]="{standalone: true}" rows="3" placeholder="Description"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Required Pass Rate</mat-label>
+            <input matInput type="number" [(ngModel)]="editedSuite.requiredPassRate" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05">
+            <mat-hint>Value between 0 and 1 (e.g., 0.8 = 80%)</mat-hint>
+          </mat-form-field>
+
+          <mat-slide-toggle [(ngModel)]="editedSuite.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
+
+          <div class="editor-actions">
+            <button mat-stroked-button (click)="cancelEditSuite()">Cancel</button>
+            <button mat-flat-button color="primary" (click)="saveSuite()" [disabled]="savingSuite">
+              <mat-spinner *ngIf="savingSuite" diameter="20"></mat-spinner>
+              <span *ngIf="!savingSuite">Save Suite</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Test Case Editor -->
+        <div class="test-case-editor" *ngIf="editingTestCase">
+          <h4>{{ selectedTestCase?.id ? 'Edit Test Case' : 'New Test Case' }}</h4>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput [(ngModel)]="editedTestCase.name" [ngModelOptions]="{standalone: true}" placeholder="Test case name">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Query</mat-label>
+            <textarea matInput [(ngModel)]="editedTestCase.query" [ngModelOptions]="{standalone: true}" rows="3" placeholder="The query to test"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Expected Answer</mat-label>
+            <textarea matInput [(ngModel)]="editedTestCase.expectedAnswer" [ngModelOptions]="{standalone: true}" rows="3" placeholder="Expected answer (ground truth)"></textarea>
+          </mat-form-field>
+
+          <!-- Expected Facts -->
+          <div class="chip-input-section">
+            <label>Expected Facts</label>
+            <mat-chip-set>
+              <mat-chip *ngFor="let fact of editedTestCase.expectedFacts" (removed)="removeExpectedFact(fact)">
+                {{ fact }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </mat-chip-set>
+            <mat-form-field appearance="outline" class="chip-input">
+              <input matInput [(ngModel)]="newExpectedFact" [ngModelOptions]="{standalone: true}" placeholder="Add expected fact" (keyup.enter)="addExpectedFact()">
+              <button mat-icon-button matSuffix (click)="addExpectedFact()"><mat-icon>add</mat-icon></button>
+            </mat-form-field>
+          </div>
+
+          <!-- Forbidden Facts -->
+          <div class="chip-input-section">
+            <label>Forbidden Facts</label>
+            <mat-chip-set>
+              <mat-chip *ngFor="let fact of editedTestCase.forbiddenFacts" (removed)="removeForbiddenFact(fact)" color="warn">
+                {{ fact }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </mat-chip-set>
+            <mat-form-field appearance="outline" class="chip-input">
+              <input matInput [(ngModel)]="newForbiddenFact" [ngModelOptions]="{standalone: true}" placeholder="Add forbidden fact" (keyup.enter)="addForbiddenFact()">
+              <button mat-icon-button matSuffix (click)="addForbiddenFact()"><mat-icon>add</mat-icon></button>
+            </mat-form-field>
+          </div>
+
+          <!-- Expected Entities -->
+          <div class="chip-input-section">
+            <label>Expected Entities</label>
+            <mat-chip-set>
+              <mat-chip *ngFor="let entity of editedTestCase.expectedEntities" (removed)="removeExpectedEntity(entity)">
+                {{ entity }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </mat-chip-set>
+            <mat-form-field appearance="outline" class="chip-input">
+              <input matInput [(ngModel)]="newExpectedEntity" [ngModelOptions]="{standalone: true}" placeholder="Add expected entity" (keyup.enter)="addExpectedEntity()">
+              <button mat-icon-button matSuffix (click)="addExpectedEntity()"><mat-icon>add</mat-icon></button>
+            </mat-form-field>
+          </div>
+
+          <!-- Evaluation Types -->
+          <div class="eval-types-section">
+            <label>Evaluation Types</label>
+            <div class="eval-type-chips">
+              <mat-chip-set>
+                <mat-chip *ngFor="let type of evaluationTypes"
+                          [class.selected]="isEvaluationTypeSelected(type.value)"
+                          [highlighted]="isEvaluationTypeSelected(type.value)"
+                          (click)="toggleEvaluationType(type.value)"
+                          [matTooltip]="type.description">
+                  {{ type.label }}
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+          </div>
+
+          <!-- Priority -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Priority</mat-label>
+            <mat-select [(ngModel)]="editedTestCase.priority" [ngModelOptions]="{standalone: true}">
+              <mat-option *ngFor="let p of priorityLevels" [value]="p.value">
+                <span [style.color]="p.color">{{ p.label }}</span>
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Timeout -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Timeout (ms)</mat-label>
+            <input matInput type="number" [(ngModel)]="editedTestCase.timeoutMs" [ngModelOptions]="{standalone: true}" min="1000" step="1000">
+          </mat-form-field>
+
+          <mat-slide-toggle [(ngModel)]="editedTestCase.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
+
+          <div class="editor-actions">
+            <button mat-stroked-button (click)="cancelEditTestCase()">Cancel</button>
+            <button mat-flat-button color="primary" (click)="saveTestCase()" [disabled]="savingTestCase">
+              <mat-spinner *ngIf="savingTestCase" diameter="20"></mat-spinner>
+              <span *ngIf="!savingTestCase">Save Test Case</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- No Selection -->
+        <div class="empty-state" *ngIf="!editingSuite && !editingTestCase">
+          <mat-icon>edit_note</mat-icon>
+          <p>Select an item to edit or create a new one</p>
+        </div>
+      </div>
+
+      <!-- Results View -->
+      <div class="details-content results-view" *ngIf="detailsView === 'results'">
+        <div *ngIf="selectedTestCase && testCaseResults.length > 0">
+          <h4>Recent Results for "{{ selectedTestCase.name }}"</h4>
+          <mat-card *ngFor="let result of testCaseResults" class="result-card" [class.passed]="result.passed" [class.failed]="!result.passed">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.pass]="result.passed" [class.fail]="!result.passed">
+                {{ result.passed ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              <mat-card-title>{{ result.passed ? 'Passed' : 'Failed' }}</mat-card-title>
+              <mat-card-subtitle>{{ formatDate(result.completedAt) }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="result-metrics">
+                <span><strong>Score:</strong> {{ formatScore(result.score) }}</span>
+                <span><strong>Time:</strong> {{ result.executionTimeMs }}ms</span>
+              </div>
+              <div class="result-answer" *ngIf="result.actualAnswer">
+                <strong>Answer:</strong>
+                <p>{{ result.actualAnswer | slice:0:200 }}{{ result.actualAnswer.length > 200 ? '...' : '' }}</p>
+              </div>
+              <div class="failure-reasons" *ngIf="result.failureReasons?.length">
+                <strong>Failure Reasons:</strong>
+                <ul>
+                  <li *ngFor="let reason of result.failureReasons">{{ reason }}</li>
+                </ul>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div *ngIf="selectedSuite && suiteResults.length > 0 && !selectedTestCase">
+          <h4>Recent Results for "{{ selectedSuite.name }}"</h4>
+          <mat-card *ngFor="let result of suiteResults" class="result-card" [class.passed]="result.passed" [class.failed]="!result.passed">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.pass]="result.passed" [class.fail]="!result.passed">
+                {{ result.passed ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              <mat-card-title>{{ result.passed ? 'Passed' : 'Failed' }}</mat-card-title>
+              <mat-card-subtitle>{{ formatDate(result.completedAt) }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="result-metrics">
+                <span><strong>Pass Rate:</strong> {{ formatPercentage(result.passRate) }}</span>
+                <span><strong>Avg Score:</strong> {{ formatScore(result.averageScore) }}</span>
+                <span><strong>Tests:</strong> {{ result.passedCount }}/{{ result.totalCount }}</span>
+              </div>
+              <mat-progress-bar mode="determinate" [value]="result.passRate * 100"></mat-progress-bar>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="(!selectedTestCase || testCaseResults.length === 0) && (!selectedSuite || suiteResults.length === 0)">
+          <mat-icon>history</mat-icon>
+          <p>No results available</p>
+        </div>
+      </div>
+
+      <!-- Metrics View -->
+      <div class="details-content metrics-view" *ngIf="detailsView === 'metrics'">
+        <div *ngIf="metrics">
+          <h4>Fact Sheet Evaluation Metrics</h4>
+
+          <mat-card class="metric-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>quiz</mat-icon>
+              <mat-card-title>Test Cases</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="big-number">{{ metrics.totalTestCases || 0 }}</div>
+              <div class="metric-label">Total test cases</div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="metric-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>folder</mat-icon>
+              <mat-card-title>Suites</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="big-number">{{ metrics.totalSuites || 0 }}</div>
+              <div class="metric-label">Total suites</div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="metric-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>play_circle</mat-icon>
+              <mat-card-title>Test Runs</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="big-number">{{ metrics.totalTestRuns || 0 }}</div>
+              <div class="metric-label">Total executions (30 days)</div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="metric-card highlight">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>percent</mat-icon>
+              <mat-card-title>Pass Rate</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="big-number">{{ formatPercentage(metrics.testPassRate) }}</div>
+              <mat-progress-bar mode="determinate" [value]="(metrics.testPassRate || 0) * 100"></mat-progress-bar>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="metric-card highlight">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>star</mat-icon>
+              <mat-card-title>Average Score</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="big-number">{{ formatScore(metrics.averageTestScore) }}</div>
+              <mat-progress-bar mode="determinate" [value]="(metrics.averageTestScore || 0) * 100"></mat-progress-bar>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <div class="empty-state" *ngIf="!metrics">
+          <mat-icon>bar_chart</mat-icon>
+          <p>No metrics available</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

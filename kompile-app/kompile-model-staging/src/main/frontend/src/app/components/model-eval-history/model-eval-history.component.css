@@ -1,0 +1,10 @@
+.model-eval-history { padding: 16px; }
+.loading-spinner { display: flex; justify-content: center; padding: 40px; }
+.empty-state { text-align: center; padding: 60px 20px; color: #888; }
+.empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; margin-bottom: 16px; }
+.history-table { width: 100%; }
+.status-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
+.status-success { color: #2e7d32; background: #e8f5e9; }
+.status-error { color: #c62828; background: #ffebee; }
+.status-pending { color: #e65100; background: #fff3e0; }
+.status-info { color: #1565c0; background: #e3f2fd; }

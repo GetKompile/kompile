@@ -241,6 +241,10 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
   tableExtractionMethods: TableExtractionMethodInfo[] = TABLE_EXTRACTION_METHODS;
   pdfProcessingConfig: PdfProcessingConfig = { ...DEFAULT_PDF_PROCESSING_CONFIG };
 
+  // VLM models from registry
+  availableVlmModels: { id: string; name: string; status?: string }[] = [];
+  loadingVlmModels: boolean = false;
+
   // Subprocess configuration
   showSubprocessOptions: boolean = false;
   subprocessConfig: SubprocessIngestConfig = { ...DEFAULT_SUBPROCESS_CONFIG };
@@ -397,6 +401,9 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
 
     // Fetch current subprocess configuration
     this.fetchSubprocessConfig();
+
+    // Fetch available VLM models from registry
+    this.loadAvailableVlmModels();
 
     this.updateValidatorsBasedOnSourceType();
 
@@ -1521,6 +1528,40 @@ export class AddSourceDialogComponent implements OnInit, OnDestroy {
       return 'Document ingestion runs in isolated JVM processes for crash protection';
     }
     return 'Document ingestion runs in the main process (no crash isolation)';
+  }
+
+  /**
+   * Fetches available VLM models from the remote staging registry.
+   * Uses the staging-config proxy which calls the configured staging service.
+   */
+  private loadAvailableVlmModels(): void {
+    this.loadingVlmModels = true;
+    this.http.get<any>(`${backendUrl}/staging-config/remote/registry`).subscribe({
+      next: (registry) => {
+        if (registry?.models) {
+          this.availableVlmModels = Object.entries(registry.models)
+            .filter(([_, model]: [string, any]) => model.type === 'vlm_pipeline')
+            .map(([id, model]: [string, any]) => ({
+              id: id,
+              name: (model as any).model_id || id,
+              status: (model as any).status
+            }));
+        } else {
+          this.availableVlmModels = [];
+        }
+        // Auto-select first model if none selected
+        if (!this.pdfProcessingConfig.vlmModelId && this.availableVlmModels.length > 0) {
+          this.pdfProcessingConfig.vlmModelId = this.availableVlmModels[0].id;
+        }
+        this.loadingVlmModels = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.availableVlmModels = [];
+        this.loadingVlmModels = false;
+        this.cdr.markForCheck();
+      }
+    });
   }
 
   /**

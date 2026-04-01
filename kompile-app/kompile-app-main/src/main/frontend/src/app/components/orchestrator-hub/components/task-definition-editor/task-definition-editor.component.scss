@@ -1,0 +1,368 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+.task-definition-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fafafa;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+
+  h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 500;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: #ffebee;
+  color: #c62828;
+  border-bottom: 1px solid #ef9a9a;
+
+  mat-icon {
+    flex-shrink: 0;
+  }
+
+  span {
+    flex: 1;
+  }
+}
+
+.editor-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 12px 24px;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+
+  button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    &.active {
+      background: #e3f2fd;
+      color: #1976d2;
+    }
+  }
+}
+
+.form-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 800px;
+
+  h3 {
+    margin: 0 0 8px 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+    color: #424242;
+  }
+
+  h4 {
+    margin: 16px 0 8px 0;
+    font-size: 1rem;
+    font-weight: 500;
+    color: #616161;
+  }
+
+  mat-divider {
+    margin: 16px 0;
+  }
+}
+
+.full-width {
+  width: 100%;
+}
+
+mat-form-field {
+  &:not(.full-width) {
+    width: 250px;
+  }
+}
+
+.agent-capabilities {
+  font-size: 0.8rem;
+  color: #757575;
+  margin-left: 4px;
+}
+
+.rag-options,
+.tool-options {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-left: 24px;
+  margin-top: 16px;
+  border-left: 3px solid #e0e0e0;
+}
+
+.search-options {
+  display: flex;
+  gap: 24px;
+}
+
+.available-tools {
+  h4 {
+    margin: 0 0 8px 0;
+  }
+}
+
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pattern-test-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.pattern-test-result {
+  margin-top: 16px;
+  padding: 16px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+
+    &.valid {
+      color: #2e7d32;
+    }
+
+    &.invalid {
+      color: #c62828;
+    }
+  }
+
+  .result-error {
+    margin-top: 8px;
+    color: #c62828;
+    font-family: monospace;
+    font-size: 0.9rem;
+  }
+
+  .result-matches {
+    margin-top: 8px;
+    color: #424242;
+  }
+
+  .matches-list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    .match-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      background: #e8f5e9;
+      border-radius: 4px;
+
+      code {
+        font-family: monospace;
+        color: #1b5e20;
+      }
+
+      .match-position {
+        font-size: 0.8rem;
+        color: #757575;
+      }
+    }
+  }
+}
+
+.required-variables {
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    h4 {
+      margin: 0;
+      flex: 1;
+    }
+  }
+}
+
+.variable-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.hint {
+  color: #757575;
+  font-size: 0.9rem;
+  margin: 8px 0;
+}
+
+.variable-reference {
+  ul {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0 0 0;
+
+    li {
+      padding: 4px 0;
+      font-size: 0.9rem;
+
+      code {
+        background: #f5f5f5;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+        color: #1565c0;
+      }
+    }
+  }
+}
+
+// Actions Panel - Pass/Fail Triggers
+.panel-description {
+  color: #616161;
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+}
+
+.action-section {
+  padding: 20px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+
+  &.success-section {
+    border-left: 4px solid #4caf50;
+  }
+
+  &.failure-section {
+    border-left: 4px solid #f44336;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+
+    h4 {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+
+    .section-icon {
+      font-size: 24px;
+      width: 24px;
+      height: 24px;
+
+      &.success {
+        color: #4caf50;
+      }
+
+      &.error {
+        color: #f44336;
+      }
+    }
+  }
+
+  .section-hint {
+    color: #757575;
+    font-size: 0.85rem;
+    margin: 0 0 16px 34px;
+  }
+}
+
+.action-divider {
+  margin: 24px 0 !important;
+}
+
+.action-reference {
+  padding: 20px;
+  background: #f5f5f5;
+  border-radius: 8px;
+
+  h4 {
+    margin: 0 0 16px 0;
+    font-size: 1rem;
+    color: #424242;
+  }
+
+  .reference-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+
+    .reference-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px;
+      background: #fff;
+      border-radius: 6px;
+      border: 1px solid #e0e0e0;
+
+      strong {
+        font-size: 0.85rem;
+        color: #1565c0;
+        font-family: monospace;
+      }
+
+      span {
+        font-size: 0.8rem;
+        color: #616161;
+      }
+    }
+  }
+}

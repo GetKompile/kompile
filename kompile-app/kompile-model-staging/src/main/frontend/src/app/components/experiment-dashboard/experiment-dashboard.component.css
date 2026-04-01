@@ -1,0 +1,19 @@
+.experiment-dashboard { padding: 16px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.create-form { margin-bottom: 16px; }
+.full-width { width: 100%; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.loading-spinner { display: flex; justify-content: center; padding: 40px; }
+.empty-state { text-align: center; padding: 60px 20px; color: #888; }
+.empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; margin-bottom: 16px; }
+.experiment-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+.experiment-card { cursor: pointer; transition: box-shadow 0.2s; }
+.experiment-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.status-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
+.status-success { color: #2e7d32; background: #e8f5e9; }
+.status-error { color: #c62828; background: #ffebee; }
+.status-pending { color: #e65100; background: #fff3e0; }
+.status-info { color: #1565c0; background: #e3f2fd; }
+.date { margin-left: 8px; color: #999; font-size: 12px; }
+.meta { display: flex; gap: 16px; font-size: 13px; color: #666; margin-top: 8px; }
+.meta mat-icon { font-size: 16px; width: 16px; height: 16px; vertical-align: middle; }

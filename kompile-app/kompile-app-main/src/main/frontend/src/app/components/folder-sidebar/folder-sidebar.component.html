@@ -1,0 +1,189 @@
+<!-- Folder Sidebar Component -->
+<div class="folder-sidebar">
+  <!-- Header -->
+  <div class="sidebar-header">
+    <h3>
+      <mat-icon>folder</mat-icon>
+      Folders
+    </h3>
+    <button mat-icon-button
+            (click)="showCreateForm()"
+            [disabled]="showNewFolderForm"
+            matTooltip="Create new folder">
+      <mat-icon>add</mat-icon>
+    </button>
+  </div>
+
+  <!-- Error Display -->
+  <div class="error-message" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="error = null">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- New Folder Form -->
+  <div class="new-folder-form" *ngIf="showNewFolderForm">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Folder Name</mat-label>
+      <input matInput
+             [(ngModel)]="newFolderName" [ngModelOptions]="{standalone: true}"
+             placeholder="Enter folder name"
+             (keyup.enter)="createFolder()"
+             (keyup.escape)="cancelCreate()">
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Description (optional)</mat-label>
+      <textarea matInput
+                [(ngModel)]="newFolderDescription" [ngModelOptions]="{standalone: true}"
+                placeholder="Enter description"
+                rows="2"></textarea>
+    </mat-form-field>
+
+    <div class="form-actions">
+      <button mat-button (click)="cancelCreate()">Cancel</button>
+      <button mat-raised-button
+              color="primary"
+              (click)="createFolder()"
+              [disabled]="!newFolderName.trim() || isCreating">
+        <mat-icon *ngIf="isCreating">
+          <mat-spinner diameter="18"></mat-spinner>
+        </mat-icon>
+        <span *ngIf="!isCreating">Create</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="isLoading">
+    <mat-spinner diameter="30"></mat-spinner>
+    <span>Loading folders...</span>
+  </div>
+
+  <!-- Empty State -->
+  <div class="empty-state" *ngIf="!isLoading && folders.length === 0">
+    <mat-icon>folder_off</mat-icon>
+    <p>No folders yet</p>
+    <button mat-stroked-button color="primary" (click)="showCreateForm()">
+      <mat-icon>add</mat-icon>
+      Create Folder
+    </button>
+  </div>
+
+  <!-- Folder List -->
+  <div class="folder-list" *ngIf="!isLoading && folders.length > 0">
+    <!-- Clear Selection Button -->
+    <button mat-button
+            class="clear-selection-btn"
+            *ngIf="selectedFolder"
+            (click)="clearSelection()">
+      <mat-icon>clear</mat-icon>
+      Clear Selection
+    </button>
+
+    <!-- Folders -->
+    <div class="folder-item"
+         *ngFor="let folder of folders; trackBy: trackByFolderId"
+         [class.selected]="selectedFolder?.folderId === folder.folderId"
+         [class.editing]="editingFolder?.folderId === folder.folderId"
+         (click)="selectFolder(folder)">
+
+      <!-- Normal View -->
+      <ng-container *ngIf="editingFolder?.folderId !== folder.folderId">
+        <div class="folder-icon">
+          <mat-icon [class.has-files]="folder.fileCount > 0">
+            {{ folder.fileCount > 0 ? 'folder' : 'folder_open' }}
+          </mat-icon>
+        </div>
+
+        <div class="folder-info">
+          <div class="folder-name">{{ folder.name }}</div>
+          <div class="folder-meta">
+            <span class="file-count" *ngIf="folder.fileCount > 0">
+              {{ folder.fileCount }} file{{ folder.fileCount !== 1 ? 's' : '' }}
+            </span>
+            <span class="session-count" *ngIf="folder.sessionCount && folder.sessionCount > 0">
+              · {{ folder.sessionCount }} chat{{ folder.sessionCount !== 1 ? 's' : '' }}
+            </span>
+            <span class="no-content" *ngIf="folder.fileCount === 0 && (!folder.sessionCount || folder.sessionCount === 0)">
+              Empty
+            </span>
+          </div>
+        </div>
+
+        <div class="folder-actions">
+          <button mat-icon-button
+                  matTooltip="Manage files"
+                  (click)="openFilesDialog(folder, $event)">
+            <mat-icon>attach_file</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Edit folder"
+                  (click)="startEdit(folder, $event)">
+            <mat-icon>edit</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Delete folder"
+                  (click)="deleteFolder(folder, $event)">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </div>
+      </ng-container>
+
+      <!-- Edit View -->
+      <div class="edit-form" *ngIf="editingFolder?.folderId === folder.folderId" (click)="$event.stopPropagation()">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Folder Name</mat-label>
+          <input matInput
+                 [(ngModel)]="editName" [ngModelOptions]="{standalone: true}"
+                 (keyup.enter)="saveEdit()"
+                 (keyup.escape)="cancelEdit()">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Description</mat-label>
+          <textarea matInput
+                    [(ngModel)]="editDescription" [ngModelOptions]="{standalone: true}"
+                    rows="2"></textarea>
+        </mat-form-field>
+
+        <div class="form-actions">
+          <button mat-button (click)="cancelEdit()">Cancel</button>
+          <button mat-raised-button
+                  color="primary"
+                  (click)="saveEdit()"
+                  [disabled]="!editName.trim()">
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Selected Folder Info -->
+  <div class="selected-folder-info" *ngIf="selectedFolder">
+    <mat-divider></mat-divider>
+    <div class="info-content">
+      <div class="info-header">
+        <mat-icon>check_circle</mat-icon>
+        <span>Active Folder</span>
+      </div>
+      <div class="info-name">{{ selectedFolder.name }}</div>
+      <div class="info-description" *ngIf="selectedFolder.description">
+        {{ selectedFolder.description }}
+      </div>
+      <div class="info-stats">
+        <div class="info-stat">
+          <mat-icon>attach_file</mat-icon>
+          {{ selectedFolder.fileCount }} file{{ selectedFolder.fileCount !== 1 ? 's' : '' }}
+        </div>
+        <div class="info-stat" *ngIf="selectedFolder.sessionCount && selectedFolder.sessionCount > 0">
+          <mat-icon>chat</mat-icon>
+          {{ selectedFolder.sessionCount }} chat{{ selectedFolder.sessionCount !== 1 ? 's' : '' }}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

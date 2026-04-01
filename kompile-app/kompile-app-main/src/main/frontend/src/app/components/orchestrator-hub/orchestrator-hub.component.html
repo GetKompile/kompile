@@ -1,0 +1,1084 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="orchestrator-hub">
+  <div class="hub-header">
+    <h2>Orchestrator</h2>
+    <p class="subtitle">Manage orchestrator instances, tasks, and workflows</p>
+  </div>
+
+  <!-- Error Banner -->
+  <div *ngIf="error" class="error-banner">
+    <span>{{ error }}</span>
+    <button class="close-btn" (click)="clearError()">x</button>
+  </div>
+
+  <!-- Main Navigation Tabs (only top-level items) -->
+  <div class="sub-tabs">
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'instances' || activeSubTab === 'orchestrator-detail'"
+      (click)="activeSubTab = 'instances'; selectedOrchestrator = null">
+      <span class="tab-icon">O</span>
+      <span class="tab-label">Instances</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'react-agent'"
+      (click)="activeSubTab = 'react-agent'">
+      <span class="tab-icon">R</span>
+      <span class="tab-label">ReAct Agent</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'create'"
+      (click)="activeSubTab = 'create'">
+      <span class="tab-icon">+</span>
+      <span class="tab-label">Create</span>
+    </button>
+  </div>
+
+  <div class="sub-tab-content">
+    <!-- Instances Tab (List View) -->
+    <div *ngIf="activeSubTab === 'instances'" class="tab-panel">
+      <div class="panel-header">
+        <h3>Orchestrator Instances</h3>
+        <button class="btn btn-primary" (click)="activeSubTab = 'create'">
+          + New Orchestrator
+        </button>
+      </div>
+
+      <div *ngIf="orchestrators.length === 0" class="empty-state">
+        <p>No orchestrator instances found. Create one to get started.</p>
+      </div>
+
+      <div *ngIf="orchestrators.length > 0" class="instance-list">
+        <div
+          *ngFor="let orch of orchestrators"
+          class="instance-card"
+          (click)="selectAndOpenOrchestrator(orch)">
+          <div class="instance-header">
+            <span class="instance-name">{{ orch.name }}</span>
+            <span class="status-badge" [ngClass]="getStatusClass(orch.status)">
+              {{ orch.status }}
+            </span>
+          </div>
+          <p *ngIf="orch.description" class="instance-description">{{ orch.description }}</p>
+          <div class="instance-meta">
+            <span *ngIf="orch.currentStateId">State: {{ orch.currentStateId }}</span>
+            <span *ngIf="orch.createdAt">Created: {{ orch.createdAt | date:'short' }}</span>
+          </div>
+          <div class="instance-quick-actions" (click)="$event.stopPropagation()">
+            <button
+              *ngIf="orch.status === 'CREATED' || orch.status === 'STOPPED'"
+              class="btn btn-sm btn-success"
+              (click)="startOrchestrator(orch)">
+              Start
+            </button>
+            <button
+              *ngIf="orch.status === 'RUNNING'"
+              class="btn btn-sm btn-warning"
+              (click)="pauseOrchestrator(orch)">
+              Pause
+            </button>
+            <button
+              *ngIf="orch.status === 'PAUSED'"
+              class="btn btn-sm btn-success"
+              (click)="resumeOrchestrator(orch)">
+              Resume
+            </button>
+            <button class="btn btn-sm btn-primary" (click)="selectAndOpenOrchestrator(orch)">
+              Open →
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orchestrator Detail View (shown when an orchestrator is selected) -->
+    <div *ngIf="activeSubTab === 'orchestrator-detail' && selectedOrchestrator" class="tab-panel orchestrator-detail-panel">
+      <!-- Orchestrator Header with Back Button -->
+      <div class="orchestrator-detail-header">
+        <button class="btn btn-secondary btn-back" (click)="activeSubTab = 'instances'; selectedOrchestrator = null">
+          ← Back to Instances
+        </button>
+        <div class="orchestrator-title-section">
+          <h3 class="orchestrator-title">{{ selectedOrchestrator.name }}</h3>
+          <span class="status-badge status-lg" [ngClass]="getStatusClass(selectedOrchestrator.status)">
+            {{ selectedOrchestrator.status }}
+          </span>
+        </div>
+        <p *ngIf="selectedOrchestrator.description" class="orchestrator-description">
+          {{ selectedOrchestrator.description }}
+        </p>
+
+        <!-- Orchestrator Actions -->
+        <div class="orchestrator-actions">
+          <button
+            *ngIf="selectedOrchestrator.status === 'CREATED' || selectedOrchestrator.status === 'STOPPED'"
+            class="btn btn-success"
+            (click)="startOrchestrator(selectedOrchestrator)">
+            ▶ Start
+          </button>
+          <button
+            *ngIf="selectedOrchestrator.status === 'RUNNING'"
+            class="btn btn-warning"
+            (click)="pauseOrchestrator(selectedOrchestrator)">
+            ⏸ Pause
+          </button>
+          <button
+            *ngIf="selectedOrchestrator.status === 'PAUSED'"
+            class="btn btn-success"
+            (click)="resumeOrchestrator(selectedOrchestrator)">
+            ▶ Resume
+          </button>
+          <button
+            *ngIf="selectedOrchestrator.status === 'RUNNING' || selectedOrchestrator.status === 'PAUSED'"
+            class="btn btn-danger"
+            (click)="stopOrchestrator(selectedOrchestrator)">
+            ⏹ Stop
+          </button>
+          <button class="btn btn-secondary" (click)="createSnapshot(selectedOrchestrator)">
+            📸 Snapshot
+          </button>
+          <button class="btn btn-secondary" (click)="recoverOrchestrator(selectedOrchestrator)">
+            🔄 Recover
+          </button>
+          <button class="btn btn-danger" (click)="deleteOrchestrator(selectedOrchestrator)">
+            🗑 Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- Orchestrator Sub-Tabs -->
+      <div class="orchestrator-sub-tabs">
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'overview'"
+          (click)="orchestratorDetailTab = 'overview'">
+          Overview
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'tasks'"
+          (click)="orchestratorDetailTab = 'tasks'">
+          Tasks
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'definitions'"
+          (click)="orchestratorDetailTab = 'definitions'">
+          Task Definitions
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'workflows'"
+          (click)="orchestratorDetailTab = 'workflows'">
+          Workflows
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'state-machine'"
+          (click)="orchestratorDetailTab = 'state-machine'">
+          State Machine
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'classifiers'"
+          (click)="orchestratorDetailTab = 'classifiers'">
+          Classifiers
+        </button>
+        <button
+          class="orch-sub-tab"
+          [class.active]="orchestratorDetailTab === 'audit'"
+          (click)="orchestratorDetailTab = 'audit'">
+          Audit Log
+        </button>
+      </div>
+
+      <!-- Orchestrator Detail Content -->
+      <div class="orchestrator-detail-content">
+
+        <!-- Overview Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'overview'" class="orch-detail-panel">
+          <div class="overview-grid">
+            <div class="overview-card">
+              <h4>Status</h4>
+              <div class="overview-value">
+                <span class="status-badge status-xl" [ngClass]="getStatusClass(selectedOrchestrator.status)">
+                  {{ selectedOrchestrator.status }}
+                </span>
+              </div>
+            </div>
+            <div class="overview-card">
+              <h4>Current State</h4>
+              <div class="overview-value">{{ selectedOrchestrator.currentStateId || 'N/A' }}</div>
+            </div>
+            <div class="overview-card">
+              <h4>Instance ID</h4>
+              <div class="overview-value overview-id">{{ selectedOrchestrator.instanceId }}</div>
+            </div>
+            <div class="overview-card">
+              <h4>Created</h4>
+              <div class="overview-value">{{ selectedOrchestrator.createdAt | date:'medium' }}</div>
+            </div>
+            <div class="overview-card" *ngIf="selectedOrchestrator.startedAt">
+              <h4>Started</h4>
+              <div class="overview-value">{{ selectedOrchestrator.startedAt | date:'medium' }}</div>
+            </div>
+            <div class="overview-card" *ngIf="selectedOrchestrator.completedAt">
+              <h4>Completed</h4>
+              <div class="overview-value">{{ selectedOrchestrator.completedAt | date:'medium' }}</div>
+            </div>
+          </div>
+
+          <!-- Quick Stats -->
+          <div class="quick-stats">
+            <div class="stat-item">
+              <span class="stat-number">{{ runningTasks.length }}</span>
+              <span class="stat-label">Running Tasks</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-number">{{ activeWorkflows.length }}</span>
+              <span class="stat-label">Active Workflows</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-number">{{ tasks.length }}</span>
+              <span class="stat-label">Total Tasks</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-number">{{ workflows.length }}</span>
+              <span class="stat-label">Total Workflows</span>
+            </div>
+          </div>
+
+          <!-- Error Message if any -->
+          <div *ngIf="selectedOrchestrator.errorMessage" class="orchestrator-error">
+            <h4>⚠ Error</h4>
+            <pre>{{ selectedOrchestrator.errorMessage }}</pre>
+          </div>
+        </div>
+
+        <!-- Tasks Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'tasks'" class="orch-detail-panel">
+          <!-- Execute Command -->
+          <div class="command-section">
+            <h4>Execute Command</h4>
+            <div class="command-input">
+              <input
+                type="text"
+                [(ngModel)]="commandToExecute" [ngModelOptions]="{standalone: true}"
+                placeholder="Enter command to execute..."
+                (keyup.enter)="executeCommand()">
+              <button
+                class="btn btn-primary"
+                [disabled]="!commandToExecute.trim() || executingCommand"
+                (click)="executeCommand()">
+                {{ executingCommand ? 'Executing...' : 'Execute' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Running Tasks -->
+          <div *ngIf="runningTasks.length > 0" class="task-section">
+            <h4>Running Tasks ({{ runningTasks.length }})</h4>
+            <div class="task-list">
+              <div *ngFor="let task of runningTasks" class="task-card running">
+                <div class="task-header">
+                  <span class="task-id">#{{ task.id }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(task.status)">
+                    {{ task.status }}
+                  </span>
+                </div>
+                <div class="task-info">
+                  <span>Definition: {{ task.taskDefinitionId || 'Command' }}</span>
+                </div>
+                <div class="task-actions">
+                  <button class="btn btn-sm btn-danger" (click)="cancelTask(task)">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Task History -->
+          <div class="task-section">
+            <h4>Task History</h4>
+            <div *ngIf="loadingTasks" class="loading">Loading tasks...</div>
+            <div *ngIf="!loadingTasks && tasks.length === 0" class="empty-state">
+              <p>No tasks executed yet.</p>
+            </div>
+            <div *ngIf="!loadingTasks && tasks.length > 0" class="task-list">
+              <div *ngFor="let task of tasks" class="task-card" [class.task-failed]="task.status === 'FAILED' || task.status === 'TIMEOUT'">
+                <div class="task-header">
+                  <span class="task-id">#{{ task.id }}</span>
+                  <span class="task-name" *ngIf="task.name">{{ task.name }}</span>
+                  <span class="task-type-badge">{{ task.taskType || 'SHELL' }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(task.status)">
+                    {{ task.status }}
+                  </span>
+                  <span class="exit-code" *ngIf="task.exitCode !== null && task.exitCode !== undefined"
+                        [class.exit-error]="task.exitCode !== 0">
+                    Exit: {{ task.exitCode }}
+                  </span>
+                </div>
+
+                <!-- Task Metadata -->
+                <div class="task-meta">
+                  <span *ngIf="task.taskDefinitionId">Definition: {{ task.taskDefinitionId }}</span>
+                  <span *ngIf="task.startTime">Started: {{ task.startTime | date:'medium' }}</span>
+                  <span *ngIf="task.endTime">Completed: {{ task.endTime | date:'medium' }}</span>
+                  <span *ngIf="task.retryAttempt && task.retryAttempt > 0">Retry #{{ task.retryAttempt }}</span>
+                </div>
+
+                <!-- Command -->
+                <div *ngIf="task.command" class="task-command">
+                  <label>Command:</label>
+                  <code>{{ task.command }}</code>
+                </div>
+
+                <!-- Error Message with Parsing -->
+                <div *ngIf="task.errorMessage" class="task-error-section">
+                  <div class="error-header">
+                    <span class="error-icon">⚠</span>
+                    <span class="error-label">Error</span>
+                  </div>
+                  <pre class="error-content">{{ task.errorMessage }}</pre>
+                  <div class="parsed-errors" *ngIf="parseErrorPatterns(task.errorMessage) as errors">
+                    <div *ngFor="let error of errors" class="parsed-error">
+                      <span class="error-type">{{ error.type }}:</span>
+                      <span class="error-detail">{{ error.message }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Task Output (expandable) -->
+                <div *ngIf="task.output" class="task-output-section">
+                  <div class="output-header" (click)="toggleTaskOutput(task.id)">
+                    <span class="expand-icon">{{ expandedTaskOutputs.has(task.id) ? '▼' : '▶' }}</span>
+                    <span class="output-label">Output</span>
+                    <span class="output-size">{{ task.output.length }} chars</span>
+                  </div>
+                  <pre *ngIf="expandedTaskOutputs.has(task.id)" class="output-content">{{ task.output }}</pre>
+                </div>
+
+                <!-- LLM Session Link -->
+                <div *ngIf="task.llmSessionId" class="task-llm-link">
+                  <span class="llm-icon">🤖</span>
+                  <a (click)="viewLlmSession(task.llmSessionId)">View LLM Session #{{ task.llmSessionId }}</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Task Definitions Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'definitions'" class="orch-detail-panel full-height-panel">
+          <app-task-definition-editor
+            [instanceId]="selectedOrchestrator.instanceId"
+            [taskDefinition]="selectedTaskDefinition"
+            (saved)="onTaskDefinitionSaved($event)"
+            (cancelled)="onTaskDefinitionCancelled()">
+          </app-task-definition-editor>
+        </div>
+
+        <!-- Workflows Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'workflows'" class="orch-detail-panel">
+          <!-- Workflow Builder Toggle -->
+          <div class="workflow-builder-toggle">
+            <button
+              class="btn"
+              [class.btn-primary]="!workflowBuilderMode"
+              [class.btn-secondary]="workflowBuilderMode"
+              (click)="workflowBuilderMode = false">
+              Simple Mode
+            </button>
+            <button
+              class="btn"
+              [class.btn-primary]="workflowBuilderMode"
+              [class.btn-secondary]="!workflowBuilderMode"
+              (click)="workflowBuilderMode = true">
+              Visual Builder
+            </button>
+          </div>
+
+          <!-- Simple Workflow Mode -->
+          <div *ngIf="!workflowBuilderMode" class="workflow-create-section">
+            <h4>Start New Workflow (Simple)</h4>
+            <div class="workflow-form">
+              <div class="form-group">
+                <label>Workflow Name *</label>
+                <input
+                  type="text"
+                  [(ngModel)]="newWorkflowName" [ngModelOptions]="{standalone: true}"
+                  placeholder="Workflow name">
+              </div>
+              <div class="form-group">
+                <label>Initial Prompt *</label>
+                <textarea
+                  [(ngModel)]="newWorkflowPrompt" [ngModelOptions]="{standalone: true}"
+                  placeholder="Enter the initial prompt for this workflow..."
+                  rows="4"
+                  class="code-textarea"></textarea>
+                <p class="field-hint">This prompt will be sent to the agent to start the workflow</p>
+              </div>
+              <div class="workflow-options">
+                <label class="toggle-label">
+                  <input type="checkbox" [(ngModel)]="newWorkflowAutoAdvance" [ngModelOptions]="{standalone: true}">
+                  <span>Auto-advance steps</span>
+                </label>
+                <div class="form-group inline">
+                  <label>Max steps:</label>
+                  <input type="number" [(ngModel)]="newWorkflowMaxSteps" [ngModelOptions]="{standalone: true}" min="1" max="100" class="form-input-sm">
+                </div>
+              </div>
+              <button
+                class="btn btn-primary"
+                [disabled]="!newWorkflowName.trim() || !newWorkflowPrompt.trim() || creatingWorkflow"
+                (click)="startWorkflow()">
+                {{ creatingWorkflow ? 'Starting...' : 'Start Workflow' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Visual Workflow Builder Mode -->
+          <div *ngIf="workflowBuilderMode" class="workflow-builder-section">
+            <h4>Visual Workflow Builder</h4>
+            <p class="section-description">Build complex workflows by defining steps visually</p>
+
+            <!-- Workflow Name & Settings -->
+            <div class="workflow-builder-header">
+              <div class="form-row">
+                <div class="form-group flex-2">
+                  <label>Workflow Name *</label>
+                  <input
+                    type="text"
+                    [(ngModel)]="newWorkflowName" [ngModelOptions]="{standalone: true}"
+                    placeholder="Enter workflow name">
+                </div>
+                <div class="form-group">
+                  <label>Max Steps</label>
+                  <input type="number" [(ngModel)]="newWorkflowMaxSteps" [ngModelOptions]="{standalone: true}" min="1" max="100" class="form-input-sm">
+                </div>
+                <div class="form-group toggle-inline">
+                  <label class="toggle-label">
+                    <input type="checkbox" [(ngModel)]="newWorkflowAutoAdvance" [ngModelOptions]="{standalone: true}">
+                    <span>Auto-advance</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Steps Canvas -->
+            <div class="workflow-steps-canvas">
+              <div class="steps-header">
+                <span class="steps-title">Workflow Steps</span>
+                <div class="add-step-buttons">
+                  <button class="btn btn-sm btn-add" (click)="addWorkflowStep('prompt')" title="Add Prompt Step">
+                    + Prompt
+                  </button>
+                  <button class="btn btn-sm btn-add" (click)="addWorkflowStep('tool')" title="Add Tool Step">
+                    + Tool
+                  </button>
+                  <button class="btn btn-sm btn-add" (click)="addWorkflowStep('condition')" title="Add Condition">
+                    + Condition
+                  </button>
+                  <button class="btn btn-sm btn-add" (click)="addWorkflowStep('parallel')" title="Add Parallel Steps">
+                    + Parallel
+                  </button>
+                </div>
+              </div>
+
+              <!-- Steps List -->
+              <div class="steps-container" *ngIf="workflowStepsBuilder.length > 0">
+                <div *ngFor="let step of workflowStepsBuilder; let i = index"
+                     class="workflow-step-card"
+                     [class.editing]="editingStepIndex === i"
+                     [class.step-prompt]="step.type === 'prompt'"
+                     [class.step-tool]="step.type === 'tool'"
+                     [class.step-condition]="step.type === 'condition'"
+                     [class.step-parallel]="step.type === 'parallel'">
+
+                    <!-- Step Header -->
+                    <div class="step-card-header">
+                      <div class="step-number">{{ i + 1 }}</div>
+                      <div class="step-type-badge">
+                        <span *ngIf="step.type === 'prompt'">🤖 Prompt</span>
+                        <span *ngIf="step.type === 'tool'">🔧 Tool</span>
+                        <span *ngIf="step.type === 'condition'">🔀 Condition</span>
+                        <span *ngIf="step.type === 'parallel'">⚡ Parallel</span>
+                      </div>
+                      <input
+                        type="text"
+                        [(ngModel)]="step.name" [ngModelOptions]="{standalone: true}"
+                        placeholder="Step name"
+                        class="step-name-input">
+                      <div class="step-card-actions">
+                        <button class="btn-icon" (click)="moveStepUp(i)" [disabled]="i === 0" title="Move Up">↑</button>
+                        <button class="btn-icon" (click)="moveStepDown(i)" [disabled]="i === workflowStepsBuilder.length - 1" title="Move Down">↓</button>
+                        <button class="btn-icon" (click)="editingStepIndex = editingStepIndex === i ? null : i" title="Edit">✏️</button>
+                        <button class="btn-icon btn-danger" (click)="removeWorkflowStep(i)" title="Remove">✕</button>
+                      </div>
+                    </div>
+
+                    <!-- Step Content (Expanded when editing) -->
+                    <div *ngIf="editingStepIndex === i" class="step-card-content">
+                      <!-- Prompt Step Config -->
+                      <div *ngIf="step.type === 'prompt'" class="step-config">
+                        <div class="form-group">
+                          <label>Prompt</label>
+                          <textarea
+                            [(ngModel)]="step.prompt" [ngModelOptions]="{standalone: true}"
+                            placeholder="Enter the prompt for this step..."
+                            rows="4"
+                            class="code-textarea"></textarea>
+                        </div>
+                        <div class="form-row">
+                          <div class="form-group">
+                            <label>Override Agent</label>
+                            <select [(ngModel)]="step.agentName" [ngModelOptions]="{standalone: true}" class="form-select">
+                              <option value="">Use Default</option>
+                              <option *ngFor="let agent of availableAgents" [value]="agent.name">
+                                {{ agent.displayName || agent.name }}
+                              </option>
+                            </select>
+                          </div>
+                          <div class="form-group">
+                            <label>Override Fact Sheet</label>
+                            <select [(ngModel)]="step.factSheetId" [ngModelOptions]="{standalone: true}" class="form-select">
+                              <option [ngValue]="null">Use Default</option>
+                              <option *ngFor="let sheet of factSheets" [ngValue]="sheet.id">
+                                {{ sheet.name }}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="form-row">
+                          <div class="form-group">
+                            <label>Timeout (seconds)</label>
+                            <input type="number" [(ngModel)]="step.timeoutSeconds" [ngModelOptions]="{standalone: true}" min="0" class="form-input-sm">
+                          </div>
+                          <div class="form-group">
+                            <label>Retry Count</label>
+                            <input type="number" [(ngModel)]="step.retryCount" [ngModelOptions]="{standalone: true}" min="0" max="5" class="form-input-sm">
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Tool Step Config -->
+                      <div *ngIf="step.type === 'tool'" class="step-config">
+                        <div class="form-group">
+                          <label>Tool Name *</label>
+                          <select [(ngModel)]="step.toolName" [ngModelOptions]="{standalone: true}" class="form-select">
+                            <option value="">-- Select Tool --</option>
+                            <option *ngFor="let tool of availableTools" [value]="tool">{{ tool }}</option>
+                          </select>
+                        </div>
+                        <div class="form-group">
+                          <label>Tool Arguments (JSON)</label>
+                          <textarea
+                            [(ngModel)]="step.toolArgs" [ngModelOptions]="{standalone: true}"
+                            placeholder='{"key": "value"}'
+                            rows="3"
+                            class="code-textarea"></textarea>
+                        </div>
+                        <div class="form-row">
+                          <div class="form-group">
+                            <label>Timeout (seconds)</label>
+                            <input type="number" [(ngModel)]="step.timeoutSeconds" [ngModelOptions]="{standalone: true}" min="0" class="form-input-sm">
+                          </div>
+                          <div class="form-group">
+                            <label>Retry Count</label>
+                            <input type="number" [(ngModel)]="step.retryCount" [ngModelOptions]="{standalone: true}" min="0" max="5" class="form-input-sm">
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Condition Step Config -->
+                      <div *ngIf="step.type === 'condition'" class="step-config">
+                        <div class="form-group">
+                          <label>Condition Expression</label>
+                          <textarea
+                            [(ngModel)]="step.condition" [ngModelOptions]="{standalone: true}"
+                            placeholder="Enter condition (e.g., output.contains('success') || exitCode === 0)"
+                            rows="2"
+                            class="code-textarea"></textarea>
+                          <p class="field-hint">JavaScript expression evaluated against previous step output</p>
+                        </div>
+                        <div class="form-row">
+                          <div class="form-group">
+                            <label>On True - Go to Step</label>
+                            <select [(ngModel)]="step.onSuccess" [ngModelOptions]="{standalone: true}" class="form-select">
+                              <option value="">Next Step</option>
+                              <option *ngFor="let s of workflowStepsBuilder; let j = index" [value]="s.id" [disabled]="j === i">
+                                {{ j + 1 }}. {{ s.name || s.type }}
+                              </option>
+                            </select>
+                          </div>
+                          <div class="form-group">
+                            <label>On False - Go to Step</label>
+                            <select [(ngModel)]="step.onFailure" [ngModelOptions]="{standalone: true}" class="form-select">
+                              <option value="">Stop Workflow</option>
+                              <option *ngFor="let s of workflowStepsBuilder; let j = index" [value]="s.id" [disabled]="j === i">
+                                {{ j + 1 }}. {{ s.name || s.type }}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Parallel Step Config -->
+                      <div *ngIf="step.type === 'parallel'" class="step-config">
+                        <div class="form-group">
+                          <label>Run these steps in parallel:</label>
+                          <div class="parallel-steps-select">
+                            <label *ngFor="let s of workflowStepsBuilder; let j = index" class="checkbox-label">
+                              <input
+                                type="checkbox"
+                                [checked]="step.parallelSteps?.includes(s.id)"
+                                (change)="toggleParallelStep(step, s.id)"
+                                [disabled]="j === i">
+                              {{ j + 1 }}. {{ s.name || s.type }}
+                            </label>
+                          </div>
+                          <p class="field-hint">Selected steps will execute simultaneously</p>
+                        </div>
+                      </div>
+
+                      <!-- Close Edit Button -->
+                      <div class="step-config-actions">
+                        <button class="btn btn-sm btn-secondary" (click)="editingStepIndex = null">
+                          Done Editing
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- Step Preview (when not editing) -->
+                    <div *ngIf="editingStepIndex !== i" class="step-preview">
+                      <span *ngIf="step.type === 'prompt'" class="preview-text">
+                        {{ step.prompt ? (step.prompt.length > 60 ? step.prompt.substring(0, 60) + '...' : step.prompt) : '(no prompt)' }}
+                      </span>
+                      <span *ngIf="step.type === 'tool'" class="preview-text">
+                        Tool: {{ step.toolName || '(not selected)' }}
+                      </span>
+                      <span *ngIf="step.type === 'condition'" class="preview-text">
+                        If: {{ step.condition ? (step.condition.length > 40 ? step.condition.substring(0, 40) + '...' : step.condition) : '(no condition)' }}
+                      </span>
+                      <span *ngIf="step.type === 'parallel'" class="preview-text">
+                        Parallel: {{ step.parallelSteps?.length || 0 }} steps
+                      </span>
+                    </div>
+
+                    <!-- Connection line to next step -->
+                    <div *ngIf="i < workflowStepsBuilder.length - 1" class="step-connector">
+                      <div class="connector-line"></div>
+                      <div class="connector-arrow">↓</div>
+                    </div>
+                </div>
+              </div>
+
+              <!-- Empty State -->
+              <div *ngIf="workflowStepsBuilder.length === 0" class="empty-steps">
+                <p>No steps defined yet. Click a button above to add your first step.</p>
+              </div>
+            </div>
+
+            <!-- Workflow Builder Actions -->
+            <div class="workflow-builder-actions">
+              <button
+                class="btn btn-primary"
+                [disabled]="!newWorkflowName.trim() || workflowStepsBuilder.length === 0 || creatingWorkflow"
+                (click)="startWorkflowFromBuilder()">
+                {{ creatingWorkflow ? 'Starting...' : 'Start Workflow' }}
+              </button>
+              <button class="btn btn-secondary" (click)="clearWorkflowBuilder()">
+                Clear All Steps
+              </button>
+            </div>
+          </div>
+
+          <!-- Active Workflows -->
+          <div *ngIf="activeWorkflows.length > 0" class="workflow-section">
+            <h4>Active Workflows ({{ activeWorkflows.length }})</h4>
+            <div class="workflow-list">
+              <div
+                *ngFor="let wf of activeWorkflows"
+                class="workflow-card"
+                [class.selected]="selectedWorkflow?.id === wf.id"
+                (click)="selectWorkflow(wf)">
+                <div class="workflow-header">
+                  <span class="workflow-name">{{ wf.name }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(wf.status)">
+                    {{ wf.status }}
+                  </span>
+                </div>
+                <div class="workflow-info">
+                  <span>Step {{ wf.currentStep || 0 }} / {{ wf.maxSteps || '?' }}</span>
+                  <span *ngIf="wf.autoAdvance">Auto-advance</span>
+                </div>
+                <div class="workflow-actions" (click)="$event.stopPropagation()">
+                  <button
+                    *ngIf="wf.status === 'IN_PROGRESS' || wf.status === 'AWAITING_APPROVAL'"
+                    class="btn btn-sm btn-primary"
+                    (click)="advanceWorkflow(wf)">
+                    Advance
+                  </button>
+                  <button class="btn btn-sm btn-danger" (click)="cancelWorkflow(wf)">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Selected Workflow Steps -->
+          <div *ngIf="selectedWorkflow" class="workflow-steps-section">
+            <h4>Steps for "{{ selectedWorkflow.name }}"</h4>
+            <div *ngIf="workflowSteps.length === 0" class="empty-state">
+              <p>No steps yet.</p>
+            </div>
+            <div *ngIf="workflowSteps.length > 0" class="steps-list">
+              <div *ngFor="let step of workflowSteps" class="step-card" [class.step-failed]="step.status === 'FAILED' || step.status === 'REJECTED'">
+                <div class="step-header">
+                  <span class="step-number">Step {{ step.stepNumber }}</span>
+                  <span class="step-description" *ngIf="step.description">{{ step.description }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(step.status)">
+                    {{ step.status }}
+                  </span>
+                  <span class="approval-badge" *ngIf="step.userApproved">✓ Approved</span>
+                </div>
+
+                <!-- Timing -->
+                <div class="step-timing" *ngIf="step.startTime || step.endTime">
+                  <span *ngIf="step.startTime">Started: {{ step.startTime | date:'medium' }}</span>
+                  <span *ngIf="step.endTime">Ended: {{ step.endTime | date:'medium' }}</span>
+                </div>
+
+                <!-- Next Action Proposal -->
+                <div *ngIf="step.nextAction" class="step-action-section">
+                  <div class="action-header">
+                    <span class="action-type">{{ step.nextAction.actionType }}</span>
+                    <span class="confidence" *ngIf="step.nextAction.confidence">
+                      Confidence: {{ (step.nextAction.confidence * 100).toFixed(0) }}%
+                    </span>
+                  </div>
+                  <div *ngIf="step.nextAction.command" class="action-command">
+                    <label>Command:</label>
+                    <code>{{ step.nextAction.command }}</code>
+                  </div>
+                  <div *ngIf="step.nextAction.taskDefinitionId" class="action-task">
+                    <label>Task:</label>
+                    <span>{{ step.nextAction.taskDefinitionId }}</span>
+                  </div>
+                  <div *ngIf="step.nextAction.llmPrompt" class="action-prompt">
+                    <label>LLM Prompt:</label>
+                    <pre>{{ step.nextAction.llmPrompt }}</pre>
+                  </div>
+                  <div *ngIf="step.nextAction.reasoning" class="action-reasoning">
+                    <label>Reasoning:</label>
+                    <p>{{ step.nextAction.reasoning }}</p>
+                  </div>
+                  <div *ngIf="step.nextAction.expectedOutcome" class="action-expected">
+                    <label>Expected Outcome:</label>
+                    <p>{{ step.nextAction.expectedOutcome }}</p>
+                  </div>
+                </div>
+
+                <!-- LLM Analysis -->
+                <div *ngIf="step.llmAnalysis" class="step-llm-analysis">
+                  <div class="analysis-header" (click)="toggleStepAnalysis(step.id)">
+                    <span class="expand-icon">{{ expandedStepAnalysis.has(step.id) ? '▼' : '▶' }}</span>
+                    <span class="analysis-label">🤖 LLM Analysis</span>
+                  </div>
+                  <pre *ngIf="expandedStepAnalysis.has(step.id)" class="analysis-content">{{ step.llmAnalysis }}</pre>
+                </div>
+
+                <!-- Task Output -->
+                <div *ngIf="step.taskOutput" class="step-task-output">
+                  <div class="output-header" (click)="toggleStepOutput(step.id)">
+                    <span class="expand-icon">{{ expandedStepOutputs.has(step.id) ? '▼' : '▶' }}</span>
+                    <span class="output-label">Task Output</span>
+                  </div>
+                  <pre *ngIf="expandedStepOutputs.has(step.id)" class="output-content">{{ step.taskOutput }}</pre>
+                </div>
+
+                <!-- Error Message -->
+                <div *ngIf="step.errorMessage" class="step-error">
+                  <div class="error-header">
+                    <span class="error-icon">⚠</span>
+                    <span class="error-label">Error</span>
+                  </div>
+                  <pre class="error-content">{{ step.errorMessage }}</pre>
+                </div>
+
+                <!-- Rejection Reason -->
+                <div *ngIf="step.rejectionReason" class="step-rejection">
+                  <label>Rejection Reason:</label>
+                  <p>{{ step.rejectionReason }}</p>
+                </div>
+
+                <!-- Actions -->
+                <div *ngIf="step.status === 'WAITING_APPROVAL'" class="step-actions">
+                  <button class="btn btn-sm btn-success" (click)="approveStep(step)">Approve</button>
+                  <button class="btn btn-sm btn-danger" (click)="rejectStep(step)">Reject</button>
+                </div>
+
+                <!-- Related Links -->
+                <div class="step-links">
+                  <a *ngIf="step.taskInstanceId" (click)="viewTaskDetails(step.taskInstanceId)">
+                    View Task #{{ step.taskInstanceId }}
+                  </a>
+                  <a *ngIf="step.llmSessionId" (click)="viewLlmSession(step.llmSessionId)">
+                    View LLM Session #{{ step.llmSessionId }}
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Workflow History -->
+          <div class="workflow-section">
+            <h4>All Workflows</h4>
+            <div *ngIf="loadingWorkflows" class="loading">Loading workflows...</div>
+            <div *ngIf="!loadingWorkflows && workflows.length === 0" class="empty-state">
+              <p>No workflows created yet.</p>
+            </div>
+            <div *ngIf="!loadingWorkflows && workflows.length > 0" class="workflow-list">
+              <div
+                *ngFor="let wf of workflows"
+                class="workflow-card"
+                [class.selected]="selectedWorkflow?.id === wf.id"
+                (click)="selectWorkflow(wf)">
+                <div class="workflow-header">
+                  <span class="workflow-name">{{ wf.name }}</span>
+                  <span class="status-badge" [ngClass]="getStatusClass(wf.status)">
+                    {{ wf.status }}
+                  </span>
+                </div>
+                <div class="workflow-info">
+                  <span>Step {{ wf.currentStep || 0 }} / {{ wf.maxSteps || '?' }}</span>
+                  <span *ngIf="wf.createdAt">Created: {{ wf.createdAt | date:'short' }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- State Machine Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'state-machine'" class="orch-detail-panel full-height-panel">
+          <app-state-machine-editor
+            [instanceId]="selectedOrchestrator.instanceId">
+          </app-state-machine-editor>
+        </div>
+
+        <!-- Classifiers Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'classifiers'" class="orch-detail-panel full-height-panel">
+          <app-output-classifier-config
+            [instanceId]="selectedOrchestrator.instanceId">
+          </app-output-classifier-config>
+        </div>
+
+        <!-- Audit Log Sub-Tab -->
+        <div *ngIf="orchestratorDetailTab === 'audit'" class="orch-detail-panel full-height-panel">
+          <app-audit-log-viewer
+            [instanceId]="selectedOrchestrator.instanceId">
+          </app-audit-log-viewer>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ReAct Agent Tab -->
+    <div *ngIf="activeSubTab === 'react-agent'" class="tab-panel">
+      <app-react-agent-config></app-react-agent-config>
+    </div>
+
+    <!-- Create Tab -->
+    <div *ngIf="activeSubTab === 'create'" class="tab-panel">
+      <div class="panel-header">
+        <h3>Create New Orchestrator</h3>
+        <p class="form-subtitle">Configure your AI-powered orchestrator with agents, knowledge bases, and tools</p>
+      </div>
+
+      <div class="create-form orchestrator-create-form">
+        <!-- Basic Information Section -->
+        <div class="form-section">
+          <h4 class="section-title">Basic Information</h4>
+          <div class="form-row">
+            <div class="form-group flex-2">
+              <label for="orchName">Name *</label>
+              <input
+                id="orchName"
+                type="text"
+                [(ngModel)]="newOrchestratorName" [ngModelOptions]="{standalone: true}"
+                placeholder="Enter orchestrator name">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="orchDesc">Description</label>
+            <textarea
+              id="orchDesc"
+              [(ngModel)]="newOrchestratorDescription" [ngModelOptions]="{standalone: true}"
+              placeholder="Describe what this orchestrator does..."
+              rows="2"></textarea>
+          </div>
+        </div>
+
+        <!-- Agent/LLM Configuration Section -->
+        <div class="form-section">
+          <h4 class="section-title">Agent / LLM Configuration</h4>
+          <p class="section-description">Select which AI agent will power this orchestrator</p>
+
+          <div class="form-group">
+            <label for="agentSelect">Agent *</label>
+            <select id="agentSelect" [(ngModel)]="selectedAgentName" [ngModelOptions]="{standalone: true}" class="form-select">
+              <option value="">-- Select an Agent --</option>
+              <option *ngFor="let agent of availableAgents" [value]="agent.name" [disabled]="!agent.available">
+                {{ agent.displayName || agent.name }}
+                <span *ngIf="agent.isDefault"> (Default)</span>
+                <span *ngIf="!agent.available"> (Unavailable)</span>
+              </option>
+            </select>
+            <p class="field-hint" *ngIf="selectedAgentName">
+              Selected: {{ selectedAgentName }}
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="systemPrompt">System Prompt</label>
+            <textarea
+              id="systemPrompt"
+              [(ngModel)]="systemPrompt" [ngModelOptions]="{standalone: true}"
+              placeholder="Enter the system prompt that defines the orchestrator's behavior and personality..."
+              rows="5"
+              class="code-textarea"></textarea>
+            <p class="field-hint">This prompt sets the context and behavior for all LLM interactions.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="defaultPromptTemplate">Default Task Prompt Template</label>
+            <textarea
+              id="defaultPromptTemplate"
+              [(ngModel)]="defaultPromptTemplate" [ngModelOptions]="{standalone: true}"
+              placeholder="Enter a default template for task prompts..."
+              rows="4"
+              class="code-textarea"></textarea>
+            <p class="field-hint">Template used when creating new tasks. Variables will be substituted at runtime.</p>
+          </div>
+        </div>
+
+        <!-- RAG / Knowledge Base Section -->
+        <div class="form-section">
+          <h4 class="section-title">Knowledge Base (RAG)</h4>
+          <p class="section-description">Connect a fact sheet to provide context from your documents</p>
+
+          <div class="form-group toggle-group">
+            <label class="toggle-label">
+              <input type="checkbox" [(ngModel)]="enableRag" [ngModelOptions]="{standalone: true}">
+              <span class="toggle-text">Enable RAG (Retrieval Augmented Generation)</span>
+            </label>
+          </div>
+
+          <div *ngIf="enableRag" class="rag-config">
+            <div class="form-group">
+              <label for="factSheetSelect">Fact Sheet</label>
+              <select id="factSheetSelect" [(ngModel)]="selectedFactSheetId" [ngModelOptions]="{standalone: true}" class="form-select">
+                <option [ngValue]="null">-- No Fact Sheet --</option>
+                <option *ngFor="let sheet of factSheets" [ngValue]="sheet.id">
+                  {{ sheet.name }}
+                </option>
+              </select>
+              <p class="field-hint" *ngIf="selectedFactSheetId">
+                Documents from "{{ getSelectedFactSheetName() }}" will be used as context.
+              </p>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="ragMaxResults">Max Results</label>
+                <input
+                  id="ragMaxResults"
+                  type="number"
+                  [(ngModel)]="ragMaxResults" [ngModelOptions]="{standalone: true}"
+                  min="1"
+                  max="50"
+                  class="form-input-sm">
+                <p class="field-hint">Number of document chunks to retrieve</p>
+              </div>
+              <div class="form-group">
+                <label for="ragThreshold">Similarity Threshold</label>
+                <input
+                  id="ragThreshold"
+                  type="number"
+                  [(ngModel)]="ragSimilarityThreshold" [ngModelOptions]="{standalone: true}"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  class="form-input-sm">
+                <p class="field-hint">Minimum similarity score (0-1)</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool Configuration Section -->
+        <div class="form-section">
+          <h4 class="section-title">Tools</h4>
+          <p class="section-description">Enable tools that the orchestrator can use to execute tasks</p>
+
+          <div class="form-group toggle-group">
+            <label class="toggle-label">
+              <input type="checkbox" [(ngModel)]="enableTools" [ngModelOptions]="{standalone: true}">
+              <span class="toggle-text">Enable Tool Usage</span>
+            </label>
+          </div>
+
+          <div *ngIf="enableTools" class="tools-grid">
+            <div *ngFor="let tool of availableTools"
+                 class="tool-card"
+                 [class.selected]="isToolSelected(tool)"
+                 (click)="toggleTool(tool)">
+              <div class="tool-icon">
+                <span *ngIf="tool === 'file-read'">📖</span>
+                <span *ngIf="tool === 'file-write'">📝</span>
+                <span *ngIf="tool === 'shell-execute'">💻</span>
+                <span *ngIf="tool === 'web-search'">🔍</span>
+                <span *ngIf="tool === 'code-interpreter'">⚙️</span>
+              </div>
+              <div class="tool-name">{{ tool }}</div>
+              <div class="tool-check" *ngIf="isToolSelected(tool)">✓</div>
+            </div>
+          </div>
+          <p class="field-hint" *ngIf="enableTools && selectedTools.length > 0">
+            {{ selectedTools.length }} tool(s) selected: {{ selectedTools.join(', ') }}
+          </p>
+        </div>
+
+        <!-- Form Actions -->
+        <div class="form-actions">
+          <button
+            class="btn btn-primary btn-lg"
+            [disabled]="!newOrchestratorName.trim() || !selectedAgentName || creating"
+            (click)="createOrchestrator()">
+            {{ creating ? 'Creating...' : 'Create Orchestrator' }}
+          </button>
+          <button
+            class="btn btn-secondary"
+            (click)="resetCreateForm(); activeSubTab = 'instances'">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,1103 @@
+<!--
+   Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="llm-execution-container">
+  <!-- Header -->
+  <div class="llm-header">
+    <div class="header-title">
+      <mat-icon>smart_toy</mat-icon>
+      <h2>LLM Text Generation</h2>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="loadStatus()" matTooltip="Refresh Status">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Model Status Banner -->
+  <div class="status-banner" [class.loaded]="isModelLoaded" [class.unloaded]="!isModelLoaded">
+    <mat-icon>{{ isModelLoaded ? 'check_circle' : 'cancel' }}</mat-icon>
+    <span class="status-text" *ngIf="isModelLoaded">
+      Model <strong>{{ modelStatus?.modelId }}</strong> loaded
+      <span class="status-detail" *ngIf="modelStatus?.kvCacheType">
+        | KV Cache: {{ modelStatus?.kvCacheType }}
+      </span>
+      <span class="status-detail" *ngIf="modelStatus?.memoryUsageMb">
+        | Memory: {{ modelStatus?.memoryUsageMb }}MB
+      </span>
+      <span class="status-detail" *ngIf="modelStatus?.decoderPath">
+        | Path: {{ modelStatus?.decoderPath }}
+      </span>
+    </span>
+    <span class="status-text" *ngIf="!isModelLoaded">No model loaded</span>
+  </div>
+
+  <!-- Tabs -->
+  <mat-tab-group [(selectedIndex)]="activeTab" class="llm-tabs" animationDuration="200ms">
+
+    <!-- ==================== Generate Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">edit_note</mat-icon>
+        Generate
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Load Model Section -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>download</mat-icon>
+            <mat-card-title>Load Model</mat-card-title>
+            <mat-card-subtitle>Select and load an LLM model for inference</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="model-loader-form">
+              <mat-form-field appearance="outline" class="model-id-field">
+                <mat-label>Model ID</mat-label>
+                <input matInput [(ngModel)]="modelId" placeholder="e.g., gpt2, tinyllama-1.1b">
+                <mat-hint>Enter the model identifier from the registry</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="model-path-field">
+                <mat-label>Model Path (optional)</mat-label>
+                <input matInput [(ngModel)]="modelPath" placeholder="/path/to/model.fb">
+                <mat-hint>Explicit file path, overrides model ID resolution</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="kv-cache-field">
+                <mat-label>KV Cache Type</mat-label>
+                <mat-select [(ngModel)]="kvCacheType">
+                  <mat-option *ngFor="let type of kvCacheTypes" [value]="type">{{ type }}</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <div class="model-loader-actions">
+                <button mat-raised-button color="primary"
+                        (click)="loadModel()"
+                        [disabled]="isLoadingModel || !modelId">
+                  <mat-icon>play_arrow</mat-icon>
+                  Load Model
+                  <mat-spinner *ngIf="isLoadingModel" diameter="18" class="inline-spinner"></mat-spinner>
+                </button>
+                <button mat-stroked-button color="warn"
+                        (click)="unloadModel()"
+                        [disabled]="!isModelLoaded">
+                  <mat-icon>stop</mat-icon>
+                  Unload
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Prompt Area -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>text_fields</mat-icon>
+            <mat-card-title>Prompt</mat-card-title>
+            <mat-card-subtitle>Enter your text prompt for generation</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="prompt-field">
+              <mat-label>Prompt</mat-label>
+              <textarea matInput [(ngModel)]="prompt"
+                        rows="8"
+                        placeholder="Enter your prompt here..."></textarea>
+              <mat-hint>{{ prompt.length }} characters</mat-hint>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Sampling Configuration -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>tune</mat-icon>
+            <mat-card-title>Sampling Configuration</mat-card-title>
+            <mat-card-subtitle>Control text generation behavior</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Preset Selector -->
+            <div class="preset-selector">
+              <mat-form-field appearance="outline" class="preset-field">
+                <mat-label>Preset</mat-label>
+                <mat-select [(ngModel)]="selectedPreset" (selectionChange)="applyPreset()">
+                  <mat-option value="">Custom</mat-option>
+                  <mat-option *ngFor="let preset of presets" [value]="preset.name">
+                    {{ preset.displayName }} - {{ preset.description }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+
+            <!-- Sampling Parameters -->
+            <div class="sampling-params">
+              <mat-form-field appearance="outline">
+                <mat-label>Temperature</mat-label>
+                <input matInput type="number" [(ngModel)]="temperature"
+                       min="0" max="2" step="0.1">
+                <mat-hint>0 = deterministic, 2 = very random</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Top-K</mat-label>
+                <input matInput type="number" [(ngModel)]="topK"
+                       min="0" max="500" step="1">
+                <mat-hint>0 = disabled, limits vocab to top K tokens</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Top-P</mat-label>
+                <input matInput type="number" [(ngModel)]="topP"
+                       min="0" max="1" step="0.05">
+                <mat-hint>Nucleus sampling threshold (0-1)</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Max Tokens</mat-label>
+                <input matInput type="number" [(ngModel)]="maxTokens"
+                       min="1" max="4096" step="1">
+                <mat-hint>Maximum tokens to generate</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Repetition Penalty</mat-label>
+                <input matInput type="number" [(ngModel)]="repetitionPenalty"
+                       min="1.0" max="2.0" step="0.05">
+                <mat-hint>1.0 = no penalty, higher = less repetition</mat-hint>
+              </mat-form-field>
+
+              <div class="toggle-field">
+                <mat-slide-toggle [(ngModel)]="doSample" color="primary">
+                  Sampling Enabled
+                </mat-slide-toggle>
+                <span class="toggle-hint">When off, uses greedy decoding</span>
+              </div>
+            </div>
+
+            <!-- Advanced Toggle -->
+            <div class="advanced-toggle">
+              <button mat-stroked-button (click)="toggleAdvanced()" class="advanced-btn">
+                <mat-icon>{{ showAdvanced ? 'expand_less' : 'expand_more' }}</mat-icon>
+                {{ showAdvanced ? 'Hide' : 'Show' }} Advanced Settings
+              </button>
+            </div>
+
+            <!-- Advanced Generation Settings -->
+            <div *ngIf="showAdvanced" class="advanced-params">
+              <div class="advanced-section-label">
+                <mat-icon>settings</mat-icon>
+                Advanced Generation Controls
+              </div>
+
+              <div class="sampling-params">
+                <mat-form-field appearance="outline">
+                  <mat-label>Seed</mat-label>
+                  <input matInput type="number" [(ngModel)]="seed"
+                         min="-1" step="1">
+                  <mat-hint>-1 = random, any other value for reproducibility</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Min Tokens</mat-label>
+                  <input matInput type="number" [(ngModel)]="minTokens"
+                         min="0" max="4096" step="1">
+                  <mat-hint>Minimum tokens before allowing EOS</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Frequency Penalty</mat-label>
+                  <input matInput type="number" [(ngModel)]="frequencyPenalty"
+                         min="0" max="2" step="0.1">
+                  <mat-hint>0 = off, penalize by token frequency</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Presence Penalty</mat-label>
+                  <input matInput type="number" [(ngModel)]="presencePenalty"
+                         min="0" max="2" step="0.1">
+                  <mat-hint>0 = off, penalize if token appeared at all</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Stop Sequences (one per line)</mat-label>
+                <textarea matInput [(ngModel)]="stopSequencesText"
+                          rows="3"
+                          placeholder="Enter stop sequences, one per line&#10;e.g., \n###&#10;END"></textarea>
+                <mat-hint>Generation stops when any of these sequences is produced</mat-hint>
+              </mat-form-field>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Generate Actions & Output -->
+        <mat-card class="section-card generation-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>send</mat-icon>
+            <mat-card-title>Generation</mat-card-title>
+            <mat-card-subtitle>Run inference and view results</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="generation-actions">
+              <button mat-raised-button color="primary"
+                      (click)="generate()"
+                      [disabled]="isGenerating || !isModelLoaded || !prompt">
+                <mat-icon>send</mat-icon>
+                Generate
+              </button>
+              <button mat-stroked-button color="warn"
+                      (click)="cancelGeneration()"
+                      [disabled]="!isGenerating">
+                <mat-icon>cancel</mat-icon>
+                Cancel
+              </button>
+              <div class="toggle-field streaming-toggle">
+                <mat-slide-toggle [(ngModel)]="streamingEnabled" color="primary">
+                  Streaming
+                </mat-slide-toggle>
+              </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <mat-progress-bar *ngIf="isGenerating" mode="indeterminate" class="generation-progress"></mat-progress-bar>
+
+            <!-- Output Display -->
+            <div *ngIf="generationOutput || isGenerating" class="output-section">
+              <mat-divider></mat-divider>
+              <h3 class="output-title">
+                <mat-icon>text_fields</mat-icon>
+                Output
+              </h3>
+              <div class="output-text">
+                <pre>{{ generationOutput }}</pre>
+                <div *ngIf="isGenerating && !generationOutput" class="generating-indicator">
+                  <mat-spinner diameter="24"></mat-spinner>
+                  <span>Generating...</span>
+                </div>
+              </div>
+
+              <!-- Generation Metrics -->
+              <div *ngIf="generationResponse" class="metrics-section">
+                <mat-divider></mat-divider>
+                <h4 class="metrics-title">
+                  <mat-icon>analytics</mat-icon>
+                  Generation Metrics
+                </h4>
+                <div class="metrics-grid">
+                  <div class="metric">
+                    <span class="metric-value">{{ formatTokensPerSecond(generationResponse?.tokensPerSecond ?? 0) }}</span>
+                    <span class="metric-label">tokens/sec</span>
+                  </div>
+                  <div class="metric">
+                    <span class="metric-value">{{ generationResponse?.totalTokens }}</span>
+                    <span class="metric-label">total tokens</span>
+                  </div>
+                  <div class="metric">
+                    <span class="metric-value">{{ formatTime(generationResponse?.totalTimeMs ?? 0) }}</span>
+                    <span class="metric-label">total time</span>
+                  </div>
+                  <div class="metric" *ngIf="(generationResponse?.firstTokenLatencyMs ?? 0) > 0">
+                    <span class="metric-value">{{ formatTime(generationResponse?.firstTokenLatencyMs ?? 0) }}</span>
+                    <span class="metric-label">first token</span>
+                  </div>
+                  <div class="metric">
+                    <mat-chip [class.finish-stop]="generationResponse?.finishReason === 'completed' || generationResponse?.finishReason === 'stop'"
+                              [class.finish-error]="generationResponse?.finishReason?.startsWith('error')">
+                      {{ generationResponse?.finishReason }}
+                    </mat-chip>
+                    <span class="metric-label">finish reason</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Batch Generation Section -->
+            <div class="batch-section">
+              <mat-divider></mat-divider>
+              <div class="batch-toggle">
+                <button mat-stroked-button (click)="showBatchSection = !showBatchSection" class="advanced-btn">
+                  <mat-icon>{{ showBatchSection ? 'expand_less' : 'expand_more' }}</mat-icon>
+                  {{ showBatchSection ? 'Hide' : 'Show' }} Batch Generation
+                </button>
+              </div>
+
+              <div *ngIf="showBatchSection" class="batch-content">
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Batch Prompts (separated by ---)</mat-label>
+                  <textarea matInput [(ngModel)]="batchPromptsText"
+                            rows="6"
+                            placeholder="First prompt here&#10;---&#10;Second prompt here&#10;---&#10;Third prompt here"></textarea>
+                  <mat-hint>Enter multiple prompts separated by --- on its own line</mat-hint>
+                </mat-form-field>
+
+                <div class="batch-actions">
+                  <button mat-raised-button color="primary"
+                          (click)="generateBatch()"
+                          [disabled]="isRunningBatch || !isModelLoaded || !batchPromptsText">
+                    <mat-icon>playlist_play</mat-icon>
+                    Run Batch
+                    <mat-spinner *ngIf="isRunningBatch" diameter="18" class="inline-spinner"></mat-spinner>
+                  </button>
+                </div>
+
+                <!-- Batch Results -->
+                <div *ngIf="batchResult" class="batch-results">
+                  <div class="batch-summary">
+                    <span class="batch-stat">
+                      <mat-icon>check_circle</mat-icon>
+                      {{ batchResult.successCount }} success
+                    </span>
+                    <span class="batch-stat batch-stat-error" *ngIf="batchResult.errorCount > 0">
+                      <mat-icon>error</mat-icon>
+                      {{ batchResult.errorCount }} errors
+                    </span>
+                    <span class="batch-stat">
+                      <mat-icon>timer</mat-icon>
+                      {{ formatTime(batchResult.totalTimeMs) }}
+                    </span>
+                  </div>
+
+                  <div *ngFor="let result of batchResult.results; let i = index" class="batch-result-item">
+                    <div class="batch-result-header">
+                      <span class="batch-result-index">#{{ i + 1 }}</span>
+                      <mat-chip [class.finish-stop]="result.finishReason === 'completed'"
+                                [class.finish-error]="result.finishReason?.startsWith('error')">
+                        {{ result.finishReason }}
+                      </mat-chip>
+                    </div>
+                    <div class="batch-result-text">{{ truncateText(result.generatedText, 300) }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Chat Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">chat</mat-icon>
+        Chat
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>chat</mat-icon>
+            <mat-card-title>Chat</mat-card-title>
+            <mat-card-subtitle>Multi-turn conversation with the loaded LLM</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Chat Config -->
+            <div class="chat-config">
+              <mat-form-field appearance="outline" class="chat-template-field">
+                <mat-label>Chat Template</mat-label>
+                <mat-select [(ngModel)]="selectedChatTemplate">
+                  <mat-option *ngFor="let t of builtinChatTemplates" [value]="t.name">
+                    {{ t.name }} - {{ t.description }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="chat-max-tokens-field">
+                <mat-label>Max Tokens</mat-label>
+                <input matInput type="number" [(ngModel)]="chatMaxTokens" min="1" max="4096">
+              </mat-form-field>
+
+              <div class="toggle-field">
+                <mat-slide-toggle [(ngModel)]="chatStreamingEnabled" color="primary">
+                  Streaming
+                </mat-slide-toggle>
+              </div>
+            </div>
+
+            <!-- System Prompt -->
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>System Prompt (optional)</mat-label>
+              <textarea matInput [(ngModel)]="chatSystemPrompt"
+                        rows="2"
+                        placeholder="You are a helpful assistant..."></textarea>
+            </mat-form-field>
+
+            <!-- Chat Messages -->
+            <div class="chat-messages">
+              <div *ngIf="chatMessages.length === 0" class="empty-state chat-empty">
+                <mat-icon>forum</mat-icon>
+                <p>Start a conversation by typing a message below.</p>
+              </div>
+
+              <div *ngFor="let msg of chatMessages" class="chat-bubble"
+                   [class.chat-user]="msg.role === 'user'"
+                   [class.chat-assistant]="msg.role === 'assistant'">
+                <div class="chat-role">{{ msg.role }}</div>
+                <div class="chat-content">{{ msg.content }}</div>
+              </div>
+
+              <div *ngIf="isChatting" class="chat-bubble chat-assistant chat-typing">
+                <div class="chat-role">assistant</div>
+                <div class="chat-content">
+                  <mat-spinner diameter="20"></mat-spinner>
+                  <span>Thinking...</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chat Input -->
+            <div class="chat-input-area">
+              <mat-form-field appearance="outline" class="chat-input-field">
+                <mat-label>Message</mat-label>
+                <input matInput [(ngModel)]="chatInput"
+                       (keydown.enter)="sendChatMessage()"
+                       placeholder="Type your message..."
+                       [disabled]="isChatting">
+              </mat-form-field>
+              <button mat-raised-button color="primary"
+                      (click)="sendChatMessage()"
+                      [disabled]="isChatting || !isModelLoaded || !chatInput">
+                <mat-icon>send</mat-icon>
+              </button>
+              <button mat-stroked-button (click)="clearChat()" matTooltip="Clear chat">
+                <mat-icon>delete_sweep</mat-icon>
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Templates Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">description</mat-icon>
+        Templates
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Create Template -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>add_circle</mat-icon>
+            <mat-card-title>Create Template</mat-card-title>
+            <mat-card-subtitle>Define reusable prompt templates with variable placeholders</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="template-form">
+              <mat-form-field appearance="outline" class="template-name-field">
+                <mat-label>Template Name</mat-label>
+                <input matInput [(ngModel)]="newTemplateName" placeholder="e.g., Summarizer">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <input matInput [(ngModel)]="newTemplateDescription" placeholder="What this template does...">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Template Text</mat-label>
+                <textarea matInput [(ngModel)]="newTemplateText"
+                          rows="5"
+                          [placeholder]="'Summarize the following text in \{\{style\}\} style:\n\n\{\{input\}\}'"></textarea>
+                <mat-hint>Use double-brace variables for dynamic values</mat-hint>
+              </mat-form-field>
+
+              <div class="template-actions">
+                <button mat-raised-button color="primary"
+                        (click)="createTemplate()"
+                        [disabled]="!newTemplateName || !newTemplateText">
+                  <mat-icon>add</mat-icon>
+                  Create Template
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Template List -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>list</mat-icon>
+            <mat-card-title>Saved Templates</mat-card-title>
+            <mat-card-subtitle>{{ promptTemplates.length }} template(s)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="promptTemplates.length === 0" class="empty-state">
+              <mat-icon>description</mat-icon>
+              <p>No templates yet. Create one above.</p>
+            </div>
+
+            <div class="template-list">
+              <div *ngFor="let template of promptTemplates" class="template-card"
+                   [class.template-selected]="selectedTemplateForTest?.id === template.id">
+                <div class="template-card-header">
+                  <div class="template-card-title">{{ template.name }}</div>
+                  <div class="template-card-actions">
+                    <button mat-icon-button matTooltip="Test template"
+                            (click)="selectTemplateForTest(template)">
+                      <mat-icon>play_circle</mat-icon>
+                    </button>
+                    <button mat-icon-button color="warn" matTooltip="Delete"
+                            (click)="deleteTemplate(template.id)">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                </div>
+                <div class="template-card-desc" *ngIf="template.description">{{ template.description }}</div>
+                <div class="template-card-vars" *ngIf="template.variables && template.variables.length > 0">
+                  Variables:
+                  <mat-chip *ngFor="let v of template.variables" class="var-chip">{{ v }}</mat-chip>
+                </div>
+                <div class="template-card-preview">{{ truncateText(template.template, 100) }}</div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Template Tester -->
+        <mat-card *ngIf="selectedTemplateForTest" class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>science</mat-icon>
+            <mat-card-title>Test: {{ selectedTemplateForTest.name }}</mat-card-title>
+            <mat-card-subtitle>Fill in variables and preview the result</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="template-tester">
+              <div class="template-var-fields">
+                <mat-form-field *ngFor="let varName of objectKeys(templateTestVariables)"
+                                appearance="outline">
+                  <mat-label>{{ varName }}</mat-label>
+                  <input matInput [(ngModel)]="templateTestVariables[varName]"
+                         [placeholder]="'Value for ' + varName">
+                </mat-form-field>
+              </div>
+
+              <div class="template-tester-actions">
+                <button mat-raised-button color="primary" (click)="applyTemplateTest()">
+                  <mat-icon>preview</mat-icon>
+                  Preview
+                </button>
+                <button mat-stroked-button (click)="useTemplateAsPrompt()"
+                        [disabled]="!templateTestResult">
+                  <mat-icon>arrow_forward</mat-icon>
+                  Use as Prompt
+                </button>
+              </div>
+
+              <div *ngIf="templateTestResult" class="template-test-result">
+                <div class="template-result-label">Result:</div>
+                <pre class="template-result-text">{{ templateTestResult }}</pre>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Pipelines Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">account_tree</mat-icon>
+        Pipelines
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Create Pipeline -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>add_circle</mat-icon>
+            <mat-card-title>Create Pipeline</mat-card-title>
+            <mat-card-subtitle>Chain multiple generation steps together</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="pipeline-form">
+              <mat-form-field appearance="outline" class="pipeline-name-field">
+                <mat-label>Pipeline Name</mat-label>
+                <input matInput [(ngModel)]="newPipelineName" placeholder="e.g., Summarize & Translate">
+              </mat-form-field>
+
+              <!-- Steps -->
+              <div class="pipeline-steps">
+                <div *ngFor="let step of newPipelineSteps; let i = index" class="pipeline-step-card">
+                  <div class="pipeline-step-header">
+                    <span class="pipeline-step-number">Step {{ i + 1 }}</span>
+                    <mat-form-field appearance="outline" class="step-name-field">
+                      <mat-label>Step Name</mat-label>
+                      <input matInput [(ngModel)]="step.name">
+                    </mat-form-field>
+                    <mat-form-field appearance="outline" class="step-tokens-field">
+                      <mat-label>Max Tokens</mat-label>
+                      <input matInput type="number" [(ngModel)]="step.maxTokens" min="1" max="4096">
+                    </mat-form-field>
+                    <button mat-icon-button color="warn" (click)="removePipelineStep(i)" matTooltip="Remove step">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
+                  <mat-form-field appearance="outline" class="full-width">
+                    <mat-label>Prompt Template</mat-label>
+                    <textarea matInput [(ngModel)]="step.promptTemplate"
+                              rows="3"
+                              [placeholder]="'Use \{\{input\}\} for initial input, \{\{step1_output\}\} for previous step output'"></textarea>
+                    <mat-hint>Step ID: {{ step.stepId }}</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
+
+              <div class="pipeline-form-actions">
+                <button mat-stroked-button (click)="addPipelineStep()">
+                  <mat-icon>add</mat-icon>
+                  Add Step
+                </button>
+                <button mat-raised-button color="primary"
+                        (click)="createPipeline()"
+                        [disabled]="!newPipelineName || newPipelineSteps.length === 0">
+                  <mat-icon>save</mat-icon>
+                  Create Pipeline
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Pipeline List -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>list</mat-icon>
+            <mat-card-title>Saved Pipelines</mat-card-title>
+            <mat-card-subtitle>{{ textPipelines.length }} pipeline(s)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="textPipelines.length === 0" class="empty-state">
+              <mat-icon>account_tree</mat-icon>
+              <p>No pipelines yet. Create one above.</p>
+            </div>
+
+            <div class="pipeline-list">
+              <div *ngFor="let pipeline of textPipelines" class="pipeline-item"
+                   [class.pipeline-selected]="selectedPipelineForRun?.id === pipeline.id">
+                <div class="pipeline-item-header">
+                  <div class="pipeline-item-title">{{ pipeline.name }}</div>
+                  <span class="pipeline-step-count">{{ pipeline.steps?.length || 0 }} steps</span>
+                  <div class="pipeline-item-actions">
+                    <button mat-icon-button matTooltip="Run pipeline"
+                            (click)="selectPipelineForRun(pipeline)">
+                      <mat-icon>play_circle</mat-icon>
+                    </button>
+                    <button mat-icon-button color="warn" matTooltip="Delete"
+                            (click)="deletePipeline(pipeline.id)">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </div>
+                </div>
+                <div class="pipeline-steps-preview" *ngIf="pipeline.steps">
+                  <span *ngFor="let step of pipeline.steps; let last = last" class="pipeline-step-badge">
+                    {{ step.name || step.stepId }}
+                    <mat-icon *ngIf="!last" class="pipeline-arrow">arrow_forward</mat-icon>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Pipeline Runner -->
+        <mat-card *ngIf="selectedPipelineForRun" class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>play_arrow</mat-icon>
+            <mat-card-title>Run: {{ selectedPipelineForRun.name }}</mat-card-title>
+            <mat-card-subtitle>Provide input variables and execute</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Input Variables (key=value per line)</mat-label>
+              <textarea matInput [(ngModel)]="pipelineInputVariables"
+                        rows="4"
+                        placeholder="input=Your text here&#10;style=formal"></textarea>
+              <mat-hint>One variable per line in key=value format</mat-hint>
+            </mat-form-field>
+
+            <div class="pipeline-runner-actions">
+              <button mat-raised-button color="primary"
+                      (click)="executePipeline()"
+                      [disabled]="isRunningPipeline || !isModelLoaded">
+                <mat-icon>play_arrow</mat-icon>
+                Execute Pipeline
+                <mat-spinner *ngIf="isRunningPipeline" diameter="18" class="inline-spinner"></mat-spinner>
+              </button>
+            </div>
+
+            <!-- Pipeline Results -->
+            <div *ngIf="pipelineResult" class="pipeline-results">
+              <div class="pipeline-result-summary">
+                <span class="pipeline-result-stat">
+                  <mat-icon>timer</mat-icon>
+                  {{ formatTime(pipelineResult.totalTimeMs) }}
+                </span>
+                <mat-chip [class.finish-stop]="pipelineResult.finishReason === 'completed'"
+                          [class.finish-error]="pipelineResult.finishReason?.startsWith('error')">
+                  {{ pipelineResult.finishReason }}
+                </mat-chip>
+              </div>
+
+              <div *ngFor="let step of pipelineResult.stepOutputs" class="pipeline-step-result">
+                <div class="pipeline-step-result-header">
+                  <span class="pipeline-step-result-name">{{ step.stepName }} ({{ step.stepId }})</span>
+                  <span class="pipeline-step-result-time">{{ formatTime(step.timeMs) }}</span>
+                </div>
+                <div class="pipeline-step-result-prompt">
+                  <span class="result-label">Prompt:</span>
+                  <pre>{{ truncateText(step.prompt, 200) }}</pre>
+                </div>
+                <div class="pipeline-step-result-output">
+                  <span class="result-label">Output:</span>
+                  <pre>{{ step.output }}</pre>
+                </div>
+              </div>
+
+              <div class="pipeline-final-output">
+                <span class="result-label">Final Output:</span>
+                <pre>{{ pipelineResult.finalOutput }}</pre>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Decoder & Pipeline Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">memory</mat-icon>
+        Decoder &amp; Pipeline
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Decoder Configuration -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>settings_suggest</mat-icon>
+            <mat-card-title>Decoder Configuration</mat-card-title>
+            <mat-card-subtitle>Configure decoder behavior, token handling, and penalties</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="decoder-form">
+              <div class="decoder-section-label">
+                <mat-icon>generating_tokens</mat-icon>
+                Token Controls
+              </div>
+              <div class="sampling-params">
+                <mat-form-field appearance="outline">
+                  <mat-label>EOS Token ID</mat-label>
+                  <input matInput type="number" [(ngModel)]="eosTokenId" min="-1" step="1">
+                  <mat-hint>-1 = use model default</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Context Length</mat-label>
+                  <input matInput type="number" [(ngModel)]="maxContextLength" min="0" max="131072" step="256">
+                  <mat-hint>0 = use model default</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min New Tokens</mat-label>
+                  <input matInput type="number" [(ngModel)]="decoderMinNewTokens" min="0" max="4096" step="1">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Seed</mat-label>
+                  <input matInput type="number" [(ngModel)]="decoderSeed" min="-1" step="1">
+                </mat-form-field>
+              </div>
+
+              <div class="decoder-section-label">
+                <mat-icon>balance</mat-icon>
+                Penalty Controls
+              </div>
+              <div class="sampling-params">
+                <mat-form-field appearance="outline">
+                  <mat-label>Frequency Penalty</mat-label>
+                  <input matInput type="number" [(ngModel)]="decoderFrequencyPenalty" min="0" max="2" step="0.1">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Presence Penalty</mat-label>
+                  <input matInput type="number" [(ngModel)]="decoderPresencePenalty" min="0" max="2" step="0.1">
+                </mat-form-field>
+              </div>
+
+              <div class="decoder-section-label">
+                <mat-icon>architecture</mat-icon>
+                Model Architecture (KV Cache Sizing)
+              </div>
+              <div class="sampling-params">
+                <mat-form-field appearance="outline">
+                  <mat-label>Num Attention Heads</mat-label>
+                  <input matInput type="number" [(ngModel)]="numHeads" min="0" step="1">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Head Dimension</mat-label>
+                  <input matInput type="number" [(ngModel)]="headDim" min="0" step="1">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Num KV Layers</mat-label>
+                  <input matInput type="number" [(ngModel)]="numKvLayers" min="0" step="1">
+                </mat-form-field>
+              </div>
+
+              <div class="decoder-section-label">
+                <mat-icon>stop_circle</mat-icon>
+                Default Stop Sequences
+              </div>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Stop Sequences (one per line)</mat-label>
+                <textarea matInput [(ngModel)]="decoderStopSequencesText" rows="3"
+                          placeholder="Enter default stop sequences"></textarea>
+              </mat-form-field>
+
+              <div class="decoder-section-label">
+                <mat-icon>folder_open</mat-icon>
+                Decoder Model Path
+              </div>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Decoder Path</mat-label>
+                <input matInput [(ngModel)]="decoderConfigPath" placeholder="/path/to/decoder/model.fb">
+              </mat-form-field>
+
+              <div class="decoder-actions">
+                <button mat-raised-button color="primary" (click)="saveDecoderConfig()">
+                  <mat-icon>save</mat-icon>
+                  Save Decoder Config
+                </button>
+                <button mat-stroked-button (click)="resetDecoderConfig()">
+                  <mat-icon>restart_alt</mat-icon>
+                  Reset to Defaults
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Pipeline Info -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>info</mat-icon>
+            <mat-card-title>Pipeline Information</mat-card-title>
+            <mat-card-subtitle>Details about the currently loaded generation pipeline</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="pipeline-info-actions">
+              <button mat-stroked-button (click)="loadPipelineInfo()" [disabled]="!isModelLoaded">
+                <mat-icon>refresh</mat-icon>
+                Refresh Pipeline Info
+              </button>
+            </div>
+
+            <div *ngIf="!pipelineInfo || !pipelineInfo.loaded" class="empty-state">
+              <mat-icon>info_outline</mat-icon>
+              <p>Load a model to view pipeline information.</p>
+            </div>
+
+            <div *ngIf="pipelineInfo && pipelineInfo.loaded" class="pipeline-info-grid">
+              <div class="info-group">
+                <div class="info-group-title">Model</div>
+                <div class="info-row">
+                  <span class="info-label">Model ID</span>
+                  <span class="info-value">{{ pipelineInfo.modelId }}</span>
+                </div>
+                <div class="info-row" *ngIf="pipelineInfo.decoderPath">
+                  <span class="info-label">Decoder Path</span>
+                  <span class="info-value mono">{{ pipelineInfo.decoderPath }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">KV Cache Strategy</span>
+                  <span class="info-value">{{ pipelineInfo.kvCacheStrategy }}</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Memory Usage</span>
+                  <span class="info-value">{{ pipelineInfo.memoryUsageMb }} MB</span>
+                </div>
+              </div>
+
+              <div class="info-group" *ngIf="pipelineInfo.currentSamplingConfig">
+                <div class="info-group-title">Active Sampling Config</div>
+                <div class="info-row" *ngFor="let key of objectKeys(pipelineInfo.currentSamplingConfig)">
+                  <span class="info-label">{{ key }}</span>
+                  <span class="info-value mono">{{ pipelineInfo.currentSamplingConfig[key] }}</span>
+                </div>
+              </div>
+
+              <div class="info-group" *ngIf="pipelineInfo.inputNames">
+                <div class="info-group-title">Model Inputs</div>
+                <div class="info-row" *ngFor="let name of pipelineInfo.inputNames">
+                  <span class="info-value mono">{{ name }}</span>
+                </div>
+              </div>
+
+              <div class="info-group" *ngIf="pipelineInfo.outputNames">
+                <div class="info-group-title">Model Outputs</div>
+                <div class="info-row" *ngFor="let name of pipelineInfo.outputNames">
+                  <span class="info-value mono">{{ name }}</span>
+                </div>
+              </div>
+
+              <div class="info-group" *ngIf="pipelineInfo.logitsOutputName">
+                <div class="info-group-title">Logits Output</div>
+                <div class="info-row">
+                  <span class="info-value mono">{{ pipelineInfo.logitsOutputName }}</span>
+                </div>
+              </div>
+
+              <div class="info-group" *ngIf="pipelineInfo.kvCacheKeyNames && pipelineInfo.kvCacheKeyNames.length > 0">
+                <div class="info-group-title">KV Cache Keys ({{ pipelineInfo.kvCacheKeyNames.length }} layers)</div>
+                <div class="info-row" *ngFor="let name of pipelineInfo.kvCacheKeyNames">
+                  <span class="info-value mono">{{ name }}</span>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Speculative Decoding Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">bolt</mat-icon>
+        Speculative Decoding
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>bolt</mat-icon>
+            <mat-card-title>Speculative Decoding Configuration</mat-card-title>
+            <mat-card-subtitle>Speed up generation with token speculation</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="speculative-form">
+              <div class="toggle-field">
+                <mat-slide-toggle [(ngModel)]="speculativeEnabled" color="primary">
+                  Enable Speculative Decoding
+                </mat-slide-toggle>
+              </div>
+
+              <div *ngIf="speculativeEnabled" class="speculative-params">
+                <mat-form-field appearance="outline">
+                  <mat-label>N-gram Size</mat-label>
+                  <input matInput type="number" [(ngModel)]="speculativeNgramSize" min="1" max="10" step="1">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Speculative Tokens</mat-label>
+                  <input matInput type="number" [(ngModel)]="speculativeMaxTokens" min="1" max="20" step="1">
+                </mat-form-field>
+                <div class="toggle-field">
+                  <mat-slide-toggle [(ngModel)]="speculativeUseDraftModel" color="primary">
+                    Use Draft Model
+                  </mat-slide-toggle>
+                </div>
+                <mat-form-field *ngIf="speculativeUseDraftModel" appearance="outline" class="full-width">
+                  <mat-label>Draft Model ID</mat-label>
+                  <input matInput [(ngModel)]="speculativeDraftModelId" placeholder="e.g., smollm-135m">
+                </mat-form-field>
+              </div>
+
+              <div class="speculative-actions">
+                <button mat-raised-button color="primary" (click)="saveSpeculativeConfig()">
+                  <mat-icon>save</mat-icon>
+                  Save Configuration
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== History Tab ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">history</mat-icon>
+        History
+        <span *ngIf="generationHistory.length > 0" class="history-badge">{{ generationHistory.length }}</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>history</mat-icon>
+            <mat-card-title>Generation History</mat-card-title>
+            <mat-card-subtitle>Recent text generation runs (stored in memory, not persisted)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="generationHistory.length === 0" class="empty-state">
+              <mat-icon>inbox</mat-icon>
+              <p>No generation history yet. Run a generation to see results here.</p>
+            </div>
+
+            <div *ngIf="generationHistory.length > 0">
+              <div class="history-actions">
+                <button mat-stroked-button color="warn" (click)="clearHistory()">
+                  <mat-icon>delete_sweep</mat-icon>
+                  Clear History
+                </button>
+              </div>
+
+              <div class="history-list">
+                <div *ngFor="let entry of generationHistory; let i = index" class="history-item">
+                  <div class="history-item-header">
+                    <span class="history-index">#{{ generationHistory.length - i }}</span>
+                    <span class="history-timestamp">{{ formatTimestamp(entry.timestamp) }}</span>
+                    <button mat-icon-button matTooltip="Load this prompt"
+                            (click)="loadFromHistory(entry)" class="history-load-btn">
+                      <mat-icon>replay</mat-icon>
+                    </button>
+                  </div>
+
+                  <div class="history-prompt">
+                    <span class="history-label">Prompt:</span>
+                    <span class="history-text">{{ truncateText(entry.prompt, 150) }}</span>
+                  </div>
+
+                  <div class="history-output">
+                    <span class="history-label">Output:</span>
+                    <span class="history-text">{{ truncateText(entry.generatedText, 200) }}</span>
+                  </div>
+
+                  <div class="history-metrics">
+                    <span class="history-metric">
+                      <mat-icon>speed</mat-icon>
+                      {{ formatTokensPerSecond(entry.tokensPerSecond) }} tok/s
+                    </span>
+                    <span class="history-metric">
+                      <mat-icon>token</mat-icon>
+                      {{ entry.totalTokens }} tokens
+                    </span>
+                    <span class="history-metric">
+                      <mat-icon>timer</mat-icon>
+                      {{ formatTime(entry.totalTimeMs) }}
+                    </span>
+                    <span class="history-metric">
+                      <mat-icon>flag</mat-icon>
+                      {{ entry.finishReason }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+</div>

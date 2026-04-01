@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kompile Lite</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="dark">
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h1>Kompile Lite</h1>
+            <p>Chat + RAG + Graph RAG</p>
+        </div>
+
+        <div class="sidebar-section">
+            <h3>Status</h3>
+            <div class="status-item">
+                <span><span class="status-dot inactive" id="embedding-status"></span>Embeddings</span>
+                <span id="model-name" style="font-size:11px;color:var(--text-secondary)">Loading...</span>
+            </div>
+            <div class="status-item">
+                <span><span class="status-dot inactive" id="vectorstore-status"></span>Vector Store</span>
+                <span id="doc-count" style="font-size:11px;color:var(--text-secondary)">0</span>
+            </div>
+            <div class="status-item">
+                <span><span class="status-dot inactive" id="graph-status"></span>Graph RAG</span>
+            </div>
+            <div class="status-item">
+                <span><span class="status-dot inactive" id="llm-status"></span>LLM</span>
+                <span id="llm-provider" style="font-size:11px;color:var(--text-secondary)">None</span>
+            </div>
+        </div>
+
+        <div class="sidebar-section">
+            <h3>Upload Documents</h3>
+            <div class="upload-zone" id="upload-zone">
+                <div>Drop files here or click to upload</div>
+                <div style="margin-top:4px;font-size:11px">PDF, TXT, MD, CSV</div>
+                <input type="file" id="file-input" multiple accept=".pdf,.txt,.md,.csv,.doc,.docx">
+            </div>
+        </div>
+
+        <div class="sidebar-footer">
+            <button class="btn-icon" id="theme-btn" title="Toggle theme">Theme</button>
+            <button class="btn-icon" id="clear-btn" title="Clear conversation">Clear</button>
+        </div>
+    </div>
+
+    <!-- Chat Area -->
+    <div class="chat-area">
+        <div class="chat-messages" id="messages">
+            <!-- Messages rendered here by JS -->
+        </div>
+
+        <div class="typing-indicator" id="typing-indicator">
+            Thinking...
+        </div>
+
+        <div class="chat-input-area">
+            <div class="input-container">
+                <textarea class="chat-input" id="chat-input" placeholder="Type a message..." rows="1"></textarea>
+                <button class="send-btn" id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="chat.js"></script>
+</body>
+</html>

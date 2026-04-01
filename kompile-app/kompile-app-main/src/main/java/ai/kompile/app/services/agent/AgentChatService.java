@@ -913,6 +913,176 @@ public class AgentChatService {
     }
 
     /**
+     * Result of a synchronous agent chat execution.
+     */
+    public record SyncChatResult(
+            String content,
+            String processId,
+            int exitCode,
+            long durationMs,
+            List<RetrievedDoc> sources,
+            List<String> modifiedFiles,
+            Map<String, Object> stats,
+            String error
+    ) {
+        public boolean isSuccess() {
+            return error == null && exitCode == 0;
+        }
+    }
+
+    /**
+     * Execute chat synchronously, blocking until the agent completes.
+     * Used for MCP tool-based inter-agent delegation where we need to return
+     * a complete result rather than stream events.
+     */
+    public SyncChatResult executeChatSync(AgentChatRequest request, int timeoutSeconds) {
+        long startTime = System.currentTimeMillis();
+        List<RetrievedDoc> retrievedSources = new ArrayList<>();
+
+        try {
+            // Validate agent
+            Optional<AgentProvider> agentOpt = agentRegistry.getAgent(request.getAgentName());
+            if (agentOpt.isEmpty()) {
+                return new SyncChatResult("", null, -1, 0, List.of(), List.of(), null,
+                        "Agent not found: " + request.getAgentName());
+            }
+
+            AgentProvider agent = agentOpt.get();
+            if (!agent.isAvailable()) {
+                return new SyncChatResult("", null, -1, 0, List.of(), List.of(), null,
+                        "Agent not available: " + agent.getDisplayName());
+            }
+
+            // API agents not supported in sync mode (they use HTTP streaming)
+            if (agent.isApiAgent()) {
+                return new SyncChatResult("", null, -1, 0, List.of(), List.of(), null,
+                        "API agents are not supported for synchronous delegation. Use CLI agents.");
+            }
+
+            // Build prompt with RAG context
+            String prompt = buildPromptWithSources(request, retrievedSources);
+
+            // Build command
+            List<String> command = buildCommand(agent, request, prompt);
+
+            // Create process status for tracking
+            ProcessStatus processStatus = diagnosticService.startProcess(agent.getName(), command);
+            String processId = processStatus.getId();
+
+            log.info("Executing synchronous agent command: {} (delegationId: {})", agent.getCommand(), processId);
+
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+
+            if (request.getWorkingDirectory() != null && !request.getWorkingDirectory().isEmpty()) {
+                File workDir = new File(request.getWorkingDirectory());
+                if (workDir.isDirectory()) {
+                    pb.directory(workDir);
+                }
+            }
+
+            pb.environment().putAll(agent.safeEnvironment());
+
+            Process process = pb.start();
+            runningProcesses.put(processId, process);
+            diagnosticService.processStarted(processId, process.pid());
+
+            StringBuilder fullResponse = new StringBuilder();
+            Map<String, Object> chatStats = new LinkedHashMap<>();
+            boolean useStreamParser = streamParser.supportsStreamJson(agent.getName());
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+
+                diagnosticService.processStreaming(processId);
+                String line;
+
+                while ((line = reader.readLine()) != null) {
+                    if (!runningProcesses.containsKey(processId)) {
+                        break; // Cancelled
+                    }
+
+                    diagnosticService.outputReceived(processId, line);
+
+                    if (useStreamParser) {
+                        ClaudeStreamParser.ParseResult result = streamParser.parseLine(processId, line);
+                        if (result != null) {
+                            if (result.textContent() != null && !result.textContent().isEmpty()) {
+                                fullResponse.append(result.textContent());
+                            }
+                            if (result.isResult()) {
+                                chatStats.put("durationMs", result.durationMs() != null ? result.durationMs() : 0);
+                                chatStats.put("costUsd", result.costUsd() != null ? result.costUsd() : 0.0);
+                                chatStats.put("numTurns", result.numTurns() != null ? result.numTurns() : 0);
+                                chatStats.put("isError", result.isError());
+                                Map<String, Object> tokenMetrics = streamParser.getTokenMetrics(processId);
+                                if (tokenMetrics != null) {
+                                    chatStats.put("tokenMetrics", tokenMetrics);
+                                }
+                            }
+                        }
+                    } else {
+                        fullResponse.append(line).append("\n");
+                    }
+                }
+
+                boolean completed;
+                if (timeoutSeconds <= 0) {
+                    process.waitFor();
+                    completed = true;
+                } else {
+                    completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+                }
+
+                if (!completed) {
+                    process.destroyForcibly();
+                    diagnosticService.processTimedOut(processId);
+                    return new SyncChatResult(fullResponse.toString(), processId, -1,
+                            System.currentTimeMillis() - startTime, retrievedSources, List.of(),
+                            chatStats, "Process timed out after " + timeoutSeconds + "s");
+                }
+
+                int exitCode = process.exitValue();
+                diagnosticService.processCompleted(processId, exitCode);
+
+                List<String> modifiedFiles = new ArrayList<>();
+                Object mf = streamParser.getModifiedFiles(processId);
+                if (mf instanceof List<?> list) {
+                    for (Object item : list) {
+                        modifiedFiles.add(item.toString());
+                    }
+                }
+
+                streamParser.clearSession(processId);
+                streamParser.clearModifiedFiles(processId);
+
+                long duration = System.currentTimeMillis() - startTime;
+
+                if (exitCode != 0) {
+                    return new SyncChatResult(fullResponse.toString(), processId, exitCode,
+                            duration, retrievedSources, modifiedFiles, chatStats,
+                            "Process exited with code: " + exitCode);
+                }
+
+                return new SyncChatResult(fullResponse.toString(), processId, exitCode,
+                        duration, retrievedSources, modifiedFiles, chatStats, null);
+
+            } finally {
+                runningProcesses.remove(processId);
+                if (process.isAlive()) {
+                    process.destroyForcibly();
+                }
+            }
+
+        } catch (Exception e) {
+            log.error("Error in synchronous agent chat", e);
+            return new SyncChatResult("", null, -1,
+                    System.currentTimeMillis() - startTime, retrievedSources, List.of(), null,
+                    "Execution error: " + e.getMessage());
+        }
+    }
+
+    /**
      * Check if a process is currently running.
      */
     public boolean isProcessRunning(String processId) {

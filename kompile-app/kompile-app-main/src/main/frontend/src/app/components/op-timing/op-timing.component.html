@@ -1,0 +1,581 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="op-timing-container">
+  <!-- Header -->
+  <div class="section-header">
+    <mat-icon>speed</mat-icon>
+    <div>
+      <h2>ND4J Op Timing Profiler</h2>
+      <p class="header-subtitle">Profile operation execution times with phase-level granularity</p>
+    </div>
+  </div>
+
+  <!-- Loading spinner -->
+  <div *ngIf="loading" class="loading-overlay">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <!-- Error message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button (click)="loadStatus()">Retry</button>
+  </div>
+
+  <!-- Controls Card -->
+  <mat-card class="controls-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>settings</mat-icon>
+      <mat-card-title>Profiling Controls</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="controls-row">
+        <!-- Status indicator -->
+        <div class="status-indicator" [class.enabled]="status?.enabled">
+          <mat-icon>{{ status?.enabled ? 'play_circle' : 'pause_circle' }}</mat-icon>
+          <span>{{ status?.enabled ? 'Profiling Active' : 'Profiling Disabled' }}</span>
+        </div>
+
+        <!-- Mode toggles -->
+        <div class="mode-toggles">
+          <mat-slide-toggle name="detailedMode" [(ngModel)]="detailedMode" [ngModelOptions]="{standalone: true}" [disabled]="status?.enabled === true"
+            matTooltip="Enable detailed phase-level timing (validation, memory alloc, helper exec, native exec)">
+            Detailed Mode
+          </mat-slide-toggle>
+          <mat-slide-toggle name="traceMode" [(ngModel)]="traceMode" [ngModelOptions]="{standalone: true}" [disabled]="status?.enabled === true"
+            matTooltip="Enable trace mode for Chrome trace export">
+            Trace Mode
+          </mat-slide-toggle>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="action-buttons">
+          <button mat-raised-button color="primary" *ngIf="!status?.enabled" (click)="enableTiming()"
+            [disabled]="loading">
+            <mat-icon>play_arrow</mat-icon>
+            Enable Profiling
+          </button>
+          <button mat-raised-button color="warn" *ngIf="status?.enabled" (click)="disableTiming()" [disabled]="loading">
+            <mat-icon>stop</mat-icon>
+            Disable Profiling
+          </button>
+          <button mat-raised-button (click)="flushStats()" [disabled]="loading || !status?.enabled"
+            matTooltip="Flush ring buffer and get statistics">
+            <mat-icon>refresh</mat-icon>
+            Flush Stats
+          </button>
+          <button mat-raised-button (click)="resetTiming()" [disabled]="loading"
+            matTooltip="Reset all timing data">
+            <mat-icon>restart_alt</mat-icon>
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Summary stats -->
+      <div class="summary-stats" *ngIf="totalExecutions > 0 || numOps > 0">
+        <div class="stat-item">
+          <span class="stat-label">Total Ops</span>
+          <span class="stat-value">{{ numOps }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Total Executions</span>
+          <span class="stat-value">{{ totalExecutions | number }}</span>
+        </div>
+        <div class="stat-item" *ngIf="lastFlushTime">
+          <span class="stat-label">Last Flush</span>
+          <span class="stat-value">{{ lastFlushTime | date:'medium' }}</span>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Subprocess Overhead Card -->
+  <mat-card class="subprocess-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>schedule</mat-icon>
+      <mat-card-title>Subprocess Overhead Timing</mat-card-title>
+      <mat-card-subtitle>Track startup, model loading, and IPC overhead in subprocesses</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="subprocess-controls">
+        <button mat-stroked-button (click)="refreshSubprocessData()" [disabled]="loadingSubprocess">
+          <mat-icon>refresh</mat-icon>
+          Refresh
+        </button>
+        <button mat-stroked-button color="warn" (click)="clearSubprocessHistory()" [disabled]="loadingSubprocess">
+          <mat-icon>delete</mat-icon>
+          Clear History
+        </button>
+      </div>
+
+      <!-- Loading spinner -->
+      <div *ngIf="loadingSubprocess" class="subprocess-loading">
+        <mat-spinner diameter="30"></mat-spinner>
+      </div>
+
+      <!-- Active Subprocesses -->
+      <div class="active-subprocesses" *ngIf="activeSubprocesses && activeSubprocesses.activeCount > 0">
+        <h4>
+          <mat-icon>play_circle</mat-icon>
+          Active Subprocesses ({{ activeSubprocesses.activeCount }})
+        </h4>
+        <div class="active-list">
+          <div class="active-item" *ngFor="let proc of activeSubprocesses.active">
+            <mat-icon>{{ getSubprocessTypeIcon(proc.subprocessType) }}</mat-icon>
+            <div class="active-info">
+              <span class="task-id">{{ proc.taskId }}</span>
+              <span class="subprocess-type">{{ proc.subprocessType }}</span>
+              <span class="model-id" *ngIf="proc.modelId">Model: {{ proc.modelId }}</span>
+            </div>
+            <div class="active-stats">
+              <span>Elapsed: {{ formatNumber(proc.elapsedMs) }} ms</span>
+              <span *ngIf="proc.startupDurationMs > 0">Startup: {{ formatNumber(proc.startupDurationMs) }} ms</span>
+              <span *ngIf="proc.modelLoadDurationMs > 0">Model Load: {{ formatNumber(proc.modelLoadDurationMs) }} ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Aggregate Statistics -->
+      <div class="subprocess-aggregates" *ngIf="subprocessHistory?.aggregates">
+        <h4>
+          <mat-icon>analytics</mat-icon>
+          Aggregate Statistics
+        </h4>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-label">Avg Startup</span>
+            <span class="stat-value">{{ formatNumber(subprocessHistory!.aggregates!.avgStartupMs) }} ms</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg Model Load</span>
+            <span class="stat-value">{{ formatNumber(subprocessHistory!.aggregates!.avgModelLoadMs) }} ms</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg IPC Overhead</span>
+            <span class="stat-value">{{ formatNumber(subprocessHistory!.aggregates!.avgIpcOverheadMs) }} ms</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg Total Overhead</span>
+            <span class="stat-value">{{ formatNumber(subprocessHistory!.aggregates!.avgTotalOverheadMs) }} ms</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Avg Overhead %</span>
+            <span class="stat-value" [class]="getOverheadClass(subprocessHistory!.aggregates!.avgOverheadPercent)">
+              {{ formatNumber(subprocessHistory!.aggregates!.avgOverheadPercent, 1) }}%
+            </span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Success Rate</span>
+            <span class="stat-value">{{ formatNumber(subprocessHistory!.aggregates!.successRate, 1) }}%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subprocess History Table -->
+      <div class="subprocess-history" *ngIf="subprocessHistory && subprocessHistory.history.length > 0">
+        <h4>
+          <mat-icon>history</mat-icon>
+          Recent Subprocess Timings ({{ subprocessHistory.count }})
+        </h4>
+        <table mat-table [dataSource]="subprocessHistory.history" class="subprocess-table">
+          <!-- Task ID Column -->
+          <ng-container matColumnDef="taskId">
+            <th mat-header-cell *matHeaderCellDef>Task ID</th>
+            <td mat-cell *matCellDef="let stat">
+              <code class="task-id-code">{{ stat.taskId | slice:0:12 }}...</code>
+            </td>
+          </ng-container>
+
+          <!-- Type Column -->
+          <ng-container matColumnDef="subprocessType">
+            <th mat-header-cell *matHeaderCellDef>Type</th>
+            <td mat-cell *matCellDef="let stat">
+              <mat-icon class="type-icon">{{ getSubprocessTypeIcon(stat.subprocessType) }}</mat-icon>
+              {{ stat.subprocessType }}
+            </td>
+          </ng-container>
+
+          <!-- Startup Duration Column -->
+          <ng-container matColumnDef="startupDurationMs">
+            <th mat-header-cell *matHeaderCellDef>Startup (ms)</th>
+            <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.startupDurationMs) }}</td>
+          </ng-container>
+
+          <!-- Model Load Column -->
+          <ng-container matColumnDef="modelLoadDurationMs">
+            <th mat-header-cell *matHeaderCellDef>Model Load (ms)</th>
+            <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.modelLoadDurationMs) }}</td>
+          </ng-container>
+
+          <!-- IPC Overhead Column -->
+          <ng-container matColumnDef="ipcOverheadMs">
+            <th mat-header-cell *matHeaderCellDef>IPC (ms)</th>
+            <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.ipcOverheadMs) }}</td>
+          </ng-container>
+
+          <!-- Total Overhead Column -->
+          <ng-container matColumnDef="totalOverheadMs">
+            <th mat-header-cell *matHeaderCellDef>Total Overhead (ms)</th>
+            <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.totalOverheadMs) }}</td>
+          </ng-container>
+
+          <!-- Overhead % Column -->
+          <ng-container matColumnDef="overheadPercent">
+            <th mat-header-cell *matHeaderCellDef>Overhead %</th>
+            <td mat-cell *matCellDef="let stat">
+              <span [class]="getOverheadClass(stat.overheadPercent)">
+                {{ formatNumber(stat.overheadPercent, 1) }}%
+              </span>
+            </td>
+          </ng-container>
+
+          <!-- Success Column -->
+          <ng-container matColumnDef="success">
+            <th mat-header-cell *matHeaderCellDef>Status</th>
+            <td mat-cell *matCellDef="let stat">
+              <mat-icon [class.success-icon]="stat.success" [class.failure-icon]="!stat.success">
+                {{ stat.success ? 'check_circle' : 'error' }}
+              </mat-icon>
+            </td>
+          </ng-container>
+
+          <tr mat-header-row *matHeaderRowDef="subprocessColumns"></tr>
+          <tr mat-row *matRowDef="let row; columns: subprocessColumns;"></tr>
+        </table>
+      </div>
+
+      <!-- Empty state for subprocess -->
+      <div class="subprocess-empty" *ngIf="!loadingSubprocess && (!subprocessHistory || subprocessHistory.history.length === 0)">
+        <mat-icon>hourglass_empty</mat-icon>
+        <p>No subprocess timing data yet. Run an embedding or indexing job to collect subprocess overhead metrics.</p>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Subprocess Op Timing Card (where actual embedding inference runs!) -->
+  <mat-card class="subprocess-op-timing-card" *ngIf="subprocessOpTiming && subprocessOpTiming.available">
+    <mat-card-header>
+      <mat-icon mat-card-avatar class="subprocess-icon">psychology</mat-icon>
+      <mat-card-title>Subprocess Op Timing (Embedding Inference)</mat-card-title>
+      <mat-card-subtitle>ND4J operations from the embedding subprocess - this is where actual inference runs!</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="subprocessOpTiming.success; else subprocessError">
+        <!-- Summary stats -->
+        <div class="summary-stats subprocess-stats">
+          <div class="stat-item">
+            <span class="stat-label">Total Ops</span>
+            <span class="stat-value">{{ subprocessOpTiming.numOps || 0 }}</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Total Executions</span>
+            <span class="stat-value">{{ subprocessOpTiming.totalExecutions || 0 | number }}</span>
+          </div>
+        </div>
+
+        <!-- Subprocess hotspots table -->
+        <div *ngIf="subprocessOpTiming.hotspots && subprocessOpTiming.hotspots.length > 0">
+          <table mat-table [dataSource]="subprocessOpTiming.hotspots" class="hotspots-table subprocess-table">
+            <!-- Rank Column -->
+            <ng-container matColumnDef="rank">
+              <th mat-header-cell *matHeaderCellDef>Rank</th>
+              <td mat-cell *matCellDef="let stat">{{ stat.rank }}</td>
+            </ng-container>
+
+            <!-- Op Name Column -->
+            <ng-container matColumnDef="opName">
+              <th mat-header-cell *matHeaderCellDef>Op Name</th>
+              <td mat-cell *matCellDef="let stat" class="op-name-cell">
+                <code>{{ stat.opName }}</code>
+              </td>
+            </ng-container>
+
+            <!-- Calls Column -->
+            <ng-container matColumnDef="calls">
+              <th mat-header-cell *matHeaderCellDef>Calls</th>
+              <td mat-cell *matCellDef="let stat">{{ stat.calls | number }}</td>
+            </ng-container>
+
+            <!-- Total Time Column -->
+            <ng-container matColumnDef="totalMs">
+              <th mat-header-cell *matHeaderCellDef>Total (ms)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.totalMs) }}</td>
+            </ng-container>
+
+            <!-- Avg Time Column -->
+            <ng-container matColumnDef="avgUs">
+              <th mat-header-cell *matHeaderCellDef>Avg (us)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.avgUs) }}</td>
+            </ng-container>
+
+            <!-- StdDev Column -->
+            <ng-container matColumnDef="stdDevUs">
+              <th mat-header-cell *matHeaderCellDef>StdDev (us)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.stdDevUs) }}</td>
+            </ng-container>
+
+            <!-- Helper % Column -->
+            <ng-container matColumnDef="helperPercent">
+              <th mat-header-cell *matHeaderCellDef>Helper %</th>
+              <td mat-cell *matCellDef="let stat">
+                <span [class]="getHelperClass(stat.helperPercent)">
+                  {{ formatNumber(stat.helperPercent, 1) }}%
+                </span>
+              </td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="['rank', 'opName', 'calls', 'totalMs', 'avgUs', 'stdDevUs', 'helperPercent']"></tr>
+            <tr mat-row *matRowDef="let row; columns: ['rank', 'opName', 'calls', 'totalMs', 'avgUs', 'stdDevUs', 'helperPercent'];"></tr>
+          </table>
+        </div>
+
+        <!-- Empty subprocess hotspots -->
+        <div class="subprocess-no-ops" *ngIf="!subprocessOpTiming.hotspots || subprocessOpTiming.hotspots.length === 0">
+          <mat-icon>info</mat-icon>
+          <p>No ops captured in subprocess yet. Make sure profiling is enabled and run an embedding operation.</p>
+        </div>
+      </div>
+
+      <ng-template #subprocessError>
+        <div class="subprocess-error">
+          <mat-icon>warning</mat-icon>
+          <p>{{ subprocessOpTiming.error || 'Failed to retrieve subprocess op timing' }}</p>
+        </div>
+      </ng-template>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Hotspots Table (Main JVM) -->
+  <mat-card class="hotspots-card" *ngIf="hotspots.length > 0">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>whatshot</mat-icon>
+      <mat-card-title>Main JVM Op Hotspots (Top {{ topN }})</mat-card-title>
+      <mat-card-subtitle>Operations in main JVM sorted by total execution time</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="export-buttons">
+        <button mat-stroked-button (click)="exportChromeTrace()" [disabled]="loading || !status?.traceMode"
+          matTooltip="Export to Chrome trace format (requires trace mode)">
+          <mat-icon>download</mat-icon>
+          Chrome Trace
+        </button>
+        <button mat-stroked-button (click)="exportCSV()" [disabled]="loading">
+          <mat-icon>table_chart</mat-icon>
+          CSV
+        </button>
+      </div>
+
+      <table mat-table [dataSource]="hotspots" class="hotspots-table">
+        <!-- Rank Column -->
+        <ng-container matColumnDef="rank">
+          <th mat-header-cell *matHeaderCellDef>Rank</th>
+          <td mat-cell *matCellDef="let stat">{{ stat.rank }}</td>
+        </ng-container>
+
+        <!-- Op Name Column -->
+        <ng-container matColumnDef="opName">
+          <th mat-header-cell *matHeaderCellDef>Op Name</th>
+          <td mat-cell *matCellDef="let stat" class="op-name-cell">
+            <code>{{ stat.opName }}</code>
+          </td>
+        </ng-container>
+
+        <!-- Calls Column -->
+        <ng-container matColumnDef="calls">
+          <th mat-header-cell *matHeaderCellDef>Calls</th>
+          <td mat-cell *matCellDef="let stat">{{ stat.calls | number }}</td>
+        </ng-container>
+
+        <!-- Total Time Column -->
+        <ng-container matColumnDef="totalMs">
+          <th mat-header-cell *matHeaderCellDef>Total (ms)</th>
+          <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.totalMs) }}</td>
+        </ng-container>
+
+        <!-- Avg Time Column -->
+        <ng-container matColumnDef="avgUs">
+          <th mat-header-cell *matHeaderCellDef>Avg (us)</th>
+          <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.avgUs) }}</td>
+        </ng-container>
+
+        <!-- StdDev Column -->
+        <ng-container matColumnDef="stdDevUs">
+          <th mat-header-cell *matHeaderCellDef>StdDev (us)</th>
+          <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.stdDevUs) }}</td>
+        </ng-container>
+
+        <!-- Helper % Column -->
+        <ng-container matColumnDef="helperPercent">
+          <th mat-header-cell *matHeaderCellDef>Helper %</th>
+          <td mat-cell *matCellDef="let stat">
+            <span [class]="getHelperClass(stat.helperPercent)">
+              {{ formatNumber(stat.helperPercent, 1) }}%
+            </span>
+          </td>
+        </ng-container>
+
+        <!-- Actions Column -->
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>Details</th>
+          <td mat-cell *matCellDef="let stat">
+            <button mat-icon-button (click)="selectOp(stat.opName)"
+              [class.selected]="selectedOp === stat.opName"
+              matTooltip="View phase breakdown and histogram">
+              <mat-icon>analytics</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;"
+          [class.selected-row]="selectedOp === row.opName"
+          (click)="selectOp(row.opName)"></tr>
+      </table>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Op Details Panel -->
+  <mat-expansion-panel *ngIf="selectedOp" [expanded]="true" class="details-panel">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon>analytics</mat-icon>
+        <span>Details for <code>{{ selectedOp }}</code></span>
+      </mat-panel-title>
+    </mat-expansion-panel-header>
+
+    <div class="details-content" *ngIf="!loadingBreakdown">
+      <mat-tab-group>
+        <!-- Phase Breakdown Tab -->
+        <mat-tab label="Phase Breakdown">
+          <div class="breakdown-content" *ngIf="opBreakdown?.breakdown?.phases">
+            <div class="phase-list">
+              <div class="phase-item" *ngFor="let phase of opBreakdown!.breakdown.phases">
+                <div class="phase-header">
+                  <span class="phase-name">{{ phase.phase }}</span>
+                  <span class="phase-percent">{{ formatNumber(phase.percent, 1) }}%</span>
+                </div>
+                <mat-progress-bar mode="determinate" [value]="phase.percent"></mat-progress-bar>
+                <div class="phase-stats">
+                  <span>Total: {{ formatNumber(phase.totalMs) }} ms</span>
+                  <span>Avg: {{ formatNumber(phase.avgUs) }} us</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="breakdown-stats" *ngIf="opBreakdown?.breakdown">
+              <h4>Statistics</h4>
+              <div class="stats-grid">
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.helperPercent !== undefined">
+                  <span class="stat-label">Helper Usage</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.helperPercent, 1) }}%</span>
+                </div>
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.minUs !== undefined">
+                  <span class="stat-label">Min</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.minUs) }} us</span>
+                </div>
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.maxUs !== undefined">
+                  <span class="stat-label">Max</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.maxUs) }} us</span>
+                </div>
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.p50Us !== undefined">
+                  <span class="stat-label">p50</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.p50Us) }} us</span>
+                </div>
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.p90Us !== undefined">
+                  <span class="stat-label">p90</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.p90Us) }} us</span>
+                </div>
+                <div class="stat-item" *ngIf="opBreakdown!.breakdown.p99Us !== undefined">
+                  <span class="stat-label">p99</span>
+                  <span class="stat-value">{{ formatNumber(opBreakdown!.breakdown.p99Us) }} us</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="no-data" *ngIf="!opBreakdown?.breakdown?.phases">
+            <mat-icon>info</mat-icon>
+            <span>No phase breakdown available. Enable detailed mode and run operations.</span>
+          </div>
+        </mat-tab>
+
+        <!-- Histogram Tab -->
+        <mat-tab label="Timing Histogram">
+          <div class="histogram-content" *ngIf="opHistogram?.histogram?.buckets?.length">
+            <div class="histogram-bars">
+              <div class="histogram-row" *ngFor="let bucket of opHistogram!.histogram.buckets">
+                <span class="bucket-range">{{ bucket.rangeStart }} - {{ bucket.rangeEnd }} us</span>
+                <div class="bar-container">
+                  <div class="bar" [style.width]="getHistogramBarWidth(bucket)"></div>
+                </div>
+                <span class="bucket-count">{{ bucket.count }} ({{ formatNumber(bucket.percent, 1) }}%)</span>
+              </div>
+            </div>
+
+            <div class="histogram-percentiles" *ngIf="opHistogram?.histogram">
+              <h4>Percentiles</h4>
+              <div class="percentile-row">
+                <span class="percentile-label">p50:</span>
+                <span class="percentile-value">{{ formatNumber(opHistogram!.histogram.p50Us || 0) }} us</span>
+              </div>
+              <div class="percentile-row">
+                <span class="percentile-label">p90:</span>
+                <span class="percentile-value">{{ formatNumber(opHistogram!.histogram.p90Us || 0) }} us</span>
+              </div>
+              <div class="percentile-row">
+                <span class="percentile-label">p99:</span>
+                <span class="percentile-value">{{ formatNumber(opHistogram!.histogram.p99Us || 0) }} us</span>
+              </div>
+            </div>
+          </div>
+          <div class="no-data" *ngIf="!opHistogram?.histogram?.buckets?.length">
+            <mat-icon>info</mat-icon>
+            <span>No histogram data available for this operation.</span>
+          </div>
+        </mat-tab>
+
+        <!-- Raw Output Tab -->
+        <mat-tab label="Raw Output">
+          <div class="raw-output">
+            <pre *ngIf="opBreakdown?.rawOutput">{{ opBreakdown!.rawOutput }}</pre>
+            <pre *ngIf="opHistogram?.rawOutput">{{ opHistogram!.rawOutput }}</pre>
+          </div>
+        </mat-tab>
+      </mat-tab-group>
+    </div>
+
+    <div class="loading-breakdown" *ngIf="loadingBreakdown">
+      <mat-spinner diameter="30"></mat-spinner>
+      <span>Loading details...</span>
+    </div>
+  </mat-expansion-panel>
+
+  <!-- Empty state -->
+  <div class="empty-state" *ngIf="!loading && !error && hotspots.length === 0">
+    <mat-icon>speed</mat-icon>
+    <h3>No Timing Data</h3>
+    <p>Enable profiling, run some operations (like generating embeddings), then click "Flush Stats" to see timing data.</p>
+    <ol class="instructions">
+      <li>Toggle "Detailed Mode" for phase-level timing (optional)</li>
+      <li>Toggle "Trace Mode" for Chrome trace export (optional)</li>
+      <li>Click "Enable Profiling"</li>
+      <li>Generate an embedding or run other ND4J operations</li>
+      <li>Click "Flush Stats" to see the results</li>
+    </ol>
+  </div>
+</div>

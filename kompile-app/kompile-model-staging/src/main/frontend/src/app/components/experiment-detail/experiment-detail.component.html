@@ -1,0 +1,107 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="experiment-detail" *ngIf="experiment">
+  <div class="header">
+    <button mat-icon-button (click)="goBack()"><mat-icon>arrow_back</mat-icon></button>
+    <div class="header-info">
+      <h2>{{ experiment.name }}</h2>
+      <p *ngIf="experiment.description">{{ experiment.description }}</p>
+      <div class="meta">
+        <span class="status-chip" [class]="getStatusColor(experiment.status)">{{ experiment.status }}</span>
+        <span>Suite: {{ experiment.suiteId | slice:0:8 }}...</span>
+        <span *ngIf="experiment.createdAt">Created {{ experiment.createdAt | date:'medium' }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions-bar">
+    <button mat-raised-button color="primary" (click)="showAddRun = !showAddRun">
+      <mat-icon>add</mat-icon> Add Run
+    </button>
+    <button mat-raised-button color="accent" (click)="openComparison()"
+            [disabled]="!experiment.runs || experiment.runs.length < 2">
+      <mat-icon>compare_arrows</mat-icon> Compare
+    </button>
+  </div>
+
+  <mat-card *ngIf="showAddRun" class="add-run-form">
+    <mat-card-header><mat-card-title>Add Model Run</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Model ID</mat-label>
+        <mat-select [(ngModel)]="newModelId">
+          <mat-option *ngFor="let id of getModelIds()" [value]="id">{{ id }}</mat-option>
+        </mat-select>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Variant (optional)</mat-label>
+        <input matInput [(ngModel)]="newModelVariant" placeholder="e.g., base, lora-v2, quantized">
+      </mat-form-field>
+      <div class="form-actions">
+        <button mat-button (click)="showAddRun = false">Cancel</button>
+        <button mat-raised-button color="primary" (click)="addRun()">Add Run</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <h3>Runs ({{ experiment.runs?.length || 0 }})</h3>
+
+  <div *ngIf="!experiment.runs || experiment.runs.length === 0" class="empty-state">
+    <p>No runs yet. Add a model run to start evaluating.</p>
+  </div>
+
+  <table mat-table [dataSource]="experiment.runs || []" *ngIf="experiment.runs && experiment.runs.length > 0" class="runs-table">
+    <ng-container matColumnDef="modelId">
+      <th mat-header-cell *matHeaderCellDef>Model</th>
+      <td mat-cell *matCellDef="let run">{{ run.modelId }}</td>
+    </ng-container>
+    <ng-container matColumnDef="modelVariant">
+      <th mat-header-cell *matHeaderCellDef>Variant</th>
+      <td mat-cell *matCellDef="let run">{{ run.modelVariant || '-' }}</td>
+    </ng-container>
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef>Status</th>
+      <td mat-cell *matCellDef="let run">
+        <span class="status-chip" [class]="getStatusColor(run.status)">{{ run.status }}</span>
+      </td>
+    </ng-container>
+    <ng-container matColumnDef="passRate">
+      <th mat-header-cell *matHeaderCellDef>Pass Rate</th>
+      <td mat-cell *matCellDef="let run">{{ formatPercent(run.passRate) }}</td>
+    </ng-container>
+    <ng-container matColumnDef="averageScore">
+      <th mat-header-cell *matHeaderCellDef>Avg Score</th>
+      <td mat-cell *matCellDef="let run">{{ formatScore(run.averageScore) }}</td>
+    </ng-container>
+    <ng-container matColumnDef="passedCount">
+      <th mat-header-cell *matHeaderCellDef>Passed</th>
+      <td mat-cell *matCellDef="let run">{{ run.passedCount ?? '-' }}</td>
+    </ng-container>
+    <ng-container matColumnDef="failedCount">
+      <th mat-header-cell *matHeaderCellDef>Failed</th>
+      <td mat-cell *matCellDef="let run">{{ run.failedCount ?? '-' }}</td>
+    </ng-container>
+    <ng-container matColumnDef="executionTimeMs">
+      <th mat-header-cell *matHeaderCellDef>Duration</th>
+      <td mat-cell *matCellDef="let run">{{ formatDuration(run.executionTimeMs) }}</td>
+    </ng-container>
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>Actions</th>
+      <td mat-cell *matCellDef="let run">
+        <button mat-icon-button color="primary" (click)="executeRun(run)"
+                [disabled]="run.status !== 'PENDING'" matTooltip="Execute">
+          <mat-icon>play_arrow</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+  </table>
+</div>
+
+<div *ngIf="loading" class="loading-spinner">
+  <mat-spinner diameter="40"></mat-spinner>
+</div>

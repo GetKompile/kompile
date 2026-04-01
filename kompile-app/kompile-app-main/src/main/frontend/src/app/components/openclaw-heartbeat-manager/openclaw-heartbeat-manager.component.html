@@ -1,0 +1,114 @@
+<div class="heartbeat-manager">
+  <div class="header-row">
+    <h3>Scheduled Heartbeats</h3>
+    <button mat-raised-button color="primary" (click)="isCreating = !isCreating">
+      <mat-icon>{{ isCreating ? 'close' : 'add' }}</mat-icon>
+      {{ isCreating ? 'Cancel' : 'New Heartbeat' }}
+    </button>
+  </div>
+
+  <mat-card *ngIf="isCreating" class="create-card">
+    <mat-card-header>
+      <mat-card-title>Create Heartbeat</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <form [formGroup]="heartbeatForm" class="heartbeat-form">
+        <div class="form-row">
+          <mat-form-field appearance="outline" class="half-width">
+            <mat-label>ID</mat-label>
+            <input matInput formControlName="id">
+            <button mat-icon-button matSuffix (click)="generateId()" matTooltip="Generate ID">
+              <mat-icon>autorenew</mat-icon>
+            </button>
+          </mat-form-field>
+          
+          <mat-form-field appearance="outline" class="half-width">
+            <mat-label>Agent</mat-label>
+            <mat-select formControlName="agentId">
+              <mat-option *ngFor="let agent of agents" [value]="agent.name">{{ agent.name }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Cron Expression</mat-label>
+          <input matInput formControlName="cron" placeholder="0 0 8 * * ?">
+        </mat-form-field>
+        
+        <div class="presets">
+          <span class="presets-label">Presets:</span>
+          <button *ngFor="let preset of commonCronPresets" mat-stroked-button (click)="usePreset(preset)" class="preset-btn">
+            {{ preset.label }}
+          </button>
+        </div>
+
+        <mat-form-field appearance="outline" class="half-width">
+          <mat-label>Session Key</mat-label>
+          <input matInput formControlName="sessionKey" placeholder="cron:morning">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Message</mat-label>
+          <textarea matInput formControlName="message" rows="3" placeholder="Good morning! Give me a briefing."></textarea>
+        </mat-form-field>
+
+        <div class="form-actions">
+          <button mat-raised-button color="primary" type="button" (click)="createHeartbeat()" [disabled]="heartbeatForm.invalid">
+            <mat-icon>schedule</mat-icon>
+            Create Heartbeat
+          </button>
+        </div>
+      </form>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-card class="list-card">
+    <mat-card-content>
+      <table mat-table [dataSource]="heartbeats" class="heartbeat-table">
+        <ng-container matColumnDef="id">
+          <th mat-header-cell *matHeaderCellDef>ID</th>
+          <td mat-cell *matCellDef="let hb">{{ hb.id }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="cron">
+          <th mat-header-cell *matHeaderCellDef>Cron</th>
+          <td mat-cell *matCellDef="let hb">
+            <code>{{ hb.cron }}</code>
+          </td>
+        </ng-container>
+
+        <ng-container matColumnDef="agentId">
+          <th mat-header-cell *matHeaderCellDef>Agent</th>
+          <td mat-cell *matCellDef="let hb">{{ hb.agentId }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="sessionKey">
+          <th mat-header-cell *matHeaderCellDef>Session</th>
+          <td mat-cell *matCellDef="let hb">{{ hb.sessionKey }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="nextFireTime">
+          <th mat-header-cell *matHeaderCellDef>Next Fire</th>
+          <td mat-cell *matCellDef="let hb">{{ hb.nextFireTime | date:'medium' }}</td>
+        </ng-container>
+
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef></th>
+          <td mat-cell *matCellDef="let hb">
+            <button mat-icon-button color="warn" (click)="cancelHeartbeat(hb.id)" matTooltip="Cancel">
+              <mat-icon>cancel</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+
+        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+      </table>
+
+      <div *ngIf="heartbeats.length === 0" class="empty-state">
+        <mat-icon>schedule</mat-icon>
+        <p>No heartbeats scheduled</p>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

@@ -1,0 +1,515 @@
+<!--
+   Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="vlm-models-container">
+  <!-- Header -->
+  <div class="vlm-header">
+    <div class="header-title">
+      <mat-icon>visibility</mat-icon>
+      <h2>VLM Model Management</h2>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="refreshData()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="isLoading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading VLM models...</span>
+  </div>
+
+  <div *ngIf="!isLoading" class="vlm-content">
+    <!-- Summary Card -->
+    <mat-card class="summary-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>analytics</mat-icon>
+        <mat-card-title>VLM Status</mat-card-title>
+        <mat-card-subtitle>Vision-Language Model Cache</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="summary-stats">
+          <div class="stat">
+            <span class="stat-value">{{ getCachedModelCount() }}</span>
+            <span class="stat-label">Cached</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value">{{ getTotalModelCount() }}</span>
+            <span class="stat-label">Available</span>
+          </div>
+          <div class="stat" *ngIf="serviceStatus?.cacheStats?.cacheDirectory">
+            <mat-icon class="stat-icon">folder</mat-icon>
+            <span class="stat-label cache-path">{{ serviceStatus?.cacheStats?.cacheDirectory }}</span>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Configuration Presets -->
+    <mat-card class="presets-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>tune</mat-icon>
+        <mat-card-title>Configuration Presets</mat-card-title>
+        <mat-card-subtitle>Quick setup for common use cases</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="presets-grid">
+          <div *ngFor="let preset of presets" class="preset-item"
+               [class.selected]="selectedPresetId === preset.id">
+            <div class="preset-header">
+              <mat-icon>{{ getPresetIcon(preset.id) }}</mat-icon>
+              <span class="preset-name">{{ preset.name }}</span>
+            </div>
+            <p class="preset-description">{{ preset.description }}</p>
+            <div class="preset-extractions">
+              <mat-chip-set>
+                <mat-chip *ngFor="let extraction of preset.enabledExtractions" class="extraction-chip">
+                  <mat-icon matChipAvatar>{{ getExtractionTypeIcon(extraction) }}</mat-icon>
+                  {{ extraction }}
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+            <div class="preset-actions">
+              <button mat-stroked-button color="primary"
+                      (click)="ensurePresetModels(preset.id)"
+                      [disabled]="selectedPresetId !== null">
+                <mat-icon>download</mat-icon>
+                Ensure Models Ready
+                <mat-spinner *ngIf="selectedPresetId === preset.id" diameter="16"></mat-spinner>
+              </button>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Model Sets -->
+    <mat-card class="model-sets-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>model_training</mat-icon>
+        <mat-card-title>VLM Model Sets</mat-card-title>
+        <mat-card-subtitle>Available model architectures</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-accordion>
+          <mat-expansion-panel *ngFor="let modelSet of modelSets"
+                               [expanded]="isSetExpanded(modelSet.setId)"
+                               (opened)="toggleSetExpansion(modelSet.setId)"
+                               (closed)="expandedSetId = null">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon class="set-icon">{{ getModelSetIcon(modelSet.setId) }}</mat-icon>
+                <span class="set-name">{{ modelSet.displayName }}</span>
+                <mat-chip *ngIf="isModelSetCached(modelSet.setId)" class="cached-chip">
+                  <mat-icon>check_circle</mat-icon>
+                  Cached
+                </mat-chip>
+              </mat-panel-title>
+              <mat-panel-description>
+                {{ modelSet.architecture }} - {{ formatComponentCount(modelSet.components?.length || 0) }}
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="model-set-details">
+              <p class="model-description">{{ modelSet.description }}</p>
+
+              <div class="model-specs">
+                <div class="spec" *ngIf="modelSet.inputSize">
+                  <span class="spec-label">Input Size:</span>
+                  <span class="spec-value">{{ modelSet.inputSize }}</span>
+                </div>
+                <div class="spec" *ngIf="modelSet.hiddenSize">
+                  <span class="spec-label">Hidden Size:</span>
+                  <span class="spec-value">{{ modelSet.hiddenSize }}</span>
+                </div>
+              </div>
+
+              <!-- Components List -->
+              <h4>Components</h4>
+              <div class="components-list">
+                <div *ngFor="let component of modelSet.components" class="component-item">
+                  <mat-icon>insert_drive_file</mat-icon>
+                  <div class="component-info">
+                    <span class="component-name">{{ component.fileName }}</span>
+                    <span class="component-key">{{ component.componentKey }}</span>
+                    <span *ngIf="component.pipelineStage" class="component-stage">
+                      Stage: {{ component.pipelineStage }}
+                    </span>
+                  </div>
+                  <div class="component-shapes" *ngIf="component.inputShape || component.outputShape">
+                    <span *ngIf="component.inputShape" class="shape-info">
+                      Input: {{ component.inputShape }}
+                    </span>
+                    <span *ngIf="component.outputShape" class="shape-info">
+                      Output: {{ component.outputShape }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Actions -->
+              <div class="model-set-actions">
+                <button *ngIf="!isModelSetCached(modelSet.setId)"
+                        mat-raised-button color="primary"
+                        (click)="downloadModelSet(modelSet.setId)"
+                        [disabled]="isDownloading(modelSet.setId)">
+                  <mat-icon>cloud_download</mat-icon>
+                  Download
+                  <mat-spinner *ngIf="isDownloading(modelSet.setId)" diameter="16"></mat-spinner>
+                </button>
+
+                <button *ngIf="isModelSetCached(modelSet.setId)"
+                        mat-stroked-button color="warn"
+                        (click)="deleteModelSet(modelSet.setId)">
+                  <mat-icon>delete</mat-icon>
+                  Delete Cache
+                </button>
+
+                <!-- Download Progress -->
+                <div *ngIf="isDownloading(modelSet.setId) && downloadProgress" class="download-progress">
+                  <mat-progress-bar mode="determinate" [value]="getDownloadProgress()"></mat-progress-bar>
+                  <span class="progress-text">
+                    {{ downloadProgress.currentComponent }} - {{ getDownloadProgress() | number:'1.0-0' }}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          </mat-expansion-panel>
+        </mat-accordion>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Extraction Types -->
+    <mat-card class="extraction-types-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>category</mat-icon>
+        <mat-card-title>Extraction Types</mat-card-title>
+        <mat-card-subtitle>Available content extraction methods</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="extraction-types-grid">
+          <div *ngFor="let type of extractionTypes" class="extraction-type-item">
+            <mat-icon class="type-icon">{{ getExtractionTypeIcon(type.id) }}</mat-icon>
+            <div class="type-info">
+              <span class="type-id">{{ type.id }}</span>
+              <span class="type-description">{{ type.description }}</span>
+              <span *ngIf="type.defaultModelSetName" class="type-model">
+                Default: {{ type.defaultModelSetName }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Pipeline Stages (Collapsible) -->
+    <mat-card class="pipeline-card">
+      <mat-card-header (click)="togglePipelineStages()" class="clickable-header">
+        <mat-icon mat-card-avatar>account_tree</mat-icon>
+        <mat-card-title>Pipeline Stages</mat-card-title>
+        <mat-card-subtitle>VLM processing pipeline transparency</mat-card-subtitle>
+        <mat-icon class="expand-icon">{{ showPipelineStages ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </mat-card-header>
+      <mat-card-content *ngIf="showPipelineStages">
+        <div class="pipeline-stages">
+          <div *ngFor="let stage of pipelineStages; let i = index" class="pipeline-stage">
+            <div class="stage-number">{{ i + 1 }}</div>
+            <div class="stage-content">
+              <div class="stage-header">
+                <mat-icon>{{ getPipelineStageIcon(stage) }}</mat-icon>
+                <span class="stage-name">{{ stage.displayName }}</span>
+                <mat-chip *ngIf="stage.requiresModel" class="model-chip">
+                  <mat-icon>memory</mat-icon>
+                  {{ stage.modelComponentKey }}
+                </mat-chip>
+                <mat-chip *ngIf="!stage.requiresModel" class="algorithmic-chip">
+                  <mat-icon>functions</mat-icon>
+                  Algorithmic
+                </mat-chip>
+              </div>
+              <div class="stage-io">
+                <div class="io-item">
+                  <span class="io-label">Input:</span>
+                  <code class="io-value">{{ stage.inputDescription }}</code>
+                </div>
+                <mat-icon class="arrow-icon">arrow_forward</mat-icon>
+                <div class="io-item">
+                  <span class="io-label">Output:</span>
+                  <code class="io-value">{{ stage.outputDescription }}</code>
+                </div>
+              </div>
+            </div>
+            <div class="stage-connector" *ngIf="i < pipelineStages.length - 1">
+              <mat-icon>arrow_downward</mat-icon>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Pipeline Output Cache Browser (Collapsible) -->
+    <mat-card class="cache-browser-card">
+      <mat-card-header (click)="toggleCacheBrowser()" class="clickable-header">
+        <mat-icon mat-card-avatar>cached</mat-icon>
+        <mat-card-title>Pipeline Output Cache</mat-card-title>
+        <mat-card-subtitle>Browse and manage cached pipeline outputs</mat-card-subtitle>
+        <mat-icon class="expand-icon">{{ showCacheBrowser ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </mat-card-header>
+
+      <mat-card-content *ngIf="showCacheBrowser">
+        <!-- Cache Stats Summary -->
+        <div class="cache-stats-bar" *ngIf="cacheStats">
+          <div class="cache-stat" *ngIf="cacheStats.available">
+            <span class="cache-stat-value">{{ cacheStats.totalEntries }}</span>
+            <span class="cache-stat-label">Total</span>
+          </div>
+          <div class="cache-stat" *ngIf="cacheStats.available">
+            <span class="cache-stat-value">{{ cacheStats.finalOutputEntries }}</span>
+            <span class="cache-stat-label">Final Outputs</span>
+          </div>
+          <div class="cache-stat" *ngIf="cacheStats.available">
+            <span class="cache-stat-value">{{ cacheStats.stageCheckpointEntries }}</span>
+            <span class="cache-stat-label">Checkpoints</span>
+          </div>
+          <div class="cache-stat" *ngIf="cacheStats.available">
+            <span class="cache-stat-value">{{ cacheStats.totalSizeMB | number:'1.1-1' }} MB</span>
+            <span class="cache-stat-label">Size</span>
+          </div>
+          <div class="cache-stat" *ngIf="cacheStats.available">
+            <span class="cache-stat-value">{{ (cacheStats.hitRate * 100) | number:'1.0-1' }}%</span>
+            <span class="cache-stat-label">Hit Rate</span>
+          </div>
+          <div class="cache-stat-unavailable" *ngIf="!cacheStats.available">
+            <mat-icon>info</mat-icon>
+            <span>{{ cacheStats.message || 'Cache not available' }}</span>
+          </div>
+        </div>
+
+        <!-- Cache Actions -->
+        <div class="cache-actions" *ngIf="cacheStats?.available">
+          <div class="cache-filter-group">
+            <button mat-stroked-button
+                    [class.active-filter]="cacheTypeFilter === null"
+                    (click)="onCacheTypeFilterChange(null)">
+              All
+            </button>
+            <button mat-stroked-button
+                    [class.active-filter]="cacheTypeFilter === 'final'"
+                    (click)="onCacheTypeFilterChange('final')">
+              <mat-icon>check_circle</mat-icon> Final Outputs
+            </button>
+            <button mat-stroked-button
+                    [class.active-filter]="cacheTypeFilter === 'checkpoint'"
+                    (click)="onCacheTypeFilterChange('checkpoint')">
+              <mat-icon>pending</mat-icon> Checkpoints
+            </button>
+          </div>
+          <div class="cache-management-actions">
+            <button mat-stroked-button (click)="loadCacheData()" matTooltip="Refresh cache">
+              <mat-icon>refresh</mat-icon>
+            </button>
+            <button mat-stroked-button color="accent" (click)="evictExpiredCache()" matTooltip="Evict expired entries">
+              <mat-icon>auto_delete</mat-icon> Evict Expired
+            </button>
+            <button mat-stroked-button color="warn" (click)="clearAllCache()" matTooltip="Clear all cache entries">
+              <mat-icon>delete_sweep</mat-icon> Clear All
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading -->
+        <div *ngIf="cacheLoading" class="cache-loading">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading cache entries...</span>
+        </div>
+
+        <!-- Cache Entries Table -->
+        <div *ngIf="!cacheLoading && cacheStats?.available && cacheEntries.length > 0" class="cache-entries-table">
+          <table mat-table [dataSource]="cacheEntries" class="cache-table">
+            <!-- Type Column -->
+            <ng-container matColumnDef="type">
+              <th mat-header-cell *matHeaderCellDef>Type</th>
+              <td mat-cell *matCellDef="let entry">
+                <div class="cache-type-badge" [class.final-output]="entry.entryType === 'FINAL_OUTPUT'"
+                     [class.checkpoint]="entry.entryType === 'STAGE_CHECKPOINT'">
+                  <mat-icon>{{ getCacheEntryTypeIcon(entry.entryType) }}</mat-icon>
+                  <span>{{ getCacheEntryTypeLabel(entry.entryType) }}</span>
+                </div>
+              </td>
+            </ng-container>
+
+            <!-- Pipeline Column -->
+            <ng-container matColumnDef="pipeline">
+              <th mat-header-cell *matHeaderCellDef>Pipeline</th>
+              <td mat-cell *matCellDef="let entry">
+                <span class="cache-pipeline-name">{{ entry.pipelineDisplayName || entry.pipelineId || 'N/A' }}</span>
+                <span *ngIf="entry.stageId" class="cache-stage-id">Stage: {{ entry.stageId }}</span>
+              </td>
+            </ng-container>
+
+            <!-- Content Hash Column -->
+            <ng-container matColumnDef="contentHash">
+              <th mat-header-cell *matHeaderCellDef>Content Hash</th>
+              <td mat-cell *matCellDef="let entry">
+                <code class="cache-hash">{{ entry.contentHashShort }}</code>
+              </td>
+            </ng-container>
+
+            <!-- Model Column -->
+            <ng-container matColumnDef="model">
+              <th mat-header-cell *matHeaderCellDef>Model Set</th>
+              <td mat-cell *matCellDef="let entry">
+                <span *ngIf="entry.modelSetId" class="cache-model-id">{{ entry.modelSetId }}</span>
+                <span *ngIf="!entry.modelSetId" class="cache-na">-</span>
+              </td>
+            </ng-container>
+
+            <!-- Size Column -->
+            <ng-container matColumnDef="size">
+              <th mat-header-cell *matHeaderCellDef>Size</th>
+              <td mat-cell *matCellDef="let entry">
+                {{ entry.sizeMB | number:'1.2-2' }} MB
+              </td>
+            </ng-container>
+
+            <!-- Hits Column -->
+            <ng-container matColumnDef="hits">
+              <th mat-header-cell *matHeaderCellDef>Hits</th>
+              <td mat-cell *matCellDef="let entry">
+                <span class="cache-hit-count">{{ entry.hitCount }}</span>
+              </td>
+            </ng-container>
+
+            <!-- Created Column -->
+            <ng-container matColumnDef="created">
+              <th mat-header-cell *matHeaderCellDef>Created</th>
+              <td mat-cell *matCellDef="let entry">
+                {{ formatCacheDate(entry.createdAt) }}
+              </td>
+            </ng-container>
+
+            <!-- Actions Column -->
+            <ng-container matColumnDef="actions">
+              <th mat-header-cell *matHeaderCellDef></th>
+              <td mat-cell *matCellDef="let entry">
+                <button mat-icon-button (click)="viewCacheEntry(entry)" matTooltip="View details">
+                  <mat-icon>visibility</mat-icon>
+                </button>
+                <button mat-icon-button color="warn" (click)="deleteCacheEntry(entry.contentHash)" matTooltip="Delete">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="['type', 'pipeline', 'contentHash', 'model', 'size', 'hits', 'created', 'actions']"></tr>
+            <tr mat-row *matRowDef="let row; columns: ['type', 'pipeline', 'contentHash', 'model', 'size', 'hits', 'created', 'actions'];"
+                class="cache-row"></tr>
+          </table>
+
+          <mat-paginator #cachePaginator
+                         [length]="cacheTotalEntries"
+                         [pageSize]="cachePageSize"
+                         [pageIndex]="cachePageIndex"
+                         [pageSizeOptions]="[10, 20, 50, 100]"
+                         (page)="onCachePageChange($event)"
+                         showFirstLastButtons>
+          </mat-paginator>
+        </div>
+
+        <!-- Empty State -->
+        <div *ngIf="!cacheLoading && cacheStats?.available && cacheEntries.length === 0" class="cache-empty">
+          <mat-icon>inbox</mat-icon>
+          <span>No cache entries found</span>
+        </div>
+
+        <!-- Cache Entry Detail Panel -->
+        <div *ngIf="selectedCacheEntry" class="cache-detail-panel">
+          <div class="cache-detail-header">
+            <h4>Cache Entry Detail</h4>
+            <button mat-icon-button (click)="closeCacheEntryDetail()">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+          <div class="cache-detail-grid">
+            <div class="cache-detail-item">
+              <span class="detail-label">Type</span>
+              <span class="detail-value">{{ getCacheEntryTypeLabel(selectedCacheEntry.entryType) }}</span>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Pipeline</span>
+              <span class="detail-value">{{ selectedCacheEntry.pipelineDisplayName || selectedCacheEntry.pipelineId || 'N/A' }}</span>
+            </div>
+            <div class="cache-detail-item" *ngIf="selectedCacheEntry.stageId">
+              <span class="detail-label">Stage</span>
+              <span class="detail-value">{{ selectedCacheEntry.stageId }}</span>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Content Hash</span>
+              <code class="detail-value mono">{{ selectedCacheEntry.contentHash }}</code>
+            </div>
+            <div class="cache-detail-item" *ngIf="selectedCacheEntry.modelSetId">
+              <span class="detail-label">Model Set</span>
+              <span class="detail-value">{{ selectedCacheEntry.modelSetId }}</span>
+            </div>
+            <div class="cache-detail-item" *ngIf="selectedCacheEntry.outputClassName">
+              <span class="detail-label">Output Type</span>
+              <code class="detail-value mono">{{ selectedCacheEntry.outputClassName }}</code>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Size</span>
+              <span class="detail-value">{{ selectedCacheEntry.sizeMB | number:'1.2-2' }} MB ({{ selectedCacheEntry.sizeBytes | number }} bytes)</span>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Hit Count</span>
+              <span class="detail-value">{{ selectedCacheEntry.hitCount }}</span>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Created</span>
+              <span class="detail-value">{{ formatCacheDate(selectedCacheEntry.createdAt) }}</span>
+            </div>
+            <div class="cache-detail-item">
+              <span class="detail-label">Last Accessed</span>
+              <span class="detail-value">{{ formatCacheDate(selectedCacheEntry.lastAccessedAt) }}</span>
+            </div>
+          </div>
+
+          <!-- Metadata -->
+          <div *ngIf="selectedCacheEntry.metadata && (selectedCacheEntry.metadata | keyvalue).length > 0" class="cache-detail-metadata">
+            <h5>Metadata</h5>
+            <div *ngFor="let kv of selectedCacheEntry.metadata | keyvalue" class="metadata-item">
+              <span class="metadata-key">{{ kv.key }}</span>
+              <span class="metadata-value">{{ kv.value }}</span>
+            </div>
+          </div>
+
+          <!-- Output Preview -->
+          <div *ngIf="selectedCacheOutputPreview" class="cache-output-preview">
+            <h5>Output Preview</h5>
+            <pre class="output-preview-content">{{ selectedCacheOutputPreview }}</pre>
+          </div>
+
+          <div class="cache-detail-actions">
+            <button mat-stroked-button color="warn" (click)="deleteCacheEntry(selectedCacheEntry.contentHash)">
+              <mat-icon>delete</mat-icon> Delete Entry
+            </button>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

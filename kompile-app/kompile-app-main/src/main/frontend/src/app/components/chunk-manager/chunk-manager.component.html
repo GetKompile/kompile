@@ -1,0 +1,458 @@
+<div class="chunk-manager-container">
+  <!-- Header -->
+  <div class="header">
+    <h2>Chunk Manager</h2>
+    <!-- Index Stats -->
+    <div class="index-stats" *ngIf="indexStats">
+      <span class="stat-item" matTooltip="Keyword Index Documents">
+        <mat-icon>text_fields</mat-icon>
+        {{ indexStats.keywordIndexCount | number }}
+      </span>
+      <span class="stat-item" matTooltip="Vector Store Embeddings">
+        <mat-icon>hub</mat-icon>
+        {{ indexStats.vectorStoreCount | number }}
+      </span>
+    </div>
+    <div class="header-actions">
+      <button mat-stroked-button (click)="refresh()" [disabled]="isLoading">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+      <button mat-stroked-button color="primary" (click)="openDedupDialog()">
+        <mat-icon>content_copy</mat-icon>
+        Deduplicate
+      </button>
+      <button mat-stroked-button (click)="exportAll()" [disabled]="isExporting">
+        <mat-icon>download</mat-icon>
+        Export All
+      </button>
+    </div>
+  </div>
+
+  <!-- Filters and Bulk Actions -->
+  <div class="toolbar">
+    <mat-form-field appearance="outline" class="source-filter">
+      <mat-label>Filter by Source</mat-label>
+      <mat-select [(ngModel)]="selectedSourceId" [ngModelOptions]="{standalone: true}" (selectionChange)="onSourceFilterChange()">
+        <mat-option value="">All Sources</mat-option>
+        <mat-option *ngFor="let source of sources" [value]="source.sourceId">
+          {{ source.filename }} ({{ source.chunkCount }} chunks)
+        </mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <div class="bulk-actions" *ngIf="selection.hasValue()">
+      <span class="selection-count">{{ selection.selected.length }} selected</span>
+      <button mat-stroked-button color="warn" (click)="deleteSelected()">
+        <mat-icon>delete</mat-icon>
+        Delete Selected
+      </button>
+      <button mat-stroked-button (click)="exportSelected()" [disabled]="isExporting">
+        <mat-icon>download</mat-icon>
+        Export Selected
+      </button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="danger-zone">
+      <button mat-stroked-button color="warn" (click)="requestClearToken()" *ngIf="!clearToken">
+        <mat-icon>warning</mat-icon>
+        Clear All...
+      </button>
+      <button mat-raised-button color="warn" (click)="clearAll()" *ngIf="clearToken">
+        <mat-icon>delete_forever</mat-icon>
+        Confirm Clear All
+      </button>
+    </div>
+  </div>
+
+  <!-- Chunk Table -->
+  <div class="table-container">
+    <div *ngIf="isLoading" class="loading-overlay">
+      <mat-spinner diameter="40"></mat-spinner>
+      <span>Loading chunks...</span>
+    </div>
+
+    <table mat-table [dataSource]="dataSource" class="chunk-table">
+      <!-- Checkbox Column -->
+      <ng-container matColumnDef="select">
+        <th mat-header-cell *matHeaderCellDef>
+          <mat-checkbox
+            (change)="masterToggle()"
+            [checked]="selection.hasValue() && isAllSelected()"
+            [indeterminate]="selection.hasValue() && !isAllSelected()">
+          </mat-checkbox>
+        </th>
+        <td mat-cell *matCellDef="let row">
+          <mat-checkbox
+            (click)="$event.stopPropagation()"
+            (change)="selection.toggle(row)"
+            [checked]="selection.isSelected(row)">
+          </mat-checkbox>
+        </td>
+      </ng-container>
+
+      <!-- ID Column -->
+      <ng-container matColumnDef="id">
+        <th mat-header-cell *matHeaderCellDef>ID</th>
+        <td mat-cell *matCellDef="let chunk">
+          <span class="chunk-id" [title]="chunk.id">
+            {{ chunk.id.substring(0, 12) }}...
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Preview Column -->
+      <ng-container matColumnDef="preview">
+        <th mat-header-cell *matHeaderCellDef>Content Preview</th>
+        <td mat-cell *matCellDef="let chunk">
+          <span class="content-preview">{{ chunk.preview || '[No content]' }}</span>
+        </td>
+      </ng-container>
+
+      <!-- Source Column -->
+      <ng-container matColumnDef="source">
+        <th mat-header-cell *matHeaderCellDef>Source</th>
+        <td mat-cell *matCellDef="let chunk">
+          <span class="source-name" [title]="chunk.sourceId || ''">
+            {{ getSourceDisplay(chunk.sourceFilename || chunk.sourceId) }}
+          </span>
+        </td>
+      </ng-container>
+
+      <!-- Chunk Index Column -->
+      <ng-container matColumnDef="chunkIndex">
+        <th mat-header-cell *matHeaderCellDef>Chunk #</th>
+        <td mat-cell *matCellDef="let chunk">
+          {{ chunk.chunkIndex !== undefined ? chunk.chunkIndex + 1 : '-' }}
+        </td>
+      </ng-container>
+
+      <!-- Location Column -->
+      <ng-container matColumnDef="location">
+        <th mat-header-cell *matHeaderCellDef>Location</th>
+        <td mat-cell *matCellDef="let chunk">
+          <div class="location-badges">
+            <span class="location-badge keyword" *ngIf="chunk.inKeywordIndex" matTooltip="In Keyword Index">
+              <mat-icon>text_fields</mat-icon>
+            </span>
+            <span class="location-badge vector" *ngIf="chunk.inVectorStore" matTooltip="In Vector Store">
+              <mat-icon>hub</mat-icon>
+            </span>
+            <span class="location-badge missing" *ngIf="!chunk.inKeywordIndex && !chunk.inVectorStore" matTooltip="Not in any index">
+              <mat-icon>warning</mat-icon>
+            </span>
+          </div>
+        </td>
+      </ng-container>
+
+      <!-- Actions Column -->
+      <ng-container matColumnDef="actions">
+        <th mat-header-cell *matHeaderCellDef>Actions</th>
+        <td mat-cell *matCellDef="let chunk">
+          <button mat-icon-button (click)="viewChunk(chunk)" matTooltip="View Details">
+            <mat-icon>visibility</mat-icon>
+          </button>
+          <button mat-icon-button (click)="copyToClipboard(chunk.id)" matTooltip="Copy ID">
+            <mat-icon>content_copy</mat-icon>
+          </button>
+          <button mat-icon-button color="warn" (click)="deleteChunk(chunk)" matTooltip="Delete">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;"
+          [class.selected]="selection.isSelected(row)"
+          (click)="viewChunk(row)"></tr>
+    </table>
+
+    <div *ngIf="!isLoading && chunks.length === 0" class="no-data">
+      <mat-icon>inbox</mat-icon>
+      <p>No chunks found</p>
+    </div>
+
+    <mat-paginator
+      [length]="totalCount"
+      [pageSize]="pageSize"
+      [pageIndex]="pageIndex"
+      [pageSizeOptions]="pageSizeOptions"
+      (page)="onPageChange($event)"
+      showFirstLastButtons>
+    </mat-paginator>
+  </div>
+
+  <!-- Chunk Detail Panel -->
+  <div class="detail-panel" *ngIf="selectedChunk">
+    <div class="detail-header">
+      <h3>{{ isEditMode ? 'Edit Chunk' : 'Chunk Details' }}</h3>
+      <div class="detail-actions">
+        <ng-container *ngIf="!isEditMode">
+          <mat-button-toggle-group [(ngModel)]="showRenderedMarkdown" [ngModelOptions]="{standalone: true}" (change)="toggleMarkdownView()">
+            <mat-button-toggle [value]="false">Raw</mat-button-toggle>
+            <mat-button-toggle [value]="true">Rendered</mat-button-toggle>
+          </mat-button-toggle-group>
+          <button mat-icon-button (click)="enterEditMode()" matTooltip="Edit Chunk" color="primary">
+            <mat-icon>edit</mat-icon>
+          </button>
+          <button mat-icon-button (click)="copyToClipboard(selectedChunk.content)" matTooltip="Copy Content">
+            <mat-icon>content_copy</mat-icon>
+          </button>
+        </ng-container>
+        <ng-container *ngIf="isEditMode">
+          <button mat-stroked-button (click)="cancelEdit()" [disabled]="isSaving">
+            Cancel
+          </button>
+          <button mat-raised-button color="primary" (click)="saveChunk()" [disabled]="isSaving">
+            <mat-icon *ngIf="isSaving">
+              <mat-spinner diameter="18"></mat-spinner>
+            </mat-icon>
+            <mat-icon *ngIf="!isSaving">save</mat-icon>
+            Save
+          </button>
+        </ng-container>
+        <button mat-icon-button (click)="closeDetail()" matTooltip="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <!-- View Mode -->
+    <div class="detail-content" *ngIf="!isLoadingDetail && !isEditMode">
+      <div class="detail-meta">
+        <div class="meta-item">
+          <strong>ID:</strong>
+          <code>{{ selectedChunk.id }}</code>
+        </div>
+        <div class="meta-item" *ngIf="selectedChunk.sourceFilename">
+          <strong>Source:</strong>
+          {{ selectedChunk.sourceFilename }}
+        </div>
+        <div class="meta-item" *ngIf="selectedChunk.chunkIndex !== undefined">
+          <strong>Chunk:</strong>
+          {{ selectedChunk.chunkIndex + 1 }} of {{ selectedChunk.totalChunks || '?' }}
+        </div>
+        <div class="meta-item" *ngIf="selectedChunk.pageNumber">
+          <strong>Page:</strong>
+          {{ selectedChunk.pageNumber }}
+        </div>
+        <div class="meta-item">
+          <strong>Length:</strong>
+          {{ selectedChunk.contentLength }} characters
+        </div>
+        <div class="meta-item" *ngIf="selectedChunk.indexedAt">
+          <strong>Indexed:</strong>
+          {{ selectedChunk.indexedAt }}
+        </div>
+        <div class="meta-item location-meta">
+          <strong>Location:</strong>
+          <div class="location-badges">
+            <span class="location-badge keyword" *ngIf="selectedChunk.inKeywordIndex">
+              <mat-icon>text_fields</mat-icon> Keyword Index
+            </span>
+            <span class="location-badge vector" *ngIf="selectedChunk.inVectorStore">
+              <mat-icon>hub</mat-icon> Vector Store
+            </span>
+            <span class="location-badge missing" *ngIf="!selectedChunk.inKeywordIndex && !selectedChunk.inVectorStore">
+              <mat-icon>warning</mat-icon> Not indexed
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="content-section">
+        <h4>Content</h4>
+        <div class="chunk-content" *ngIf="!showRenderedMarkdown">
+          <pre>{{ selectedChunk.content }}</pre>
+        </div>
+        <div class="chunk-content rendered" *ngIf="showRenderedMarkdown" [innerHTML]="selectedChunk.content">
+        </div>
+      </div>
+
+      <mat-divider *ngIf="selectedChunk.metadata && (selectedChunk.metadata | keyvalue).length > 0"></mat-divider>
+
+      <div class="metadata-section" *ngIf="selectedChunk.metadata && (selectedChunk.metadata | keyvalue).length > 0">
+        <h4>Metadata</h4>
+        <div class="metadata-list">
+          <div class="metadata-item" *ngFor="let item of selectedChunk.metadata | keyvalue">
+            <strong>{{ item.key }}:</strong>
+            <span>{{ item.value }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Mode -->
+    <div class="detail-content edit-mode" *ngIf="!isLoadingDetail && isEditMode">
+      <div class="edit-section">
+        <h4>Content</h4>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Chunk Content</mat-label>
+          <textarea matInput [(ngModel)]="editContent" [ngModelOptions]="{standalone: true}" rows="10" placeholder="Enter chunk content..."></textarea>
+          <mat-hint>{{ editContent.length }} characters</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="edit-section">
+        <h4>Classification</h4>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Semantic Type</mat-label>
+          <mat-select [(ngModel)]="editSemanticType" [ngModelOptions]="{standalone: true}">
+            <mat-option *ngFor="let type of semanticTypes" [value]="type">
+              {{ getSemanticTypeLabel(type) }}
+            </mat-option>
+          </mat-select>
+          <mat-hint>Classify the type of content in this chunk</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="edit-section">
+        <h4>Source Information</h4>
+        <div class="edit-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Source Title</mat-label>
+            <input matInput [(ngModel)]="editSourceTitle" [ngModelOptions]="{standalone: true}" placeholder="Document title">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Author</mat-label>
+            <input matInput [(ngModel)]="editSourceAuthor" [ngModelOptions]="{standalone: true}" placeholder="Author name">
+          </mat-form-field>
+        </div>
+        <div class="edit-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Date</mat-label>
+            <input matInput [(ngModel)]="editSourceDate" [ngModelOptions]="{standalone: true}" placeholder="YYYY-MM-DD">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Source URL</mat-label>
+            <input matInput [(ngModel)]="editSourceUrl" [ngModelOptions]="{standalone: true}" placeholder="https://...">
+          </mat-form-field>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <div class="edit-section">
+        <h4>Entities</h4>
+        <div class="entity-list" *ngIf="editEntities.length > 0">
+          <div class="entity-chip" *ngFor="let entity of editEntities; let i = index">
+            <span class="entity-type">{{ entity.type }}</span>
+            <span class="entity-name">{{ entity.name }}</span>
+            <button mat-icon-button (click)="removeEntity(i)" matTooltip="Remove">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+        </div>
+        <div class="no-entities" *ngIf="editEntities.length === 0">
+          <mat-icon>label_off</mat-icon>
+          <span>No entities added</span>
+        </div>
+        <div class="add-entity">
+          <mat-form-field appearance="outline">
+            <mat-label>Entity Name</mat-label>
+            <input matInput [(ngModel)]="newEntityName" [ngModelOptions]="{standalone: true}" placeholder="Enter entity name"
+                   (keyup.enter)="addEntity()">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Type</mat-label>
+            <mat-select [(ngModel)]="newEntityType" [ngModelOptions]="{standalone: true}">
+              <mat-option *ngFor="let type of entityTypes" [value]="type">
+                {{ getEntityTypeLabel(type) }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <button mat-stroked-button (click)="addEntity()" [disabled]="!newEntityName.trim()">
+            <mat-icon>add</mat-icon>
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="loading-detail" *ngIf="isLoadingDetail">
+      <mat-spinner diameter="30"></mat-spinner>
+      <span>Loading details...</span>
+    </div>
+  </div>
+
+  <!-- Deduplication Dialog -->
+  <div class="dedup-dialog-overlay" *ngIf="showDedupDialog" (click)="closeDedupDialog()">
+    <div class="dedup-dialog" (click)="$event.stopPropagation()">
+      <div class="dialog-header">
+        <h3>Deduplicate Chunks</h3>
+        <button mat-icon-button (click)="closeDedupDialog()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+
+      <div class="dialog-content">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Deduplication Strategy</mat-label>
+          <mat-select [(ngModel)]="dedupStrategy" [ngModelOptions]="{standalone: true}">
+            <mat-option value="content_hash">
+              Content Hash (SHA-256) - Finds exact text duplicates
+            </mat-option>
+            <mat-option value="source_and_index">
+              Source + Index - Finds re-indexed files
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Keep Policy</mat-label>
+          <mat-select [(ngModel)]="dedupKeepPolicy" [ngModelOptions]="{standalone: true}">
+            <mat-option value="first">Keep First (oldest)</mat-option>
+            <mat-option value="latest">Keep Latest (newest)</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-checkbox [(ngModel)]="dedupDryRun" [ngModelOptions]="{standalone: true}">
+          Dry Run (preview only, don't delete)
+        </mat-checkbox>
+
+        <div class="analysis-results" *ngIf="duplicateAnalysis">
+          <mat-divider></mat-divider>
+          <h4>Analysis Results</h4>
+          <div class="result-stats">
+            <div class="stat">
+              <span class="stat-value">{{ duplicateAnalysis.totalDuplicateGroups }}</span>
+              <span class="stat-label">Duplicate Groups</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">{{ duplicateAnalysis.totalDuplicateChunks }}</span>
+              <span class="stat-label">Total Duplicates</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">{{ duplicateAnalysis.chunksToRemove }}</span>
+              <span class="stat-label">To Remove</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-stroked-button (click)="analyzeDuplicates()" [disabled]="isDeduplicating">
+          <mat-icon>search</mat-icon>
+          Analyze
+        </button>
+        <button mat-raised-button color="primary" (click)="runDeduplication()" [disabled]="isDeduplicating">
+          <mat-icon>{{ dedupDryRun ? 'preview' : 'delete_sweep' }}</mat-icon>
+          {{ dedupDryRun ? 'Preview' : 'Remove Duplicates' }}
+        </button>
+      </div>
+
+      <div class="dialog-loading" *ngIf="isDeduplicating">
+        <mat-spinner diameter="24"></mat-spinner>
+        <span>Processing...</span>
+      </div>
+    </div>
+  </div>
+</div>

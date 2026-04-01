@@ -29,6 +29,7 @@
   <modules>
     <!-- Base modules first -->
     <module>kompile-cli-plugin-api</module>
+    <module>kompile-cli-common</module>
     <module>tokenizers-rust</module>
 
     <!-- Model importers (dependencies) -->
@@ -43,6 +44,9 @@
     <module>anserini</module>
     <module>kompile-sdk-serving</module>
     <module>kompile-cli</module>
+    <module>kompile-app-cli</module>
+    <module>kompile-model-cli</module>
+    <module>kompile-agent-cli</module>
   </modules>
 
   <properties>
@@ -103,6 +107,7 @@
     <maven-clean-plugin.version>3.3.2</maven-clean-plugin.version>
     <maven-install-plugin.version>3.1.2</maven-install-plugin.version>
     <hibernate.version>6.4.4.Final</hibernate.version>
+    <jline.version>3.26.1</jline.version>
 
     <!-- Platform-specific native resource configurations -->
     <javacpp.platform.extension></javacpp.platform.extension>
@@ -126,9 +131,24 @@
         <version>${project.version}</version>
       </dependency>
       <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-cli-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-cli-plugin-api</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
         <groupId>org.hibernate.orm</groupId>
         <artifactId>hibernate-core</artifactId>
         <version>${hibernate.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jline</groupId>
+        <artifactId>jline</artifactId>
+        <version>${jline.version}</version>
       </dependency>
 
       <dependency>

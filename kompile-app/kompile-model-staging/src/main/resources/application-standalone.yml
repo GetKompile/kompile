@@ -1,0 +1,6 @@
+# Profile for running model-staging as a standalone application
+# Activate with: --spring.profiles.active=standalone
+kompile:
+  staging:
+    ui:
+      enabled: true

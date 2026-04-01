@@ -1,0 +1,73 @@
+<div class="evaluation-viewer">
+  <h2>Model Evaluation</h2>
+
+  <!-- Configuration -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Evaluation Setup</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="config-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Model</mat-label>
+          <mat-select [(ngModel)]="selectedModelId">
+            <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Dataset</mat-label>
+          <mat-select [(ngModel)]="selectedDatasetId">
+            <mat-option *ngFor="let d of datasets" [value]="d.id">{{ d.name }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Batch Size</mat-label>
+          <input matInput type="number" [(ngModel)]="batchSize">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Max Samples (-1 = all)</mat-label>
+          <input matInput type="number" [(ngModel)]="maxSamples">
+        </mat-form-field>
+      </div>
+
+      <h3>Metrics</h3>
+      <div class="metrics-selection">
+        <mat-checkbox *ngFor="let m of availableMetrics"
+                      [checked]="selectedMetrics.includes(m.id)"
+                      (change)="toggleMetric(m.id)">
+          {{ m.name }}
+        </mat-checkbox>
+      </div>
+
+      <div class="actions">
+        <button mat-raised-button color="primary" (click)="runEvaluation()"
+                [disabled]="running || !selectedModelId || !selectedDatasetId || selectedMetrics.length === 0">
+          <mat-icon>assessment</mat-icon>
+          {{ running ? 'Evaluating...' : 'Run Evaluation' }}
+        </button>
+        <mat-spinner *ngIf="running" diameter="24"></mat-spinner>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Results -->
+  <mat-card *ngIf="results.length > 0" class="section-card">
+    <mat-card-header><mat-card-title>Results</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <!-- Result Cards -->
+      <div *ngFor="let result of results" class="result-card">
+        <div class="result-header">
+          <strong>{{ result.modelId }}</strong> on <strong>{{ result.datasetId }}</strong>
+          <span class="result-time">{{ result.evaluationTimeMs }}ms | {{ result.samplesEvaluated }} samples</span>
+        </div>
+        <div class="metrics-grid">
+          <div *ngFor="let key of (result.metrics | keyvalue)" class="metric-item">
+            <span class="metric-label">{{ key.key }}</span>
+            <span class="metric-value">{{ key.value | number:'1.4-4' }}</span>
+          </div>
+        </div>
+        <div *ngIf="result.error" class="result-error">
+          <mat-icon>error</mat-icon> {{ result.error }}
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

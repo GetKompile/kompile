@@ -1,0 +1,218 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="query-transformer-settings">
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>transform</mat-icon>
+        Query Transformer Configuration
+      </h3>
+      <p>Configure how queries are transformed before retrieval to improve search results.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Not Available Message -->
+  <div *ngIf="!loading && !config.available" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>Query transformer module is not loaded. Add kompile-query-transformer dependency to enable.</span>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success Message -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && config.available">
+    <!-- Master Toggle -->
+    <mat-card class="master-toggle-card">
+      <mat-card-content>
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable Query Transformation</span>
+            <span class="config-description">
+              Transform queries before retrieval to improve search results
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}"
+            (change)="toggleEnabled()"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Presets -->
+    <mat-card class="presets-card" *ngIf="config.enabled && presets.length > 0">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>tune</mat-icon>
+        <mat-card-title>Quick Presets</mat-card-title>
+        <mat-card-subtitle>Apply a pre-configured transformation strategy</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="presets-grid">
+          <div *ngFor="let preset of presets"
+               class="preset-card"
+               [class.active]="config.type === preset.type"
+               (click)="applyPreset(preset.preset)">
+            <div class="preset-header">
+              <span class="preset-name">{{ preset.name }}</span>
+            </div>
+            <p class="preset-description">{{ preset.description }}</p>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Transformer Type Selection -->
+    <mat-card class="type-card" *ngIf="config.enabled">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>swap_horiz</mat-icon>
+        <mat-card-title>Transformer Type</mat-card-title>
+        <mat-card-subtitle>Select the query transformation strategy</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-radio-group [(ngModel)]="config.type" [ngModelOptions]="{standalone: true}" (change)="onTypeChange()" class="type-radio-group">
+          <mat-radio-button *ngFor="let type of transformerTypes"
+                            [value]="type.type"
+                            color="primary"
+                            class="type-option">
+            <div class="type-info">
+              <span class="type-name">{{ type.name }}</span>
+              <span class="type-description">{{ type.description }}</span>
+              <span *ngIf="type.requiresLlm" class="llm-badge">
+                <mat-icon>psychology</mat-icon> Requires LLM
+              </span>
+            </div>
+          </mat-radio-button>
+        </mat-radio-group>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Advanced Options -->
+    <mat-card class="advanced-card" *ngIf="config.enabled && showAdvancedOptions()">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>settings</mat-icon>
+        <mat-card-title>Advanced Options</mat-card-title>
+        <mat-card-subtitle>Fine-tune the transformation behavior</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <!-- Expansion-specific options -->
+        <ng-container *ngIf="config.type === 'expansion' || config.type === 'multi-query'">
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Max Queries</span>
+              <span class="config-description">Maximum number of queries to generate</span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input">
+              <input matInput type="number" [(ngModel)]="config.maxQueries" [ngModelOptions]="{standalone: true}" min="1" max="10">
+            </mat-form-field>
+          </div>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Include Original Query</span>
+              <span class="config-description">Include the original query in the expanded set</span>
+            </div>
+            <mat-slide-toggle [(ngModel)]="config.includeOriginal" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+          </div>
+        </ng-container>
+
+        <!-- LLM-specific options -->
+        <ng-container *ngIf="requiresLlm()">
+          <mat-divider></mat-divider>
+          <h4 class="section-title">LLM Settings</h4>
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Temperature</span>
+              <span class="config-description">Controls randomness: {{ config.temperature.toFixed(1) }}</span>
+            </div>
+            <mat-slider min="0" max="1" step="0.1" discrete>
+              <input matSliderThumb [(ngModel)]="config.temperature" [ngModelOptions]="{standalone: true}">
+            </mat-slider>
+          </div>
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Max Tokens</span>
+              <span class="config-description">Maximum tokens for generated queries</span>
+            </div>
+            <mat-form-field appearance="outline" class="config-input">
+              <input matInput type="number" [(ngModel)]="config.maxTokens" [ngModelOptions]="{standalone: true}" min="50" max="1000">
+            </mat-form-field>
+          </div>
+          <div class="config-row">
+            <div class="config-info">
+              <span class="config-label">Custom System Prompt</span>
+              <span class="config-description">Override the default system prompt (optional)</span>
+            </div>
+          </div>
+          <mat-form-field appearance="outline" class="full-width">
+            <textarea matInput [(ngModel)]="config.systemPrompt" [ngModelOptions]="{standalone: true}"
+                      placeholder="Leave empty to use default prompt"
+                      rows="4"></textarea>
+          </mat-form-field>
+        </ng-container>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Info Card -->
+    <mat-card class="info-card" *ngIf="config.enabled">
+      <mat-card-content>
+        <div class="info-content">
+          <mat-icon>lightbulb</mat-icon>
+          <div>
+            <strong>Current Mode: {{ getSelectedTypeInfo()?.name || config.type }}</strong>
+            <p>{{ getSelectedTypeInfo()?.description || 'No transformation applied.' }}</p>
+            <p *ngIf="requiresLlm()" class="llm-note">
+              <mat-icon>info</mat-icon>
+              This transformer requires an LLM to be configured. Ensure you have set up an LLM provider.
+            </p>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Save Button -->
+    <div class="actions" *ngIf="config.enabled">
+      <button mat-raised-button color="primary"
+              (click)="saveConfiguration()"
+              [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        Save Configuration
+      </button>
+      <mat-spinner *ngIf="saving" diameter="24"></mat-spinner>
+    </div>
+  </ng-container>
+</div>

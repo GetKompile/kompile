@@ -1,0 +1,138 @@
+<div class="training-metrics">
+  <div class="header">
+    <h2>Training Metrics: {{ jobId }}</h2>
+    <div class="header-actions">
+      <button mat-stroked-button (click)="exportCsv()" [disabled]="metricsHistory.length === 0">
+        <mat-icon>download</mat-icon> Export CSV
+      </button>
+      <button mat-button routerLink="/training">
+        <mat-icon>arrow_back</mat-icon> Back to Jobs
+      </button>
+    </div>
+  </div>
+
+  <!-- Job Status Summary -->
+  <mat-card *ngIf="job" class="status-card">
+    <mat-card-content>
+      <div class="status-grid">
+        <div class="stat-item">
+          <span class="stat-label">Status</span>
+          <mat-chip>{{ job.status }}</mat-chip>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Epoch</span>
+          <span class="stat-value">{{ job.currentEpoch }} / {{ job.totalEpochs }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Step</span>
+          <span class="stat-value">{{ job.currentStep }} / {{ job.totalSteps }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Current Loss</span>
+          <span class="stat-value">{{ job.loss ? (job.loss | number:'1.6-6') : '-' }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Learning Rate</span>
+          <span class="stat-value">{{ job.learningRate ? (job.learningRate | number:'1.2-8') : '-' }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Progress</span>
+          <mat-progress-bar [value]="(job.overallProgress ?? 0) * 100" mode="determinate"></mat-progress-bar>
+          <span class="progress-text">{{ ((job.overallProgress ?? 0) * 100) | number:'1.1-1' }}%</span>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-tab-group [(selectedIndex)]="selectedTab">
+    <!-- Loss Curve -->
+    <mat-tab label="Loss Curve">
+      <mat-card class="chart-card">
+        <mat-card-content>
+          <div *ngIf="lossData.length === 0" class="empty-chart">
+            <mat-icon>show_chart</mat-icon>
+            <p>No metrics data yet. Waiting for training to start...</p>
+            <mat-spinner *ngIf="job?.status === 'TRAINING' || job?.status === 'QUEUED'" diameter="30"></mat-spinner>
+          </div>
+          <div *ngIf="lossData.length > 0" class="chart-container">
+            <div class="chart-stats">
+              <div class="chart-stat"><span>Min Loss:</span> {{ getMinLoss() | number:'1.6-6' }}</div>
+              <div class="chart-stat"><span>Max Loss:</span> {{ getMaxLoss() | number:'1.6-6' }}</div>
+              <div class="chart-stat"><span>Current:</span> {{ lossData[lossData.length - 1].value | number:'1.6-6' }}</div>
+              <div class="chart-stat"><span>Steps:</span> {{ lossData.length }}</div>
+            </div>
+            <div class="simple-chart">
+              <div *ngFor="let point of lossData; let i = index"
+                   class="chart-bar"
+                   [style.height.%]="((point.value - getMinLoss()) / (getMaxLoss() - getMinLoss() + 0.0001)) * 80 + 10"
+                   [matTooltip]="'Step ' + point.step + ': ' + (point.value | number:'1.6-6')">
+              </div>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-tab>
+
+    <!-- Learning Rate -->
+    <mat-tab label="Learning Rate">
+      <mat-card class="chart-card">
+        <mat-card-content>
+          <div *ngIf="lrData.length === 0" class="empty-chart">
+            <p>No learning rate data yet.</p>
+          </div>
+          <div *ngIf="lrData.length > 0" class="chart-container">
+            <div class="simple-chart">
+              <div *ngFor="let point of lrData"
+                   class="chart-bar lr-bar"
+                   [style.height.%]="(point.value / (lrData[0].value || 0.0001)) * 90 + 5"
+                   [matTooltip]="'Step ' + point.step + ': ' + (point.value | number:'1.2-8')">
+              </div>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-tab>
+
+    <!-- Throughput -->
+    <mat-tab label="Throughput">
+      <mat-card class="chart-card">
+        <mat-card-content>
+          <div *ngIf="throughputData.length === 0" class="empty-chart">
+            <p>No throughput data yet.</p>
+          </div>
+          <div *ngIf="throughputData.length > 0" class="chart-container">
+            <div class="chart-stats">
+              <div class="chart-stat"><span>Avg Samples/s:</span> {{ getAvgThroughput() | number:'1.1-1' }}</div>
+            </div>
+            <div class="simple-chart">
+              <div *ngFor="let point of throughputData"
+                   class="chart-bar throughput-bar"
+                   [style.height.%]="(point.value / (getAvgThroughput() * 2 + 0.001)) * 90 + 5"
+                   [matTooltip]="'Step ' + point.step + ': ' + (point.value | number:'1.1-1') + ' samples/s'">
+              </div>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-tab>
+
+    <!-- Logs -->
+    <mat-tab label="Logs">
+      <mat-card class="logs-card">
+        <mat-card-content>
+          <div *ngIf="logs.length === 0" class="empty-chart">
+            <p>No logs yet.</p>
+          </div>
+          <div class="log-container" *ngIf="logs.length > 0">
+            <div *ngFor="let log of logs" class="log-entry" [ngClass]="'log-' + log.level?.toLowerCase()">
+              <span class="log-time">{{ log.timestamp }}</span>
+              <span class="log-level">{{ log.level }}</span>
+              <span class="log-msg">{{ log.message }}</span>
+              <span *ngIf="log.loss" class="log-metric">loss={{ log.loss | number:'1.4-4' }}</span>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-tab>
+  </mat-tab-group>
+</div>

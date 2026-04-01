@@ -17,6 +17,7 @@
 package ai.kompile.app.web.controllers;
 
 import ai.kompile.app.services.agent.AgentChatService;
+import ai.kompile.app.services.agent.AgentRegistryService;
 import ai.kompile.app.web.dto.AgentChatRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,9 +48,11 @@ public class AgentChatController {
     private static final long MAX_SSE_TIMEOUT = TimeUnit.MINUTES.toMillis(30);
 
     private final AgentChatService chatService;
+    private final AgentRegistryService agentRegistryService;
 
-    public AgentChatController(AgentChatService chatService) {
+    public AgentChatController(AgentChatService chatService, AgentRegistryService agentRegistryService) {
         this.chatService = chatService;
+        this.agentRegistryService = agentRegistryService;
     }
 
     /**
@@ -125,6 +128,20 @@ public class AgentChatController {
         return ResponseEntity.ok(Map.of(
                 "status", "ok",
                 "service", "agent-chat"
+        ));
+    }
+
+    /**
+     * Update the skipPermissions setting for an agent.
+     */
+    @PutMapping("/agents/{name}/skip-permissions")
+    public ResponseEntity<Map<String, Object>> updateSkipPermissions(
+            @PathVariable String name, @RequestBody Map<String, Boolean> body) {
+        boolean skip = body.getOrDefault("skipPermissions", true);
+        agentRegistryService.updateAgentSkipPermissions(name, skip);
+        return ResponseEntity.ok(Map.of(
+                "agent", name,
+                "skipPermissions", skip
         ));
     }
 }

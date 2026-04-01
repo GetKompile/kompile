@@ -43,6 +43,9 @@ export class RegistryBrowserComponent implements OnInit, OnDestroy {
     denseEncoders: 0,
     sparseEncoders: 0,
     crossEncoders: 0,
+    vlmPipelines: 0,
+    ocrModels: 0,
+    llmModels: 0,
     active: 0
   };
 
@@ -51,7 +54,11 @@ export class RegistryBrowserComponent implements OnInit, OnDestroy {
     { value: 'retrieval', label: 'Retrieval (All Encoders)', icon: 'search' },
     { value: 'dense_encoder', label: 'Dense Encoders', icon: 'hub' },
     { value: 'sparse_encoder', label: 'Sparse Encoders', icon: 'scatter_plot' },
-    { value: 'cross_encoder', label: 'Cross-Encoders (Rerankers)', icon: 'compare_arrows' }
+    { value: 'cross_encoder', label: 'Cross-Encoders (Rerankers)', icon: 'compare_arrows' },
+    { value: 'vlm_pipeline', label: 'VLM Pipelines', icon: 'visibility' },
+    { value: 'ocr', label: 'OCR Models', icon: 'document_scanner' },
+    { value: 'llm_ggml', label: 'LLM Models', icon: 'smart_toy' },
+    { value: 'document_classifier', label: 'Document Classifiers', icon: 'category' }
   ];
 
   constructor(
@@ -113,16 +120,20 @@ export class RegistryBrowserComponent implements OnInit, OnDestroy {
 
   calculateStats(): void {
     if (!this.registry?.models) {
-      this.stats = { total: 0, denseEncoders: 0, sparseEncoders: 0, crossEncoders: 0, active: 0 };
+      this.stats = { total: 0, denseEncoders: 0, sparseEncoders: 0, crossEncoders: 0, vlmPipelines: 0, ocrModels: 0, llmModels: 0, active: 0 };
       return;
     }
 
     const models = Object.values(this.registry.models);
+    const ocrTypes = ['ocr_detection', 'ocr_recognition', 'ocr_table', 'ocr_pipeline', 'layout_model'];
     this.stats = {
       total: models.length,
       denseEncoders: models.filter(m => m.type === 'dense_encoder' || m.type === 'encoder').length,
       sparseEncoders: models.filter(m => m.type === 'sparse_encoder').length,
       crossEncoders: models.filter(m => m.type === 'cross_encoder').length,
+      vlmPipelines: models.filter(m => m.type === 'vlm_pipeline').length,
+      ocrModels: models.filter(m => ocrTypes.includes(m.type)).length,
+      llmModels: models.filter(m => m.type === 'llm_ggml').length,
       active: models.filter(m => m.status === 'active').length
     };
   }
@@ -135,10 +146,12 @@ export class RegistryBrowserComponent implements OnInit, OnDestroy {
     // Filter by type
     if (this.selectedType !== 'all') {
       if (this.selectedType === 'retrieval') {
-        // Show all retrieval models (dense + sparse + legacy encoder)
         models = models.filter(m =>
           m.type === 'dense_encoder' || m.type === 'sparse_encoder' || m.type === 'encoder'
         );
+      } else if (this.selectedType === 'ocr') {
+        const ocrTypes = ['ocr_detection', 'ocr_recognition', 'ocr_table', 'ocr_pipeline', 'layout_model'];
+        models = models.filter(m => ocrTypes.includes(m.type));
       } else {
         models = models.filter(m => m.type === this.selectedType);
       }

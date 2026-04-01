@@ -18,6 +18,12 @@ package ai.kompile.graph.neo4j;
 
 import ai.kompile.app.core.chunking.TextChunker;
 import ai.kompile.core.graphrag.GraphConstructor;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionResult;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedEntity;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractedRelation;
+import ai.kompile.core.graphrag.format.GraphExtractionSchema.ExtractionMetadata;
+import ai.kompile.core.graphrag.format.GraphExtractionValidator;
 import ai.kompile.core.graphrag.model.Entity;
 import ai.kompile.core.graphrag.model.Graph;
 import ai.kompile.core.graphrag.model.Relationship;
@@ -29,6 +35,7 @@ import ai.kompile.core.graphrag.model.schema.SchemaEnforcementMode;
 import ai.kompile.core.llm.chat.LLMChat;
 import ai.kompile.core.retrievers.RetrievedDoc;
 import ai.kompile.knowledgegraph.builder.dto.ExtractedGraphDTO;
+import ai.kompile.knowledgegraph.resolution.EntityResolutionService;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -58,15 +65,18 @@ public class Neo4jGraphConstructor implements GraphConstructor {
     private final LLMChat llmChat;
     private final ObjectMapper objectMapper;
     private final TextChunker textChunker;
+    private final EntityResolutionService entityResolutionService;
 
     // Extraction model configuration
     private ExtractionModelConfig extractionConfig = ExtractionModelConfig.defaults();
 
-    public Neo4jGraphConstructor(Driver neo4jDriver, LLMChat llmChat, ObjectMapper objectMapper, TextChunker textChunker) {
+    public Neo4jGraphConstructor(Driver neo4jDriver, LLMChat llmChat, ObjectMapper objectMapper,
+                                 TextChunker textChunker, EntityResolutionService entityResolutionService) {
         this.neo4jDriver = neo4jDriver;
         this.llmChat = llmChat;
         this.objectMapper = objectMapper;
         this.textChunker = textChunker;
+        this.entityResolutionService = entityResolutionService;
     }
 
     @Override
@@ -110,7 +120,10 @@ public class Neo4jGraphConstructor implements GraphConstructor {
     public Graph constructGraphFromDocs(List<RetrievedDoc> docs, GraphSchema schema, SchemaEnforcementMode enforcementMode) {
         List<ExtractedGraphDTO.ExtractedEntity> allExtractedEntities = new ArrayList<>();
         List<ExtractedGraphDTO.ExtractedRelationship> allExtractedRelationships = new ArrayList<>();
+        List<ExtractionResult> chunkExtractions = new ArrayList<>();
         SchemaEnforcementMode currentMode = (enforcementMode == null) ? SchemaEnforcementMode.NONE : enforcementMode;
+
+        String modelName = extractionConfig.modelName() != null ? extractionConfig.modelName() : extractionConfig.provider();
 
         for (RetrievedDoc doc : docs) {
             List<RetrievedDoc> chunks = textChunker.chunk(doc, doc.getMetadata());
@@ -134,40 +147,86 @@ public class Neo4jGraphConstructor implements GraphConstructor {
                             .options(options)
                             .call()
                             .content();
-                    ExtractedGraphDTO.ExtractedGraph extractedGraph = objectMapper.readValue(jsonResponse, ExtractedGraphDTO.ExtractedGraph.class);
 
-                    if (currentMode == SchemaEnforcementMode.STRICT && schema != null) {
-                        cleanGraph(extractedGraph, schema); // Operates on internal DTOs
-                    }
+                    // Try parsing as new standardized format first
+                    ExtractionResult chunkResult = tryParseStandardFormat(jsonResponse, chunk.getId(), doc.getId(), modelName);
 
-                    String chunkPrefix = "chunk_" + chunk.getId() + "_";
-                    if (extractedGraph.getEntities() != null) {
-                        for (ExtractedGraphDTO.ExtractedEntity entity : extractedGraph.getEntities()) {
-                            entity.setId(chunkPrefix + entity.getId());
-                            if (entity.getMetadata() == null) {
-                                entity.setMetadata(new HashMap<>());
-                            }
-                            entity.getMetadata().put("sourceChunkId", chunk.getId());
-                            entity.getMetadata().put("sourceDocumentId", doc.getId());
-                            allExtractedEntities.add(entity);
+                    if (chunkResult != null) {
+                        chunkExtractions.add(chunkResult);
+                    } else {
+                        // Fallback to legacy ExtractedGraphDTO format
+                        ExtractedGraphDTO.ExtractedGraph extractedGraph = objectMapper.readValue(jsonResponse, ExtractedGraphDTO.ExtractedGraph.class);
+
+                        if (currentMode == SchemaEnforcementMode.STRICT && schema != null) {
+                            cleanGraph(extractedGraph, schema);
                         }
-                    }
-                    if (extractedGraph.getRelationships() != null) {
-                        for (ExtractedGraphDTO.ExtractedRelationship rel : extractedGraph.getRelationships()) {
-                            rel.setSource(chunkPrefix + rel.getSource());
-                            rel.setTarget(chunkPrefix + rel.getTarget());
-                            if (rel.getMetadata() == null) {
-                                rel.setMetadata(new HashMap<>());
+
+                        String chunkPrefix = "chunk_" + chunk.getId() + "_";
+                        if (extractedGraph.getEntities() != null) {
+                            for (ExtractedGraphDTO.ExtractedEntity entity : extractedGraph.getEntities()) {
+                                entity.setId(chunkPrefix + entity.getId());
+                                if (entity.getMetadata() == null) {
+                                    entity.setMetadata(new HashMap<>());
+                                }
+                                entity.getMetadata().put("sourceChunkId", chunk.getId());
+                                entity.getMetadata().put("sourceDocumentId", doc.getId());
+                                allExtractedEntities.add(entity);
                             }
-                            rel.getMetadata().put("sourceChunkId", chunk.getId());
-                            rel.getMetadata().put("sourceDocumentId", doc.getId());
-                            allExtractedRelationships.add(rel);
+                        }
+                        if (extractedGraph.getRelationships() != null) {
+                            for (ExtractedGraphDTO.ExtractedRelationship rel : extractedGraph.getRelationships()) {
+                                rel.setSource(chunkPrefix + rel.getSource());
+                                rel.setTarget(chunkPrefix + rel.getTarget());
+                                if (rel.getMetadata() == null) {
+                                    rel.setMetadata(new HashMap<>());
+                                }
+                                rel.getMetadata().put("sourceChunkId", chunk.getId());
+                                rel.getMetadata().put("sourceDocumentId", doc.getId());
+                                allExtractedRelationships.add(rel);
+                            }
                         }
                     }
                 } catch (Exception e) {
                     log.error("Failed to process chunk: {} for document: {}", chunk.getId(), doc.getId(), e);
                 }
             }
+        }
+
+        // If we have new-format extractions, run entity resolution and convert
+        if (!chunkExtractions.isEmpty()) {
+            ExtractionResult resolved = entityResolutionService.resolve(chunkExtractions);
+            Graph resolvedGraph = GraphExtractionValidator.toGraph(resolved);
+
+            // Also write resolved entities to Neo4j via legacy path
+            List<ExtractedGraphDTO.ExtractedEntity> resolvedLegacyEntities = new ArrayList<>();
+            for (ExtractedEntity ee : resolved.entities()) {
+                ExtractedGraphDTO.ExtractedEntity legacy = new ExtractedGraphDTO.ExtractedEntity();
+                legacy.setId(ee.id());
+                legacy.setTitle(ee.name());
+                legacy.setNodeLabel(ee.type());
+                legacy.setDescription(ee.description());
+                Map<String, Object> meta = new HashMap<>();
+                if (ee.properties() != null) meta.putAll(ee.properties());
+                if (ee.aliases() != null && !ee.aliases().isEmpty()) meta.put("aliases", String.join(",", ee.aliases()));
+                legacy.setMetadata(meta);
+                resolvedLegacyEntities.add(legacy);
+            }
+            allExtractedEntities.addAll(resolvedLegacyEntities);
+
+            List<ExtractedGraphDTO.ExtractedRelationship> resolvedLegacyRels = new ArrayList<>();
+            for (ExtractedRelation er : resolved.relations()) {
+                ExtractedGraphDTO.ExtractedRelationship legacy = new ExtractedGraphDTO.ExtractedRelationship();
+                legacy.setSource(er.source());
+                legacy.setTarget(er.target());
+                legacy.setRelationshipType(er.type());
+                legacy.setDescription(er.description());
+                legacy.setConfidence(er.confidence());
+                Map<String, Object> meta = new HashMap<>();
+                if (er.properties() != null) meta.putAll(er.properties());
+                legacy.setMetadata(meta);
+                resolvedLegacyRels.add(legacy);
+            }
+            allExtractedRelationships.addAll(resolvedLegacyRels);
         }
 
         if (!allExtractedEntities.isEmpty()) {
@@ -183,10 +242,11 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             Entity entity = new Entity();
             entity.setId(ee.getId());
             entity.setTitle(ee.getTitle());
-            entity.setType(ee.getNodeLabel()); // Now properly set the type from extraction
+            entity.setType(ee.getNodeLabel());
             entity.setDescription(ee.getDescription());
             entity.setMetadata(ee.getMetadata());
-            entity.setConfidence(1.0); // Default confidence for LLM extraction
+            entity.setConfidence(ee.getMetadata() != null && ee.getMetadata().containsKey("confidence")
+                    ? Double.parseDouble(ee.getMetadata().get("confidence").toString()) : 1.0);
             return entity;
         }).collect(Collectors.toList()));
 
@@ -194,15 +254,37 @@ public class Neo4jGraphConstructor implements GraphConstructor {
             Relationship relationship = new Relationship();
             relationship.setSource(er.getSource());
             relationship.setTarget(er.getTarget());
-            relationship.setType(er.getRelationshipType()); // Now properly set the type from extraction
+            relationship.setType(er.getRelationshipType());
             relationship.setDescription(er.getDescription());
             relationship.setMetadata(er.getMetadata());
-            relationship.setWeight(1.0); // Default weight
-            relationship.setConfidence(1.0); // Default confidence for LLM extraction
+            relationship.setWeight(er.getConfidence() != null ? er.getConfidence() : 1.0);
+            relationship.setConfidence(er.getConfidence() != null ? er.getConfidence() : 1.0);
             return relationship;
         }).collect(Collectors.toList()));
 
         return finalGraph;
+    }
+
+    private ExtractionResult tryParseStandardFormat(String jsonResponse, String chunkId, String docId, String model) {
+        try {
+            // Clean markdown fences if present
+            String clean = jsonResponse.trim();
+            if (clean.startsWith("```json")) clean = clean.substring(7);
+            else if (clean.startsWith("```")) clean = clean.substring(3);
+            if (clean.endsWith("```")) clean = clean.substring(0, clean.length() - 3);
+            clean = clean.trim();
+
+            ExtractionResult result = GraphExtractionValidator.fromJson(clean);
+            // Check if it looks like our format (has 'entities' with 'name' field, not 'title')
+            if (result.entities() != null && !result.entities().isEmpty() && result.entities().get(0).name() != null) {
+                // Add metadata
+                ExtractionMetadata metadata = ExtractionMetadata.forChunk(chunkId, docId, model);
+                return new ExtractionResult(result.schema(), result.entities(), result.relations(), metadata);
+            }
+        } catch (Exception e) {
+            // Not in standard format, that's fine
+        }
+        return null;
     }
 
     private String createExtractionPrompt(String text, GraphSchema schema) throws JsonProcessingException {
@@ -221,41 +303,25 @@ public class Neo4jGraphConstructor implements GraphConstructor {
 
                     The relationships must conform to the following types:
                     %s
-
-                    For each entity, provide:
-                    - "id": a unique identifier for the entity within this text chunk.
-                    - "title": the primary name or title of the entity.
-                    - "label": the node label from the schema (e.g., "PERSON", "ORGANIZATION").
-                    - "description": a short description of the entity.
-                    - "metadata": any other relevant properties as key-value pairs.
-
-                    For each relationship, provide:
-                    - "source": the "id" of the source entity.
-                    - "target": the "id" of the target entity.
-                    - "type": the relationship type from the schema (e.g., "WORKS_AT", "LOCATED_IN").
-                    - "description": a natural language description of how the entities are related.
-                    - "metadata": any other relevant properties.
                     """.formatted(
                     schema.getNodeTypes().stream().map(nt -> "- Label: " + nt.getLabel() + ", Description: " + nt.getDescription()).collect(Collectors.joining("\n")),
                     schema.getRelationshipTypes().stream().map(rt -> "- Type: " + rt.getType() + ", Description: " + rt.getDescription()).collect(Collectors.joining("\n"))
             );
         } else {
-            schemaDescription = "Entities should have an 'id', 'title', 'label' (e.g. PERSON), and 'description'. Relationships should have 'source', 'target', 'type' (e.g. WORKS_AT), and 'description'.";
+            schemaDescription = "";
         }
 
         return """
-               From the text below, extract entities and their relationships based on the provided schema instructions.
+               From the text below, extract entities and their relationships.
+               %s
+
                %s
 
                Text:
                \"""
                %s
                \"""
-
-               Respond with a JSON object containing two keys: "entities" (a list of objects) and "relationships" (a list of objects).
-               Example entity: {"id": "e1", "title": "John Doe", "label": "PERSON", "description": "A person.", "metadata": {"email": "john.doe@example.com"}}
-               Example relationship: {"source": "e1", "target": "e2", "type": "WORKS_AT", "description": "John Doe works at Acme Corp.", "metadata": {"role": "Engineer"}}
-               """.formatted(schemaDescription, text);
+               """.formatted(schemaDescription, GraphExtractionValidator.getExtractionPromptInstructions(), text);
     }
 
     private void cleanGraph(ExtractedGraphDTO.ExtractedGraph graph, GraphSchema schema) {

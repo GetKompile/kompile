@@ -27,6 +27,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -42,6 +43,7 @@ import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.metadata.RateLimit;
 
 @Service("geminiLanguageModel")
+@ConditionalOnClass(name = "ai.kompile.llm.gemini.GeminiLanguageModelImpl")
 @ConditionalOnProperty(prefix = "spring.ai.vertex.ai.gemini", name = "project-id") // Condition on Vertex AI project ID
 public class GeminiLanguageModelImpl implements LanguageModel {
 

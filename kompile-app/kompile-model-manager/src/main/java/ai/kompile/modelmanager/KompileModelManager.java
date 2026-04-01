@@ -988,26 +988,55 @@ public class KompileModelManager {
         }
 
         JsonNode models = registry.get("models");
-        if (models == null || !models.has(modelId)) {
+        if (models == null) {
             return Optional.empty();
         }
 
+        // Try exact match first, then with -pipeline suffix
         JsonNode model = models.get(modelId);
+        String matchedId = modelId;
+        if (model == null) {
+            model = models.get(modelId + "-pipeline");
+            matchedId = modelId + "-pipeline";
+        }
+        if (model == null) {
+            // Scan all models for a VLM type matching the base model ID
+            var fields = models.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                String key = entry.getKey();
+                JsonNode val = entry.getValue();
+                String entryType = val.has("type") ? val.get("type").asText() : "";
+                if (isVlmType(entryType) && (key.equals(modelId) || key.startsWith(modelId))) {
+                    model = val;
+                    matchedId = key;
+                    break;
+                }
+            }
+        }
+        if (model == null) {
+            return Optional.empty();
+        }
+
         String status = model.has("status") ? model.get("status").asText() : "";
         String type = model.has("type") ? model.get("type").asText() : "";
 
         if (!"active".equalsIgnoreCase(status)) {
-            LOGGER.debug("VLM model {} found in registry but status is '{}', not 'active'", modelId, status);
+            LOGGER.debug("VLM model {} found in registry but status is '{}', not 'active'", matchedId, status);
             return Optional.empty();
         }
 
-        // Check for VLM type
-        if (!type.equals("vlm_model") && !type.equals("vlm") && !type.contains("vision_language")) {
-            LOGGER.debug("VLM model {} found in registry but type is '{}', not a VLM type", modelId, type);
+        if (!isVlmType(type)) {
+            LOGGER.debug("VLM model {} found in registry but type is '{}', not a VLM type", matchedId, type);
             return Optional.empty();
         }
 
-        return Optional.of(parseModelEntry(modelId, model));
+        return Optional.of(parseModelEntry(matchedId, model));
+    }
+
+    private static boolean isVlmType(String type) {
+        return type.equals("vlm_pipeline") || type.equals("vlm_model") || type.equals("vlm")
+                || type.contains("vision_language");
     }
 
     /**

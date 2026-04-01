@@ -57,6 +57,30 @@
       </div>
     </mat-card>
 
+    <mat-card class="stat-card" *ngIf="stats.vlmPipelines > 0">
+      <mat-icon>visibility</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.vlmPipelines }}</span>
+        <span class="stat-label">VLM Pipelines</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card" *ngIf="stats.ocrModels > 0">
+      <mat-icon>document_scanner</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.ocrModels }}</span>
+        <span class="stat-label">OCR Models</span>
+      </div>
+    </mat-card>
+
+    <mat-card class="stat-card" *ngIf="stats.llmModels > 0">
+      <mat-icon>smart_toy</mat-icon>
+      <div class="stat-content">
+        <span class="stat-value">{{ stats.llmModels }}</span>
+        <span class="stat-label">LLM Models</span>
+      </div>
+    </mat-card>
+
     <mat-card class="stat-card highlight">
       <mat-icon>check_circle</mat-icon>
       <div class="stat-content">

@@ -1,0 +1,384 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="log-settings">
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>article</mat-icon>
+        Job Log Configuration
+      </h3>
+      <p>Configure how indexing job logs are captured, stored, and rotated.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh status" (click)="refreshStatus()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Not Available Message -->
+  <div *ngIf="!loading && !available" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>Job logging service is not available. Database may not be configured.</span>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success Message -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && available">
+    <!-- Status Card -->
+    <mat-card class="status-card" *ngIf="status">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>storage</mat-icon>
+        <mat-card-title>Log Storage Status</mat-card-title>
+        <mat-card-subtitle>
+          {{ status.enabled ? 'Active' : 'Disabled' }} -
+          {{ formatCount(status.totalLogEntries) }} entries stored
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="status-label">Total Entries</span>
+            <span class="status-value">{{ formatCount(status.totalLogEntries) }}</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Capacity</span>
+            <span class="status-value">{{ formatCount(status.maxTotalEntries) }}</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Active Trackers</span>
+            <span class="status-value">{{ status.activeSequenceTrackers }}</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Retention</span>
+            <span class="status-value">{{ status.retentionDays }} days</span>
+          </div>
+        </div>
+
+        <!-- Utilization Bar -->
+        <div class="utilization-section">
+          <div class="utilization-header">
+            <span>Storage Utilization</span>
+            <span [class]="getUtilizationClass(status.utilizationPercent)">
+              {{ status.utilizationPercent.toFixed(1) }}%
+            </span>
+          </div>
+          <mat-progress-bar
+            mode="determinate"
+            [value]="status.utilizationPercent"
+            [color]="getUtilizationColor(status.utilizationPercent)">
+          </mat-progress-bar>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Configuration Card -->
+    <mat-card class="config-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>settings</mat-icon>
+        <mat-card-title>Configuration</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <!-- Enable/Disable Toggle -->
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable Job Logging</span>
+            <span class="config-description">
+              Capture detailed logs from indexing jobs for debugging and monitoring
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}"
+            (change)="toggleEnabled()"
+            [disabled]="saving"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+
+        <!-- Retention Days -->
+        <div class="config-row">
+          <div class="config-info">
+            <span class="config-label">Retention Period</span>
+            <span class="config-description">
+              How long to keep log entries before automatic cleanup
+            </span>
+          </div>
+          <mat-form-field appearance="outline" class="config-input">
+            <input matInput type="number" [(ngModel)]="config.retentionDays" [ngModelOptions]="{standalone: true}"
+                   min="1" max="365" [disabled]="!config.enabled">
+            <span matSuffix>days</span>
+          </mat-form-field>
+        </div>
+
+        <!-- Max Entries Per Job -->
+        <div class="config-row">
+          <div class="config-info">
+            <span class="config-label">Max Entries Per Job</span>
+            <span class="config-description">
+              Maximum log entries to keep per job (oldest entries rotated)
+            </span>
+          </div>
+          <mat-form-field appearance="outline" class="config-input">
+            <input matInput type="number" [(ngModel)]="config.maxEntriesPerJob" [ngModelOptions]="{standalone: true}"
+                   min="100" max="100000" [disabled]="!config.enabled">
+          </mat-form-field>
+        </div>
+
+        <!-- Max Total Entries -->
+        <div class="config-row">
+          <div class="config-info">
+            <span class="config-label">Max Total Entries</span>
+            <span class="config-description">
+              Total storage capacity for all job logs combined
+            </span>
+          </div>
+          <mat-form-field appearance="outline" class="config-input">
+            <input matInput type="number" [(ngModel)]="config.maxTotalEntries" [ngModelOptions]="{standalone: true}"
+                   min="10000" max="10000000" [disabled]="!config.enabled">
+          </mat-form-field>
+        </div>
+      </mat-card-content>
+
+      <mat-card-actions>
+        <button mat-raised-button color="primary"
+                (click)="saveConfiguration()"
+                [disabled]="saving || !config.enabled">
+          <mat-icon>save</mat-icon>
+          Save Configuration
+        </button>
+        <mat-spinner *ngIf="saving" diameter="24"></mat-spinner>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Archive Configuration Card -->
+    <mat-card class="archive-config-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>archive</mat-icon>
+        <mat-card-title>Log Archives</mat-card-title>
+        <mat-card-subtitle>Archive logs before cleanup to preserve them for later review</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <!-- Enable Archive Toggle -->
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable Log Archiving</span>
+            <span class="config-description">
+              Create compressed archives of logs that can be downloaded or stored
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.archiveEnabled" [ngModelOptions]="{standalone: true}"
+            [disabled]="saving || !config.enabled"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+
+        <!-- Archive Path -->
+        <div class="config-row">
+          <div class="config-info">
+            <span class="config-label">Archive Storage Path</span>
+            <span class="config-description">
+              Directory where log archives will be stored
+            </span>
+          </div>
+          <mat-form-field appearance="outline" class="config-input wide">
+            <input matInput type="text" [(ngModel)]="config.archivePath" [ngModelOptions]="{standalone: true}"
+                   [disabled]="!config.enabled || !config.archiveEnabled"
+                   placeholder="~/.kompile/log-archives">
+          </mat-form-field>
+        </div>
+
+        <!-- Archive on Cleanup Toggle -->
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Archive Before Cleanup</span>
+            <span class="config-description">
+              Automatically archive logs before they are deleted during cleanup
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.archiveOnCleanup" [ngModelOptions]="{standalone: true}"
+            [disabled]="saving || !config.enabled || !config.archiveEnabled"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+      </mat-card-content>
+
+      <mat-card-actions>
+        <button mat-raised-button color="primary"
+                (click)="saveConfiguration()"
+                [disabled]="saving || !config.enabled">
+          <mat-icon>save</mat-icon>
+          Save Archive Settings
+        </button>
+        <button mat-raised-button
+                (click)="createArchive()"
+                [disabled]="archiveCreating || !config.enabled">
+          <mat-icon>add</mat-icon>
+          Create Archive Now
+        </button>
+        <mat-spinner *ngIf="archiveCreating" diameter="24"></mat-spinner>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Archives List Card -->
+    <mat-card class="archives-list-card" *ngIf="config.archiveEnabled || archives.length > 0">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>folder_zip</mat-icon>
+        <mat-card-title>Available Archives</mat-card-title>
+        <mat-card-subtitle>{{ archives.length }} archive(s) available</mat-card-subtitle>
+        <button mat-icon-button matTooltip="Refresh archives" (click)="loadArchives()" class="refresh-btn">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <div *ngIf="archiveLoading" class="loading-container">
+          <mat-spinner diameter="30"></mat-spinner>
+          <span>Loading archives...</span>
+        </div>
+
+        <div *ngIf="!archiveLoading && archives.length === 0" class="no-archives">
+          <mat-icon>folder_off</mat-icon>
+          <span>No archives available. Create one using the button above.</span>
+        </div>
+
+        <div *ngIf="!archiveLoading && archives.length > 0" class="archives-list">
+          <div class="archive-item" *ngFor="let archive of archives">
+            <div class="archive-info">
+              <mat-icon>folder_zip</mat-icon>
+              <div class="archive-details">
+                <span class="archive-name">{{ archive.fileName }}</span>
+                <span class="archive-meta">
+                  {{ formatFileSize(archive.sizeBytes) }} - {{ formatArchiveDate(archive.createdAt) }}
+                </span>
+              </div>
+            </div>
+            <div class="archive-actions">
+              <button mat-icon-button matTooltip="Download" (click)="downloadArchive(archive)">
+                <mat-icon>download</mat-icon>
+              </button>
+              <button mat-icon-button matTooltip="Delete" color="warn" (click)="openArchiveDeleteDialog(archive)">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Maintenance Card -->
+    <mat-card class="maintenance-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>cleaning_services</mat-icon>
+        <mat-card-title>Maintenance</mat-card-title>
+        <mat-card-subtitle>Manual cleanup and maintenance actions</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="maintenance-info">
+          <mat-icon>info</mat-icon>
+          <p>
+            Automatic cleanup runs daily at 3:30 AM based on the retention period.
+            Use manual cleanup to free up space immediately.
+          </p>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-raised-button color="warn" (click)="openCleanupDialog()">
+          <mat-icon>delete_sweep</mat-icon>
+          Manual Cleanup
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </ng-container>
+
+  <!-- Cleanup Dialog -->
+  <div class="dialog-overlay" *ngIf="showCleanupDialog" (click)="closeCleanupDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <div class="dialog-header">
+        <mat-icon color="warn">delete_sweep</mat-icon>
+        <h3>Manual Log Cleanup</h3>
+      </div>
+      <p>Delete log entries older than:</p>
+      <div class="dialog-input">
+        <mat-form-field appearance="outline">
+          <input matInput type="number" [(ngModel)]="cleanupHours" [ngModelOptions]="{standalone: true}" min="1" max="8760">
+          <span matSuffix>hours</span>
+        </mat-form-field>
+        <span class="hint">(168 hours = 7 days)</span>
+      </div>
+      <div class="dialog-warning" *ngIf="cleanupHours < 24">
+        <mat-icon>warning</mat-icon>
+        <span>Deleting logs less than 24 hours old may affect debugging.</span>
+      </div>
+      <div class="dialog-actions">
+        <button mat-button (click)="closeCleanupDialog()" [disabled]="cleanupLoading">Cancel</button>
+        <button mat-raised-button color="warn" (click)="triggerCleanup()" [disabled]="cleanupLoading">
+          <mat-icon>delete</mat-icon>
+          Delete Old Logs
+        </button>
+        <mat-spinner *ngIf="cleanupLoading" diameter="24"></mat-spinner>
+      </div>
+    </div>
+  </div>
+
+  <!-- Archive Delete Dialog -->
+  <div class="dialog-overlay" *ngIf="showArchiveDeleteDialog" (click)="closeArchiveDeleteDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <div class="dialog-header">
+        <mat-icon color="warn">delete_forever</mat-icon>
+        <h3>Delete Archive</h3>
+      </div>
+      <p>Are you sure you want to delete this archive?</p>
+      <div class="archive-to-delete" *ngIf="archiveToDelete">
+        <mat-icon>folder_zip</mat-icon>
+        <div>
+          <span class="archive-name">{{ archiveToDelete.fileName }}</span>
+          <span class="archive-meta">{{ formatFileSize(archiveToDelete.sizeBytes) }}</span>
+        </div>
+      </div>
+      <div class="dialog-warning">
+        <mat-icon>warning</mat-icon>
+        <span>This action cannot be undone.</span>
+      </div>
+      <div class="dialog-actions">
+        <button mat-button (click)="closeArchiveDeleteDialog()" [disabled]="archiveDeleting">Cancel</button>
+        <button mat-raised-button color="warn" (click)="confirmDeleteArchive()" [disabled]="archiveDeleting">
+          <mat-icon>delete</mat-icon>
+          Delete Archive
+        </button>
+        <mat-spinner *ngIf="archiveDeleting" diameter="24"></mat-spinner>
+      </div>
+    </div>
+  </div>
+</div>

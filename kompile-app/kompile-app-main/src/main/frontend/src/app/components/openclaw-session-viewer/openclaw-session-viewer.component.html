@@ -1,0 +1,67 @@
+<div class="session-viewer">
+  <div class="header-row">
+    <h3>Session History</h3>
+    <button mat-icon-button (click)="loadSessions()" [disabled]="isLoading">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <div class="search-row">
+    <mat-form-field appearance="outline" class="search-field">
+      <mat-label>Search sessions</mat-label>
+      <input matInput [(ngModel)]="searchTerm" (input)="searchSessions()" placeholder="Filter sessions...">
+      <mat-icon matPrefix>search</mat-icon>
+    </mat-form-field>
+  </div>
+
+  <div class="content-area">
+    <div class="sessions-list">
+      <mat-nav-list>
+        <mat-list-item *ngFor="let session of filteredSessions" (click)="selectSession(session)" [class.selected]="selectedSession === session">
+          <mat-icon matListItemIcon>history</mat-icon>
+          <span matListItemTitle>{{ session }}</span>
+          <button mat-icon-button matListItemMeta (click)="clearSession(session); $event.stopPropagation()" matTooltip="Clear session">
+            <mat-icon>delete</mat-icon>
+          </button>
+        </mat-list-item>
+      </mat-nav-list>
+      
+      <div *ngIf="filteredSessions.length === 0 && !isLoading" class="empty-state">
+        <mat-icon>history</mat-icon>
+        <p>No sessions found</p>
+      </div>
+    </div>
+
+    <div class="session-detail" *ngIf="selectedSession">
+      <mat-card>
+        <mat-card-header>
+          <mat-card-title>{{ selectedSession }}</mat-card-title>
+          <mat-card-subtitle>Token count: {{ sessionTokenCount }}</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div *ngIf="isLoading" class="loading">
+            <mat-spinner diameter="32"></mat-spinner>
+          </div>
+          
+          <div *ngIf="!isLoading && sessionMessages.length > 0" class="messages-list">
+            <div *ngFor="let msg of sessionMessages" class="session-message">
+              <div class="message-header">
+                <mat-icon>{{ getMessageIcon(msg.role) }}</mat-icon>
+                <span class="role">{{ msg.role }}</span>
+                <span class="timestamp">{{ formatDate(msg.timestamp) }}</span>
+              </div>
+              <div class="message-content">{{ msg.content }}</div>
+              <div *ngIf="msg.thought" class="message-thought">
+                <strong>Thought:</strong> {{ msg.thought }}
+              </div>
+            </div>
+          </div>
+          
+          <div *ngIf="!isLoading && sessionMessages.length === 0" class="empty-messages">
+            <p>No messages in this session</p>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+  </div>
+</div>

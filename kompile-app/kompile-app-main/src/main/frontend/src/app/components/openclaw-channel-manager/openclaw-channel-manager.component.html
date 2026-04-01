@@ -1,0 +1,152 @@
+<div class="channel-manager">
+  <div class="header-row">
+    <h3>Channel Management</h3>
+  </div>
+
+  <!-- Channel List -->
+  <div class="channel-grid" *ngIf="!showConfig">
+    <mat-card *ngFor="let channel of channels" class="channel-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>{{ getChannelIcon(channel.channelName) }}</mat-icon>
+        <mat-card-title>{{ channel.channelName | titlecase }}</mat-card-title>
+        <mat-card-subtitle>
+          <mat-chip [color]="channel.running ? 'primary' : 'warn'" selected>
+            {{ channel.running ? 'Running' : 'Stopped' }}
+          </mat-chip>
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p *ngIf="channel.config">
+          Agent: <strong>{{ channel.config.agentId || 'default' }}</strong>
+        </p>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-button color="primary" (click)="configureChannel(channel)">
+          <mat-icon>settings</mat-icon>
+          Configure
+        </button>
+        <button mat-raised-button 
+          [color]="channel.running ? 'warn' : 'primary'"
+          (click)="channel.running ? stopChannel(channel.channelName) : startChannel(channel.channelName)">
+          <mat-icon>{{ channel.running ? 'stop' : 'play_arrow' }}</mat-icon>
+          {{ channel.running ? 'Stop' : 'Start' }}
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+
+  <!-- Channel Configuration -->
+  <mat-card class="config-card" *ngIf="showConfig && selectedChannel">
+    <mat-card-header>
+      <mat-card-title>
+        Configure {{ selectedChannel.channelName | titlecase }}
+      </mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <!-- Telegram Config -->
+      <form [formGroup]="telegramForm" *ngIf="selectedChannel.channelName === 'telegram'" class="config-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Bot Token</mat-label>
+          <input matInput formControlName="botToken" type="password">
+          <mat-hint>Get from &#64;BotFather</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Allowed Chat IDs</mat-label>
+          <input matInput formControlName="allowedChatIds" placeholder="123456789,987654321">
+          <mat-hint>Comma-separated chat IDs</mat-hint>
+        </mat-form-field>
+      </form>
+
+      <!-- Discord Config -->
+      <form [formGroup]="discordForm" *ngIf="selectedChannel.channelName === 'discord'" class="config-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Bot Token</mat-label>
+          <input matInput formControlName="botToken" type="password">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Allowed Channel IDs</mat-label>
+          <input matInput formControlName="allowedChannelIds">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Allowed Guild IDs</mat-label>
+          <input matInput formControlName="allowedGuildIds">
+        </mat-form-field>
+      </form>
+
+      <!-- Slack Config -->
+      <form [formGroup]="slackForm" *ngIf="selectedChannel.channelName === 'slack'" class="config-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Bot Token</mat-label>
+          <input matInput formControlName="botToken" type="password">
+          <mat-hint>xoxb-...</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>App Token</mat-label>
+          <input matInput formControlName="appToken" type="password">
+          <mat-hint>xapp-...</mat-hint>
+        </mat-form-field>
+        <mat-slide-toggle formControlName="respondToAllMessages">
+          Respond to all messages (not just mentions)
+        </mat-slide-toggle>
+      </form>
+
+      <!-- WhatsApp Config -->
+      <form [formGroup]="whatsappForm" *ngIf="selectedChannel.channelName === 'whatsapp'" class="config-form">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Access Token</mat-label>
+          <input matInput formControlName="accessToken" type="password">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Phone Number ID</mat-label>
+          <input matInput formControlName="phoneNumberId">
+        </mat-form-field>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Verify Token</mat-label>
+          <input matInput formControlName="verifyToken">
+        </mat-form-field>
+      </form>
+
+      <!-- Email Config -->
+      <form [formGroup]="emailForm" *ngIf="selectedChannel.channelName === 'email'" class="config-form">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>IMAP Host</mat-label>
+            <input matInput formControlName="imapHost">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>IMAP Port</mat-label>
+            <input matInput type="number" formControlName="imapPort">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Username</mat-label>
+            <input matInput formControlName="username">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Password</mat-label>
+            <input matInput formControlName="password" type="password">
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>SMTP Host</mat-label>
+            <input matInput formControlName="smtpHost">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>SMTP Port</mat-label>
+            <input matInput type="number" formControlName="smtpPort">
+          </mat-form-field>
+        </div>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>From Address</mat-label>
+          <input matInput formControlName="fromAddress">
+        </mat-form-field>
+      </form>
+    </mat-card-content>
+    <mat-card-actions>
+      <button mat-button (click)="closeConfig()">Cancel</button>
+      <button mat-raised-button color="primary" (click)="saveChannelConfig()">Save</button>
+    </mat-card-actions>
+  </mat-card>
+</div>

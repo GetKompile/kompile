@@ -126,6 +126,23 @@
               <input matInput formControlName="trainingData" placeholder="e.g., MS MARCO">
             </mat-form-field>
 
+            <div class="form-row three-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Encoder Type</mat-label>
+                <input matInput formControlName="encoderType" placeholder="e.g., bert, distilbert">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>RAG Role</mat-label>
+                <input matInput formControlName="ragRole" placeholder="e.g., retriever, reranker">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Version</mat-label>
+                <input matInput formControlName="version" placeholder="e.g., 1.5">
+              </mat-form-field>
+            </div>
+
             <div class="form-row two-columns">
               <mat-form-field appearance="outline">
                 <mat-label>Source Origin</mat-label>
@@ -136,6 +153,108 @@
                 <mat-label>Source Repository</mat-label>
                 <input matInput formControlName="sourceRepository" placeholder="e.g., BAAI/bge-base-en-v1.5">
               </mat-form-field>
+            </div>
+
+            <!-- OCR Fields (OCR models) -->
+            <div *ngIf="isOcrModel()" class="conditional-section">
+              <div class="section-header">
+                <h5>OCR Configuration</h5>
+              </div>
+              <div class="form-row three-columns">
+                <mat-form-field appearance="outline">
+                  <mat-label>Input Height</mat-label>
+                  <input matInput type="number" formControlName="inputHeight">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Input Width</mat-label>
+                  <input matInput type="number" formControlName="inputWidth">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Batch Size</mat-label>
+                  <input matInput type="number" formControlName="maxBatchSize">
+                </mat-form-field>
+              </div>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Supported Languages</mat-label>
+                <input matInput formControlName="supportedLanguages" placeholder="e.g., en, de, fr, zh">
+                <mat-hint>Comma-separated language codes</mat-hint>
+              </mat-form-field>
+              <div class="form-row">
+                <mat-checkbox formControlName="supportsBatch" color="primary">Supports Batch</mat-checkbox>
+                <mat-checkbox formControlName="supportsHandwriting" color="primary">Supports Handwriting</mat-checkbox>
+                <mat-checkbox formControlName="usesCtc" color="primary">Uses CTC</mat-checkbox>
+              </div>
+              <div class="form-row two-columns">
+                <mat-form-field appearance="outline">
+                  <mat-label>Average Accuracy (%)</mat-label>
+                  <input matInput type="number" step="0.1" formControlName="averageAccuracy">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>OCR Vocab Size</mat-label>
+                  <input matInput type="number" formControlName="ocrVocabSize">
+                </mat-form-field>
+              </div>
+            </div>
+
+            <!-- VLM Architecture Fields -->
+            <div *ngIf="isVlmModel()" class="conditional-section">
+              <div class="section-header">
+                <h5>VLM Architecture</h5>
+              </div>
+              <div class="form-row three-columns">
+                <mat-form-field appearance="outline">
+                  <mat-label>Image Size (px)</mat-label>
+                  <input matInput type="number" formControlName="imageSize">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Tile Size (px)</mat-label>
+                  <input matInput type="number" formControlName="tileSize">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Vision Frames</mat-label>
+                  <input matInput type="number" formControlName="visionFrames">
+                </mat-form-field>
+              </div>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Components</mat-label>
+                <input matInput formControlName="components" placeholder="e.g., vision_encoder, decoder, embed_tokens">
+                <mat-hint>Comma-separated component names</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <!-- Vision Encoder IO Config (VLM models) -->
+            <div *ngIf="model.type === 'vlm_pipeline'" class="vision-io-section">
+              <div class="section-header">
+                <h5>Vision Encoder IO Config</h5>
+                <button mat-stroked-button color="accent" (click)="probeVisionEncoderIO()"
+                        [disabled]="isProbing" matTooltip="Auto-detect IO names from model graph">
+                  <mat-icon>{{ isProbing ? 'hourglass_empty' : 'search' }}</mat-icon>
+                  {{ isProbing ? 'Probing...' : 'Re-probe' }}
+                </button>
+              </div>
+              <div class="form-row two-columns">
+                <mat-form-field appearance="outline">
+                  <mat-label>Pixel Values Input Name</mat-label>
+                  <input matInput formControlName="visionEncoderPixelValuesName" placeholder="e.g., pixel_values">
+                  <mat-hint>Auto-probed from model graph</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Pixel Attention Mask Input</mat-label>
+                  <input matInput formControlName="visionEncoderPixelAttentionMaskName" placeholder="e.g., pixel_attention_mask">
+                  <mat-hint>Leave blank if not used</mat-hint>
+                </mat-form-field>
+              </div>
+              <div class="form-row two-columns">
+                <mat-form-field appearance="outline">
+                  <mat-label>Primary Output Name</mat-label>
+                  <input matInput formControlName="visionEncoderPrimaryOutputName" placeholder="e.g., image_embeds">
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Output Names</mat-label>
+                  <input matInput formControlName="visionEncoderOutputNames" placeholder="e.g., image_embeds, last_hidden_state">
+                  <mat-hint>Comma-separated list of output variable names</mat-hint>
+                </mat-form-field>
+              </div>
             </div>
 
             <div class="form-actions">
@@ -259,6 +378,20 @@
               <span class="config-label">Max Length</span>
               <span class="config-value">{{ model.tokenizer?.max_length || 512 }} tokens</span>
             </div>
+
+            <div class="config-row" *ngIf="model.tokenizer?.padding">
+              <mat-icon>format_indent_increase</mat-icon>
+              <span class="config-label">Padding</span>
+              <span class="config-value">{{ model.tokenizer.padding }}</span>
+            </div>
+
+            <div class="config-row" *ngIf="model.tokenizer?.truncation != null">
+              <mat-icon>content_cut</mat-icon>
+              <span class="config-label">Truncation</span>
+              <mat-chip [class]="model.tokenizer?.truncation ? 'chip-enabled' : 'chip-disabled'">
+                {{ model.tokenizer?.truncation ? 'Yes' : 'No' }}
+              </mat-chip>
+            </div>
           </div>
 
           <!-- Edit form -->
@@ -287,6 +420,17 @@
               <mat-hint>Maximum number of tokens per sequence</mat-hint>
             </mat-form-field>
 
+            <mat-form-field appearance="outline" class="max-length-field">
+              <mat-label>Padding</mat-label>
+              <input matInput formControlName="padding" placeholder="e.g., max_length, longest">
+            </mat-form-field>
+
+            <div class="form-row">
+              <mat-checkbox formControlName="truncation" color="primary">
+                Enable truncation
+              </mat-checkbox>
+            </div>
+
             <div class="form-actions">
               <button mat-button (click)="toggleTokenizerEdit()">Cancel</button>
               <button mat-raised-button color="primary" (click)="saveTokenizerConfig()"
@@ -314,6 +458,417 @@
               <div class="vocab-content">
                 <span class="vocab-label">Vocabulary Size</span>
                 <span class="vocab-value">{{ model.metadata.vocabSize | number }} tokens</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Preprocessor Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>image</mat-icon>
+        <span>Preprocessor</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="info-section">
+          <div class="section-header">
+            <h4>Image Preprocessor Configuration</h4>
+            <button mat-icon-button *ngIf="editable && !isEditingPreprocessor" (click)="togglePreprocessorEdit()"
+                    matTooltip="Edit configuration">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button *ngIf="isEditingPreprocessor" (click)="togglePreprocessorEdit()"
+                    matTooltip="Cancel">
+              <mat-icon>close</mat-icon>
+            </button>
+          </div>
+
+          <!-- Read-only view -->
+          <div *ngIf="!isEditingPreprocessor">
+            <div class="metadata-grid" *ngIf="hasPreprocessorConfig()">
+              <div class="metadata-item" *ngFor="let item of getPreprocessorItems()">
+                <mat-icon>{{ item.icon }}</mat-icon>
+                <div class="metadata-content">
+                  <span class="metadata-label">{{ item.label }}</span>
+                  <span class="metadata-value">{{ item.value }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="empty-metadata" *ngIf="!hasPreprocessorConfig()">
+              <p>No preprocessor configuration for this model.</p>
+              <button mat-stroked-button color="primary" *ngIf="editable" (click)="togglePreprocessorEdit()">
+                <mat-icon>add</mat-icon>
+                Add Preprocessor Config
+              </button>
+            </div>
+          </div>
+
+          <!-- Edit form -->
+          <form [formGroup]="preprocessorForm" class="edit-form" *ngIf="isEditingPreprocessor">
+
+            <!-- Preset Selector -->
+            <div class="preset-selector-section">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Load from Preset</mat-label>
+                <mat-select [(value)]="selectedPreprocessorPreset"
+                            (selectionChange)="applyPreprocessorPreset($event.value)">
+                  <mat-option value="">-- Select a preset --</mat-option>
+                  <mat-option *ngFor="let preset of preprocessorPresets" [value]="preset.id">
+                    {{ preset.name }} — {{ preset.description }}
+                  </mat-option>
+                </mat-select>
+                <mat-hint>Select a preset to auto-fill fields, then customize as needed</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <mat-divider class="preset-divider"></mat-divider>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Image Processor Type</mat-label>
+              <input matInput formControlName="image_processor_type" placeholder="e.g., CLIPImageProcessor">
+            </mat-form-field>
+
+            <h5>Resize</h5>
+            <div class="form-row">
+              <mat-checkbox formControlName="do_resize" color="primary">Enable Resize</mat-checkbox>
+            </div>
+            <div class="form-row three-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Height</mat-label>
+                <input matInput type="number" formControlName="size_height">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Width</mat-label>
+                <input matInput type="number" formControlName="size_width">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Resample</mat-label>
+                <input matInput type="number" formControlName="resample" placeholder="e.g., 3 (bicubic)">
+              </mat-form-field>
+            </div>
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Shortest Edge</mat-label>
+                <input matInput type="number" formControlName="size_shortest_edge">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Longest Edge</mat-label>
+                <input matInput type="number" formControlName="size_longest_edge">
+              </mat-form-field>
+            </div>
+
+            <h5>Rescale & Normalize</h5>
+            <div class="form-row two-columns">
+              <mat-checkbox formControlName="do_rescale" color="primary">Enable Rescale</mat-checkbox>
+              <mat-checkbox formControlName="do_normalize" color="primary">Enable Normalize</mat-checkbox>
+            </div>
+            <mat-form-field appearance="outline">
+              <mat-label>Rescale Factor</mat-label>
+              <input matInput type="number" step="0.000001" formControlName="rescale_factor">
+              <mat-hint>e.g., 0.003922 (1/255)</mat-hint>
+            </mat-form-field>
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Image Mean</mat-label>
+                <input matInput formControlName="image_mean" placeholder="e.g., 0.485, 0.456, 0.406">
+                <mat-hint>Comma-separated per-channel values</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Image Std</mat-label>
+                <input matInput formControlName="image_std" placeholder="e.g., 0.229, 0.224, 0.225">
+                <mat-hint>Comma-separated per-channel values</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <h5>Crop & Pad</h5>
+            <div class="form-row two-columns">
+              <mat-checkbox formControlName="do_center_crop" color="primary">Enable Center Crop</mat-checkbox>
+              <mat-checkbox formControlName="do_pad" color="primary">Enable Padding</mat-checkbox>
+            </div>
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Crop Height</mat-label>
+                <input matInput type="number" formControlName="crop_size_height">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Crop Width</mat-label>
+                <input matInput type="number" formControlName="crop_size_width">
+              </mat-form-field>
+            </div>
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Pad Height</mat-label>
+                <input matInput type="number" formControlName="pad_size_height">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Pad Width</mat-label>
+                <input matInput type="number" formControlName="pad_size_width">
+              </mat-form-field>
+            </div>
+
+            <h5>Other</h5>
+            <div class="form-row">
+              <mat-checkbox formControlName="do_convert_rgb" color="primary">Convert to RGB</mat-checkbox>
+            </div>
+            <div class="form-row two-columns">
+              <mat-form-field appearance="outline">
+                <mat-label>Patch Size</mat-label>
+                <input matInput type="number" formControlName="patch_size">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Num Channels</mat-label>
+                <input matInput type="number" formControlName="num_channels" min="1" max="4">
+              </mat-form-field>
+            </div>
+
+            <div class="form-actions">
+              <button mat-button (click)="togglePreprocessorEdit()">Cancel</button>
+              <button mat-raised-button color="primary" (click)="savePreprocessorConfig()"
+                      [disabled]="isSaving || preprocessorForm.invalid">
+                <mat-icon *ngIf="isSaving">hourglass_empty</mat-icon>
+                {{ isSaving ? 'Saving...' : 'Save Configuration' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Optimization Tab -->
+    <mat-tab *ngIf="hasOptimizationData()">
+      <ng-template mat-tab-label>
+        <mat-icon>speed</mat-icon>
+        <span>Optimization</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Optimization Stats -->
+        <div class="info-section">
+          <h4>Optimization Summary</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item">
+              <mat-icon>tune</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Preset</span>
+                <span class="metadata-value">{{ getOptimizationPreset() }}</span>
+              </div>
+            </div>
+            <div class="metadata-item">
+              <mat-icon>compress</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Size Reduction</span>
+                <span class="metadata-value">{{ getOptimizationReduction() }}</span>
+              </div>
+            </div>
+            <div class="metadata-item">
+              <mat-icon>timer</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Optimization Time</span>
+                <span class="metadata-value">{{ getOptimizationTime() }}</span>
+              </div>
+            </div>
+            <div class="metadata-item" *ngIf="model.metadata?.optimized_at">
+              <mat-icon>event</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Optimized At</span>
+                <span class="metadata-value">{{ model.metadata.optimized_at | date:'medium' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Optimization Stats Detail -->
+        <div class="info-section" *ngIf="model.metadata?.optimization_stats">
+          <h4>Before / After</h4>
+          <div class="metadata-grid">
+            <div class="metadata-item" *ngIf="model.metadata?.optimization_stats?.ops_before != null">
+              <mat-icon>functions</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Operations</span>
+                <span class="metadata-value">{{ model.metadata?.optimization_stats?.ops_before }} &rarr; {{ model.metadata?.optimization_stats?.ops_after }}</span>
+              </div>
+            </div>
+            <div class="metadata-item" *ngIf="model.metadata?.optimization_stats?.vars_before != null">
+              <mat-icon>data_array</mat-icon>
+              <div class="metadata-content">
+                <span class="metadata-label">Variables</span>
+                <span class="metadata-value">{{ model.metadata?.optimization_stats?.vars_before }} &rarr; {{ model.metadata?.optimization_stats?.vars_after }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Applied Passes -->
+        <div class="info-section" *ngIf="getOptimizationPasses().length > 0">
+          <h4>Applied Passes</h4>
+          <mat-chip-set>
+            <mat-chip *ngFor="let pass of getOptimizationPasses()">{{ pass }}</mat-chip>
+          </mat-chip-set>
+        </div>
+
+        <!-- Saved Config -->
+        <div class="info-section" *ngIf="model.metadata?.optimization_config">
+          <h4>Saved Configuration</h4>
+          <pre class="json-view">{{ model.metadata.optimization_config | json }}</pre>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- DSP Execution Plan Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>account_tree</mat-icon>
+        <span>DSP Plan</span>
+      </ng-template>
+
+      <div class="tab-content" (click)="loadExecutionPlan()">
+        <!-- Auto-load trigger -->
+        <div *ngIf="!executionPlanLoaded && !executionPlanLoading && !executionPlanError" class="plan-load-prompt">
+          <button mat-raised-button color="primary" (click)="loadExecutionPlan()">
+            <mat-icon>play_arrow</mat-icon>
+            Load Execution Plan
+          </button>
+          <p class="plan-hint">Analyzes the model graph to generate an end-to-end execution plan</p>
+        </div>
+
+        <!-- Loading -->
+        <div *ngIf="executionPlanLoading" class="plan-loading">
+          <mat-progress-spinner mode="indeterminate" diameter="40"></mat-progress-spinner>
+          <span>Analyzing computation graph...</span>
+        </div>
+
+        <!-- Error -->
+        <div *ngIf="executionPlanError" class="plan-error">
+          <mat-icon color="warn">error_outline</mat-icon>
+          <span>{{ executionPlanError }}</span>
+          <button mat-stroked-button (click)="executionPlanLoaded = false; executionPlanError = null; loadExecutionPlan()">
+            <mat-icon>refresh</mat-icon>
+            Retry
+          </button>
+        </div>
+
+        <!-- Execution Plan -->
+        <div *ngIf="executionPlanLoaded && graphInfo" class="execution-plan">
+
+          <!-- Summary Bar -->
+          <div class="plan-summary">
+            <div class="plan-summary-item">
+              <mat-icon>functions</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Operations</span>
+                <span class="plan-summary-value">{{ graphInfo.totalOps }}</span>
+              </div>
+            </div>
+            <div class="plan-summary-item">
+              <mat-icon>data_array</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Variables</span>
+                <span class="plan-summary-value">{{ graphInfo.totalVariables }}</span>
+              </div>
+            </div>
+            <div class="plan-summary-item" *ngIf="graphInfo.analysis?.graphDepth">
+              <mat-icon>stacked_line_chart</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Graph Depth</span>
+                <span class="plan-summary-value">{{ graphInfo.analysis!.graphDepth }}</span>
+              </div>
+            </div>
+            <div class="plan-summary-item">
+              <mat-icon>storage</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Model Size</span>
+                <span class="plan-summary-value">{{ formatBytes(graphInfo.modelSizeBytes) }}</span>
+              </div>
+            </div>
+            <div class="plan-summary-item" *ngIf="graphInfo.analysis?.memoryEstimateBytes">
+              <mat-icon>memory</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Memory Estimate</span>
+                <span class="plan-summary-value">{{ formatBytes(graphInfo.analysis!.memoryEstimateBytes) }}</span>
+              </div>
+            </div>
+            <div class="plan-summary-item" *ngIf="graphInfo.analysis?.attentionHeads">
+              <mat-icon>visibility</mat-icon>
+              <div class="plan-summary-content">
+                <span class="plan-summary-label">Attention Heads</span>
+                <span class="plan-summary-value">{{ graphInfo.analysis!.attentionHeads }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Plan Flow -->
+          <div class="plan-flow">
+            <div *ngFor="let stage of executionPlanStages; let i = index; let last = last"
+                 class="plan-stage-wrapper">
+              <!-- Stage Card -->
+              <div class="plan-stage" [style.border-left-color]="getStageColor(stage.type)">
+                <div class="plan-stage-header">
+                  <mat-icon [style.color]="getStageColor(stage.type)">{{ stage.icon }}</mat-icon>
+                  <span class="plan-stage-label">{{ stage.label }}</span>
+                  <span class="plan-stage-badge" [style.background]="getStageColor(stage.type)">
+                    <ng-container *ngIf="stage.type === 'layer_group'">
+                      {{ stage.stats.count }} layers &times; {{ stage.stats.opsPerUnit }} ops
+                    </ng-container>
+                    <ng-container *ngIf="stage.type === 'op_group'">
+                      {{ stage.stats.count }} ops
+                    </ng-container>
+                    <ng-container *ngIf="stage.type === 'input' || stage.type === 'output'">
+                      {{ stage.stats.count }} {{ stage.stats.count === 1 ? 'tensor' : 'tensors' }}
+                    </ng-container>
+                    <ng-container *ngIf="stage.type === 'optimization'">
+                      {{ stage.stats.count }} fused
+                    </ng-container>
+                  </span>
+                </div>
+                <div class="plan-stage-details">
+                  <mat-chip-set>
+                    <mat-chip *ngFor="let detail of stage.details"
+                              [class]="'detail-chip-' + detail.type">
+                      {{ detail.label }}
+                    </mat-chip>
+                  </mat-chip-set>
+                </div>
+              </div>
+
+              <!-- Connector Arrow -->
+              <div *ngIf="!last" class="plan-connector">
+                <div class="plan-connector-line"></div>
+                <mat-icon class="plan-connector-arrow">arrow_downward</mat-icon>
+              </div>
+            </div>
+          </div>
+
+          <!-- Op Type Distribution -->
+          <div class="info-section" *ngIf="graphInfo.opTypes && (graphInfo.opTypes | keyvalue).length > 0">
+            <h4>Operation Distribution</h4>
+            <div class="op-distribution">
+              <div *ngFor="let entry of graphInfo.opTypes | keyvalue" class="op-dist-row">
+                <span class="op-dist-name">{{ entry.key }}</span>
+                <div class="op-dist-bar-wrapper">
+                  <div class="op-dist-bar"
+                       [style.width.%]="(entry.value / graphInfo.totalOps) * 100"
+                       [style.background]="getStageColor('layer_group')">
+                  </div>
+                </div>
+                <span class="op-dist-count">{{ entry.value }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Parameter Breakdown -->
+          <div class="info-section" *ngIf="graphInfo.analysis?.parametersByDataType">
+            <h4>Parameters by Data Type</h4>
+            <div class="metadata-grid">
+              <div *ngFor="let entry of graphInfo.analysis!.parametersByDataType | keyvalue" class="metadata-item">
+                <mat-icon>memory</mat-icon>
+                <div class="metadata-content">
+                  <span class="metadata-label">{{ entry.key }}</span>
+                  <span class="metadata-value">{{ entry.value | number }} params</span>
+                </div>
               </div>
             </div>
           </div>

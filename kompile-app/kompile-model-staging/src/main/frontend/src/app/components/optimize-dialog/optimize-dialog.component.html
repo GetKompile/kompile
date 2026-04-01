@@ -1,0 +1,85 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<h2 mat-dialog-title>
+  <mat-icon>bolt</mat-icon>
+  {{ data.isReoptimize ? 'Re-Optimize' : 'Optimize' }} Model
+</h2>
+
+<mat-dialog-content>
+  <p class="model-id">{{ data.modelId }}</p>
+
+  <!-- Preset Selector -->
+  <div class="preset-section">
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Optimization Profile</mat-label>
+      <mat-select [value]="selectedPreset" (selectionChange)="applyPreset($event.value)">
+        <mat-option *ngFor="let key of presetKeys" [value]="key">
+          {{ presets[key].name }} — {{ presets[key].description }}
+        </mat-option>
+        <mat-option value="CUSTOM" *ngIf="selectedPreset === 'CUSTOM'">
+          Custom — Manually selected passes
+        </mat-option>
+      </mat-select>
+    </mat-form-field>
+  </div>
+
+  <!-- Pass Tree -->
+  <div class="pass-tree">
+    <div class="group-row" *ngFor="let gs of groupStates">
+      <!-- Group Header -->
+      <div class="group-header" (click)="gs.expanded = !gs.expanded">
+        <mat-checkbox
+          [checked]="isGroupFullySelected(gs)"
+          [indeterminate]="isGroupPartiallySelected(gs)"
+          (change)="toggleGroup(gs)"
+          (click)="$event.stopPropagation()"
+          color="primary">
+        </mat-checkbox>
+        <mat-icon class="category-icon" [style.color]="getCategoryColor(gs.group.category)">{{ gs.group.icon }}</mat-icon>
+        <span class="group-name">{{ gs.group.name }}</span>
+        <span class="category-badge" [style.background]="getCategoryColor(gs.group.category)">{{ gs.group.category }}</span>
+        <span class="sub-count">{{ gs.selectedSubPasses.size }}/{{ gs.group.subPasses?.length || 0 }}</span>
+        <mat-icon class="expand-icon">{{ gs.expanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </div>
+
+      <!-- Sub-passes (expandable) -->
+      <div class="sub-passes" *ngIf="gs.expanded && gs.group.subPasses">
+        <div class="sub-pass-row" *ngFor="let sub of gs.group.subPasses">
+          <mat-checkbox
+            [checked]="isSubPassSelected(gs, sub.id)"
+            (change)="toggleSubPass(gs, sub.id)"
+            color="primary">
+          </mat-checkbox>
+          <div class="sub-pass-info">
+            <span class="sub-pass-name">{{ sub.name }}</span>
+            <span class="sub-pass-desc">{{ sub.description }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Max Iterations -->
+  <div class="iterations-section">
+    <mat-form-field appearance="outline" class="iterations-field">
+      <mat-label>Max Iterations</mat-label>
+      <input matInput type="number" [(ngModel)]="maxIterations" min="1" max="10">
+      <mat-hint>Number of optimization passes over the graph</mat-hint>
+    </mat-form-field>
+  </div>
+
+  <div class="selection-summary">
+    <mat-icon>info_outline</mat-icon>
+    <span>{{ getTotalSelectedCount() }} individual optimizers selected across {{ getSelectedPassIds().length }} pass groups</span>
+  </div>
+</mat-dialog-content>
+
+<mat-dialog-actions align="end">
+  <button mat-button (click)="onCancel()">Cancel</button>
+  <button mat-raised-button color="primary" (click)="onOptimize()" [disabled]="getTotalSelectedCount() === 0">
+    <mat-icon>bolt</mat-icon>
+    {{ data.isReoptimize ? 'Re-Optimize' : 'Optimize' }}
+  </button>
+</mat-dialog-actions>

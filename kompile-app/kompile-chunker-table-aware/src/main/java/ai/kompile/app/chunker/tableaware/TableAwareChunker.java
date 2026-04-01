@@ -1,0 +1,392 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.kompile.app.chunker.tableaware;
+
+import ai.kompile.app.core.chunking.SentenceFilter;
+import ai.kompile.app.core.chunking.TextChunker;
+import ai.kompile.core.retrievers.RetrievedDoc;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+
+/**
+ * A text chunker that preserves table structure during chunking.
+ *
+ * <p>This chunker:</p>
+ * <ul>
+ *   <li>Detects tables (markdown, TSV, HTML) in the document</li>
+ *   <li>Keeps tables as atomic chunks (never splits a table)</li>
+ *   <li>Chunks non-table text using standard recursive character splitting</li>
+ *   <li>Enriches metadata to indicate which chunks contain tables</li>
+ * </ul>
+ *
+ * <p>Configuration options:</p>
+ * <ul>
+ *   <li><b>chunkSize</b> - Maximum size for text chunks (default: 2000)</li>
+ *   <li><b>overlap</b> - Overlap between text chunks (default: 200)</li>
+ *   <li><b>preserveTables</b> - Keep tables atomic even if large (default: true)</li>
+ *   <li><b>maxTableSize</b> - Maximum table size before warning (default: 10000)</li>
+ * </ul>
+ */
+@Component("tableAwareChunker")
+public class TableAwareChunker implements TextChunker {
+
+    private static final Logger logger = LoggerFactory.getLogger(TableAwareChunker.class);
+    private static final String CHUNKER_NAME = "table-aware";
+
+    // Default configuration
+    private static final int DEFAULT_CHUNK_SIZE = 2000;
+    private static final int DEFAULT_OVERLAP = 200;
+    private static final int DEFAULT_MAX_TABLE_SIZE = 10000;
+
+    private final TableDetector tableDetector;
+
+    @Autowired
+    public TableAwareChunker(TableDetector tableDetector) {
+        this.tableDetector = tableDetector;
+    }
+
+    // Constructor for testing without Spring
+    public TableAwareChunker() {
+        this.tableDetector = new TableDetector();
+    }
+
+    @Override
+    public List<RetrievedDoc> chunk(RetrievedDoc document, Map<String, Object> options) {
+        validateDocument(document);
+        Map<String, Object> opts = prepareOptions(options);
+
+        String text = document.getText();
+        if (text == null || text.isEmpty()) {
+            return List.of();
+        }
+
+        int chunkSize = (Integer) opts.get("chunkSize");
+        int overlap = (Integer) opts.get("overlap");
+        int maxTableSize = (Integer) opts.get("maxTableSize");
+        boolean preserveTables = (Boolean) opts.get("preserveTables");
+
+        // Detect table regions
+        List<TableDetector.TableRegion> tableRegions = tableDetector.detectTables(text);
+
+        if (tableRegions.isEmpty()) {
+            // No tables - use standard text chunking
+            logger.debug("No tables detected in document {}, using standard chunking", document.getId());
+            return chunkText(document, text, chunkSize, overlap);
+        }
+
+        logger.debug("Detected {} tables in document {}", tableRegions.size(), document.getId());
+
+        // Split content into table and non-table segments
+        List<ContentSegment> segments = splitIntoSegments(text, tableRegions);
+
+        // Process each segment
+        List<RetrievedDoc> allChunks = new ArrayList<>();
+        int chunkIndex = 0;
+
+        for (ContentSegment segment : segments) {
+            if (segment.isTable) {
+                // Check if table is very large
+                if (segment.content.length() > maxTableSize && !preserveTables) {
+                    logger.warn("Table {} exceeds max size ({} chars), will be chunked",
+                        segment.tableIndex, segment.content.length());
+                    List<RetrievedDoc> tableChunks = chunkText(document, segment.content, chunkSize, overlap);
+                    for (RetrievedDoc tc : tableChunks) {
+                        allChunks.add(enrichTableChunk(tc, document, chunkIndex++, segment));
+                    }
+                } else {
+                    // Keep table as single chunk
+                    RetrievedDoc tableChunk = createTableChunk(document, segment, chunkIndex++);
+                    allChunks.add(tableChunk);
+                }
+            } else {
+                // Chunk non-table text normally
+                if (!segment.content.trim().isEmpty()) {
+                    List<RetrievedDoc> textChunks = chunkText(document, segment.content, chunkSize, overlap);
+                    for (RetrievedDoc tc : textChunks) {
+                        allChunks.add(enrichTextChunk(tc, document, chunkIndex++));
+                    }
+                }
+            }
+        }
+
+        logger.debug("Created {} chunks for document {} ({} tables, {} text chunks)",
+            allChunks.size(), document.getId(),
+            tableRegions.size(),
+            allChunks.size() - tableRegions.size());
+
+        return allChunks;
+    }
+
+    /**
+     * Represents a segment of content (either table or text).
+     */
+    private record ContentSegment(
+        String content,
+        boolean isTable,
+        int tableIndex,
+        String tableType
+    ) {}
+
+    /**
+     * Splits text into alternating table and non-table segments.
+     */
+    private List<ContentSegment> splitIntoSegments(String text, List<TableDetector.TableRegion> tables) {
+        List<ContentSegment> segments = new ArrayList<>();
+        int currentPos = 0;
+
+        for (TableDetector.TableRegion table : tables) {
+            // Add text before this table
+            if (table.startOffset() > currentPos) {
+                String textBefore = text.substring(currentPos, table.startOffset());
+                segments.add(new ContentSegment(textBefore, false, -1, null));
+            }
+
+            // Add the table
+            segments.add(new ContentSegment(
+                table.tableContent(),
+                true,
+                table.tableIndex(),
+                table.tableType()
+            ));
+
+            currentPos = table.endOffset();
+        }
+
+        // Add text after last table
+        if (currentPos < text.length()) {
+            String textAfter = text.substring(currentPos);
+            segments.add(new ContentSegment(textAfter, false, -1, null));
+        }
+
+        return segments;
+    }
+
+    /**
+     * Creates a chunk for a table.
+     */
+    private RetrievedDoc createTableChunk(RetrievedDoc original, ContentSegment segment, int chunkIndex) {
+        Map<String, Object> metadata = new HashMap<>(original.getMetadata());
+        metadata.put("chunk.strategy", CHUNKER_NAME);
+        metadata.put("chunk.index", chunkIndex);
+        metadata.put("chunk.originalId", original.getId());
+        metadata.put("chunk.size", segment.content.length());
+        metadata.put("chunk.isTable", true);
+        metadata.put("content_type", "table");
+        metadata.put("table_index", segment.tableIndex);
+        metadata.put("table_type", segment.tableType);
+
+        return RetrievedDoc.builder()
+            .id(original.getId() + "-chunk-" + chunkIndex)
+            .text(segment.content.trim())
+            .metadata(metadata)
+            .score(original.getScore())
+            .build();
+    }
+
+    /**
+     * Enriches a table chunk with additional metadata.
+     */
+    private RetrievedDoc enrichTableChunk(RetrievedDoc chunk, RetrievedDoc original,
+                                           int chunkIndex, ContentSegment segment) {
+        Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
+        metadata.put("chunk.strategy", CHUNKER_NAME);
+        metadata.put("chunk.index", chunkIndex);
+        metadata.put("chunk.originalId", original.getId());
+        metadata.put("chunk.isTable", true);
+        metadata.put("chunk.tableFragment", true); // Indicates this is part of a split table
+        metadata.put("content_type", "table");
+        metadata.put("table_index", segment.tableIndex);
+        metadata.put("table_type", segment.tableType);
+
+        return RetrievedDoc.builder()
+            .id(original.getId() + "-chunk-" + chunkIndex)
+            .text(chunk.getText())
+            .metadata(metadata)
+            .score(original.getScore())
+            .build();
+    }
+
+    /**
+     * Enriches a text chunk with metadata.
+     */
+    private RetrievedDoc enrichTextChunk(RetrievedDoc chunk, RetrievedDoc original, int chunkIndex) {
+        Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
+        metadata.put("chunk.strategy", CHUNKER_NAME);
+        metadata.put("chunk.index", chunkIndex);
+        metadata.put("chunk.originalId", original.getId());
+        metadata.put("chunk.isTable", false);
+        metadata.put("content_type", "text");
+
+        return RetrievedDoc.builder()
+            .id(original.getId() + "-chunk-" + chunkIndex)
+            .text(chunk.getText())
+            .metadata(metadata)
+            .score(original.getScore())
+            .build();
+    }
+
+    /**
+     * Chunks text using recursive character splitting.
+     * This is a simplified implementation - the real one delegates to RecursiveCharacterTextChunker.
+     */
+    private List<RetrievedDoc> chunkText(RetrievedDoc original, String text, int chunkSize, int overlap) {
+        List<RetrievedDoc> chunks = new ArrayList<>();
+
+        if (text.length() <= chunkSize) {
+            chunks.add(RetrievedDoc.builder()
+                .id(original.getId() + "-text-0")
+                .text(text.trim())
+                .metadata(original.getMetadata())
+                .score(original.getScore())
+                .build());
+            return chunks;
+        }
+
+        // Split on paragraphs first, then sentences, then words
+        String[] separators = {"\n\n", "\n", ". ", " "};
+
+        List<String> textChunks = splitTextRecursively(text, chunkSize, overlap, separators, 0);
+
+        for (int i = 0; i < textChunks.size(); i++) {
+            chunks.add(RetrievedDoc.builder()
+                .id(original.getId() + "-text-" + i)
+                .text(textChunks.get(i).trim())
+                .metadata(original.getMetadata())
+                .score(original.getScore())
+                .build());
+        }
+
+        return chunks;
+    }
+
+    private List<String> splitTextRecursively(String text, int chunkSize, int overlap,
+                                               String[] separators, int sepIndex) {
+        List<String> chunks = new ArrayList<>();
+
+        if (text.length() <= chunkSize) {
+            if (!text.trim().isEmpty()) {
+                chunks.add(text);
+            }
+            return chunks;
+        }
+
+        if (sepIndex >= separators.length) {
+            // Fallback: split by character
+            int start = 0;
+            while (start < text.length()) {
+                int end = Math.min(start + chunkSize, text.length());
+                chunks.add(text.substring(start, end));
+                start = end - overlap;
+                if (start <= 0 || start >= text.length()) break;
+            }
+            return chunks;
+        }
+
+        String separator = separators[sepIndex];
+        String[] parts = text.split(Pattern.quote(separator));
+
+        StringBuilder currentChunk = new StringBuilder();
+
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+
+            int potentialLength = currentChunk.isEmpty()
+                ? part.length()
+                : currentChunk.length() + separator.length() + part.length();
+
+            if (potentialLength <= chunkSize) {
+                if (currentChunk.length() > 0) {
+                    currentChunk.append(separator);
+                }
+                currentChunk.append(part);
+            } else {
+                // Save current chunk if not empty
+                if (currentChunk.length() > 0) {
+                    chunks.add(currentChunk.toString());
+
+                    // Add overlap from end of current chunk
+                    String overlapText = getOverlapText(currentChunk.toString(), overlap);
+                    currentChunk = new StringBuilder(overlapText);
+                }
+
+                // Handle part that might be larger than chunkSize
+                if (part.length() > chunkSize) {
+                    // Recursively split with next separator
+                    List<String> subChunks = splitTextRecursively(part, chunkSize, overlap, separators, sepIndex + 1);
+                    chunks.addAll(subChunks);
+                    currentChunk = new StringBuilder();
+                } else {
+                    if (currentChunk.length() > 0) {
+                        currentChunk.append(separator);
+                    }
+                    currentChunk.append(part);
+                }
+            }
+        }
+
+        // Add last chunk
+        if (currentChunk.length() > 0) {
+            chunks.add(currentChunk.toString());
+        }
+
+        return chunks;
+    }
+
+    private String getOverlapText(String text, int overlapSize) {
+        if (text.length() <= overlapSize) {
+            return text;
+        }
+        // Try to start at word boundary
+        int startPos = text.length() - overlapSize;
+        int spacePos = text.indexOf(' ', startPos);
+        if (spacePos > startPos && spacePos < text.length() - overlapSize / 2) {
+            startPos = spacePos + 1;
+        }
+        return text.substring(startPos);
+    }
+
+    @Override
+    public String getName() {
+        return CHUNKER_NAME;
+    }
+
+    @Override
+    public List<String> getSupportedLanguages() {
+        return List.of("*"); // Language-agnostic
+    }
+
+    @Override
+    public Map<String, Object> getDefaultOptions() {
+        Map<String, Object> defaults = new HashMap<>();
+        defaults.put("chunkSize", DEFAULT_CHUNK_SIZE);
+        defaults.put("overlap", DEFAULT_OVERLAP);
+        defaults.put("preserveTables", true);
+        defaults.put("maxTableSize", DEFAULT_MAX_TABLE_SIZE);
+        return defaults;
+    }
+
+    // Pattern helper
+    private static class Pattern {
+        static String quote(String s) {
+            return java.util.regex.Pattern.quote(s);
+        }
+    }
+}

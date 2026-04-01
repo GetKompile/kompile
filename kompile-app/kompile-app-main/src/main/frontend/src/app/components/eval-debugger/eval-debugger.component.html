@@ -1,0 +1,661 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="eval-debugger">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-info">
+      <h2>
+        <mat-icon>science</mat-icon>
+        Evaluation Debugger
+      </h2>
+      <p>Test prompts with expected answers and measure RAG quality metrics</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh" (click)="loadInitialData()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading...</span>
+  </div>
+
+  <!-- Not Available -->
+  <div *ngIf="!loading && !status?.available" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>{{ status?.message || 'RAG service not available' }}</span>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="error = null">Dismiss</button>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && status?.available">
+    <div class="main-content">
+      <!-- Left Panel: Test Suite Editor -->
+      <div class="editor-panel">
+        <!-- Suite Header -->
+        <mat-card class="suite-header-card">
+          <mat-card-content>
+            <div class="suite-header">
+              <mat-form-field appearance="outline" class="suite-name-field">
+                <mat-label>Test Suite Name</mat-label>
+                <input matInput [(ngModel)]="currentSuite.name" [ngModelOptions]="{standalone: true}" placeholder="Enter suite name">
+              </mat-form-field>
+
+              <div class="suite-actions">
+                <button mat-icon-button [matMenuTriggerFor]="suiteMenu" matTooltip="Suite Options">
+                  <mat-icon>more_vert</mat-icon>
+                </button>
+                <mat-menu #suiteMenu="matMenu">
+                  <button mat-menu-item (click)="newSuite()">
+                    <mat-icon>add</mat-icon>
+                    <span>New Suite</span>
+                  </button>
+                  <button mat-menu-item (click)="saveSuite()" [disabled]="saving">
+                    <mat-icon>save</mat-icon>
+                    <span>Save Suite</span>
+                  </button>
+                  <mat-divider></mat-divider>
+                  <button mat-menu-item (click)="exportSuite()">
+                    <mat-icon>download</mat-icon>
+                    <span>Export JSON</span>
+                  </button>
+                  <button mat-menu-item (click)="fileInput.click()">
+                    <mat-icon>upload</mat-icon>
+                    <span>Import JSON</span>
+                  </button>
+                </mat-menu>
+                <input #fileInput type="file" accept=".json" hidden (change)="importSuite($event)">
+              </div>
+            </div>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Description (optional)</mat-label>
+              <textarea matInput [(ngModel)]="currentSuite.description" [ngModelOptions]="{standalone: true}" rows="2"
+                        placeholder="Describe what this test suite validates"></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Run Mode Selection -->
+        <mat-card class="run-mode-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>play_circle</mat-icon>
+            <mat-card-title>Run Mode</mat-card-title>
+            <mat-card-subtitle>Choose how to evaluate test cases</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-button-toggle-group [(ngModel)]="runMode" [ngModelOptions]="{standalone: true}" class="run-mode-toggle">
+              <mat-button-toggle value="automated" matTooltip="Run automated evaluators only">
+                <mat-icon>auto_fix_high</mat-icon>
+                Automated
+              </mat-button-toggle>
+              <mat-button-toggle value="combined" [disabled]="!status?.llmJudgeAvailable"
+                                 matTooltip="Run both automated evaluators and LLM-as-judge">
+                <mat-icon>compare</mat-icon>
+                Combined
+              </mat-button-toggle>
+            </mat-button-toggle-group>
+            <p class="mode-hint" *ngIf="runMode === 'combined'">
+              <mat-icon>info</mat-icon>
+              Tests will run both automated evaluators and LLM-as-judge for comprehensive evaluation
+            </p>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Evaluator Selection -->
+        <mat-card class="evaluator-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>assessment</mat-icon>
+            <mat-card-title>Automated Evaluators</mat-card-title>
+            <mat-card-subtitle>Select which metrics to measure</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="evaluator-chips">
+              <mat-chip-listbox multiple [(ngModel)]="selectedEvaluatorTypes" [ngModelOptions]="{standalone: true}">
+                <mat-chip-option *ngFor="let type of evaluatorTypes"
+                                 [value]="type.type"
+                                 [disabled]="!type.available"
+                                 [matTooltip]="type.description">
+                  {{ type.name }}
+                  <mat-icon *ngIf="!type.available" matChipTrailingIcon>lock</mat-icon>
+                </mat-chip-option>
+              </mat-chip-listbox>
+            </div>
+            <p class="evaluator-hint" *ngIf="!status?.evaluationAvailable">
+              <mat-icon>info</mat-icon>
+              Enable evaluation in Settings to use evaluators
+            </p>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- LLM-as-Judge Selection -->
+        <mat-card class="llm-judge-card" *ngIf="status?.llmJudgeAvailable">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>smart_toy</mat-icon>
+            <mat-card-title>LLM-as-Judge</mat-card-title>
+            <mat-card-subtitle>Select LLM to evaluate responses</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="llm-selection-row">
+              <mat-form-field appearance="outline" class="provider-select">
+                <mat-label>Provider</mat-label>
+                <mat-select [(ngModel)]="selectedLlmProviderId" [ngModelOptions]="{standalone: true}" (selectionChange)="onProviderChange()">
+                  <mat-option *ngFor="let provider of llmProviders" [value]="provider.id">
+                    {{ provider.name }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="model-select" *ngIf="getSelectedProviderModels().length > 0">
+                <mat-label>Model</mat-label>
+                <mat-select [(ngModel)]="selectedLlmModelId" [ngModelOptions]="{standalone: true}">
+                  <mat-option *ngFor="let model of getSelectedProviderModels()" [value]="model.id">
+                    {{ model.name }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+            <p class="llm-hint">
+              <mat-icon>info</mat-icon>
+              The selected LLM will judge answer quality using comprehensive criteria
+            </p>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- No LLM Warning -->
+        <mat-card class="llm-warning-card" *ngIf="!status?.llmJudgeAvailable && runMode === 'combined'">
+          <mat-card-content>
+            <div class="warning-content">
+              <mat-icon color="warn">warning</mat-icon>
+              <span>LLM-as-judge requires an LLM provider. Configure OpenAI, Anthropic, or another LLM in your application settings.</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Test Cases -->
+        <div class="test-cases-header">
+          <h3>Test Cases ({{ currentSuite.testCases.length }})</h3>
+          <button mat-raised-button color="primary" (click)="addTestCase()">
+            <mat-icon>add</mat-icon>
+            Add Test Case
+          </button>
+        </div>
+
+        <div class="test-cases-list" *ngIf="currentSuite.testCases.length > 0">
+          <mat-expansion-panel *ngFor="let testCase of currentSuite.testCases; let i = index; trackBy: trackByTestCase"
+                               class="test-case-panel"
+                               [class.passed]="getResultForTestCase(testCase.id)?.passed === true"
+                               [class.failed]="getResultForTestCase(testCase.id)?.passed === false">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <span class="test-case-number">{{ i + 1 }}</span>
+                <span class="test-case-prompt">{{ testCase.prompt || 'Empty prompt' }}</span>
+              </mat-panel-title>
+              <mat-panel-description>
+                <ng-container *ngIf="getResultForTestCase(testCase.id) as result">
+                  <mat-chip [class.passed-chip]="result.passed" [class.failed-chip]="!result.passed">
+                    {{ result.passed ? 'PASSED' : 'FAILED' }}
+                    <span *ngIf="result.evaluationReport">
+                      ({{ (result.evaluationReport.overallScore * 100).toFixed(0) }}%)
+                    </span>
+                  </mat-chip>
+                </ng-container>
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="test-case-content">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Prompt / Question</mat-label>
+                <textarea matInput [(ngModel)]="testCase.prompt" [ngModelOptions]="{standalone: true}" rows="3"
+                          placeholder="Enter the query to test"
+                          cdkTextareaAutosize></textarea>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Expected Answer (Ground Truth)</mat-label>
+                <textarea matInput [(ngModel)]="testCase.expectedAnswer" [ngModelOptions]="{standalone: true}" rows="4"
+                          placeholder="Enter the expected correct answer"
+                          cdkTextareaAutosize></textarea>
+                <mat-hint>Used for answer correctness evaluation</mat-hint>
+              </mat-form-field>
+
+              <div class="test-case-actions">
+                <button mat-button color="primary" (click)="runSingleTest(testCase)" [disabled]="running">
+                  <mat-icon>play_arrow</mat-icon>
+                  Run This Test
+                </button>
+                <button mat-button color="accent" (click)="saveToManagedEval(testCase)"
+                        [disabled]="!selectedManagedSuiteId"
+                        matTooltip="Save to Managed Eval Suite">
+                  <mat-icon>bookmark_add</mat-icon>
+                  Save to Eval Set
+                </button>
+                <span class="spacer"></span>
+                <button mat-icon-button matTooltip="Move Up" (click)="moveTestCase(i, 'up')" [disabled]="i === 0">
+                  <mat-icon>arrow_upward</mat-icon>
+                </button>
+                <button mat-icon-button matTooltip="Move Down" (click)="moveTestCase(i, 'down')"
+                        [disabled]="i === currentSuite.testCases.length - 1">
+                  <mat-icon>arrow_downward</mat-icon>
+                </button>
+                <button mat-icon-button matTooltip="Duplicate" (click)="duplicateTestCase(i)">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+                <button mat-icon-button matTooltip="Delete" color="warn" (click)="removeTestCase(i)">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </div>
+
+              <!-- Result for this test case -->
+              <ng-container *ngIf="getResultForTestCase(testCase.id) as result">
+                <mat-divider></mat-divider>
+                <div class="test-result-preview">
+                  <h4>Result</h4>
+
+                  <div class="result-row">
+                    <span class="label">Actual Answer:</span>
+                    <p class="actual-answer">{{ result.actualAnswer }}</p>
+                  </div>
+
+                  <!-- Tabs for Automated and LLM Judge Results -->
+                  <mat-tab-group *ngIf="runMode === 'combined' && getLlmJudgeResultForTestCase(testCase.id)" class="result-tabs">
+                    <!-- Automated Results Tab -->
+                    <mat-tab label="Automated Evaluation">
+                      <div class="tab-content">
+                        <div class="result-metrics" *ngIf="result.evaluationReport">
+                          <div class="metric">
+                            <span class="metric-label">Overall Score</span>
+                            <span class="metric-value" [style.color]="getScoreColor(result.evaluationReport.overallScore)">
+                              {{ (result.evaluationReport.overallScore * 100).toFixed(1) }}%
+                            </span>
+                          </div>
+                          <div class="metric">
+                            <span class="metric-label">Status</span>
+                            <mat-chip [class.passed-chip]="result.passed" [class.failed-chip]="!result.passed">
+                              {{ result.passed ? 'PASSED' : 'FAILED' }}
+                            </mat-chip>
+                          </div>
+                          <div class="metric">
+                            <span class="metric-label">RAG Time</span>
+                            <span class="metric-value">{{ formatDuration(result.ragTimeMs) }}</span>
+                          </div>
+                          <div class="metric">
+                            <span class="metric-label">Eval Time</span>
+                            <span class="metric-value">{{ formatDuration(result.evaluationTimeMs) }}</span>
+                          </div>
+                        </div>
+
+                        <div class="eval-details" *ngIf="result.evaluationReport?.results?.length">
+                          <h5>Evaluator Results</h5>
+                          <div *ngFor="let evalResult of result.evaluationReport?.results ?? []; trackBy: trackByResult"
+                               class="eval-result-item" [class.passed]="evalResult.passed" [class.failed]="!evalResult.passed">
+                            <div class="eval-result-header">
+                              <span class="eval-name">{{ evalResult.evaluatorName }}</span>
+                              <span class="eval-score" [style.color]="getScoreColor(evalResult.score)">
+                                {{ (evalResult.score * 100).toFixed(0) }}%
+                              </span>
+                              <mat-icon *ngIf="evalResult.passed" class="pass-icon">check_circle</mat-icon>
+                              <mat-icon *ngIf="!evalResult.passed" class="fail-icon">cancel</mat-icon>
+                            </div>
+                            <p class="eval-explanation" *ngIf="evalResult.explanation">{{ evalResult.explanation }}</p>
+
+                            <!-- Findings -->
+                            <div *ngIf="evalResult.findings?.length" class="findings">
+                              <div *ngFor="let finding of evalResult.findings" class="finding"
+                                   [style.border-left-color]="getSeverityColor(finding.severity)">
+                                <span class="finding-type">{{ finding.type }}</span>
+                                <span class="finding-desc">{{ finding.description }}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </mat-tab>
+
+                    <!-- LLM Judge Results Tab -->
+                    <mat-tab label="LLM-as-Judge">
+                      <ng-container *ngIf="getLlmJudgeResultForTestCase(testCase.id) as llmResult">
+                        <div class="tab-content">
+                          <div class="result-metrics">
+                            <div class="metric">
+                              <span class="metric-label">Overall Score</span>
+                              <span class="metric-value" [style.color]="getScoreColor(llmResult.overallScore)">
+                                {{ (llmResult.overallScore * 100).toFixed(1) }}%
+                              </span>
+                            </div>
+                            <div class="metric">
+                              <span class="metric-label">Status</span>
+                              <mat-chip [class.passed-chip]="llmResult.passed" [class.failed-chip]="!llmResult.passed">
+                                {{ llmResult.passed ? 'PASSED' : 'FAILED' }}
+                              </mat-chip>
+                            </div>
+                            <div class="metric">
+                              <span class="metric-label">Judge</span>
+                              <span class="metric-value">{{ llmResult.judgeProvider }}/{{ llmResult.judgeModel }}</span>
+                            </div>
+                            <div class="metric">
+                              <span class="metric-label">Eval Time</span>
+                              <span class="metric-value">{{ formatDuration(llmResult.evaluationTimeMs) }}</span>
+                            </div>
+                          </div>
+
+                          <div class="llm-summary" *ngIf="llmResult.summary">
+                            <h5>Summary</h5>
+                            <p>{{ llmResult.summary }}</p>
+                          </div>
+
+                          <div class="llm-criteria" *ngIf="llmResult.criteria">
+                            <h5>Criteria Scores</h5>
+                            <div class="criteria-grid">
+                              <div *ngFor="let criterion of llmResult.criteria | keyvalue" class="criterion-item">
+                                <div class="criterion-header">
+                                  <span class="criterion-name">{{ criterion.key | titlecase }}</span>
+                                  <span class="criterion-score" [style.color]="getScoreColor(criterion.value.score)">
+                                    {{ (criterion.value.score * 100).toFixed(0) }}%
+                                  </span>
+                                </div>
+                                <p class="criterion-explanation" *ngIf="criterion.value.explanation">
+                                  {{ criterion.value.explanation }}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="llm-recommendations" *ngIf="llmResult.recommendations?.length">
+                            <h5>Recommendations</h5>
+                            <ul>
+                              <li *ngFor="let rec of llmResult.recommendations">{{ rec }}</li>
+                            </ul>
+                          </div>
+
+                          <mat-expansion-panel class="raw-response-panel">
+                            <mat-expansion-panel-header>
+                              <mat-panel-title>View Raw LLM Response</mat-panel-title>
+                            </mat-expansion-panel-header>
+                            <pre class="raw-response">{{ llmResult.rawResponse }}</pre>
+                          </mat-expansion-panel>
+                        </div>
+                      </ng-container>
+                    </mat-tab>
+                  </mat-tab-group>
+
+                  <!-- Standard Results (non-combined mode) -->
+                  <ng-container *ngIf="runMode !== 'combined' || !getLlmJudgeResultForTestCase(testCase.id)">
+                    <div class="result-metrics" *ngIf="result.evaluationReport">
+                      <div class="metric">
+                        <span class="metric-label">Overall Score</span>
+                        <span class="metric-value" [style.color]="getScoreColor(result.evaluationReport.overallScore)">
+                          {{ (result.evaluationReport.overallScore * 100).toFixed(1) }}%
+                        </span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">RAG Time</span>
+                        <span class="metric-value">{{ formatDuration(result.ragTimeMs) }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Eval Time</span>
+                        <span class="metric-value">{{ formatDuration(result.evaluationTimeMs) }}</span>
+                      </div>
+                    </div>
+
+                    <div class="eval-details" *ngIf="result.evaluationReport?.results?.length">
+                      <h5>Evaluator Results</h5>
+                      <div *ngFor="let evalResult of result.evaluationReport?.results ?? []; trackBy: trackByResult"
+                           class="eval-result-item" [class.passed]="evalResult.passed" [class.failed]="!evalResult.passed">
+                        <div class="eval-result-header">
+                          <span class="eval-name">{{ evalResult.evaluatorName }}</span>
+                          <span class="eval-score" [style.color]="getScoreColor(evalResult.score)">
+                            {{ (evalResult.score * 100).toFixed(0) }}%
+                          </span>
+                          <mat-icon *ngIf="evalResult.passed" class="pass-icon">check_circle</mat-icon>
+                          <mat-icon *ngIf="!evalResult.passed" class="fail-icon">cancel</mat-icon>
+                        </div>
+                        <p class="eval-explanation" *ngIf="evalResult.explanation">{{ evalResult.explanation }}</p>
+
+                        <!-- Findings -->
+                        <div *ngIf="evalResult.findings?.length" class="findings">
+                          <div *ngFor="let finding of evalResult.findings" class="finding"
+                               [style.border-left-color]="getSeverityColor(finding.severity)">
+                            <span class="finding-type">{{ finding.type }}</span>
+                            <span class="finding-desc">{{ finding.description }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </ng-container>
+
+                  <div class="retrieved-docs" *ngIf="result.retrievedDocuments?.length">
+                    <h5>Retrieved Documents ({{ result.retrievedDocuments.length }})</h5>
+                    <mat-expansion-panel class="docs-panel">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>View Documents</mat-panel-title>
+                      </mat-expansion-panel-header>
+                      <div *ngFor="let doc of result.retrievedDocuments; let j = index" class="doc-item">
+                        <span class="doc-number">{{ j + 1 }}.</span>
+                        <p class="doc-content">{{ doc }}</p>
+                      </div>
+                    </mat-expansion-panel>
+                  </div>
+                </div>
+              </ng-container>
+            </div>
+          </mat-expansion-panel>
+        </div>
+
+        <div class="empty-state" *ngIf="currentSuite.testCases.length === 0">
+          <mat-icon>playlist_add</mat-icon>
+          <p>No test cases yet. Click "Add Test Case" to get started.</p>
+        </div>
+
+        <!-- Run All Button -->
+        <div class="run-all-section" *ngIf="currentSuite.testCases.length > 0">
+          <button mat-raised-button color="accent" class="run-all-btn"
+                  (click)="runAllTests()" [disabled]="running">
+            <mat-icon>play_circle</mat-icon>
+            Run All Tests ({{ currentSuite.testCases.length }})
+          </button>
+          <mat-progress-bar *ngIf="running" mode="indeterminate"></mat-progress-bar>
+        </div>
+      </div>
+
+      <!-- Right Panel: Saved Suites & Summary -->
+      <div class="sidebar-panel">
+        <!-- Run Summary - Combined Mode -->
+        <mat-card class="summary-card combined-summary" *ngIf="lastCombinedResult && runMode === 'combined'">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>compare</mat-icon>
+            <mat-card-title>Combined Run Summary</mat-card-title>
+            <mat-card-subtitle>{{ lastCombinedResult.timestamp | date:'short' }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Automated Results -->
+            <div class="summary-section">
+              <h5><mat-icon>auto_fix_high</mat-icon> Automated Evaluation</h5>
+              <div class="summary-stats">
+                <div class="stat passed">
+                  <span class="stat-value">{{ lastCombinedResult.automatedPassedTests }}</span>
+                  <span class="stat-label">Passed</span>
+                </div>
+                <div class="stat failed">
+                  <span class="stat-value">{{ lastCombinedResult.totalTests - lastCombinedResult.automatedPassedTests }}</span>
+                  <span class="stat-label">Failed</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-value">{{ (lastCombinedResult.averageAutomatedScore * 100).toFixed(0) }}%</span>
+                  <span class="stat-label">Avg Score</span>
+                </div>
+              </div>
+              <mat-progress-bar mode="determinate"
+                                [value]="(lastCombinedResult.automatedPassedTests / lastCombinedResult.totalTests) * 100"
+                                [color]="lastCombinedResult.automatedPassedTests === lastCombinedResult.totalTests ? 'primary' : 'warn'">
+              </mat-progress-bar>
+            </div>
+
+            <mat-divider></mat-divider>
+
+            <!-- LLM Judge Results -->
+            <div class="summary-section" *ngIf="lastCombinedResult.llmJudgeAvailable">
+              <h5><mat-icon>smart_toy</mat-icon> LLM-as-Judge</h5>
+              <div class="summary-stats">
+                <div class="stat passed">
+                  <span class="stat-value">{{ lastCombinedResult.llmJudgePassedTests }}</span>
+                  <span class="stat-label">Passed</span>
+                </div>
+                <div class="stat failed">
+                  <span class="stat-value">{{ lastCombinedResult.totalTests - lastCombinedResult.llmJudgePassedTests }}</span>
+                  <span class="stat-label">Failed</span>
+                </div>
+                <div class="stat">
+                  <span class="stat-value">{{ (lastCombinedResult.averageLlmJudgeScore * 100).toFixed(0) }}%</span>
+                  <span class="stat-label">Avg Score</span>
+                </div>
+              </div>
+              <mat-progress-bar mode="determinate"
+                                [value]="(lastCombinedResult.llmJudgePassedTests / lastCombinedResult.totalTests) * 100"
+                                color="accent">
+              </mat-progress-bar>
+            </div>
+
+            <div class="summary-footer">
+              <span class="total-time">Total Time: {{ formatDuration(lastCombinedResult.totalTimeMs) }}</span>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Run Summary - Standard Mode -->
+        <mat-card class="summary-card" *ngIf="lastRunResult && runMode !== 'combined'">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class.success]="lastRunResult.passedTests === lastRunResult.totalTests"
+                      [class.warning]="lastRunResult.passedTests > 0 && lastRunResult.passedTests < lastRunResult.totalTests"
+                      [class.error]="lastRunResult.passedTests === 0">
+              {{ lastRunResult.passedTests === lastRunResult.totalTests ? 'check_circle' :
+                 lastRunResult.passedTests > 0 ? 'warning' : 'cancel' }}
+            </mat-icon>
+            <mat-card-title>Last Run Summary</mat-card-title>
+            <mat-card-subtitle>{{ lastRunResult.timestamp | date:'short' }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="summary-stats">
+              <div class="stat passed">
+                <span class="stat-value">{{ lastRunResult.passedTests }}</span>
+                <span class="stat-label">Passed</span>
+              </div>
+              <div class="stat failed">
+                <span class="stat-value">{{ lastRunResult.failedTests }}</span>
+                <span class="stat-label">Failed</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value">{{ (lastRunResult.averageScore * 100).toFixed(0) }}%</span>
+                <span class="stat-label">Avg Score</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value">{{ formatDuration(lastRunResult.totalTimeMs) }}</span>
+                <span class="stat-label">Total Time</span>
+              </div>
+            </div>
+
+            <mat-progress-bar mode="determinate"
+                              [value]="(lastRunResult.passedTests / lastRunResult.totalTests) * 100"
+                              [color]="lastRunResult.passedTests === lastRunResult.totalTests ? 'primary' : 'warn'">
+            </mat-progress-bar>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Saved Suites -->
+        <mat-card class="saved-suites-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>folder</mat-icon>
+            <mat-card-title>Saved Test Suites</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="testSuites.length === 0" class="no-suites">
+              <p>No saved test suites yet.</p>
+            </div>
+            <mat-nav-list *ngIf="testSuites.length > 0">
+              <mat-list-item *ngFor="let suite of testSuites"
+                             [class.active]="currentSuite.id === suite.id"
+                             (click)="loadSuite(suite)">
+                <mat-icon matListItemIcon>description</mat-icon>
+                <span matListItemTitle>{{ suite.name }}</span>
+                <span matListItemLine>{{ suite.testCases.length }} test cases</span>
+                <button mat-icon-button matListItemMeta (click)="deleteSuite(suite); $event.stopPropagation()"
+                        matTooltip="Delete">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </mat-list-item>
+            </mat-nav-list>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Save to Managed Eval -->
+        <mat-card class="managed-eval-card" *ngIf="activeFactSheetId">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>bookmark</mat-icon>
+            <mat-card-title>Save to Managed Eval</mat-card-title>
+            <mat-card-subtitle>Persist test cases to the evaluation system</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width" *ngIf="managedSuites.length > 0">
+              <mat-label>Target Suite</mat-label>
+              <mat-select [(ngModel)]="selectedManagedSuiteId" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let suite of managedSuites" [value]="suite.id">
+                  {{ suite.name }} ({{ suite.testCaseCount }} cases)
+                </mat-option>
+              </mat-select>
+              <mat-hint>Select a suite to save test cases to</mat-hint>
+            </mat-form-field>
+            <p *ngIf="managedSuites.length === 0" class="no-suites-message">
+              No managed eval suites found. Create one in the Evaluation Sets tab.
+            </p>
+            <div class="managed-eval-actions" *ngIf="managedSuites.length > 0">
+              <button mat-raised-button color="primary"
+                      [disabled]="!selectedManagedSuiteId || currentSuite.testCases.length === 0"
+                      (click)="saveAllToManagedEval()">
+                <mat-icon>save</mat-icon>
+                Save All ({{ currentSuite.testCases.length }})
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Quick Tips -->
+        <mat-card class="tips-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>lightbulb</mat-icon>
+            <mat-card-title>Tips</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <ul class="tips-list">
+              <li>Provide expected answers for accurate scoring</li>
+              <li>Use multiple evaluators for comprehensive testing</li>
+              <li>Save suites to track quality over time</li>
+              <li>Export suites to share with team members</li>
+              <li>Save test cases to Managed Eval for persistent tracking</li>
+            </ul>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </div>
+  </ng-container>
+</div>

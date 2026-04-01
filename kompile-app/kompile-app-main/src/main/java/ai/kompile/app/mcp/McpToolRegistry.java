@@ -16,8 +16,10 @@
 
 package ai.kompile.app.mcp;
 
+import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.services.mcp.McpActionLogService;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
+import ai.kompile.app.services.mcp.ToolPermissionService;
 import ai.kompile.app.tools.*;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import ai.kompile.core.mcp.ToolChangeEvent;
@@ -109,6 +111,112 @@ public class McpToolRegistry {
 
     @Autowired(required = false)
     private ModelManagementTool modelManagementTool;
+
+    // New tools exposing all frontend functionality
+    @Autowired(required = false)
+    private IndexManagementTool indexManagementTool;
+
+    @Autowired(required = false)
+    private RagConfigTool ragConfigTool;
+
+    @Autowired(required = false)
+    private AgentConfigTool agentConfigTool;
+
+    @Autowired(required = false)
+    private McpServerTool mcpServerTool;
+
+    @Autowired(required = false)
+    private JobHistoryTool jobHistoryTool;
+
+    @Autowired(required = false)
+    private SourceManagementTool sourceManagementTool;
+
+    @Autowired(required = false)
+    private SystemConfigTool systemConfigTool;
+
+    @Autowired(required = false)
+    private EvalDebugTool evalDebugTool;
+
+    @Autowired(required = false)
+    private GraphConfigTool graphConfigTool;
+
+    @Autowired(required = false)
+    private ModelRegistryTool modelRegistryTool;
+
+    @Autowired(required = false)
+    private IntegrationsTool integrationsTool;
+
+    @Autowired(required = false)
+    private RagTestTool ragTestTool;
+
+    @Autowired(required = false)
+    private VlmPipelineTool vlmPipelineTool;
+
+    @Autowired(required = false)
+    private VlmTestTool vlmTestTool;
+
+    @Autowired(required = false)
+    private VlmConfigTool vlmConfigTool;
+
+    @Autowired(required = false)
+    private DeviceRoutingTool deviceRoutingTool;
+
+    @Autowired(required = false)
+    private OpTimingTool opTimingTool;
+
+    @Autowired(required = false)
+    private KVCacheTool kvCacheTool;
+
+    @Autowired(required = false)
+    private SettingsTool settingsTool;
+
+    @Autowired(required = false)
+    private SubprocessConfigTool subprocessConfigTool;
+
+    @Autowired(required = false)
+    private DocumentIngestionTool documentIngestionTool;
+
+    @Autowired(required = false)
+    private EvaluationTool evaluationTool;
+
+    @Autowired(required = false)
+    private ExperimentTool experimentTool;
+
+    @Autowired(required = false)
+    private FactSheetTool factSheetTool;
+
+    @Autowired(required = false)
+    private PipelineTool pipelineTool;
+
+    @Autowired(required = false)
+    private PromptTemplateTool promptTemplateTool;
+
+    @Autowired(required = false)
+    private OrchestratorTool orchestratorTool;
+
+    @Autowired(required = false)
+    private BenchmarkTool benchmarkTool;
+
+    @Autowired(required = false)
+    private BackupTool backupTool;
+
+    @Autowired(required = false)
+    private ArchiveTool archiveTool;
+
+    @Autowired(required = false)
+    private ChunkManagementTool chunkManagementTool;
+
+    @Autowired(required = false)
+    private CrossIndexTool crossIndexTool;
+
+    @Autowired(required = false)
+    private AgentDelegationTool agentDelegationTool;
+
+    @Autowired(required = false)
+    private ToolPermissionService toolPermissionService;
+
+    @Autowired(required = false)
+    private BuiltInToolDiscoveryService toolDiscoveryService;
 
     @Autowired
     public McpToolRegistry(ObjectMapper objectMapper,
@@ -251,8 +359,11 @@ public class McpToolRegistry {
     }
 
     private void collectToolBeans() {
+        // Core tools from kompile-tool modules
         addBeanIfAvailable(ragTool, "RAG");
         addBeanIfAvailable(filesystemTool, "Filesystem");
+
+        // Original application tools
         addBeanIfAvailable(modelDebugTool, "Model Debug");
         addBeanIfAvailable(chatSessionTool, "Chat Session");
         addBeanIfAvailable(actionLogTool, "Action Log");
@@ -261,6 +372,41 @@ public class McpToolRegistry {
         addBeanIfAvailable(documentManagementTool, "Document Management");
         addBeanIfAvailable(systemDiagnosticsTool, "System Diagnostics");
         addBeanIfAvailable(modelManagementTool, "Model Management");
+
+        // New tools exposing all frontend functionality via MCP
+        addBeanIfAvailable(indexManagementTool, "Index Management");
+        addBeanIfAvailable(ragConfigTool, "RAG Config");
+        addBeanIfAvailable(agentConfigTool, "Agent Config");
+        addBeanIfAvailable(mcpServerTool, "MCP Server");
+        addBeanIfAvailable(jobHistoryTool, "Job History");
+        addBeanIfAvailable(sourceManagementTool, "Source Management");
+        addBeanIfAvailable(systemConfigTool, "System Config");
+        addBeanIfAvailable(evalDebugTool, "Eval Debug");
+        addBeanIfAvailable(graphConfigTool, "Graph Config");
+        addBeanIfAvailable(modelRegistryTool, "Model Registry");
+        addBeanIfAvailable(integrationsTool, "Integrations");
+        addBeanIfAvailable(ragTestTool, "RAG Test");
+        addBeanIfAvailable(vlmPipelineTool, "VLM Pipeline");
+        addBeanIfAvailable(vlmTestTool, "VLM Test");
+        addBeanIfAvailable(vlmConfigTool, "VLM Config");
+        addBeanIfAvailable(deviceRoutingTool, "Device Routing");
+        addBeanIfAvailable(opTimingTool, "Op Timing");
+        addBeanIfAvailable(kvCacheTool, "KV Cache");
+        addBeanIfAvailable(settingsTool, "Settings");
+        addBeanIfAvailable(subprocessConfigTool, "Subprocess Config");
+        addBeanIfAvailable(documentIngestionTool, "Document Ingestion");
+        addBeanIfAvailable(evaluationTool, "Evaluation");
+        addBeanIfAvailable(experimentTool, "Experiment");
+        addBeanIfAvailable(factSheetTool, "Fact Sheet");
+        addBeanIfAvailable(pipelineTool, "Pipeline");
+        addBeanIfAvailable(promptTemplateTool, "Prompt Template");
+        addBeanIfAvailable(orchestratorTool, "Orchestrator");
+        addBeanIfAvailable(benchmarkTool, "Benchmark");
+        addBeanIfAvailable(backupTool, "Backup");
+        addBeanIfAvailable(archiveTool, "Archive");
+        addBeanIfAvailable(chunkManagementTool, "Chunk Management");
+        addBeanIfAvailable(crossIndexTool, "Cross Index");
+        addBeanIfAvailable(agentDelegationTool, "Agent Delegation");
     }
 
     private void addBeanIfAvailable(Object bean, String name) {
@@ -315,6 +461,18 @@ public class McpToolRegistry {
                 (exchange, args) -> {
                     // Log action start
                     McpActionLogService.McpAction logEntry = actionLogService.logActionStart(toolName, args);
+
+                    // Permission check
+                    if (toolPermissionService != null) {
+                        String category = toolDiscoveryService != null
+                                ? toolDiscoveryService.inferCategoryForTool(toolName)
+                                : "system";
+                        if (!toolPermissionService.isToolAllowed(toolName, category)) {
+                            String msg = "Tool '" + toolName + "' is denied by permission policy";
+                            actionLogService.logActionFailure(logEntry.getId(), msg);
+                            return errorResult(msg);
+                        }
+                    }
 
                     try {
                         // Invoke the method

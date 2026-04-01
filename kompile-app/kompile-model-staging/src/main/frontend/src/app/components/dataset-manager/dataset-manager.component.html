@@ -1,0 +1,163 @@
+<div class="dataset-manager">
+  <div class="header">
+    <h2>Dataset Management</h2>
+    <button mat-raised-button color="primary" (click)="showUploadForm = !showUploadForm">
+      <mat-icon>upload_file</mat-icon>
+      {{ showUploadForm ? 'Cancel' : 'Upload Dataset' }}
+    </button>
+  </div>
+
+  <!-- Upload Form -->
+  <mat-card *ngIf="showUploadForm" class="upload-card">
+    <mat-card-header>
+      <mat-card-title>Upload New Dataset</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="upload-form">
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Dataset Name</mat-label>
+            <input matInput [(ngModel)]="uploadName" placeholder="my-dataset">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Format</mat-label>
+            <mat-select [(ngModel)]="uploadFormat">
+              <mat-option *ngFor="let f of formats" [value]="f">{{ f }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Task</mat-label>
+            <mat-select [(ngModel)]="uploadTask">
+              <mat-option *ngFor="let t of tasks" [value]="t">{{ t }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+        <div class="form-row">
+          <mat-form-field appearance="outline">
+            <mat-label>Input Column</mat-label>
+            <input matInput [(ngModel)]="uploadInputColumn">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Output Column</mat-label>
+            <input matInput [(ngModel)]="uploadOutputColumn">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Train Split</mat-label>
+            <input matInput type="number" [(ngModel)]="uploadTrainSplit" min="0.1" max="1.0" step="0.05">
+          </mat-form-field>
+        </div>
+        <div class="form-row" *ngIf="uploadTask === 'PREFERENCE'">
+          <mat-form-field appearance="outline">
+            <mat-label>Chosen Column</mat-label>
+            <input matInput [(ngModel)]="uploadChosenColumn">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Rejected Column</mat-label>
+            <input matInput [(ngModel)]="uploadRejectedColumn">
+          </mat-form-field>
+        </div>
+        <div class="file-upload-row">
+          <input type="file" #fileInput (change)="onFileSelected($event)" style="display:none">
+          <button mat-stroked-button (click)="fileInput.click()">
+            <mat-icon>attach_file</mat-icon>
+            {{ selectedFile ? selectedFile.name : 'Choose File' }}
+          </button>
+          <span *ngIf="selectedFile" class="file-size">{{ formatBytes(selectedFile?.size ?? 0) }}</span>
+          <button mat-raised-button color="primary" (click)="uploadDataset()"
+                  [disabled]="!selectedFile || !uploadName || uploading">
+            <mat-icon>cloud_upload</mat-icon>
+            {{ uploading ? 'Uploading...' : 'Upload' }}
+          </button>
+        </div>
+        <mat-progress-bar *ngIf="uploading" mode="indeterminate"></mat-progress-bar>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Dataset List -->
+  <mat-card class="list-card">
+    <mat-card-content>
+      <div *ngIf="loading" class="loading-spinner">
+        <mat-spinner diameter="40"></mat-spinner>
+      </div>
+      <div *ngIf="!loading && datasets.length === 0" class="empty-state">
+        <mat-icon>folder_open</mat-icon>
+        <p>No datasets uploaded yet</p>
+      </div>
+      <table mat-table [dataSource]="datasets" *ngIf="!loading && datasets.length > 0" class="dataset-table">
+        <ng-container matColumnDef="name">
+          <th mat-header-cell *matHeaderCellDef>Name</th>
+          <td mat-cell *matCellDef="let d">{{ d.name }}</td>
+        </ng-container>
+        <ng-container matColumnDef="format">
+          <th mat-header-cell *matHeaderCellDef>Format</th>
+          <td mat-cell *matCellDef="let d"><mat-chip>{{ d.format }}</mat-chip></td>
+        </ng-container>
+        <ng-container matColumnDef="task">
+          <th mat-header-cell *matHeaderCellDef>Task</th>
+          <td mat-cell *matCellDef="let d"><mat-chip>{{ d.task }}</mat-chip></td>
+        </ng-container>
+        <ng-container matColumnDef="totalSamples">
+          <th mat-header-cell *matHeaderCellDef>Samples</th>
+          <td mat-cell *matCellDef="let d">{{ d.totalSamples | number }}</td>
+        </ng-container>
+        <ng-container matColumnDef="size">
+          <th mat-header-cell *matHeaderCellDef>Size</th>
+          <td mat-cell *matCellDef="let d">{{ formatBytes(d.sizeBytes) }}</td>
+        </ng-container>
+        <ng-container matColumnDef="createdAt">
+          <th mat-header-cell *matHeaderCellDef>Created</th>
+          <td mat-cell *matCellDef="let d">{{ d.createdAt }}</td>
+        </ng-container>
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>Actions</th>
+          <td mat-cell *matCellDef="let d">
+            <button mat-icon-button (click)="selectDataset(d)" matTooltip="Preview">
+              <mat-icon>visibility</mat-icon>
+            </button>
+            <button mat-icon-button (click)="computeStats(d.id)" matTooltip="Compute Stats">
+              <mat-icon>analytics</mat-icon>
+            </button>
+            <button mat-icon-button color="warn" (click)="deleteDataset(d.id)" matTooltip="Delete">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;" (click)="selectDataset(row)" class="clickable-row"></tr>
+      </table>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Dataset Detail / Preview -->
+  <mat-card *ngIf="selectedDataset" class="detail-card">
+    <mat-card-header>
+      <mat-card-title>{{ selectedDataset.name }}</mat-card-title>
+      <mat-card-subtitle>{{ selectedDataset.format }} | {{ selectedDataset.task }} | {{ selectedDataset.totalSamples | number }} samples</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div *ngIf="selectedDataset?.stats" class="stats-grid">
+        <div class="stat-item">
+          <span class="stat-label">Train Samples</span>
+          <span class="stat-value">{{ selectedDataset?.stats?.trainSamples | number }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Val Samples</span>
+          <span class="stat-value">{{ selectedDataset?.stats?.valSamples | number }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Avg Token Length</span>
+          <span class="stat-value">{{ selectedDataset?.stats?.avgTokenLength | number:'1.1-1' }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Max Token Length</span>
+          <span class="stat-value">{{ selectedDataset?.stats?.maxTokenLength | number }}</span>
+        </div>
+      </div>
+      <h3 *ngIf="previewData.length > 0">Preview (first {{ previewData.length }} rows)</h3>
+      <div *ngIf="previewData.length > 0" class="preview-container">
+        <pre class="preview-data">{{ previewData | json }}</pre>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

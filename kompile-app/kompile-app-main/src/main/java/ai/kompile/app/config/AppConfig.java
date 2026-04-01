@@ -82,13 +82,96 @@ public class AppConfig {
                     MemberCategory.INVOKE_DECLARED_METHODS);
 
             hints.reflection().registerType(Jre12Compat.class,
-
                     MemberCategory.INTROSPECT_PUBLIC_METHODS,
                     MemberCategory.INTROSPECT_DECLARED_CONSTRUCTORS,
                     MemberCategory.PUBLIC_FIELDS,
                     MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
                     MemberCategory.INVOKE_DECLARED_METHODS);
 
+            // GraalVM native image: register ND4J/JavaCPP JNI types
+            registerIfPresent(hints, classLoader, "org.bytedeco.javacpp.Loader",
+                    MemberCategory.DECLARED_FIELDS, MemberCategory.INVOKE_DECLARED_METHODS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            registerIfPresent(hints, classLoader, "org.bytedeco.javacpp.Pointer",
+                    MemberCategory.DECLARED_FIELDS, MemberCategory.INVOKE_DECLARED_METHODS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            registerIfPresent(hints, classLoader, "org.nd4j.nativeblas.Nd4jCpu",
+                    MemberCategory.DECLARED_FIELDS, MemberCategory.INVOKE_DECLARED_METHODS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            registerIfPresent(hints, classLoader, "org.nd4j.nativeblas.Nd4jCpu$NativeOps",
+                    MemberCategory.DECLARED_FIELDS, MemberCategory.INVOKE_DECLARED_METHODS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+
+            // GraalVM native image: register Lucene codec types
+            registerIfPresent(hints, classLoader, "org.apache.lucene.codecs.lucene99.Lucene99Codec",
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            registerIfPresent(hints, classLoader, "org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat",
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+            registerIfPresent(hints, classLoader, "org.apache.lucene.analysis.standard.StandardAnalyzer",
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+
+            // GraalVM native image: register Spring AI types
+            registerIfPresent(hints, classLoader, "org.springframework.ai.document.Document",
+                    MemberCategory.DECLARED_FIELDS, MemberCategory.INVOKE_DECLARED_METHODS,
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+
+            // GraalVM native image: register all record classes used as @Tool parameters
+            // These need reflection for getRecordComponents() in McpToolRegistry.buildInputSchema()
+            registerToolRecordClasses(hints, classLoader);
+
+            // Include native library resources
+            hints.resources().registerPattern("org/bytedeco/**");
+            hints.resources().registerPattern("org/nd4j/**");
+            hints.resources().registerPattern("static/**");
+            hints.resources().registerPattern("application*.properties");
+        }
+
+        private static void registerToolRecordClasses(RuntimeHints hints, ClassLoader classLoader) {
+            // Packages containing tool classes with inner record parameter types
+            String[] toolPackages = {
+                    "ai.kompile.app.tools",
+                    "ai.kompile.tool.rag",
+                    "ai.kompile.tool.filesystem",
+                    "ai.kompile.knowledgegraph.tool",
+                    "ai.kompile.staging.tool"
+            };
+            int count = 0;
+            for (String pkg : toolPackages) {
+                try {
+                    // Use ClassGraph for package scanning (already on classpath)
+                    io.github.classgraph.ScanResult scanResult = new io.github.classgraph.ClassGraph()
+                            .acceptPackages(pkg)
+                            .enableClassInfo()
+                            .scan();
+                    for (io.github.classgraph.ClassInfo classInfo : scanResult.getAllClasses()) {
+                        try {
+                            Class<?> clazz = Class.forName(classInfo.getName(), false, classLoader);
+                            if (clazz.isRecord()) {
+                                hints.reflection().registerType(clazz,
+                                        MemberCategory.DECLARED_FIELDS,
+                                        MemberCategory.INVOKE_DECLARED_METHODS,
+                                        MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+                                count++;
+                            }
+                        } catch (ClassNotFoundException e) {
+                            // Skip
+                        }
+                    }
+                    scanResult.close();
+                } catch (Exception e) {
+                    // ClassGraph scan failed — fall through
+                }
+            }
+        }
+
+        private static void registerIfPresent(RuntimeHints hints, ClassLoader classLoader,
+                                               String className, MemberCategory... categories) {
+            try {
+                Class<?> clazz = Class.forName(className, false, classLoader);
+                hints.reflection().registerType(clazz, categories);
+            } catch (ClassNotFoundException e) {
+                // Class not on classpath — skip registration
+            }
         }
     }
 

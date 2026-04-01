@@ -46,6 +46,19 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Spring Data JPA for training job history persistence -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- H2 embedded database for job history -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Picocli for CLI commands -->
         <dependency>
             <groupId>info.picocli</groupId>
@@ -151,11 +164,17 @@
             <artifactId>reactor-core</artifactId>
         </dependency>
 
-        <!-- Tokenizers for LLM/VLM -->
+        <!-- Tokenizers (from DL4J nd4j-tokenizers, transitively via samediff-llm/vlm) -->
         <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>tokenizers-native-preset</artifactId>
-            <version>${project.version}</version>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>tokenizers-native</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>tokenizers-native</artifactId>
+            <version>${nd4j.version}</version>
+            <classifier>${javacpp.platform}</classifier>
         </dependency>
 
         <!-- Logging -->
@@ -317,6 +336,118 @@
                 </plugins>
             </build>
         </profile>
+
+        <!-- GraalVM native image profile for model staging service -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.1</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-staging</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
+                            <imageName>kompile-model-staging</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/staging</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=model-sources\.yml</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=static/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>process-aot</id>
+                                <goals>
+                                    <goal>process-aot</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Native image for training subprocess only -->
+        <profile>
+            <id>native-training</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.1</version>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-training</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.staging.subprocess.TrainingSubprocessMain</mainClass>
+                            <imageName>kompile-training</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/staging</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 
     <build>
@@ -326,6 +457,7 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <mainClass>ai.kompile.staging.ModelStagingApplication</mainClass>
+                    <classifier>exec</classifier>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

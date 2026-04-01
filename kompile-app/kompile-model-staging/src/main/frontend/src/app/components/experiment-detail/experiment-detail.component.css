@@ -1,0 +1,17 @@
+.experiment-detail { padding: 16px; }
+.header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; }
+.header-info h2 { margin: 0 0 4px 0; }
+.header-info p { margin: 0 0 8px 0; color: #666; }
+.meta { display: flex; gap: 16px; font-size: 13px; color: #888; align-items: center; }
+.actions-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.add-run-form { margin-bottom: 16px; }
+.full-width { width: 100%; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.runs-table { width: 100%; }
+.loading-spinner { display: flex; justify-content: center; padding: 40px; }
+.empty-state { text-align: center; padding: 40px; color: #888; }
+.status-chip { font-size: 12px; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
+.status-success { color: #2e7d32; background: #e8f5e9; }
+.status-error { color: #c62828; background: #ffebee; }
+.status-pending { color: #e65100; background: #fff3e0; }
+.status-info { color: #1565c0; background: #e3f2fd; }

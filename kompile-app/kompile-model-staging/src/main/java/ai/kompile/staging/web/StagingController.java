@@ -45,6 +45,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -128,6 +129,7 @@ public class StagingController {
                     .status(request.toModelStatus())
                     .metadata(request.toModelMetadata())
                     .tokenizer(request.toTokenizerConfig())
+                    .preprocessor(request.toImagePreprocessorConfig())
                     .build();
 
             return registryService.updateModel(modelId, updates)
@@ -154,6 +156,59 @@ public class StagingController {
     }
 
     /**
+     * Re-probe a VLM model's vision encoder IO config.
+     * Loads the vision encoder SameDiff graph and discovers input/output variable names.
+     */
+    @PostMapping("/registry/model/{modelId}/probe-vision-io")
+    public ResponseEntity<Map<String, Object>> probeVisionEncoderIO(@PathVariable String modelId) {
+        log.info("Probing vision encoder IO config for: {}", modelId);
+        try {
+            return registryService.getModel(modelId)
+                    .map(entry -> {
+                        if (!entry.getType().isVlm()) {
+                            Map<String, Object> resp = new LinkedHashMap<>();
+                            resp.put("success", false);
+                            resp.put("error", "Model is not a VLM type: " + entry.getType());
+                            return ResponseEntity.badRequest().body(resp);
+                        }
+                        java.nio.file.Path modelDir = registryService.getModelsDir()
+                                .resolve(entry.getPath());
+                        java.nio.file.Path modelFile = modelDir.resolve(entry.getModelFile());
+                        ModelMetadata meta = entry.getMetadata();
+                        if (meta == null) {
+                            meta = ModelMetadata.builder().build();
+                            entry.setMetadata(meta);
+                        }
+                        stagingService.probeVisionEncoderIOConfigPublic(modelDir, modelFile, meta);
+                        registryService.updateModel(modelId, ModelEntry.builder()
+                                .modelId(modelId)
+                                .metadata(meta)
+                                .build());
+                        Map<String, Object> resp = new LinkedHashMap<>();
+                        resp.put("success", true);
+                        resp.put("message", "Vision encoder IO config probed successfully");
+                        resp.put("visionEncoderPixelValuesName", meta.getVisionEncoderPixelValuesName());
+                        resp.put("visionEncoderPixelAttentionMaskName", meta.getVisionEncoderPixelAttentionMaskName());
+                        resp.put("visionEncoderPrimaryOutputName", meta.getVisionEncoderPrimaryOutputName());
+                        resp.put("visionEncoderOutputNames", meta.getVisionEncoderOutputNames());
+                        return ResponseEntity.ok(resp);
+                    })
+                    .orElseGet(() -> {
+                        Map<String, Object> resp = new LinkedHashMap<>();
+                        resp.put("success", false);
+                        resp.put("error", "Model not found: " + modelId);
+                        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(resp);
+                    });
+        } catch (Exception e) {
+            log.error("Failed to probe vision encoder IO for: {}", modelId, e);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("success", false);
+            resp.put("error", "Probe failed: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(resp);
+        }
+    }
+
+    /**
      * Delete a model from the registry.
      */
     @DeleteMapping("/registry/model/{modelId}")
@@ -174,6 +229,67 @@ public class StagingController {
                     response.put("error", "Model not found: " + modelId);
                     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
                 });
+    }
+
+    // ==================== Model File Download Endpoints ====================
+
+    /**
+     * Download a model file (.sdz/.onnx) for a registered model.
+     * Used by the main app's RegistryBasedModelManager to fetch model files from staging.
+     */
+    @GetMapping("/registry/model/{modelId}/download/model")
+    public ResponseEntity<?> downloadModelFile(@PathVariable String modelId) {
+        return registryService.getModel(modelId)
+                .map(entry -> {
+                    Path modelPath = registryService.getModelDir().resolve(
+                            entry.getPath() != null ? entry.getPath() : modelId)
+                            .resolve(entry.getModelFile() != null ? entry.getModelFile() : "model.sdz");
+                    if (!Files.exists(modelPath)) {
+                        return ResponseEntity.notFound().<Void>build();
+                    }
+                    try {
+                        org.springframework.core.io.Resource resource =
+                                new org.springframework.core.io.FileSystemResource(modelPath);
+                        return ResponseEntity.ok()
+                                .header("Content-Disposition", "attachment; filename=\"" + modelPath.getFileName() + "\"")
+                                .header("Content-Type", "application/octet-stream")
+                                .body(resource);
+                    } catch (Exception e) {
+                        log.error("Failed to serve model file for {}: {}", modelId, e.getMessage());
+                        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Download a vocab file for a registered model.
+     * Used by the main app's RegistryBasedModelManager to fetch vocab files from staging.
+     */
+    @GetMapping("/registry/model/{modelId}/download/vocab")
+    public ResponseEntity<?> downloadVocabFile(@PathVariable String modelId) {
+        return registryService.getModel(modelId)
+                .map(entry -> {
+                    Path modelDir = registryService.getModelDir().resolve(
+                            entry.getPath() != null ? entry.getPath() : modelId);
+                    String vocabFileName = entry.getVocabFile() != null ? entry.getVocabFile() : "vocab.txt";
+                    Path vocabPath = modelDir.resolve(vocabFileName);
+                    if (!Files.exists(vocabPath)) {
+                        return ResponseEntity.notFound().<Void>build();
+                    }
+                    try {
+                        org.springframework.core.io.Resource resource =
+                                new org.springframework.core.io.FileSystemResource(vocabPath);
+                        return ResponseEntity.ok()
+                                .header("Content-Disposition", "attachment; filename=\"" + vocabPath.getFileName() + "\"")
+                                .header("Content-Type", "application/octet-stream")
+                                .body(resource);
+                    } catch (Exception e) {
+                        log.error("Failed to serve vocab file for {}: {}", modelId, e.getMessage());
+                        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
     }
 
     // ==================== Catalog Endpoints ====================
@@ -206,10 +322,7 @@ public class StagingController {
 
         return catalogService.getModel(modelId)
                 .map(catalogModel -> {
-                    // Determine model type from catalog location
-                    ModelType modelType = catalogService.getEncoders().contains(catalogModel)
-                            ? ModelType.ENCODER
-                            : ModelType.CROSS_ENCODER;
+                    ModelType modelType = resolveModelType(catalogModel);
 
                     DownloadRequest downloadRequest = DownloadRequest.builder()
                             .source(catalogModel.getSource())
@@ -254,6 +367,92 @@ public class StagingController {
                 .connected(true)
                 .modelsInStaging(models)
                 .build();
+    }
+
+    /**
+     * Get active models (one per type) for integration with the main app.
+     * Returns a map of model type to active model ID.
+     */
+    @GetMapping("/active")
+    public Map<String, Object> getActiveModels() {
+        ModelRegistry registry = registryService.loadRegistry();
+        Map<String, String> active = new LinkedHashMap<>();
+        for (ModelEntry entry : registry.getActiveModels()) {
+            if (entry.getType() != null) {
+                active.put(entry.getType().getValue(), entry.getModelId());
+            }
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("active", active);
+        return response;
+    }
+
+    /**
+     * Activate a specific model (deactivates other models of the same type).
+     */
+    @PostMapping("/models/{modelId}/activate")
+    public ResponseEntity<Map<String, Object>> activateModel(@PathVariable String modelId) {
+        log.info("Activating model: {}", modelId);
+        Optional<ModelEntry> model = registryService.getModel(modelId);
+        if (model.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        ModelRegistry registry = registryService.loadRegistry();
+        registry.setActiveModel(modelId);
+        registryService.saveRegistry(registry);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("success", true);
+        response.put("message", "Model " + modelId + " activated");
+        response.put("modelId", modelId);
+        response.put("type", model.get().getType() != null ? model.get().getType().getValue() : null);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Normalize the registry to ensure only one model per type is active.
+     * If multiple models of the same type are active, keeps the most recently promoted one.
+     */
+    @PostMapping("/normalize")
+    public ResponseEntity<Map<String, Object>> normalizeRegistry() {
+        log.info("Normalizing registry - ensuring one active model per type");
+        ModelRegistry registry = registryService.loadRegistry();
+        Map<String, String> changes = new LinkedHashMap<>();
+
+        // Group active models by type
+        Map<ModelType, List<ModelEntry>> activeByType = new LinkedHashMap<>();
+        for (ModelEntry entry : registry.getActiveModels()) {
+            activeByType.computeIfAbsent(entry.getType(), k -> new java.util.ArrayList<>()).add(entry);
+        }
+
+        // For types with multiple active models, keep only the most recently promoted
+        for (Map.Entry<ModelType, List<ModelEntry>> typeEntry : activeByType.entrySet()) {
+            List<ModelEntry> models = typeEntry.getValue();
+            if (models.size() > 1) {
+                // Sort by promotedAt descending, keep the first
+                models.sort((a, b) -> {
+                    String aTime = a.getPromotedAt() != null ? a.getPromotedAt() : "";
+                    String bTime = b.getPromotedAt() != null ? b.getPromotedAt() : "";
+                    return bTime.compareTo(aTime);
+                });
+                // Deactivate all except the first
+                for (int i = 1; i < models.size(); i++) {
+                    models.get(i).setStatus(ModelStatus.STAGED);
+                    changes.put(models.get(i).getModelId(), "deactivated");
+                }
+                changes.put(models.get(0).getModelId(), "kept_active");
+            }
+        }
+
+        if (!changes.isEmpty()) {
+            registryService.saveRegistry(registry);
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("success", true);
+        response.put("changes", changes);
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -436,6 +635,123 @@ public class StagingController {
                     "error", result.getErrorMessage()
             ));
         }
+    }
+
+    // ==================== Auto-Optimization Configuration ====================
+
+    /**
+     * Get the current auto-optimization configuration.
+     */
+    @GetMapping("/config/auto-optimize")
+    public ResponseEntity<Map<String, Object>> getAutoOptimizeConfig() {
+        StageWithOptimizationRequest.OptimizationConfigDto config = stagingService.getAutoOptimizationConfig();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("enabled", config != null);
+        response.put("config", config);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Set or clear the auto-optimization configuration.
+     * When set, models staged via catalog will be automatically optimized after validation.
+     */
+    @PostMapping("/config/auto-optimize")
+    public ResponseEntity<Map<String, Object>> setAutoOptimizeConfig(
+            @RequestBody(required = false) StageWithOptimizationRequest.OptimizationConfigDto config) {
+        stagingService.setAutoOptimizationConfig(config);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("success", true);
+        response.put("enabled", config != null);
+        response.put("config", config);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Clear the auto-optimization configuration.
+     */
+    @DeleteMapping("/config/auto-optimize")
+    public ResponseEntity<Map<String, Object>> clearAutoOptimizeConfig() {
+        stagingService.setAutoOptimizationConfig(null);
+        return ResponseEntity.ok(Map.of(
+                "success", true,
+                "enabled", false
+        ));
+    }
+
+    /**
+     * Stage a model from the catalog with optional optimization configuration.
+     */
+    @PostMapping("/stage/catalog/{modelId}/with-optimization")
+    public ResponseEntity<StagingModelInfo> stageFromCatalogWithOptimization(
+            @PathVariable String modelId,
+            @RequestBody StageWithOptimizationRequest request) {
+
+        return catalogService.getModel(modelId)
+                .map(catalogModel -> {
+                    ModelType modelType = resolveModelType(catalogModel);
+
+                    DownloadRequest downloadRequest = DownloadRequest.builder()
+                            .source(catalogModel.getSource())
+                            .repository(catalogModel.getRepo())
+                            .modelId(catalogModel.getId())
+                            .modelType(modelType)
+                            .format(catalogModel.getFormat())
+                            .build();
+
+                    CompletableFuture<StagingModelInfo> future = stagingService.stageModelAsync(downloadRequest);
+
+                    if (request.isAutoPromote()) {
+                        future.thenAccept(info -> {
+                            if (info.getStatus() == ai.kompile.staging.staging.StagingStatus.READY) {
+                                stagingService.promoteModel(modelId, null);
+                            }
+                        });
+                    }
+
+                    // Store the per-request optimization config for this model staging
+                    if (request.getOptimizationConfig() != null) {
+                        stagingService.setAutoOptimizationConfig(request.getOptimizationConfig());
+                    }
+
+                    StagingModelInfo initialStatus = StagingModelInfo.create(
+                            catalogModel.getId(),
+                            catalogModel.getSource() + ":" + catalogModel.getRepo(),
+                            modelType);
+
+                    return ResponseEntity.accepted().body(initialStatus);
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    // ==================== Helper Methods ====================
+
+    /**
+     * Resolve the ModelType for a catalog model by checking which catalog list it belongs to,
+     * or falling back to the modelType field on the CatalogModel itself.
+     */
+    private ModelType resolveModelType(CatalogModel catalogModel) {
+        // Check explicit modelType field first
+        if (catalogModel.getModelType() != null) {
+            try {
+                return ModelType.fromValue(catalogModel.getModelType());
+            } catch (Exception e) {
+                log.debug("Unknown modelType '{}', falling back to catalog list detection", catalogModel.getModelType());
+            }
+        }
+
+        // Fall back to catalog list membership
+        if (catalogService.getVlm().contains(catalogModel)) {
+            return ModelType.VLM_PIPELINE;
+        }
+        if (catalogService.getEncoders().contains(catalogModel)) {
+            return ModelType.ENCODER;
+        }
+        if (catalogService.getCrossEncoders().contains(catalogModel)) {
+            return ModelType.CROSS_ENCODER;
+        }
+
+        // Default
+        return ModelType.ENCODER;
     }
 
     // ==================== Cleanup Endpoints ====================

@@ -1224,6 +1224,13 @@ export interface PdfProcessingConfig {
   beamSize?: number;
   doSample?: boolean;
 
+  // VLM component path overrides (optional - null means auto-detect from model directory)
+  vlmDecoderPath?: string;
+  vlmEncoderPath?: string;
+  vlmEmbedTokensPath?: string;
+  vlmTokenizerPath?: string;
+  vlmPreprocessorConfigPath?: string;
+
   // Traditional OCR configuration
   detectionModelId?: string;
   recognitionModelId?: string;
@@ -1266,7 +1273,7 @@ export interface PdfProcessingConfig {
 export const DEFAULT_PDF_PROCESSING_CONFIG: PdfProcessingConfig = {
   processingMode: 'AUTO',
   useVlm: false,
-  vlmModelId: 'smoldocling-256m',
+  vlmModelId: '',
   vlmOutputFormat: 'MARKDOWN',
   maxNewTokens: 4096,
   temperature: 0.0,
@@ -3077,6 +3084,19 @@ export interface LocalAgentChatRequest {
 
   /** Include semantic/vector search */
   includeSemanticSearch?: boolean;
+
+  // Graph RAG Configuration
+  /** Enable Graph RAG (knowledge graph-based retrieval) */
+  enableGraphRag?: boolean;
+
+  /** Maximum results for graph RAG */
+  graphRagMaxResults?: number;
+
+  /** Search type for graph RAG: LOCAL or GLOBAL */
+  graphRagSearchType?: string;
+
+  /** Conversation ID for graph RAG entity tracking */
+  graphRagConversationId?: string;
 
   /** Folder ID for context injection (file paths injected into prompt) */
   folderId?: string;
@@ -6100,4 +6120,154 @@ export interface DeleteBackupResponse {
   deleted: string;
   message: string;
   status: string;
+}
+
+// ==================== VLM Test Workflow ====================
+
+export interface VlmTestStartResponse {
+  taskId: string;
+  fileName: string;
+  status: string;
+  modelId: string;
+  outputFormat: string;
+}
+
+export interface VlmTestStatusResponse {
+  taskId: string;
+  status: string;
+  progressPercent: number;
+  currentPhase: string;
+  pagesCompleted?: number;
+  message?: string;
+}
+
+export interface VlmTestPageResult {
+  pageNumber: number;
+  text: string;
+  rawDocTags?: string;
+  success: boolean;
+  processingTimeMs: number;
+  generatedTokens?: number;
+  tokensPerSecond?: number;
+  error?: string;
+}
+
+export interface VlmTestPerformance {
+  totalProcessingTimeMs: number;
+  modelLoadTimeMs: number;
+  totalPages: number;
+  totalGeneratedTokens: number;
+  avgTokensPerSecond: number;
+  startHeapUsedBytes: number;
+  endHeapUsedBytes: number;
+  peakMemoryBytes: number;
+  phaseDurations: { [key: string]: number };
+}
+
+export interface VlmTestResultResponse {
+  taskId: string;
+  filePath: string;
+  status: string;
+  totalTimeMs: number;
+  pages?: VlmTestPageResult[];
+  performance?: VlmTestPerformance;
+  phaseDurations?: { [key: string]: number };
+  errorMessage?: string;
+}
+
+export interface VlmTestProgressMessage {
+  taskId: string;
+  status: string;
+  progressPercent: number;
+  currentPhase: string;
+  message?: string;
+  result?: VlmTestResultResponse;
+}
+
+export interface VlmTestSubprocessConfig {
+  heapSize: string;
+  offHeapMultiplier: number;
+  timeoutMinutes: number;
+  javaPath: string;
+  cudaPinnedHostLimitMb?: number;
+}
+
+export interface VlmTestSubprocessConfigUpdate {
+  heapSize?: string;
+  offHeapMultiplier?: number;
+  timeoutMinutes?: number;
+  javaPath?: string;
+  vlmCudaPinnedHostLimitMb?: number;
+}
+
+export interface KompileLocalModelStatus {
+  connected: boolean;
+  stagingUrl: string;
+  modelId?: string;
+  modelLoaded: boolean;
+  agentRegistered: boolean;
+  message: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTIVE MODEL CONTEXT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ActiveModelContext {
+  embedding: EmbeddingContext | null;
+  reranker: RerankerContext | null;
+  staging: StagingContext | null;
+  availableEmbeddingModels: string[];
+  availableRerankerModels: string[];
+}
+
+export interface EmbeddingContext {
+  modelId: string;
+  encoderType: string;
+  dimensions: number;
+  status: string;
+  initialized: boolean;
+}
+
+export interface RerankerContext {
+  modelId: string;
+  available: boolean;
+}
+
+export interface StagingContext {
+  connected: boolean;
+  endpointUrl: string | null;
+  uiUrl: string | null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOL PERMISSIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type PermissionLevel = 'ALLOW' | 'DENY';
+
+export interface ToolPermissionConfig {
+  defaultPermission: PermissionLevel;
+  categoryRules: { [category: string]: PermissionLevel };
+  toolRules: { [toolName: string]: PermissionLevel };
+}
+
+export interface ToolPermissionStatus {
+  defaultPermission: PermissionLevel;
+  categories: { [key: string]: CategoryPermissionInfo };
+  tools: ToolPermissionInfo[];
+}
+
+export interface CategoryPermissionInfo {
+  displayName: string;
+  permission: PermissionLevel | null;
+  toolCount: number;
+}
+
+export interface ToolPermissionInfo {
+  name: string;
+  category: string;
+  description: string;
+  resolvedPermission: PermissionLevel;
+  hasOverride: boolean;
 }

@@ -58,7 +58,7 @@ public enum ValueType implements Serializable {
      * @return The corresponding ValueType, or null if not found.
      */
     @JsonCreator
-    public static ValueType fromString(@JsonProperty("valueType") String name) {
+    public static ValueType fromString(String name) {
         if (name == null) {
             return null;
         }

@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 // Spring AI's EmbeddingModel and related classes
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +36,7 @@ import java.util.stream.Collectors;
 
 @Service("sentenceTransformerEmbeddingModelImpl")
 // Activate this bean if transformer embeddings are enabled and model URI is set
+@ConditionalOnClass(name = "ai.kompile.embedding.transformer.SentenceTransformerEmbeddingModelImpl")
 @ConditionalOnProperty(prefix = "spring.ai.embedding.transformer.onnx", name = "model-uri")
 public class SentenceTransformerEmbeddingModelImpl implements EmbeddingModel {
 

@@ -1,0 +1,473 @@
+<!--
+  ~ Copyright 2025 Kompile Inc.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~ http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="entity-browser">
+  <!-- Header with Statistics -->
+  <div class="browser-header">
+    <div class="header-info">
+      <h2>Entity Browser</h2>
+      <div class="quick-stats" *ngIf="statistics">
+        <span class="stat-item">
+          <mat-icon>scatter_plot</mat-icon>
+          {{ statistics.totalNodes }} entities
+        </span>
+        <span class="stat-item">
+          <mat-icon>timeline</mat-icon>
+          {{ statistics.totalEdges }} connections
+        </span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="refreshData()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <mat-button-toggle-group [(ngModel)]="viewMode" [ngModelOptions]="{standalone: true}" class="view-toggle">
+        <mat-button-toggle value="list" matTooltip="List View">
+          <mat-icon>view_list</mat-icon>
+        </mat-button-toggle>
+        <mat-button-toggle value="grid" matTooltip="Grid View">
+          <mat-icon>grid_view</mat-icon>
+        </mat-button-toggle>
+      </mat-button-toggle-group>
+    </div>
+  </div>
+
+  <!-- Main Content with Tabs -->
+  <mat-tab-group [(selectedIndex)]="selectedTabIndex" (selectedIndexChange)="onTabChange($event)">
+
+    <!-- Entities Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>category</mat-icon>
+        <span>Entities</span>
+        <span class="tab-count">({{ totalEntities }})</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Search and Filter Bar -->
+        <div class="filter-bar">
+          <mat-form-field appearance="outline" class="search-field">
+            <mat-label>Search entities...</mat-label>
+            <input matInput
+                   [ngModel]="entitySearchQuery" [ngModelOptions]="{standalone: true}"
+                   (ngModelChange)="onEntitySearch($event)"
+                   placeholder="Search by title, description, or ID">
+            <mat-icon matSuffix>search</mat-icon>
+          </mat-form-field>
+
+          <div class="type-filters">
+            <span class="filter-label">Filter by type:</span>
+            <mat-chip-listbox multiple>
+              <mat-chip-option *ngFor="let type of allNodeTypes"
+                        [selected]="entityTypeFilters.includes(type)"
+                        (click)="toggleEntityTypeFilter(type)"
+                        [style.--mdc-chip-selected-container-color]="getNodeColor(type)">
+                <span class="type-dot" [style.background-color]="getNodeColor(type)"></span>
+                {{ formatNodeType(type) }}
+                <span class="type-count">({{ getTypeCount(type) }})</span>
+              </mat-chip-option>
+            </mat-chip-listbox>
+            <button mat-button *ngIf="entityTypeFilters.length > 0 || entitySearchQuery"
+                    (click)="clearEntityFilters()">
+              <mat-icon>clear</mat-icon>
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div class="loading-container" *ngIf="loading">
+          <mat-spinner diameter="40"></mat-spinner>
+          <span>Loading entities...</span>
+        </div>
+
+        <!-- List View -->
+        <div class="entity-list" *ngIf="!loading && viewMode === 'list'">
+          <table mat-table [dataSource]="displayedEntities" class="entity-table">
+            <!-- Type Column -->
+            <ng-container matColumnDef="type">
+              <th mat-header-cell *matHeaderCellDef>Type</th>
+              <td mat-cell *matCellDef="let entity">
+                <span class="type-badge" [style.background-color]="getNodeColor(entity.nodeType)">
+                  {{ formatNodeType(entity.nodeType) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Title Column -->
+            <ng-container matColumnDef="title">
+              <th mat-header-cell *matHeaderCellDef>Title</th>
+              <td mat-cell *matCellDef="let entity">
+                <div class="entity-title-cell">
+                  <span class="entity-title">{{ entity.title || entity.nodeId }}</span>
+                  <span class="entity-id" *ngIf="entity.externalId">{{ entity.externalId }}</span>
+                </div>
+              </td>
+            </ng-container>
+
+            <!-- Description Column -->
+            <ng-container matColumnDef="description">
+              <th mat-header-cell *matHeaderCellDef>Description</th>
+              <td mat-cell *matCellDef="let entity">
+                <span class="entity-description" [matTooltip]="entity.description || ''">
+                  {{ entity.description | slice:0:100 }}{{ entity.description?.length > 100 ? '...' : '' }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Connections Column -->
+            <ng-container matColumnDef="connections">
+              <th mat-header-cell *matHeaderCellDef>Connections</th>
+              <td mat-cell *matCellDef="let entity">
+                <span class="connection-count">{{ entity.edgeCount || 0 }}</span>
+              </td>
+            </ng-container>
+
+            <!-- Actions Column -->
+            <ng-container matColumnDef="actions">
+              <th mat-header-cell *matHeaderCellDef>Actions</th>
+              <td mat-cell *matCellDef="let entity">
+                <button mat-icon-button (click)="selectEntity(entity)" matTooltip="View Details">
+                  <mat-icon>visibility</mat-icon>
+                </button>
+                <button mat-icon-button (click)="viewInGraph(entity)" matTooltip="View in Graph">
+                  <mat-icon>hub</mat-icon>
+                </button>
+                <button mat-icon-button color="warn" (click)="deleteEntity(entity)" matTooltip="Delete">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="entityColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: entityColumns;"
+                [class.selected]="selectedEntity?.nodeId === row.nodeId"
+                (click)="selectEntity(row)"></tr>
+          </table>
+
+          <div class="no-results" *ngIf="displayedEntities.length === 0">
+            <mat-icon>search_off</mat-icon>
+            <p>No entities found</p>
+            <span>Try adjusting your search or filters</span>
+          </div>
+        </div>
+
+        <!-- Grid View -->
+        <div class="entity-grid" *ngIf="!loading && viewMode === 'grid'">
+          <div class="entity-card" *ngFor="let entity of displayedEntities"
+               [class.selected]="selectedEntity?.nodeId === entity.nodeId"
+               (click)="selectEntity(entity)">
+            <div class="card-header">
+              <span class="type-badge" [style.background-color]="getNodeColor(entity.nodeType)">
+                {{ formatNodeType(entity.nodeType) }}
+              </span>
+              <div class="card-actions">
+                <button mat-icon-button (click)="viewInGraph(entity); $event.stopPropagation()" matTooltip="View in Graph">
+                  <mat-icon>hub</mat-icon>
+                </button>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3 class="card-title">{{ entity.title || entity.nodeId }}</h3>
+              <p class="card-description" *ngIf="entity.description">
+                {{ entity.description | slice:0:80 }}{{ (entity.description?.length || 0) > 80 ? '...' : '' }}
+              </p>
+            </div>
+            <div class="card-footer">
+              <span class="connection-badge">
+                <mat-icon>link</mat-icon>
+                {{ entity.edgeCount || 0 }} connections
+              </span>
+            </div>
+          </div>
+
+          <div class="no-results grid-no-results" *ngIf="displayedEntities.length === 0">
+            <mat-icon>search_off</mat-icon>
+            <p>No entities found</p>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <mat-paginator #entityPaginator
+                       [length]="totalEntities"
+                       [pageSize]="entityPageSize"
+                       [pageIndex]="entityPageIndex"
+                       [pageSizeOptions]="[10, 20, 50, 100]"
+                       (page)="onEntityPageChange($event)">
+        </mat-paginator>
+      </div>
+    </mat-tab>
+
+    <!-- Connections Tab -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>timeline</mat-icon>
+        <span>Connections</span>
+        <span class="tab-count">({{ totalConnections }})</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Search and Filter Bar -->
+        <div class="filter-bar">
+          <mat-form-field appearance="outline" class="search-field">
+            <mat-label>Search connections...</mat-label>
+            <input matInput
+                   [ngModel]="connectionSearchQuery" [ngModelOptions]="{standalone: true}"
+                   (ngModelChange)="onConnectionSearch($event)"
+                   placeholder="Search by description, source, or target">
+            <mat-icon matSuffix>search</mat-icon>
+          </mat-form-field>
+
+          <div class="type-filters">
+            <span class="filter-label">Filter by type:</span>
+            <mat-chip-listbox multiple>
+              <mat-chip-option *ngFor="let type of allEdgeTypes"
+                        [selected]="connectionTypeFilters.includes(type)"
+                        (click)="toggleConnectionTypeFilter(type)"
+                        [style.--mdc-chip-selected-container-color]="getEdgeColor(type)">
+                {{ formatEdgeType(type) }}
+                <span class="type-count">({{ getEdgeTypeCount(type) }})</span>
+              </mat-chip-option>
+            </mat-chip-listbox>
+            <button mat-button *ngIf="connectionTypeFilters.length > 0 || connectionSearchQuery"
+                    (click)="clearConnectionFilters()">
+              <mat-icon>clear</mat-icon>
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div class="loading-container" *ngIf="loadingConnections">
+          <mat-spinner diameter="40"></mat-spinner>
+          <span>Loading connections...</span>
+        </div>
+
+        <!-- Connections List -->
+        <div class="connection-list" *ngIf="!loadingConnections">
+          <table mat-table [dataSource]="displayedConnections" class="connection-table">
+            <!-- Type Column -->
+            <ng-container matColumnDef="type">
+              <th mat-header-cell *matHeaderCellDef>Type</th>
+              <td mat-cell *matCellDef="let edge">
+                <span class="edge-type-badge" [style.background-color]="getEdgeColor(edge.edgeType)">
+                  {{ formatEdgeType(edge.edgeType) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Source Column -->
+            <ng-container matColumnDef="source">
+              <th mat-header-cell *matHeaderCellDef>Source</th>
+              <td mat-cell *matCellDef="let edge">
+                <span class="node-reference" (click)="selectEntityByNodeId(edge.sourceNodeId); $event.stopPropagation()">
+                  {{ getNodeLabel(edge.sourceNodeId) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Target Column -->
+            <ng-container matColumnDef="target">
+              <th mat-header-cell *matHeaderCellDef>Target</th>
+              <td mat-cell *matCellDef="let edge">
+                <span class="node-reference" (click)="selectEntityByNodeId(edge.targetNodeId); $event.stopPropagation()">
+                  {{ getNodeLabel(edge.targetNodeId) }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Weight Column -->
+            <ng-container matColumnDef="weight">
+              <th mat-header-cell *matHeaderCellDef>Weight</th>
+              <td mat-cell *matCellDef="let edge">
+                <div class="weight-indicator">
+                  <div class="weight-bar" [style.width.%]="edge.weight * 100"></div>
+                  <span class="weight-value">{{ edge.weight | number:'1.2-2' }}</span>
+                </div>
+              </td>
+            </ng-container>
+
+            <!-- Description Column -->
+            <ng-container matColumnDef="description">
+              <th mat-header-cell *matHeaderCellDef>Description</th>
+              <td mat-cell *matCellDef="let edge">
+                <span class="edge-description" [matTooltip]="edge.description || ''">
+                  {{ edge.description | slice:0:60 }}{{ edge.description?.length > 60 ? '...' : '' }}
+                </span>
+              </td>
+            </ng-container>
+
+            <!-- Actions Column -->
+            <ng-container matColumnDef="actions">
+              <th mat-header-cell *matHeaderCellDef>Actions</th>
+              <td mat-cell *matCellDef="let edge">
+                <button mat-icon-button color="warn" (click)="deleteConnection(edge)" matTooltip="Delete">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="connectionColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: connectionColumns;"></tr>
+          </table>
+
+          <div class="no-results" *ngIf="displayedConnections.length === 0">
+            <mat-icon>link_off</mat-icon>
+            <p>No connections found</p>
+            <span>Try adjusting your search or filters</span>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <mat-paginator #connectionPaginator
+                       [length]="totalConnections"
+                       [pageSize]="connectionPageSize"
+                       [pageIndex]="connectionPageIndex"
+                       [pageSizeOptions]="[10, 20, 50, 100]"
+                       (page)="onConnectionPageChange($event)">
+        </mat-paginator>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Entity Detail Side Panel -->
+  <div class="detail-panel" *ngIf="showEntityDetail && selectedEntity" [@slideIn]>
+    <div class="panel-header">
+      <h3>Entity Details</h3>
+      <button mat-icon-button (click)="closeEntityDetail()">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+
+    <div class="panel-content">
+      <!-- Entity Info -->
+      <div class="entity-info">
+        <div class="info-header">
+          <span class="type-badge large" [style.background-color]="getNodeColor(selectedEntity.nodeType)">
+            {{ formatNodeType(selectedEntity.nodeType) }}
+          </span>
+          <h2>{{ selectedEntity.title || selectedEntity.nodeId }}</h2>
+        </div>
+
+        <div class="info-row" *ngIf="selectedEntity.externalId">
+          <span class="info-label">External ID</span>
+          <span class="info-value">{{ selectedEntity.externalId }}</span>
+        </div>
+
+        <div class="info-row" *ngIf="selectedEntity.description">
+          <span class="info-label">Description</span>
+          <span class="info-value">{{ selectedEntity.description }}</span>
+        </div>
+
+        <div class="info-row" *ngIf="selectedEntity.sourceType">
+          <span class="info-label">Source Type</span>
+          <span class="info-value">{{ selectedEntity.sourceType }}</span>
+        </div>
+
+        <div class="info-row">
+          <span class="info-label">Children</span>
+          <span class="info-value">{{ selectedEntity.childCount || 0 }}</span>
+        </div>
+
+        <div class="info-row">
+          <span class="info-label">Connections</span>
+          <span class="info-value">{{ selectedEntity.edgeCount || 0 }}</span>
+        </div>
+
+        <div class="info-row" *ngIf="selectedEntity.createdAt">
+          <span class="info-label">Created</span>
+          <span class="info-value">{{ selectedEntity.createdAt | date:'medium' }}</span>
+        </div>
+
+        <!-- Metadata -->
+        <mat-expansion-panel *ngIf="selectedEntity.metadata && (selectedEntity.metadata | keyvalue).length > 0">
+          <mat-expansion-panel-header>
+            <mat-panel-title>Metadata</mat-panel-title>
+          </mat-expansion-panel-header>
+          <pre class="metadata-content">{{ selectedEntity.metadata | json }}</pre>
+        </mat-expansion-panel>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Entity Connections -->
+      <div class="entity-connections">
+        <h4>
+          <mat-icon>timeline</mat-icon>
+          Connections ({{ entityConnections.length }})
+        </h4>
+
+        <div class="connections-list" *ngIf="entityConnections.length > 0">
+          <div class="connection-item" *ngFor="let edge of entityConnections">
+            <span class="edge-type-badge small" [style.background-color]="getEdgeColor(edge.edgeType)">
+              {{ formatEdgeType(edge.edgeType) }}
+            </span>
+            <div class="connection-nodes">
+              <span class="connection-direction" *ngIf="edge.sourceNodeId === selectedEntity?.nodeId">
+                <mat-icon>arrow_forward</mat-icon>
+              </span>
+              <span class="connection-direction" *ngIf="edge.targetNodeId === selectedEntity?.nodeId">
+                <mat-icon>arrow_back</mat-icon>
+              </span>
+              <span class="connected-node"
+                    (click)="selectEntityByNodeId(edge.sourceNodeId === selectedEntity?.nodeId ? edge.targetNodeId : edge.sourceNodeId)">
+                {{ getNodeLabel(edge.sourceNodeId === selectedEntity?.nodeId ? edge.targetNodeId : edge.sourceNodeId) }}
+              </span>
+            </div>
+            <span class="edge-weight">{{ edge.weight | number:'1.2-2' }}</span>
+          </div>
+        </div>
+
+        <div class="no-connections" *ngIf="entityConnections.length === 0">
+          <mat-icon>link_off</mat-icon>
+          <span>No connections</span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Connected Entities -->
+      <div class="connected-entities" *ngIf="connectedEntities.length > 0">
+        <h4>
+          <mat-icon>scatter_plot</mat-icon>
+          Connected Entities ({{ connectedEntities.length }})
+        </h4>
+
+        <div class="connected-list">
+          <div class="connected-item" *ngFor="let entity of connectedEntities" (click)="selectEntity(entity)">
+            <span class="type-dot" [style.background-color]="getNodeColor(entity.nodeType)"></span>
+            <div class="connected-info">
+              <span class="connected-title">{{ entity.title || entity.nodeId }}</span>
+              <span class="connected-type">{{ formatNodeType(entity.nodeType) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="panel-actions">
+        <button mat-raised-button color="primary" (click)="viewInGraph(selectedEntity)">
+          <mat-icon>hub</mat-icon>
+          View in Graph
+        </button>
+        <button mat-stroked-button color="warn" (click)="deleteEntity(selectedEntity)">
+          <mat-icon>delete</mat-icon>
+          Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,48 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="model-eval-history">
+  <h2>Eval History: {{ modelId }}</h2>
+
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading && runs.length === 0" class="empty-state">
+    <mat-icon>history</mat-icon>
+    <p>No evaluation runs found for this model.</p>
+  </div>
+
+  <table mat-table [dataSource]="runs" *ngIf="!loading && runs.length > 0" class="history-table">
+    <ng-container matColumnDef="experimentId">
+      <th mat-header-cell *matHeaderCellDef>Experiment</th>
+      <td mat-cell *matCellDef="let run">{{ run.experimentId | slice:0:8 }}...</td>
+    </ng-container>
+    <ng-container matColumnDef="modelVariant">
+      <th mat-header-cell *matHeaderCellDef>Variant</th>
+      <td mat-cell *matCellDef="let run">{{ run.modelVariant || '-' }}</td>
+    </ng-container>
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef>Status</th>
+      <td mat-cell *matCellDef="let run">
+        <span class="status-chip" [class]="getStatusColor(run.status)">{{ run.status }}</span>
+      </td>
+    </ng-container>
+    <ng-container matColumnDef="passRate">
+      <th mat-header-cell *matHeaderCellDef>Pass Rate</th>
+      <td mat-cell *matCellDef="let run">{{ formatPercent(run.passRate) }}</td>
+    </ng-container>
+    <ng-container matColumnDef="averageScore">
+      <th mat-header-cell *matHeaderCellDef>Avg Score</th>
+      <td mat-cell *matCellDef="let run">{{ formatScore(run.averageScore) }}</td>
+    </ng-container>
+    <ng-container matColumnDef="completedAt">
+      <th mat-header-cell *matHeaderCellDef>Completed</th>
+      <td mat-cell *matCellDef="let run">{{ run.completedAt ? (run.completedAt | date:'short') : '-' }}</td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+  </table>
+</div>

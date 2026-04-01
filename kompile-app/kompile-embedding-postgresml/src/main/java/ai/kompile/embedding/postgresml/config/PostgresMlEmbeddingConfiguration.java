@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.postgresml.PostgresMlEmbeddingModel;
 import org.springframework.ai.postgresml.PostgresMlEmbeddingOptions;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -41,6 +42,7 @@ import java.util.Map;
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(PostgresMlEmbeddingProperties.class)
+@ConditionalOnClass(name = "ai.kompile.embedding.postgresml.PostgresMlEmbeddingModelImpl")
 @ConditionalOnProperty(prefix = "spring.ai.postgresml.embedding", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class PostgresMlEmbeddingConfiguration {
 

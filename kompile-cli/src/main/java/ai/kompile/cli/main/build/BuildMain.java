@@ -16,19 +16,24 @@
 
 package ai.kompile.cli.main.build;
 
+import ai.kompile.cli.main.build.generators.SampleProjectSync;
 import picocli.CommandLine;
 import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "build",subcommands = {
+        BuildAppCommand.class,
         NativeImageBuilder.class,
         PomGenerator.class,
         CloneBuildComponents.class,
         GenerateDl4jBuild.class,
-        BuildNd4jBackend.class
+        BuildNd4jBackend.class,
+        SampleProjectSync.class
 }, mixinStandardHelpOptions = false,
-        description = "Commands related to building Kompile applications, including native images and specific framework builds.\n" +
-                "Primary entry points for application creation and building are 'kompile build-kompile-app', 'kompile build-rag-app', etc.\n\n" +
-                "For custom ND4J/DL4J backend builds with fine-grained control over data types, operations, and optimizations:\n" +
+        description = "Commands related to building Kompile applications.\n\n" +
+                "Primary entry point:\n" +
+                "  kompile build app --configName=myapp --preset=hosted-llm-rag\n" +
+                "  kompile build app --configName=myapp --preset=full --exclude=graph-neo4j\n\n" +
+                "For custom ND4J/DL4J backend builds:\n" +
                 "  kompile build nd4j-backend --preset=minimal-inference\n" +
                 "  kompile build nd4j-backend --backend=cuda --cuda-version=12.3 --helper-cudnn")
 public class BuildMain implements Callable<Integer> {
@@ -39,8 +44,7 @@ public class BuildMain implements Callable<Integer> {
     public Integer call() throws Exception {
         CommandLine commandLine = new CommandLine(new BuildMain());
         commandLine.usage(System.err);
-        System.err.println("\nTip: For dynamic application creation and building, use 'kompile build-kompile-app', " +
-                "'kompile build-rag-app', 'kompile build-hosted-llm-rag-app', or 'kompile build-samediff-app'.");
+        System.err.println("\nTip: Use 'kompile build app --configName=myapp --preset=hosted-llm-rag' to build applications.");
         return 0;
     }
 }

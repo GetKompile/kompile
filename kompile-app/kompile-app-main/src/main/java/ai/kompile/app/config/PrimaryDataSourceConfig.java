@@ -19,6 +19,7 @@ package ai.kompile.app.config;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.boot.autoconfigure.domain.EntityScanPackages;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,6 +28,9 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
+import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypes;
+import org.springframework.orm.jpa.persistenceunit.PersistenceManagedTypesScanner;
+import org.springframework.context.ApplicationContext;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
@@ -96,6 +100,26 @@ public class PrimaryDataSourceConfig {
         return builder.build();
     }
 
+    private static final String[] ENTITY_PACKAGES = {
+        "ai.kompile.app.facts.domain",
+        "ai.kompile.app.ingest.domain",
+        "ai.kompile.app.staging.domain",
+        "ai.kompile.app.eval.domain",
+        "ai.kompile.app.prompts.domain",
+        "ai.kompile.chat.history.domain",
+        "ai.kompile.knowledgegraph.domain",
+        "ai.kompile.knowledgegraph.builder.domain",
+        "ai.kompile.knowledgegraph.embedding.domain",
+        "ai.kompile.oauth.domain",
+        "ai.kompile.orchestrator.model"
+    };
+
+    @Bean
+    @Primary
+    public PersistenceManagedTypes persistenceManagedTypes(ApplicationContext applicationContext) {
+        return new PersistenceManagedTypesScanner(applicationContext).scan(ENTITY_PACKAGES);
+    }
+
     @Bean
     public SchemaMigrationBridgeService schemaMigrationBridgeService(DataSource dataSource) {
         return new SchemaMigrationBridgeService(dataSource);
@@ -105,7 +129,8 @@ public class PrimaryDataSourceConfig {
     @Primary
     public LocalContainerEntityManagerFactoryBean entityManagerFactory(
             DataSource dataSource,
-            SchemaMigrationBridgeService schemaMigrationBridgeService) {
+            SchemaMigrationBridgeService schemaMigrationBridgeService,
+            PersistenceManagedTypes persistenceManagedTypes) {
         // Run bridge migrations BEFORE Hibernate schema update
         log.info("Running schema migrations before EntityManagerFactory creation...");
         schemaMigrationBridgeService.runMigrations();
@@ -114,19 +139,9 @@ public class PrimaryDataSourceConfig {
 
         LocalContainerEntityManagerFactoryBean em = new LocalContainerEntityManagerFactoryBean();
         em.setDataSource(dataSource);
-        em.setPackagesToScan(
-            "ai.kompile.app.facts.domain",
-            "ai.kompile.app.ingest.domain",
-            "ai.kompile.app.staging.domain",
-            "ai.kompile.app.eval.domain",
-            "ai.kompile.app.prompts.domain",
-            "ai.kompile.chat.history.domain",
-            "ai.kompile.knowledgegraph.domain",
-            "ai.kompile.knowledgegraph.builder.domain",
-            "ai.kompile.knowledgegraph.embedding.domain",
-            "ai.kompile.oauth.domain",
-            "ai.kompile.orchestrator.model"
-        );
+        // Use PersistenceManagedTypes for proper AOT/native image support
+        // (setPackagesToScan doesn't work reliably in native images)
+        em.setManagedTypes(persistenceManagedTypes);
         em.setPersistenceUnitName("primary");
 
         HibernateJpaVendorAdapter vendorAdapter = new HibernateJpaVendorAdapter();
@@ -154,6 +169,9 @@ public class PrimaryDataSourceConfig {
         properties.put("hibernate.jdbc.batch_size", 50);
         properties.put("hibernate.order_inserts", true);
         properties.put("hibernate.order_updates", true);
+        // Use 'none' bytecode provider for GraalVM native image compatibility
+        // (ByteBuddy generates classes at runtime which is unsupported in native images)
+        properties.put("hibernate.bytecode.provider", "none");
         return properties;
     }
 }

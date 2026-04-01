@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Vespa Services Configuration for Kompile VectorStore
+
+  This configuration defines a single-node Vespa deployment suitable for
+  development and testing. For production deployments, adjust the node
+  count and resources as needed.
+
+  Deploy with:
+    vespa deploy --wait 300 application
+
+  For more information: https://docs.vespa.ai/en/reference/services.html
+-->
+<services version="1.0" xmlns:deploy="vespa" xmlns:preprocess="properties">
+
+    <!-- Container cluster for handling requests -->
+    <container id="default" version="1.0">
+
+        <!-- Search API -->
+        <search/>
+
+        <!-- Document API for feeding -->
+        <document-api/>
+
+        <!-- HTTP server configuration -->
+        <http>
+            <server id="default" port="8080"/>
+        </http>
+
+        <!-- Node configuration -->
+        <nodes>
+            <node hostalias="node1"/>
+        </nodes>
+
+    </container>
+
+    <!-- Content cluster for storing documents -->
+    <content id="content" version="1.0">
+
+        <!-- Minimum redundancy - adjust for production -->
+        <redundancy>1</redundancy>
+
+        <!-- Document types this cluster handles -->
+        <documents>
+            <document type="document" mode="index"/>
+        </documents>
+
+        <!-- Node configuration -->
+        <nodes>
+            <node hostalias="node1" distribution-key="0"/>
+        </nodes>
+
+    </content>
+
+</services>

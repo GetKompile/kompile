@@ -68,6 +68,25 @@ public class BuiltInToolDiscoveryService {
         CATEGORY_KEYWORDS.put("config", "config,setting,property,bean");
         CATEGORY_KEYWORDS.put("action_log", "action,undo,history,log");
         CATEGORY_KEYWORDS.put("chat", "chat,session,conversation,message");
+        CATEGORY_KEYWORDS.put("factsheet", "fact_sheet,fact sheet,factsheet");
+        CATEGORY_KEYWORDS.put("evaluation", "eval,evaluation,test_case,pass_rate,failing");
+        CATEGORY_KEYWORDS.put("ingestion", "ingest,youtube,text_source");
+        CATEGORY_KEYWORDS.put("pipeline", "pipeline,execute_pipeline,async_result");
+        CATEGORY_KEYWORDS.put("settings", "filter_chain,filter,guardrail,transformer");
+        CATEGORY_KEYWORDS.put("chunk", "chunk,deduplic,duplicate");
+        CATEGORY_KEYWORDS.put("prompt", "prompt,template,render");
+        CATEGORY_KEYWORDS.put("timing", "timing,profil,chrome_trace,op_breakdown,histogram");
+        CATEGORY_KEYWORDS.put("benchmark", "benchmark,samediff_benchmark");
+        CATEGORY_KEYWORDS.put("backup", "backup,restore");
+        CATEGORY_KEYWORDS.put("orchestrator", "orchestrator,workflow,state_machine");
+        CATEGORY_KEYWORDS.put("experiment", "experiment,dataset_csv,dataset_jsonl");
+        CATEGORY_KEYWORDS.put("crossindex", "cross_index,sync_job,index_sync");
+        CATEGORY_KEYWORDS.put("archive", "archive,karch");
+        CATEGORY_KEYWORDS.put("vlm", "vlm,vision_language,vlm_pipeline,vlm_stage");
+        CATEGORY_KEYWORDS.put("kvcache", "kvcache,kv_cache,checkpoint");
+        CATEGORY_KEYWORDS.put("device", "device_routing,device_config");
+        CATEGORY_KEYWORDS.put("subprocess", "subprocess,heap_size,subprocess_config");
+        CATEGORY_KEYWORDS.put("delegation", "delegate,delegation,inter_agent");
     }
 
     @Autowired
@@ -245,6 +264,20 @@ public class BuiltInToolDiscoveryService {
     }
 
     /**
+     * Public method to infer the category for a tool by name.
+     * Looks up the tool's description from discovered tools, then delegates to inferCategory().
+     */
+    public String inferCategoryForTool(String toolName) {
+        // Try to find the tool in discovered tools for its description
+        String description = discoveredTools.stream()
+                .filter(t -> toolName.equals(t.getName()))
+                .map(DiscoveredTool::getDescription)
+                .findFirst()
+                .orElse(null);
+        return inferCategory(toolName, description);
+    }
+
+    /**
      * Infers the category based on tool name and description.
      */
     private String inferCategory(String toolName, String description) {
@@ -284,6 +317,25 @@ public class BuiltInToolDiscoveryService {
             case "config": return "Application Configuration";
             case "action_log": return "Action History";
             case "chat": return "Chat & Sessions";
+            case "factsheet": return "Fact Sheet Management";
+            case "evaluation": return "Evaluation & Testing";
+            case "ingestion": return "Document Ingestion";
+            case "pipeline": return "Pipeline Management";
+            case "settings": return "Filter & Settings";
+            case "chunk": return "Chunk Management";
+            case "prompt": return "Prompt Templates";
+            case "timing": return "Operation Timing";
+            case "benchmark": return "Benchmarks";
+            case "backup": return "Backup & Restore";
+            case "orchestrator": return "Orchestration";
+            case "experiment": return "Experiments";
+            case "crossindex": return "Cross-Index Tracking";
+            case "archive": return "Archives";
+            case "vlm": return "VLM Configuration";
+            case "kvcache": return "KV Cache";
+            case "device": return "Device Routing";
+            case "subprocess": return "Subprocess Configuration";
+            case "delegation": return "Agent Delegation";
             default: return Character.toUpperCase(category.charAt(0)) + category.substring(1);
         }
     }

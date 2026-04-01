@@ -17,7 +17,8 @@
 package io.anserini.encoder.samediff.tokenizer;
 
 import lombok.Getter;
-import ai.kompile.bindings.Tokenizer;
+import org.eclipse.deeplearning4j.llm.tokenizer.Encoding;
+import org.eclipse.deeplearning4j.llm.tokenizer.HuggingFaceTokenizer;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -28,7 +29,7 @@ import java.util.Set;
 
 @Getter
 public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
-    private final Tokenizer tokenizer;
+    private final HuggingFaceTokenizer tokenizer;
     private final boolean addSpecialTokens;
     private final int maxLength;
     private final SamediffBertVocabulary vocabulary; // Maintain vocabulary access
@@ -56,7 +57,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
 
         // Create tokenizer configuration from the existing vocabulary
         String tokenizerConfig = createConfigFromVocabulary(vocabulary, doLowerCaseAndStripAccents);
-        this.tokenizer = Tokenizer.fromJson(tokenizerConfig);
+        this.tokenizer = HuggingFaceTokenizer.fromJson(tokenizerConfig);
     }
 
     /**
@@ -69,7 +70,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
     public SamediffBertTokenizerPreProcessor(String modelPath,
                                              boolean addSpecialTokens,
                                              int maxLength) throws IOException {
-        this.tokenizer = new Tokenizer(modelPath);
+        this.tokenizer = HuggingFaceTokenizer.fromFile(modelPath);
         this.addSpecialTokens = addSpecialTokens;
         this.maxLength = maxLength;
         this.vocabulary = createVocabularyFromTokenizer();
@@ -85,14 +86,14 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
     public static SamediffBertTokenizerPreProcessor fromJson(String jsonConfig,
                                                              boolean addSpecialTokens,
                                                              int maxLength) throws IOException {
-        Tokenizer tokenizer = Tokenizer.fromJson(jsonConfig);
+        HuggingFaceTokenizer tokenizer = HuggingFaceTokenizer.fromJson(jsonConfig);
         return new SamediffBertTokenizerPreProcessor(tokenizer, addSpecialTokens, maxLength);
     }
 
     /**
      * Create from an existing tokenizer instance
      */
-    private SamediffBertTokenizerPreProcessor(Tokenizer tokenizer,
+    private SamediffBertTokenizerPreProcessor(HuggingFaceTokenizer tokenizer,
                                               boolean addSpecialTokens,
                                               int maxLength) {
         this.tokenizer = tokenizer;
@@ -197,7 +198,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * backed by the Rust tokenizer
      */
     private static class TokenizerVocabularyWrapper extends SamediffBertVocabulary {
-        private final Tokenizer tokenizer;
+        private final HuggingFaceTokenizer tokenizer;
         private final Map<String, Integer> tokenToIdCache;
         private final Map<Integer, String> idToTokenCache;
         private final long vocabSize;
@@ -205,10 +206,10 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         // Maximum cache size to prevent unbounded memory growth during long indexing jobs
         private static final int MAX_CACHE_SIZE = 10000;
 
-        public TokenizerVocabularyWrapper(Tokenizer tokenizer) {
+        public TokenizerVocabularyWrapper(HuggingFaceTokenizer tokenizer) {
             super(); // Call parent constructor
             this.tokenizer = tokenizer;
-            this.vocabSize = tokenizer.getVocabSize();
+            this.vocabSize = (long) tokenizer.getVocabSize();
 
             // Use LRU cache with bounded size to prevent memory leaks during long jobs
             this.tokenToIdCache = Collections.synchronizedMap(
@@ -238,7 +239,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
             for (String token : commonTokens) {
                 try {
                     // Use tokenizer to get the actual token ID
-                    int[] encoded = tokenizer.encode(token, false);
+                    int[] encoded = tokenizer.encode(token, false).getIds();
                     if (encoded.length > 0) {
                         int tokenId = encoded[0];
                         tokenToIdCache.put(token, tokenId);
@@ -260,7 +261,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
 
             try {
                 // Use tokenizer to encode the token
-                int[] encoded = tokenizer.encode(token, false);
+                int[] encoded = tokenizer.encode(token, false).getIds();
                 if (encoded.length > 0) {
                     int tokenId = encoded[0];
                     tokenToIdCache.put(token, tokenId);
@@ -299,7 +300,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         @Override
         public boolean containsToken(String token) {
             try {
-                int[] encoded = tokenizer.encode(token, false);
+                int[] encoded = tokenizer.encode(token, false).getIds();
                 if (encoded.length > 0) {
                     // Verify by decoding back
                     String decoded = tokenizer.decode(encoded, false);
@@ -348,7 +349,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         }
 
         // Additional method to access the underlying tokenizer if needed
-        public Tokenizer getUnderlyingTokenizer() {
+        public HuggingFaceTokenizer getUnderlyingTokenizer() {
             return tokenizer;
         }
     }
@@ -409,7 +410,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         }
 
         // Use the Rust tokenizer to encode the text
-        int[] tokenIds = tokenizer.encode(text, addSpecialTokens);
+        int[] tokenIds = tokenizer.encode(text, addSpecialTokens).getIds();
 
         // DIAGNOSTIC: Log actual token IDs from Rust tokenizer
         if (tokenIds.length > 0 && tokenIds.length <= 20) {
@@ -469,8 +470,8 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * @param text Input text to encode
      * @return Detailed encoding result
      */
-    public Tokenizer.EncodingResult encodeWithDetails(String text) {
-        return tokenizer.encodeWithDetails(text, addSpecialTokens);
+    public Encoding encodeWithDetails(String text) {
+        return tokenizer.encode(text, addSpecialTokens);
     }
 
     /**
@@ -521,10 +522,10 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
         if (document == null) document = "";
 
         // Encode query with [CLS] at start
-        int[] queryTokens = tokenizer.encode(query, addSpecialTokens);
+        int[] queryTokens = tokenizer.encode(query, addSpecialTokens).getIds();
 
         // Encode document (no CLS, will add SEP manually)
-        int[] docTokens = tokenizer.encode(document, false);
+        int[] docTokens = tokenizer.encode(document, false).getIds();
 
         // Get special token IDs
         int sepId = vocabulary.getTokenId(SEP_TOKEN);
@@ -635,9 +636,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * stop accepting new work before fully closing the tokenizer.
      */
     public void initiateShutdown() {
-        if (tokenizer != null) {
-            tokenizer.initiateShutdown();
-        }
+        // No-op: DL4J HuggingFaceTokenizer handles cleanup in close()
     }
 
     /**
@@ -645,16 +644,15 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * @return true if shutdown has been initiated
      */
     public boolean isShuttingDown() {
-        return tokenizer != null && tokenizer.isShuttingDown();
+        return false;
     }
 
     /**
      * Get the number of active operations on the tokenizer.
-     * Useful for monitoring shutdown progress.
      * @return count of active operations, or 0 if tokenizer is null
      */
     public int getActiveOperationCount() {
-        return tokenizer != null ? tokenizer.getActiveOperationCount() : 0;
+        return 0;
     }
 
     @Override
@@ -669,7 +667,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * @return Version string
      */
     public static String getVersion() {
-        return Tokenizer.getVersion();
+        return HuggingFaceTokenizer.getNativeVersion();
     }
 
     /**
@@ -677,7 +675,7 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * @return Build info string
      */
     public static String getBuildInfo() {
-        return Tokenizer.getBuildInfo();
+        return HuggingFaceTokenizer.getNativeVersion();
     }
 
     /**
@@ -686,6 +684,13 @@ public class SamediffBertTokenizerPreProcessor implements AutoCloseable {
      * @return true if valid, false otherwise
      */
     public static boolean isValidModelFile(String modelPath) {
-        return Tokenizer.isValidModelFile(modelPath);
+        try {
+            HuggingFaceTokenizer t = HuggingFaceTokenizer.fromFile(modelPath);
+            boolean valid = t.isValid();
+            t.close();
+            return valid;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

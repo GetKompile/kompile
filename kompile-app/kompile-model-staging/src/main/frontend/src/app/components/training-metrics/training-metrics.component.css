@@ -1,0 +1,35 @@
+.training-metrics { padding: 16px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+.header h2 { margin: 0; }
+.header-actions { display: flex; gap: 8px; }
+.status-card { margin-bottom: 16px; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+.stat-item { text-align: center; }
+.stat-label { display: block; font-size: 0.75rem; color: rgba(0,0,0,0.6); margin-bottom: 4px; }
+.stat-value { display: block; font-size: 1.1rem; font-weight: 500; }
+.progress-text { font-size: 0.75rem; color: rgba(0,0,0,0.6); }
+.chart-card { margin-top: 16px; }
+.logs-card { margin-top: 16px; }
+.empty-chart { text-align: center; padding: 48px; color: rgba(0,0,0,0.5); }
+.empty-chart mat-icon { font-size: 48px; width: 48px; height: 48px; }
+.chart-container { padding: 16px; }
+.chart-stats { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
+.chart-stat { font-size: 0.875rem; }
+.chart-stat span { color: rgba(0,0,0,0.6); margin-right: 4px; }
+.simple-chart { display: flex; align-items: flex-end; height: 200px; gap: 1px; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.12); }
+.chart-bar { flex: 1; min-width: 2px; max-width: 8px; background: #1976d2; border-radius: 1px 1px 0 0; transition: background 0.2s; cursor: pointer; }
+.chart-bar:hover { background: #1565c0; }
+.lr-bar { background: #ff9800; }
+.lr-bar:hover { background: #f57c00; }
+.throughput-bar { background: #4caf50; }
+.throughput-bar:hover { background: #388e3c; }
+.log-container { max-height: 500px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; }
+.log-entry { padding: 4px 8px; border-bottom: 1px solid rgba(0,0,0,0.06); display: flex; gap: 12px; align-items: baseline; }
+.log-time { color: rgba(0,0,0,0.4); min-width: 80px; }
+.log-level { font-weight: bold; min-width: 50px; }
+.log-msg { flex: 1; }
+.log-metric { color: #1976d2; }
+.log-info .log-level { color: #1976d2; }
+.log-warn .log-level { color: #ff9800; }
+.log-error .log-level { color: #f44336; }
+.log-debug .log-level { color: rgba(0,0,0,0.4); }

@@ -1,0 +1,98 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="tools-hub">
+  <div class="hub-header">
+    <h2>Tools</h2>
+    <p class="subtitle">MCP servers, orchestration, document chunking, knowledge graphs, pipelines, and prompts</p>
+  </div>
+
+  <div class="sub-tabs">
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'mcp'"
+      (click)="activeSubTab = 'mcp'">
+      <mat-icon class="tab-icon">hub</mat-icon>
+      <span class="tab-label">MCP</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'orchestrator'"
+      (click)="activeSubTab = 'orchestrator'">
+      <mat-icon class="tab-icon">account_tree</mat-icon>
+      <span class="tab-label">Orchestrator</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'chunkManager'"
+      (click)="activeSubTab = 'chunkManager'">
+      <mat-icon class="tab-icon">view_module</mat-icon>
+      <span class="tab-label">Chunk Manager</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'knowledgeGraph'"
+      (click)="activeSubTab = 'knowledgeGraph'">
+      <mat-icon class="tab-icon">share</mat-icon>
+      <span class="tab-label">Knowledge Graph</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'backup'"
+      (click)="activeSubTab = 'backup'">
+      <mat-icon class="tab-icon">backup</mat-icon>
+      <span class="tab-label">Backup</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'pipelines'"
+      (click)="activeSubTab = 'pipelines'">
+      <mat-icon class="tab-icon">linear_scale</mat-icon>
+      <span class="tab-label">Pipelines</span>
+    </button>
+    <button
+      class="sub-tab"
+      [class.active]="activeSubTab === 'prompts'"
+      (click)="activeSubTab = 'prompts'">
+      <mat-icon class="tab-icon">description</mat-icon>
+      <span class="tab-label">Prompts</span>
+    </button>
+  </div>
+
+  <div class="sub-tab-content">
+    <div *ngIf="activeSubTab === 'mcp'">
+      <app-mcp-hub></app-mcp-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'orchestrator'">
+      <app-orchestrator-hub></app-orchestrator-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'chunkManager'" class="chunk-manager-container">
+      <app-chunk-manager></app-chunk-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'knowledgeGraph'" class="graph-container">
+      <app-knowledge-graph-hub></app-knowledge-graph-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'backup'">
+      <app-backup-manager></app-backup-manager>
+    </div>
+    <div *ngIf="activeSubTab === 'pipelines'">
+      <app-pipeline-hub></app-pipeline-hub>
+    </div>
+    <div *ngIf="activeSubTab === 'prompts'" class="prompts-container">
+      <app-prompt-manager></app-prompt-manager>
+    </div>
+  </div>
+</div>

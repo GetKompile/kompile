@@ -76,7 +76,8 @@ public class AnseriniIndexUtils {
 
         // NOTE: Lock factory should be set on the Directory object when opening it,
         // not on IndexWriterConfig (Lucene 9.x API change). Ensure callers use
-        // FSDirectory.open(path, NoLockFactory.INSTANCE) to prevent lock conflicts.
+        // NativeCompatibleDirectoryFactory.open(path, NoLockFactory.INSTANCE) to prevent
+        // lock conflicts and ensure GraalVM native image compatibility.
 
         // Configure codec based on indexing strategy and quantization
         if (properties.getHnsw().isEnabled()) {

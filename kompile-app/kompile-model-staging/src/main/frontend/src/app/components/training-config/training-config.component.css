@@ -1,0 +1,5 @@
+.training-config { padding: 16px; max-width: 1000px; }
+.training-config h2 { margin-bottom: 16px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.toggle-row { display: flex; gap: 24px; margin-top: 16px; }
+.actions { display: flex; gap: 12px; margin-top: 24px; }

@@ -1,0 +1,640 @@
+<!--
+   Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<div class="vlm-execution-container">
+  <!-- Header -->
+  <div class="vlm-exec-header">
+    <div class="header-title">
+      <mat-icon>smart_toy</mat-icon>
+      <h2>VLM / OCR Execution</h2>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="refreshAll()" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Model Selection Bar -->
+  <mat-card class="model-bar-card">
+    <mat-card-content>
+      <div class="model-bar">
+        <div class="model-select-group">
+          <mat-form-field appearance="outline" class="model-select-field">
+            <mat-label>Select Model</mat-label>
+            <mat-select [(ngModel)]="selectedModelId">
+              <mat-option *ngFor="let model of availableModels" [value]="model.id">
+                {{ model.name || model.id }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <button mat-raised-button color="primary"
+                  (click)="loadModel()"
+                  [disabled]="isLoadingModel || !selectedModelId">
+            <mat-icon>upload</mat-icon>
+            Load Model
+            <mat-spinner *ngIf="isLoadingModel" diameter="16" class="inline-spinner"></mat-spinner>
+          </button>
+          <button mat-stroked-button color="warn"
+                  (click)="unloadModel()"
+                  [disabled]="!isModelLoaded()">
+            <mat-icon>eject</mat-icon>
+            Unload
+          </button>
+        </div>
+        <div class="model-status">
+          <mat-chip *ngIf="isModelLoaded()" class="status-chip loaded">
+            <mat-icon>check_circle</mat-icon>
+            {{ executionStatus?.activeModelId }}
+          </mat-chip>
+          <mat-chip *ngIf="!isModelLoaded()" class="status-chip idle">
+            <mat-icon>radio_button_unchecked</mat-icon>
+            No model loaded
+          </mat-chip>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Tabs -->
+  <mat-tab-group [(selectedIndex)]="activeTab" class="exec-tabs" animationDuration="200ms">
+
+    <!-- Tab 1: VLM Generation -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">auto_awesome</mat-icon>
+        VLM Generation
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="two-column-layout">
+          <!-- Left: Input -->
+          <div class="input-column">
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>image</mat-icon>
+                <mat-card-title>Image Input</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="image-upload-area" *ngIf="!generateImagePreview"
+                     (dragover)="onDragOver($event)"
+                     (dragleave)="onDragLeave($event)"
+                     (drop)="onGenerateImageDrop($event)">
+                  <input type="file" accept="image/*" #generateFileInput
+                         (change)="onGenerateImageSelected($event)" hidden>
+                  <mat-icon class="upload-icon">cloud_upload</mat-icon>
+                  <span class="upload-label">Drag & drop an image here</span>
+                  <span class="upload-or">or</span>
+                  <button mat-stroked-button (click)="generateFileInput.click()">
+                    <mat-icon>folder_open</mat-icon>
+                    Browse Files
+                  </button>
+                  <span class="upload-hint">PNG, JPG, WEBP supported</span>
+                </div>
+                <div class="image-preview-container" *ngIf="generateImagePreview">
+                  <img [src]="generateImagePreview" alt="Selected image" class="image-preview">
+                  <button mat-icon-button class="clear-image-btn" (click)="clearGenerateImage()"
+                          matTooltip="Remove image">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>tune</mat-icon>
+                <mat-card-title>Generation Parameters</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Prompt</mat-label>
+                  <textarea matInput [(ngModel)]="generatePrompt" rows="3"
+                            placeholder="Describe what you want to extract from the image..."></textarea>
+                </mat-form-field>
+
+                <div class="param-row">
+                  <mat-form-field appearance="outline" class="param-field">
+                    <mat-label>Max Tokens</mat-label>
+                    <input matInput type="number" [(ngModel)]="generateMaxTokens" min="1" max="4096">
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline" class="param-field">
+                    <mat-label>Max Tiles</mat-label>
+                    <input matInput type="number" [(ngModel)]="generateMaxTiles" min="1" max="16">
+                  </mat-form-field>
+                </div>
+
+                <div class="param-row">
+                  <mat-checkbox [(ngModel)]="generateTilingEnabled">
+                    Enable Image Tiling
+                  </mat-checkbox>
+                </div>
+
+                <button mat-raised-button color="primary" class="action-btn"
+                        (click)="runGenerate()"
+                        [disabled]="isGenerating || !generateImageFile">
+                  <mat-icon>play_arrow</mat-icon>
+                  Generate
+                  <mat-spinner *ngIf="isGenerating" diameter="16" class="inline-spinner"></mat-spinner>
+                </button>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Right: Output -->
+          <div class="output-column">
+            <mat-card class="section-card output-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>text_snippet</mat-icon>
+                <mat-card-title>Generation Output</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div *ngIf="!generateResult && !isGenerating" class="empty-state">
+                  <mat-icon>auto_awesome</mat-icon>
+                  <span>Upload an image and click Generate to see results</span>
+                </div>
+
+                <div *ngIf="isGenerating" class="loading-state">
+                  <mat-spinner diameter="32"></mat-spinner>
+                  <span>Generating...</span>
+                </div>
+
+                <div *ngIf="generateResult" class="result-content">
+                  <div *ngIf="generateResult.success" class="success-result">
+                    <div class="generated-text">
+                      <pre class="output-text">{{ generateResult.generatedText }}</pre>
+                    </div>
+
+                    <div *ngIf="generateResult.metrics" class="metrics-row">
+                      <div class="metric">
+                        <span class="metric-label">Time</span>
+                        <span class="metric-value">{{ generateResult.metrics.processingTimeMs }}ms</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Tokens</span>
+                        <span class="metric-value">{{ generateResult.metrics.tokensGenerated }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Device</span>
+                        <span class="metric-value">{{ generateResult.metrics.deviceUsed }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Tiles</span>
+                        <span class="metric-value">{{ generateResult.metrics.tilesUsed }}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div *ngIf="!generateResult.success" class="error-result">
+                    <mat-icon>error</mat-icon>
+                    <span>{{ generateResult.error }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tab 2: OCR Recognition -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">document_scanner</mat-icon>
+        OCR Recognition
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="two-column-layout">
+          <!-- Left: Input -->
+          <div class="input-column">
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>image</mat-icon>
+                <mat-card-title>Image Input</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="image-upload-area" *ngIf="!ocrImagePreview"
+                     (dragover)="onDragOver($event)"
+                     (dragleave)="onDragLeave($event)"
+                     (drop)="onOcrImageDrop($event)">
+                  <input type="file" accept="image/*" #ocrFileInput
+                         (change)="onOcrImageSelected($event)" hidden>
+                  <mat-icon class="upload-icon">cloud_upload</mat-icon>
+                  <span class="upload-label">Drag & drop an image here</span>
+                  <span class="upload-or">or</span>
+                  <button mat-stroked-button (click)="ocrFileInput.click()">
+                    <mat-icon>folder_open</mat-icon>
+                    Browse Files
+                  </button>
+                  <span class="upload-hint">PNG, JPG, TIFF, BMP supported</span>
+                </div>
+                <div class="image-preview-container" *ngIf="ocrImagePreview">
+                  <img [src]="ocrImagePreview" alt="Selected image" class="image-preview">
+                  <button mat-icon-button class="clear-image-btn" (click)="clearOcrImage()"
+                          matTooltip="Remove image">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>settings</mat-icon>
+                <mat-card-title>OCR Configuration</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>OCR Engine</mat-label>
+                  <mat-select [(ngModel)]="ocrSelectedEngine">
+                    <mat-option value="deepseek">DeepSeek (VLM-based)</mat-option>
+                    <mat-option value="paddleocr">PaddleOCR</mat-option>
+                    <mat-option value="tesseract">Tesseract</mat-option>
+                    <mat-option value="easyocr">EasyOCR</mat-option>
+                    <mat-option value="trocr">TrOCR</mat-option>
+                    <mat-option *ngFor="let engine of ocrEngines" [value]="engine.type">
+                      {{ engine.name }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Language</mat-label>
+                  <input matInput [(ngModel)]="ocrLanguage" placeholder="eng">
+                  <mat-hint>Language code (e.g., eng, fra, deu, jpn)</mat-hint>
+                </mat-form-field>
+
+                <div class="slider-group">
+                  <label class="slider-label">
+                    Confidence Threshold: {{ ocrConfidenceThreshold | number:'1.2-2' }}
+                  </label>
+                  <input type="range" class="custom-slider"
+                         [(ngModel)]="ocrConfidenceThreshold"
+                         min="0" max="1" step="0.05">
+                </div>
+
+                <button mat-raised-button color="primary" class="action-btn"
+                        (click)="runOcrRecognize()"
+                        [disabled]="isRecognizing || !ocrImageFile">
+                  <mat-icon>text_fields</mat-icon>
+                  Recognize Text
+                  <mat-spinner *ngIf="isRecognizing" diameter="16" class="inline-spinner"></mat-spinner>
+                </button>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Right: Output -->
+          <div class="output-column">
+            <mat-card class="section-card output-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>text_snippet</mat-icon>
+                <mat-card-title>OCR Results</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div *ngIf="!ocrResult && !isRecognizing" class="empty-state">
+                  <mat-icon>document_scanner</mat-icon>
+                  <span>Upload an image and click Recognize to extract text</span>
+                </div>
+
+                <div *ngIf="isRecognizing" class="loading-state">
+                  <mat-spinner diameter="32"></mat-spinner>
+                  <span>Recognizing text...</span>
+                </div>
+
+                <div *ngIf="ocrResult" class="result-content">
+                  <div *ngIf="ocrResult.success" class="success-result">
+                    <!-- Full text output -->
+                    <div *ngIf="ocrResult.text" class="ocr-full-text">
+                      <h4>Extracted Text</h4>
+                      <pre class="output-text">{{ ocrResult.text }}</pre>
+                    </div>
+
+                    <!-- Processing time -->
+                    <div *ngIf="ocrResult.processingTimeMs" class="metrics-row">
+                      <div class="metric">
+                        <span class="metric-label">Processing Time</span>
+                        <span class="metric-value">{{ ocrResult.processingTimeMs }}ms</span>
+                      </div>
+                    </div>
+
+                    <!-- Text regions -->
+                    <div *ngIf="ocrResult.regions && ocrResult.regions.length > 0" class="ocr-regions">
+                      <h4>Text Regions ({{ ocrResult.regions.length }})</h4>
+                      <div class="regions-list">
+                        <div *ngFor="let region of ocrResult.regions; let i = index" class="region-item">
+                          <div class="region-header">
+                            <span class="region-index">#{{ i + 1 }}</span>
+                            <span class="region-confidence"
+                                  [style.color]="getConfidenceColor(region.confidence)">
+                              {{ (region.confidence * 100) | number:'1.1-1' }}%
+                            </span>
+                          </div>
+                          <div class="region-text">{{ region.text }}</div>
+                          <div class="region-bbox">
+                            <code>x:{{ region.boundingBox.x }} y:{{ region.boundingBox.y }}
+                              w:{{ region.boundingBox.width }} h:{{ region.boundingBox.height }}</code>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div *ngIf="!ocrResult.success" class="error-result">
+                    <mat-icon>error</mat-icon>
+                    <span>{{ ocrResult.error }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tab 3: DocTags Parser -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">code</mat-icon>
+        DocTags Parser
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="two-column-layout">
+          <!-- Left: Input -->
+          <div class="input-column">
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>edit_note</mat-icon>
+                <mat-card-title>DocTags Input</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Raw DocTags</mat-label>
+                  <textarea matInput [(ngModel)]="docTagsRawInput" rows="12"
+                            placeholder="Paste raw DocTags output here...
+Example: <doctag><text>Hello World</text><table><tr><td>A</td><td>B</td></tr></table></doctag>"></textarea>
+                </mat-form-field>
+
+                <div class="action-row">
+                  <button mat-raised-button color="primary"
+                          (click)="runParseDocTags()"
+                          [disabled]="isParsing || !docTagsRawInput.trim()">
+                    <mat-icon>parse</mat-icon>
+                    Parse
+                    <mat-spinner *ngIf="isParsing" diameter="16" class="inline-spinner"></mat-spinner>
+                  </button>
+                  <button mat-stroked-button color="accent"
+                          (click)="convertToMarkdown()"
+                          [disabled]="isConvertingMarkdown || !docTagsRawInput.trim()">
+                    <mat-icon>description</mat-icon>
+                    To Markdown
+                    <mat-spinner *ngIf="isConvertingMarkdown" diameter="16" class="inline-spinner"></mat-spinner>
+                  </button>
+                  <button mat-stroked-button color="accent"
+                          (click)="convertToHtml()"
+                          [disabled]="isConvertingHtml || !docTagsRawInput.trim()">
+                    <mat-icon>html</mat-icon>
+                    To HTML
+                    <mat-spinner *ngIf="isConvertingHtml" diameter="16" class="inline-spinner"></mat-spinner>
+                  </button>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Right: Output -->
+          <div class="output-column">
+            <mat-card class="section-card output-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>text_snippet</mat-icon>
+                <mat-card-title>Parsed Output</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div *ngIf="!docTagsParseResult && !docTagsMarkdown && !docTagsHtml && !isParsing"
+                     class="empty-state">
+                  <mat-icon>code</mat-icon>
+                  <span>Enter DocTags and click Parse, To Markdown, or To HTML</span>
+                </div>
+
+                <div *ngIf="isParsing || isConvertingMarkdown || isConvertingHtml" class="loading-state">
+                  <mat-spinner diameter="32"></mat-spinner>
+                  <span>Processing...</span>
+                </div>
+
+                <!-- Parsed structure -->
+                <div *ngIf="docTagsParseResult && docTagsParseResult.success" class="doctags-result">
+                  <h4>Structured Elements</h4>
+                  <div *ngIf="docTagsParseResult.structuredElements" class="elements-list">
+                    <div *ngFor="let element of docTagsParseResult.structuredElements" class="element-item">
+                      <pre class="output-text">{{ element | json }}</pre>
+                    </div>
+                  </div>
+                  <div *ngIf="docTagsParseResult.markdown" class="doctags-section">
+                    <h4>Markdown</h4>
+                    <pre class="output-text">{{ docTagsParseResult.markdown }}</pre>
+                  </div>
+                  <div *ngIf="docTagsParseResult.html" class="doctags-section">
+                    <h4>HTML</h4>
+                    <pre class="output-text">{{ docTagsParseResult.html }}</pre>
+                  </div>
+                </div>
+
+                <div *ngIf="docTagsParseResult && !docTagsParseResult.success" class="error-result">
+                  <mat-icon>error</mat-icon>
+                  <span>{{ docTagsParseResult.error }}</span>
+                </div>
+
+                <!-- Markdown output -->
+                <div *ngIf="docTagsMarkdown !== null" class="doctags-section">
+                  <h4>Markdown Output</h4>
+                  <pre class="output-text">{{ docTagsMarkdown }}</pre>
+                </div>
+
+                <!-- HTML output -->
+                <div *ngIf="docTagsHtml !== null" class="doctags-section">
+                  <h4>HTML Output</h4>
+                  <pre class="output-text">{{ docTagsHtml }}</pre>
+                  <h4>Rendered Preview</h4>
+                  <div class="html-preview" [innerHTML]="docTagsHtml"></div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tab 4: Image Tiling -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">grid_view</mat-icon>
+        Image Tiling
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="two-column-layout">
+          <!-- Left: Input -->
+          <div class="input-column">
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>image</mat-icon>
+                <mat-card-title>Image Input</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="image-upload-area" *ngIf="!tilingImagePreview"
+                     (dragover)="onDragOver($event)"
+                     (dragleave)="onDragLeave($event)"
+                     (drop)="onTilingImageDrop($event)">
+                  <input type="file" accept="image/*" #tilingFileInput
+                         (change)="onTilingImageSelected($event)" hidden>
+                  <mat-icon class="upload-icon">cloud_upload</mat-icon>
+                  <span class="upload-label">Drag & drop an image here</span>
+                  <span class="upload-or">or</span>
+                  <button mat-stroked-button (click)="tilingFileInput.click()">
+                    <mat-icon>folder_open</mat-icon>
+                    Browse Files
+                  </button>
+                  <span class="upload-hint">Upload an image to preview tiling</span>
+                </div>
+                <div class="image-preview-container" *ngIf="tilingImagePreview">
+                  <img [src]="tilingImagePreview" alt="Selected image" class="image-preview">
+                  <button mat-icon-button class="clear-image-btn" (click)="clearTilingImage()"
+                          matTooltip="Remove image">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>tune</mat-icon>
+                <mat-card-title>Tiling Parameters</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <mat-form-field appearance="outline" class="full-width">
+                  <mat-label>Max Tiles</mat-label>
+                  <input matInput type="number" [(ngModel)]="tilingMaxTiles" min="1" max="32">
+                  <mat-hint>Maximum number of tiles to split the image into</mat-hint>
+                </mat-form-field>
+
+                <button mat-raised-button color="primary" class="action-btn"
+                        (click)="runTilingPreview()"
+                        [disabled]="isPreviewing || !tilingImageFile">
+                  <mat-icon>grid_view</mat-icon>
+                  Preview Tiling
+                  <mat-spinner *ngIf="isPreviewing" diameter="16" class="inline-spinner"></mat-spinner>
+                </button>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Right: Output -->
+          <div class="output-column">
+            <mat-card class="section-card output-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>view_comfy</mat-icon>
+                <mat-card-title>Tiling Preview</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div *ngIf="!tilingResult && !isPreviewing" class="empty-state">
+                  <mat-icon>grid_view</mat-icon>
+                  <span>Upload an image and click Preview to see tile layout</span>
+                </div>
+
+                <div *ngIf="isPreviewing" class="loading-state">
+                  <mat-spinner diameter="32"></mat-spinner>
+                  <span>Generating tiling preview...</span>
+                </div>
+
+                <div *ngIf="tilingResult" class="result-content">
+                  <div *ngIf="tilingResult.success" class="success-result">
+                    <!-- Tiling info -->
+                    <div class="metrics-row">
+                      <div class="metric">
+                        <span class="metric-label">Tiles</span>
+                        <span class="metric-value">{{ tilingResult.tileCount }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Grid</span>
+                        <span class="metric-value">{{ tilingResult.gridRows }} x {{ tilingResult.gridCols }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Tile Size</span>
+                        <span class="metric-value">{{ tilingResult.tileWidth }} x {{ tilingResult.tileHeight }}</span>
+                      </div>
+                      <div class="metric">
+                        <span class="metric-label">Original</span>
+                        <span class="metric-value">{{ tilingResult.originalWidth }} x {{ tilingResult.originalHeight }}</span>
+                      </div>
+                    </div>
+
+                    <!-- Visual tiling grid -->
+                    <div class="tiling-visual" *ngIf="tilingImagePreview && tilingResult.tiles">
+                      <div class="tiling-grid-container">
+                        <img [src]="tilingImagePreview" alt="Tiled image" class="tiling-base-image">
+                        <div *ngFor="let tile of tilingResult.tiles"
+                             class="tile-overlay"
+                             [ngStyle]="getTileStyle(tile)"
+                             [matTooltip]="'Tile ' + tile.index + ': ' + tile.width + 'x' + tile.height">
+                          <span class="tile-index">{{ tile.index }}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Tile details table -->
+                    <div *ngIf="tilingResult.tiles && tilingResult.tiles.length > 0" class="tiles-table">
+                      <h4>Tile Details</h4>
+                      <table class="tile-details-table">
+                        <thead>
+                          <tr>
+                            <th>Index</th>
+                            <th>X</th>
+                            <th>Y</th>
+                            <th>Width</th>
+                            <th>Height</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr *ngFor="let tile of tilingResult.tiles">
+                            <td>{{ tile.index }}</td>
+                            <td>{{ tile.x }}</td>
+                            <td>{{ tile.y }}</td>
+                            <td>{{ tile.width }}</td>
+                            <td>{{ tile.height }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div *ngIf="!tilingResult.success" class="error-result">
+                    <mat-icon>error</mat-icon>
+                    <span>{{ tilingResult.error }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+</div>

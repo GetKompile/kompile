@@ -29,7 +29,8 @@ import {
   AgentCountSummary,
   ActiveProcessResponse,
   AgentSelectionInfo,
-  toAgentSelectionInfo
+  toAgentSelectionInfo,
+  KompileLocalModelStatus
 } from '../models/api-models';
 
 /**
@@ -354,5 +355,33 @@ export class AgentService extends BaseService {
    */
   testApiEndpoint(config: ApiAgentConfigRequest): Observable<any> {
     return this.http.post(`${this.agentsUrl}/api-config/test-endpoint`, config);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // KOMPILE LOCAL MODEL
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  getKompileLocalStatus(): Observable<KompileLocalModelStatus> {
+    return this.http.get<KompileLocalModelStatus>(`${this.agentsUrl}/kompile-local/status`);
+  }
+
+  discoverKompileLocal(): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/kompile-local/discover`, {});
+  }
+
+  connectKompileLocal(stagingUrl: string): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/kompile-local/connect`, { stagingUrl });
+  }
+
+  disconnectKompileLocal(): Observable<any> {
+    return this.http.post(`${this.agentsUrl}/kompile-local/disconnect`, {});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // AGENT SKIP-PERMISSIONS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  updateSkipPermissions(agentName: string, skipPermissions: boolean): Observable<any> {
+    return this.http.put(`${this.agentsUrl}/chat/agents/${agentName}/skip-permissions`, { skipPermissions });
   }
 }

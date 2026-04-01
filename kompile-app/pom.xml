@@ -101,6 +101,8 @@
     <module>kompile-pipeline-management</module>
     <module>kompile-kvcache</module>
     <module>kompile-tool-model-staging</module>
+    <module>kompile-e2e-tests</module>
+    <module>kompile-app-lite</module>
 
   </modules>
 
@@ -259,6 +261,26 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-chunker-table-aware</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chunker-sentence</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chunker-recursivecharacter</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chunker-markdown</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-chunker-token</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -514,6 +536,16 @@
         <artifactId>kompile-kvcache</artifactId>
         <version>${project.version}</version>
       </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-e2e-tests</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-app-lite</artifactId>
+        <version>${project.version}</version>
+      </dependency>
 
     </dependencies>
   </dependencyManagement>
@@ -576,6 +608,7 @@
             <fork>true</fork>
             <release>${java.version}</release>
             <encoding>${project.build.sourceEncoding}</encoding>
+            <parameters>true</parameters>
             <compilerArgs>
               <arg>-Xlint:all,-serial,-processing</arg>
             </compilerArgs>

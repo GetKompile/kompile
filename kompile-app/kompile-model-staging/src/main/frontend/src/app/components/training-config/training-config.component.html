@@ -1,0 +1,158 @@
+<div class="training-config">
+  <h2>New Training Job</h2>
+
+  <mat-accordion multi>
+    <!-- Model & Dataset -->
+    <mat-expansion-panel expanded>
+      <mat-expansion-panel-header>
+        <mat-panel-title>Model & Dataset</mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="config-grid" [formGroup]="trainingForm">
+        <mat-form-field appearance="outline">
+          <mat-label>Model</mat-label>
+          <mat-select formControlName="modelId">
+            <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Dataset</mat-label>
+          <mat-select formControlName="datasetId">
+            <mat-option *ngFor="let d of datasets" [value]="d.id">{{ d.name }} ({{ d.totalSamples }} samples)</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- PEFT Configuration -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>PEFT / LoRA (Optional)</mat-panel-title>
+      </mat-expansion-panel-header>
+      <mat-slide-toggle [(ngModel)]="enablePeft" [ngModelOptions]="{standalone: true}">Enable PEFT</mat-slide-toggle>
+      <div *ngIf="enablePeft" class="config-grid" style="margin-top: 16px;" [formGroup]="trainingForm">
+        <mat-form-field appearance="outline">
+          <mat-label>PEFT Type</mat-label>
+          <mat-select formControlName="peftType">
+            <mat-option value="LORA">LoRA</mat-option>
+            <mat-option value="QLORA">QLoRA</mat-option>
+            <mat-option value="ADALORA">AdaLoRA</mat-option>
+            <mat-option value="DORA">DoRA</mat-option>
+            <mat-option value="IA3">IA3</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Rank</mat-label>
+          <input matInput type="number" formControlName="rank">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Alpha</mat-label>
+          <input matInput type="number" formControlName="alpha">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Dropout</mat-label>
+          <input matInput type="number" formControlName="dropout" step="0.01">
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Optimizer -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>Optimizer & Schedule</mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="config-grid" [formGroup]="trainingForm">
+        <mat-form-field appearance="outline">
+          <mat-label>Optimizer</mat-label>
+          <mat-select formControlName="updaterType">
+            <mat-option *ngFor="let u of updaterTypes" [value]="u.id">{{ u.name }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Learning Rate</mat-label>
+          <input matInput type="number" formControlName="learningRate" step="0.00001">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Weight Decay</mat-label>
+          <input matInput type="number" formControlName="weightDecay" step="0.01">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>LR Schedule</mat-label>
+          <mat-select formControlName="lrSchedule">
+            <mat-option *ngFor="let s of lrSchedules" [value]="s.id">{{ s.name }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Warmup Ratio</mat-label>
+          <input matInput type="number" formControlName="warmupRatio" step="0.05">
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Training Parameters -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>Training Parameters</mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="config-grid" [formGroup]="trainingForm">
+        <mat-form-field appearance="outline">
+          <mat-label>Epochs</mat-label>
+          <input matInput type="number" formControlName="epochs">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Batch Size</mat-label>
+          <input matInput type="number" formControlName="batchSize">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Gradient Accumulation Steps</mat-label>
+          <input matInput type="number" formControlName="gradientAccumulationSteps">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Max Steps (-1 = unlimited)</mat-label>
+          <input matInput type="number" formControlName="maxSteps">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Max Grad Norm</mat-label>
+          <input matInput type="number" formControlName="maxGradNorm" step="0.1">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Seed</mat-label>
+          <input matInput type="number" formControlName="seed">
+        </mat-form-field>
+      </div>
+      <div class="toggle-row" [formGroup]="trainingForm">
+        <mat-slide-toggle formControlName="fp16">FP16 Mixed Precision</mat-slide-toggle>
+        <mat-slide-toggle formControlName="bf16">BF16 Mixed Precision</mat-slide-toggle>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Logging -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>Logging & Checkpoints</mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="config-grid" [formGroup]="trainingForm">
+        <mat-form-field appearance="outline">
+          <mat-label>Logging Steps</mat-label>
+          <input matInput type="number" formControlName="loggingSteps">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Save Steps</mat-label>
+          <input matInput type="number" formControlName="saveSteps">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Eval Steps</mat-label>
+          <input matInput type="number" formControlName="evalSteps">
+        </mat-form-field>
+      </div>
+    </mat-expansion-panel>
+  </mat-accordion>
+
+  <div class="actions">
+    <button mat-raised-button color="primary" (click)="startTraining()"
+            [disabled]="submitting || !trainingForm.get('modelId')?.value || !trainingForm.get('datasetId')?.value">
+      <mat-icon>model_training</mat-icon>
+      {{ submitting ? 'Starting...' : 'Start Training' }}
+    </button>
+    <button mat-button routerLink="/training">Cancel</button>
+  </div>
+</div>

@@ -1,0 +1,519 @@
+.kg-embeddings-container {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.header h2 {
+  margin: 0;
+  color: #333;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* Stats Overview */
+.stats-overview {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 20px;
+  border-radius: 12px;
+  min-width: 180px;
+  text-align: center;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+
+.stat-label {
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+/* Tab Content */
+.tab-content {
+  padding: 24px 0;
+}
+
+/* Training Section */
+.training-section {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.training-section h3 {
+  margin-top: 0;
+  margin-bottom: 20px;
+  color: #333;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.config-grid mat-form-field {
+  width: 100%;
+}
+
+.training-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.training-progress {
+  margin-top: 20px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 13px;
+  color: #666;
+}
+
+/* Job History */
+.job-history {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.job-history h3 {
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.jobs-table th,
+.jobs-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.jobs-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  color: #333;
+}
+
+.jobs-table tr:hover {
+  background: #fafafa;
+}
+
+.job-id {
+  font-family: monospace;
+  color: #666;
+}
+
+.status-badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: white;
+}
+
+/* Embeddings Tab */
+.embeddings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  gap: 16px;
+}
+
+.search-field {
+  flex: 1;
+  max-width: 400px;
+}
+
+.embeddings-table-container {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.embeddings-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.embeddings-table th,
+.embeddings-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.embeddings-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  color: #333;
+}
+
+.embeddings-table tr:hover {
+  background: #fafafa;
+}
+
+.entity-name {
+  font-weight: 500;
+  color: #2196F3;
+}
+
+.embedding-preview {
+  font-family: monospace;
+  font-size: 12px;
+  color: #666;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+/* Link Prediction */
+.prediction-section,
+.similar-section {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  margin-bottom: 24px;
+}
+
+.prediction-section h3,
+.similar-section h3 {
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.prediction-mode {
+  margin-bottom: 20px;
+}
+
+.prediction-inputs,
+.similar-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+  align-items: flex-end;
+}
+
+.prediction-inputs mat-form-field,
+.similar-inputs mat-form-field {
+  min-width: 200px;
+  flex: 1;
+}
+
+.prediction-results,
+.similar-results {
+  margin-top: 24px;
+}
+
+.prediction-results h4,
+.similar-results h4 {
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.results-table th,
+.results-table td {
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.results-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+  color: #333;
+}
+
+.results-table tr:hover {
+  background: #fafafa;
+}
+
+/* No Data Message */
+.no-data {
+  text-align: center;
+  color: #888;
+  padding: 40px;
+  font-style: italic;
+}
+
+/* Spinner */
+mat-spinner {
+  margin: 40px auto;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .stats-overview {
+    flex-direction: column;
+  }
+
+  .stat-card {
+    min-width: auto;
+  }
+
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .embeddings-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search-field {
+    max-width: none;
+  }
+
+  .prediction-inputs,
+  .similar-inputs {
+    flex-direction: column;
+  }
+
+  .prediction-inputs mat-form-field,
+  .similar-inputs mat-form-field {
+    min-width: auto;
+    width: 100%;
+  }
+}
+
+/* Settings Section */
+.settings-section {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.settings-header h3 {
+  margin: 0;
+  color: #333;
+}
+
+.settings-form {
+  padding: 20px 0;
+}
+
+.settings-description {
+  margin-bottom: 24px;
+  color: #666;
+  line-height: 1.6;
+  padding: 12px 16px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  border-left: 4px solid #667eea;
+}
+
+.settings-description strong {
+  color: #333;
+  font-family: monospace;
+}
+
+.toggle-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.toggle-hint {
+  margin: 12px 0 0 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.config-grid.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Connection Test Result */
+.connection-test-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin: 16px 0;
+  border-radius: 8px;
+  background: #f5f5f5;
+}
+
+.connection-test-result mat-icon.success,
+.connection-test-result span.success {
+  color: #4CAF50;
+}
+
+.connection-test-result mat-icon.error,
+.connection-test-result span.error {
+  color: #F44336;
+}
+
+/* Config Section */
+.config-section {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.config-section h4 {
+  margin: 0 0 16px 0;
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.config-section.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.section-hint {
+  margin: 0 0 16px 0;
+  color: #666;
+  font-size: 13px;
+}
+
+/* Entity Types Grid */
+.entity-types-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.entity-types-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.entity-types-grid mat-checkbox {
+  display: block;
+  padding: 8px 12px;
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.entity-types-grid mat-checkbox:hover {
+  border-color: #667eea;
+}
+
+/* Full Width Form Field */
+.full-width {
+  width: 100%;
+}
+
+/* Algorithm Selection in Training */
+.algorithm-selector {
+  margin-bottom: 20px;
+}
+
+.algorithm-card {
+  background: white;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.algorithm-card:hover {
+  border-color: #667eea;
+}
+
+.algorithm-card.selected {
+  border-color: #667eea;
+  background: linear-gradient(to right, #f3f4ff, #ffffff);
+}
+
+.algorithm-card h4 {
+  margin: 0 0 8px 0;
+  color: #333;
+}
+
+.algorithm-card p {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+}
+
+/* Responsive Adjustments for Graph Building */
+@media (max-width: 768px) {
+  .entity-types-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .entity-types-actions {
+    flex-direction: column;
+  }
+
+  .config-section {
+    padding: 16px;
+  }
+}

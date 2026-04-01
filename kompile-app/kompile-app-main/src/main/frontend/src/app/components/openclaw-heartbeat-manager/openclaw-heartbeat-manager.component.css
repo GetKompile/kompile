@@ -1,0 +1,84 @@
+.heartbeat-manager {
+  padding: 16px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.header-row h3 {
+  margin: 0;
+}
+
+.create-card, .list-card {
+  margin-bottom: 16px;
+}
+
+.heartbeat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.half-width {
+  flex: 1;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.presets-label {
+  font-size: 12px;
+  color: var(--mat-app-on-surface-variant);
+}
+
+.preset-btn {
+  font-size: 12px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.heartbeat-table {
+  width: 100%;
+}
+
+.heartbeat-table code {
+  font-family: monospace;
+  background: var(--mat-app-surface-container-high);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px;
+  color: var(--mat-app-on-surface-variant);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+}

@@ -1,0 +1,715 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="processing-settings-container">
+  <div class="settings-header">
+    <mat-icon>tune</mat-icon>
+    <h2>Processing Settings</h2>
+    <p>Configure batch processing and monitor system resources</p>
+  </div>
+
+  <mat-card class="processing-settings-card">
+    <mat-card-content class="settings-content" *ngIf="processingSettings">
+
+      <!-- Memory Status Section -->
+      <div class="memory-status-section">
+        <div class="section-header">
+          <mat-icon>memory</mat-icon>
+          <span>Memory Status</span>
+          <button mat-icon-button matTooltip="Trigger garbage collection" (click)="triggerGC()" [disabled]="isGCRunning">
+            <mat-icon>cleaning_services</mat-icon>
+          </button>
+        </div>
+
+        <div class="memory-bar-container">
+          <mat-progress-bar
+            class="memory-bar"
+            mode="determinate"
+            [value]="processingSettings.memoryStatus.usagePercent"
+            [color]="getMemoryBarColor()">
+          </mat-progress-bar>
+          <span class="memory-percent" [ngClass]="'memory-' + processingSettings.memoryStatus.status.toLowerCase()">
+            {{ processingSettings.memoryStatus.usagePercent | number:'1.1-1' }}%
+          </span>
+        </div>
+
+        <div class="memory-details">
+          <span>{{ processingSettings.memoryStatus.usedMemoryMB }} MB / {{ processingSettings.memoryStatus.maxMemoryMB }} MB</span>
+          <span class="memory-status-badge" [ngClass]="'status-' + processingSettings.memoryStatus.status.toLowerCase()">
+            {{ processingSettings.memoryStatus.status }}
+          </span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Concurrency Settings -->
+      <div class="settings-section">
+        <div class="section-header">
+          <mat-icon>groups</mat-icon>
+          <span>Concurrent Jobs</span>
+        </div>
+
+        <div class="job-status">
+          <div class="job-indicator">
+            <span class="job-count">{{ processingSettings.activeJobs }}</span>
+            <span class="job-label">Active</span>
+          </div>
+          <span class="job-separator">/</span>
+          <div class="job-indicator">
+            <span class="job-count">{{ processingSettings.maxConcurrentJobs }}</span>
+            <span class="job-label">Max</span>
+          </div>
+          <div class="job-indicator" *ngIf="processingSettings.queuedJobs > 0">
+            <span class="job-separator">|</span>
+            <span class="job-count queued">{{ processingSettings.queuedJobs }}</span>
+            <span class="job-label">Queued</span>
+          </div>
+        </div>
+
+        <mat-form-field appearance="outline" class="setting-field">
+          <mat-label>Max Concurrent Jobs</mat-label>
+          <mat-select [(ngModel)]="editableSettings.maxConcurrentJobs" [ngModelOptions]="{standalone: true}" (selectionChange)="onSettingsChange()">
+            <mat-option *ngFor="let n of [1,2,3,4,5,6,7,8,10,12,16]" [value]="n">{{ n }}</mat-option>
+          </mat-select>
+          <mat-hint>Higher values use more memory</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Index Batch Size Settings (Storage/Lucene) -->
+      <div class="settings-section">
+        <div class="section-header">
+          <mat-icon>storage</mat-icon>
+          <span>Index Batch Size</span>
+          <span class="batch-type-badge storage">Storage</span>
+        </div>
+        <p class="batch-explanation">
+          Controls how many chunks are batched for Lucene index writes.
+          <em>This is different from the embedding (inference) batch size.</em>
+        </p>
+
+        <mat-form-field appearance="outline" class="setting-field">
+          <mat-label>Chunks per Lucene batch</mat-label>
+          <mat-select [(ngModel)]="editableSettings.indexBatchSize" [ngModelOptions]="{standalone: true}" (selectionChange)="onSettingsChange()">
+            <mat-option *ngFor="let n of [10,25,50,75,100,150,200,300]" [value]="n">{{ n }}</mat-option>
+          </mat-select>
+          <mat-hint>Recommended: 50-200 based on RAM</mat-hint>
+        </mat-form-field>
+
+        <mat-slide-toggle
+          [(ngModel)]="editableSettings.adaptiveBatchSize" [ngModelOptions]="{standalone: true}"
+          (change)="onSettingsChange()"
+          color="primary"
+          class="adaptive-toggle">
+          Adaptive batch size
+        </mat-slide-toggle>
+        <small class="toggle-hint">Auto-reduce batch size under memory pressure</small>
+      </div>
+
+      <!-- Embedding Batch Info Reference -->
+      <div class="embedding-batch-reference">
+        <div class="reference-header">
+          <mat-icon>memory</mat-icon>
+          <span>Embedding (Inference) Batch Size</span>
+          <span class="batch-type-badge inference">Model</span>
+        </div>
+
+        <!-- Show benchmark config if available -->
+        <div class="current-batch-config benchmark" *ngIf="hasBenchmarkConfig && currentBatchConfig">
+          <div class="config-display">
+            <div class="config-value-primary">
+              <span class="config-label">Current Batch Size:</span>
+              <span class="config-value">{{ currentBatchConfig.calculatedEffectiveBatchSize }}</span>
+              <span class="config-source">
+                <mat-icon>verified</mat-icon>
+                Benchmark Optimized
+              </span>
+            </div>
+            <div class="config-details">
+              <span class="detail-item" matTooltip="Configured optimal batch size">
+                Optimal: {{ currentBatchConfig.currentOptimalBatchSize }}
+              </span>
+              <span class="detail-divider">|</span>
+              <span class="detail-item" matTooltip="Maximum batch size limit">
+                Max: {{ currentBatchConfig.currentMaxBatchSize }}
+              </span>
+              <span class="detail-divider" *ngIf="currentEmbeddingModel">|</span>
+              <span class="detail-item model-name" *ngIf="currentEmbeddingModel" matTooltip="Active embedding model">
+                {{ currentEmbeddingModel.displayName }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Show prompt to run benchmark if no config exists -->
+        <div class="no-benchmark-config" *ngIf="!hasBenchmarkConfig">
+          <div class="no-config-message">
+            <mat-icon>science</mat-icon>
+            <div class="message-content">
+              <span class="message-title">No benchmark configuration</span>
+              <span class="message-hint">
+                Run a benchmark in the <strong>Batch Size Config</strong> tool to optimize for your hardware.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Manual Override for Embedding Batch Size -->
+        <div class="embedding-batch-override">
+          <mat-form-field appearance="outline" class="setting-field">
+            <mat-label>Override Embedding Batch Size</mat-label>
+            <mat-select [(ngModel)]="embeddingBatchSizeOverride" [ngModelOptions]="{standalone: true}" (selectionChange)="onEmbeddingBatchSizeChange()">
+              <mat-option [value]="null">Auto (use benchmark)</mat-option>
+              <mat-option *ngFor="let n of [4,8,16,32,64,128,256,512,1024,2048,4096,8192]" [value]="n">{{ n }} texts/batch</mat-option>
+            </mat-select>
+            <mat-hint>Larger = faster throughput, more memory. Smaller = slower but stable.</mat-hint>
+          </mat-form-field>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Memory Threshold -->
+      <div class="settings-section">
+        <div class="section-header">
+          <mat-icon>speed</mat-icon>
+          <span>Memory Threshold</span>
+        </div>
+
+        <mat-form-field appearance="outline" class="setting-field">
+          <mat-label>Pause new jobs at (%)</mat-label>
+          <mat-select [(ngModel)]="editableSettings.memoryThresholdPercent" [ngModelOptions]="{standalone: true}" (selectionChange)="onSettingsChange()">
+            <mat-option [value]="0">Disabled</mat-option>
+            <mat-option *ngFor="let n of [50,60,70,75,80,85,90,95]" [value]="n">{{ n }}%</mat-option>
+          </mat-select>
+          <mat-hint>0 = no memory-based throttling</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <!-- Thread Pool Info -->
+      <div class="thread-pool-info">
+        <small>
+          <mat-icon>developer_board</mat-icon>
+          Thread Pool: {{ processingSettings.activeThreads }}/{{ processingSettings.maxPoolSize }} active
+          <span *ngIf="processingSettings.queueSize > 0"> ({{ processingSettings.queueSize }} queued)</span>
+        </small>
+      </div>
+
+      <!-- Apply Button -->
+      <button mat-stroked-button color="primary" (click)="applySettings()" [disabled]="!hasSettingsChanged || isApplyingSettings" class="apply-settings-btn">
+        <mat-icon>save</mat-icon>
+        Apply Settings
+      </button>
+
+      <mat-divider></mat-divider>
+
+      <!-- Subprocess Configuration Section -->
+      <div class="settings-section subprocess-section">
+        <div class="section-header">
+          <mat-icon>launch</mat-icon>
+          <span>Subprocess Mode (Global Setting)</span>
+          <span class="subprocess-status-badge" [ngClass]="subprocessConfig?.enabled ? 'enabled' : 'disabled'">
+            {{ subprocessConfig?.enabled ? 'ENABLED' : 'DISABLED' }}
+          </span>
+        </div>
+
+        <p class="section-description">
+          When enabled, document processing runs in an isolated JVM subprocess for crash protection.
+          This setting is used when "Auto" processing mode is selected in the Add Source dialog.
+        </p>
+
+        <div class="subprocess-config-content" *ngIf="subprocessConfig && !isLoadingSubprocessConfig">
+          <!-- Quick Toggle with Immediate Apply -->
+          <div class="subprocess-toggle-row">
+            <div class="quick-toggle-buttons">
+              <button mat-raised-button
+                      [color]="subprocessConfig.enabled ? 'primary' : 'basic'"
+                      (click)="enableSubprocessMode()"
+                      [disabled]="subprocessConfig.enabled || isApplyingSubprocessConfig"
+                      class="quick-toggle-btn">
+                <mat-icon>launch</mat-icon>
+                Subprocess
+              </button>
+              <button mat-raised-button
+                      [color]="!subprocessConfig.enabled ? 'primary' : 'basic'"
+                      (click)="disableSubprocessMode()"
+                      [disabled]="!subprocessConfig.enabled || isApplyingSubprocessConfig"
+                      class="quick-toggle-btn">
+                <mat-icon>memory</mat-icon>
+                In-Process
+              </button>
+            </div>
+            <small class="toggle-hint">
+              {{ subprocessConfig.enabled ? 'Processing runs in isolated JVM (crash protection enabled)' : 'Processing runs in main application JVM (faster startup)' }}
+            </small>
+          </div>
+
+          <!-- Advanced Settings (only shown when subprocess mode is enabled) -->
+          <div class="subprocess-advanced-settings" *ngIf="subprocessConfig.enabled">
+            <div class="advanced-settings-header">
+              <mat-icon>settings</mat-icon>
+              <span>Advanced Subprocess Settings</span>
+            </div>
+            <div class="settings-row">
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Heap Size</mat-label>
+                <mat-select [(ngModel)]="editableSubprocessConfig.heapSize" [ngModelOptions]="{standalone: true}" (selectionChange)="onSubprocessConfigChange()">
+                  <mat-option *ngFor="let size of heapSizeOptions" [value]="size">{{ size }}</mat-option>
+                </mat-select>
+                <mat-hint>Memory allocated to subprocess JVM</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Off-Heap Multiplier</mat-label>
+                <mat-select [(ngModel)]="editableIngestOffHeapMultiplier" [ngModelOptions]="{standalone: true}" (selectionChange)="onSubprocessConfigChange()">
+                  <mat-option *ngFor="let m of offHeapMultiplierOptions" [value]="m">{{ m }}x</mat-option>
+                </mat-select>
+                <mat-hint>Off-heap = heap x multiplier (~{{ getEffectiveIngestOffHeapMb() }} MB)</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Timeout (minutes)</mat-label>
+                <input matInput type="number" [(ngModel)]="editableSubprocessConfig.timeoutMinutes" [ngModelOptions]="{standalone: true}"
+                       (ngModelChange)="onSubprocessConfigChange()" min="1" max="1440">
+                <mat-hint>Max time for a single job</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <div class="settings-row">
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Heartbeat Interval (seconds)</mat-label>
+                <input matInput type="number" [(ngModel)]="editableSubprocessConfig.heartbeatIntervalSeconds" [ngModelOptions]="{standalone: true}"
+                       (ngModelChange)="onSubprocessConfigChange()" min="5" max="60">
+                <mat-hint>How often subprocess reports status</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Stale Threshold (seconds)</mat-label>
+                <input matInput type="number" [(ngModel)]="editableSubprocessConfig.staleThresholdSeconds" [ngModelOptions]="{standalone: true}"
+                       (ngModelChange)="onSubprocessConfigChange()" min="30" max="600">
+                <mat-hint>Time before considering subprocess stuck</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <!-- Apply Advanced Settings Button -->
+            <button mat-stroked-button color="accent" (click)="applySubprocessConfig()"
+                    [disabled]="!hasSubprocessConfigChanged || isApplyingSubprocessConfig"
+                    class="apply-subprocess-btn">
+              <mat-icon>save</mat-icon>
+              Save Advanced Settings
+            </button>
+          </div>
+        </div>
+
+        <div class="subprocess-loading" *ngIf="isLoadingSubprocessConfig">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading subprocess configuration...</span>
+        </div>
+
+        <!-- Debug Button -->
+        <div class="subprocess-debug-row" *ngIf="subprocessConfig">
+          <button mat-stroked-button color="warn" (click)="debugSubprocessConfig()" class="debug-btn">
+            <mat-icon>bug_report</mat-icon>
+            Verify Backend State
+          </button>
+          <small class="debug-hint">Click to verify the actual subprocess config state on the backend</small>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- VLM Subprocess Configuration Section -->
+      <div class="settings-section subprocess-section">
+        <div class="section-header">
+          <mat-icon>image_search</mat-icon>
+          <span>VLM Subprocess Memory</span>
+        </div>
+
+        <p class="section-description">
+          Configure memory for VLM (Vision Language Model) test subprocesses.
+          VLM models typically need more off-heap memory than embedding models.
+        </p>
+
+        <div class="subprocess-config-content" *ngIf="!isLoadingSubprocessConfig">
+          <div class="settings-row">
+            <mat-form-field appearance="outline" class="setting-field">
+              <mat-label>VLM Heap Size</mat-label>
+              <mat-select [(ngModel)]="editableVlmHeapSize" [ngModelOptions]="{standalone: true}" (selectionChange)="onVlmConfigChange()">
+                <mat-option *ngFor="let size of heapSizeOptions" [value]="size">{{ size }}</mat-option>
+              </mat-select>
+              <mat-hint>JVM heap for VLM subprocess</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="setting-field">
+              <mat-label>VLM Off-Heap Multiplier</mat-label>
+              <mat-select [(ngModel)]="editableVlmOffHeapMultiplier" [ngModelOptions]="{standalone: true}" (selectionChange)="onVlmConfigChange()">
+                <mat-option *ngFor="let m of offHeapMultiplierOptions" [value]="m">{{ m }}x</mat-option>
+              </mat-select>
+              <mat-hint>Off-heap = heap x multiplier (~{{ getEffectiveVlmOffHeapMb() }} MB)</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="setting-field">
+              <mat-label>VLM Timeout (minutes)</mat-label>
+              <input matInput type="number" [(ngModel)]="editableVlmTimeoutMinutes" [ngModelOptions]="{standalone: true}"
+                     (ngModelChange)="onVlmConfigChange()" min="1" max="1440">
+              <mat-hint>Max time for VLM test job</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="setting-field">
+              <mat-label>CUDA Pinned Host Limit (MB)</mat-label>
+              <input matInput type="number" [(ngModel)]="editableVlmCudaPinnedHostLimitMb" [ngModelOptions]="{standalone: true}"
+                     (ngModelChange)="onVlmConfigChange()" min="0" max="65536">
+              <mat-hint>0 = system default. Set SD_CUDA_PINNED_HOST_LIMIT on subprocess</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <button mat-stroked-button color="accent" (click)="applyVlmConfig()"
+                  [disabled]="!hasVlmConfigChanged || isApplyingVlmConfig"
+                  class="apply-subprocess-btn">
+            <mat-icon>save</mat-icon>
+            Save VLM Config
+          </button>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Adaptive Performance Metrics Section -->
+      <div class="adaptive-metrics-section">
+        <div class="section-header adaptive-header" (click)="toggleAdaptiveMetricsPanel()">
+          <mat-icon [class.active-icon]="adaptiveModeActive">auto_graph</mat-icon>
+          <span>Adaptive Performance</span>
+          <span class="adaptive-status-badge" [ngClass]="adaptiveModeActive ? 'active' : 'inactive'">
+            {{ adaptiveModeActive ? 'ACTIVE' : 'INACTIVE' }}
+          </span>
+          <mat-icon class="expand-icon">{{ showAdaptiveMetrics ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+
+        <div class="adaptive-metrics-content" *ngIf="showAdaptiveMetrics && adaptiveMetrics">
+          <!-- Current Batch Sizes -->
+          <div class="adaptive-current-batches">
+            <div class="batch-metric-card embedding">
+              <div class="batch-metric-header">
+                <mat-icon>memory</mat-icon>
+                <span>Embedding Batch</span>
+              </div>
+              <div class="batch-metric-value">{{ adaptiveMetrics.embeddingBatchSize }}</div>
+              <div class="batch-metric-label">texts/batch</div>
+            </div>
+            <div class="batch-metric-card indexing">
+              <div class="batch-metric-header">
+                <mat-icon>storage</mat-icon>
+                <span>Index Batch</span>
+              </div>
+              <div class="batch-metric-value">{{ adaptiveMetrics.indexBatchSize }}</div>
+              <div class="batch-metric-label">chunks/batch</div>
+            </div>
+          </div>
+
+          <!-- Performance Metrics -->
+          <div class="adaptive-performance-row" *ngIf="adaptiveModeActive">
+            <div class="perf-metric" *ngIf="adaptiveMetrics.throughputChunksPerSec > 0">
+              <mat-icon>speed</mat-icon>
+              <span class="perf-value">{{ adaptiveMetrics.throughputChunksPerSec | number:'1.1-1' }}</span>
+              <span class="perf-label">chunks/sec</span>
+            </div>
+            <div class="perf-metric" *ngIf="adaptiveMetrics.avgEmbeddingTimeMs > 0">
+              <mat-icon>timer</mat-icon>
+              <span class="perf-value">{{ adaptiveMetrics.avgEmbeddingTimeMs | number:'1.0-0' }}</span>
+              <span class="perf-label">ms avg embed</span>
+            </div>
+            <div class="perf-metric memory" [ngClass]="{
+              'memory-ok': adaptiveMetrics.memoryUsagePercent < 75,
+              'memory-warning': adaptiveMetrics.memoryUsagePercent >= 75 && adaptiveMetrics.memoryUsagePercent < 90,
+              'memory-critical': adaptiveMetrics.memoryUsagePercent >= 90
+            }">
+              <mat-icon>memory</mat-icon>
+              <span class="perf-value">{{ adaptiveMetrics.memoryUsagePercent | number:'1.0-0' }}%</span>
+              <span class="perf-label">memory</span>
+            </div>
+          </div>
+
+          <!-- Adjustment Count & Last Reason -->
+          <div class="adaptive-adjustments-summary" *ngIf="adaptiveMetrics.adjustmentCount > 0">
+            <div class="adjustment-count">
+              <mat-icon>tune</mat-icon>
+              <span>{{ adaptiveMetrics.adjustmentCount }} adjustment(s)</span>
+            </div>
+            <div class="last-adjustment-reason" *ngIf="adaptiveMetrics.lastAdjustmentReason">
+              <span class="reason-label">Last:</span>
+              <span class="reason-text">{{ adaptiveMetrics.lastAdjustmentReason }}</span>
+            </div>
+          </div>
+
+          <!-- Recent Adjustments List (collapsible) -->
+          <div class="recent-adjustments" *ngIf="adaptiveAdjustments.length > 0">
+            <div class="adjustments-header">
+              <mat-icon>history</mat-icon>
+              <span>Recent Adjustments</span>
+            </div>
+            <div class="adjustment-list">
+              <div class="adjustment-item" *ngFor="let adj of adaptiveAdjustments.slice(0, 5)"
+                   [ngClass]="getAdaptiveAdjustmentClass(adj.type === 'both' ? 'DECREASE' : adj.type)">
+                <mat-icon>{{ getAdaptiveAdjustmentIcon(adj.newValue > adj.previousValue ? 'INCREASE' : 'DECREASE') }}</mat-icon>
+                <span class="adj-time">{{ formatAdjustmentTime(adj.timestamp) }}</span>
+                <span class="adj-change">{{ adj.previousValue }} -> {{ adj.newValue }}</span>
+                <span class="adj-reason">{{ adj.reason }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Last Updated -->
+          <div class="adaptive-last-updated">
+            <small>Updated: {{ adaptiveMetrics.lastUpdated | date:'HH:mm:ss' }}</small>
+          </div>
+        </div>
+
+        <div class="adaptive-inactive-message" *ngIf="showAdaptiveMetrics && !adaptiveModeActive">
+          <mat-icon>info_outline</mat-icon>
+          <span>Enable adaptive mode when uploading documents to see real-time performance metrics and automatic batch size adjustments.</span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Pipeline Settings Section -->
+      <div class="settings-section pipeline-section">
+        <div class="section-header">
+          <mat-icon>settings_input_component</mat-icon>
+          <span>Pipeline Settings</span>
+          <span class="preset-badge" *ngIf="pipelineConfig?.currentPreset">
+            {{ pipelineConfig?.currentPreset }}
+          </span>
+          <span class="preset-badge custom" *ngIf="pipelineConfig?.isModified && !pipelineConfig?.currentPreset">
+            Custom
+          </span>
+        </div>
+
+        <p class="section-description">
+          Configure ingestion pipeline behavior including timeouts, thread counts, and queue sizes.
+          These settings persist across restarts.
+        </p>
+
+        <div class="pipeline-config-content" *ngIf="pipelineConfig && !isLoadingPipelineConfig">
+          <!-- Presets Row -->
+          <div class="presets-row">
+            <span class="presets-label">Quick Presets:</span>
+            <button mat-stroked-button (click)="applyPipelinePreset('defaults')"
+                    [disabled]="isApplyingPipelineConfig"
+                    [class.active-preset]="pipelineConfig.currentPreset === 'defaults'">
+              Default
+            </button>
+            <button mat-stroked-button (click)="applyPipelinePreset('highThroughput')"
+                    [disabled]="isApplyingPipelineConfig"
+                    [class.active-preset]="pipelineConfig.currentPreset === 'highthroughput'">
+              High Throughput
+            </button>
+            <button mat-stroked-button (click)="applyPipelinePreset('lowMemory')"
+                    [disabled]="isApplyingPipelineConfig"
+                    [class.active-preset]="pipelineConfig.currentPreset === 'lowmemory'">
+              Low Memory
+            </button>
+            <button mat-stroked-button (click)="applyPipelinePreset('keywordOnly')"
+                    [disabled]="isApplyingPipelineConfig"
+                    [class.active-preset]="pipelineConfig.currentPreset === 'keywordonly'">
+              Keyword Only
+            </button>
+          </div>
+
+          <!-- Primary Settings Row -->
+          <div class="settings-row primary-settings">
+            <mat-form-field appearance="outline" class="setting-field timeout-field">
+              <mat-label>Embedding Timeout</mat-label>
+              <mat-select [(ngModel)]="editablePipelineConfig.embeddingTimeoutSeconds" [ngModelOptions]="{standalone: true}"
+                          (selectionChange)="onPipelineConfigChange()">
+                <mat-option [value]="0">No timeout</mat-option>
+                <mat-option [value]="60">1 minute</mat-option>
+                <mat-option [value]="120">2 minutes</mat-option>
+                <mat-option [value]="180">3 minutes</mat-option>
+                <mat-option [value]="300">5 minutes</mat-option>
+                <mat-option [value]="600">10 minutes</mat-option>
+                <mat-option [value]="900">15 minutes</mat-option>
+                <mat-option [value]="1800">30 minutes</mat-option>
+                <mat-option [value]="3600">1 hour</mat-option>
+              </mat-select>
+              <mat-hint>Timeout per embedding batch. Current: {{ formatTimeout(pipelineConfig.embeddingTimeoutSeconds) }}</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="setting-field">
+              <mat-label>Queue Capacity</mat-label>
+              <mat-select [(ngModel)]="editablePipelineConfig.queueCapacity" [ngModelOptions]="{standalone: true}"
+                          (selectionChange)="onPipelineConfigChange()">
+                <mat-option *ngFor="let n of [250, 500, 1000, 2000, 5000, 10000]" [value]="n">{{ n }}</mat-option>
+              </mat-select>
+              <mat-hint>Max chunks waiting in queue</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Skip Embedding Toggle -->
+          <mat-slide-toggle
+            [(ngModel)]="editablePipelineConfig.skipEmbedding" [ngModelOptions]="{standalone: true}"
+            (change)="onPipelineConfigChange()"
+            color="warn"
+            class="skip-embedding-toggle">
+            Skip Embedding (Keyword-only mode)
+          </mat-slide-toggle>
+          <small class="toggle-hint warning" *ngIf="editablePipelineConfig.skipEmbedding">
+            Warning: Semantic search will be disabled. Only keyword search will work.
+          </small>
+
+          <!-- Advanced Settings Toggle -->
+          <div class="advanced-toggle-row">
+            <button mat-button (click)="toggleAdvancedPipelineSettings()" class="advanced-toggle-btn">
+              <mat-icon>{{ showAdvancedPipelineSettings ? 'expand_less' : 'expand_more' }}</mat-icon>
+              {{ showAdvancedPipelineSettings ? 'Hide' : 'Show' }} Advanced Settings
+            </button>
+          </div>
+
+          <!-- Advanced Settings (collapsed by default) -->
+          <div class="advanced-settings-panel" *ngIf="showAdvancedPipelineSettings">
+            <div class="advanced-settings-header">
+              <mat-icon>tune</mat-icon>
+              <span>Thread Configuration</span>
+            </div>
+
+            <div class="settings-row">
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Chunking Threads</mat-label>
+                <mat-select [(ngModel)]="editablePipelineConfig.chunkingThreads" [ngModelOptions]="{standalone: true}"
+                            (selectionChange)="onPipelineConfigChange()">
+                  <mat-option *ngFor="let n of [1, 2, 4, 8, 16, 32]" [value]="n">{{ n }}</mat-option>
+                </mat-select>
+                <mat-hint>Parallel document chunking</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Embedding Threads</mat-label>
+                <mat-select [(ngModel)]="editablePipelineConfig.embeddingThreads" [ngModelOptions]="{standalone: true}"
+                            (selectionChange)="onPipelineConfigChange()">
+                  <mat-option *ngFor="let n of [1, 2, 4, 8]" [value]="n">{{ n }}</mat-option>
+                </mat-select>
+                <mat-hint>Usually 1 (OpenMP handles parallelism)</mat-hint>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Indexing Threads</mat-label>
+                <mat-select [(ngModel)]="editablePipelineConfig.indexingThreads" [ngModelOptions]="{standalone: true}"
+                            (selectionChange)="onPipelineConfigChange()">
+                  <mat-option *ngFor="let n of [1, 2, 4, 8, 16]" [value]="n">{{ n }}</mat-option>
+                </mat-select>
+                <mat-hint>Lucene index writers</mat-hint>
+              </mat-form-field>
+            </div>
+
+            <div class="settings-row">
+              <mat-form-field appearance="outline" class="setting-field">
+                <mat-label>Index Batch Accumulation</mat-label>
+                <mat-select [(ngModel)]="editablePipelineConfig.indexingBatchAccumulationSize" [ngModelOptions]="{standalone: true}"
+                            (selectionChange)="onPipelineConfigChange()">
+                  <mat-option *ngFor="let n of [1, 4, 8, 16, 32, 64]" [value]="n">{{ n }}</mat-option>
+                </mat-select>
+                <mat-hint>Chunks before Lucene commit</mat-hint>
+              </mat-form-field>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="pipeline-action-buttons">
+            <button mat-stroked-button color="primary"
+                    (click)="applyPipelineConfig()"
+                    [disabled]="!hasPipelineConfigChanged || isApplyingPipelineConfig">
+              <mat-icon>save</mat-icon>
+              Apply Changes
+            </button>
+            <button mat-stroked-button
+                    (click)="resetPipelineConfig()"
+                    [disabled]="isApplyingPipelineConfig">
+              <mat-icon>restart_alt</mat-icon>
+              Reset to Defaults
+            </button>
+          </div>
+        </div>
+
+        <div class="pipeline-loading" *ngIf="isLoadingPipelineConfig">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading pipeline configuration...</span>
+        </div>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Graph Optimization Section -->
+      <div class="settings-section graph-optimization-section">
+        <div class="section-header">
+          <mat-icon>speed</mat-icon>
+          <span>Graph Optimization</span>
+        </div>
+
+        <p class="section-description">
+          Pre-optimize and save the model graph for faster inference.
+          Optimizations include matmul+add fusion, constant folding, and dead code elimination.
+        </p>
+
+        <div class="graph-optimization-content" *ngIf="graphOptimizationStatus && !isLoadingGraphOptimization">
+          <!-- Info Box -->
+          <div class="optimization-info-box">
+            <div class="info-row" *ngIf="graphOptimizationStatus.currentModel">
+              <mat-icon>memory</mat-icon>
+              <span class="info-label">Current Model:</span>
+              <span class="info-value">{{ graphOptimizationStatus.currentModel }}</span>
+            </div>
+            <div class="info-row" *ngIf="graphOptimizationStatus.note">
+              <mat-icon>info</mat-icon>
+              <span class="info-detail">{{ graphOptimizationStatus.note }}</span>
+            </div>
+          </div>
+
+          <!-- Optimize and Save Button -->
+          <div class="optimization-actions">
+            <button mat-raised-button color="primary"
+                    (click)="optimizeAndSaveModel()"
+                    [disabled]="isTogglingGraphOptimization || !graphOptimizationStatus.embeddingModelLoaded"
+                    matTooltip="Optimize and save the model to a new file">
+              <mat-icon *ngIf="!isTogglingGraphOptimization">bolt</mat-icon>
+              <mat-spinner *ngIf="isTogglingGraphOptimization" diameter="18"></mat-spinner>
+              {{ isTogglingGraphOptimization ? 'Optimizing...' : 'Optimize & Save Model' }}
+            </button>
+            <small class="action-hint">
+              Creates an optimized model file. Register it in the model registry to use it.
+            </small>
+          </div>
+        </div>
+
+        <div class="optimization-loading" *ngIf="isLoadingGraphOptimization">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading status...</span>
+        </div>
+
+        <div class="optimization-unavailable" *ngIf="graphOptimizationStatus && !graphOptimizationStatus.available">
+          <mat-icon>warning</mat-icon>
+          <span>{{ graphOptimizationStatus.message || 'Model not loaded' }}</span>
+        </div>
+      </div>
+
+    </mat-card-content>
+    <mat-card-content *ngIf="!processingSettings" class="settings-loading">
+      <mat-spinner diameter="32"></mat-spinner>
+      <span>Loading settings...</span>
+    </mat-card-content>
+  </mat-card>
+</div>

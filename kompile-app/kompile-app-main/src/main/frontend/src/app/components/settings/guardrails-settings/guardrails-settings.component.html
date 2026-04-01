@@ -1,0 +1,424 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="guardrails-settings">
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>security</mat-icon>
+        Guardrails Configuration
+      </h3>
+      <p>Configure input and output safety guardrails for your RAG application.</p>
+    </div>
+    <button mat-icon-button matTooltip="Refresh" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Not Available Message -->
+  <div *ngIf="!loading && !config.available" class="not-available">
+    <mat-icon>info</mat-icon>
+    <span>Guardrails module is not loaded. Add kompile-guardrails dependency to enable.</span>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success Message -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="!loading && config.available">
+    <!-- Master Toggle -->
+    <mat-card class="master-toggle-card">
+      <mat-card-content>
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable Guardrails</span>
+            <span class="config-description">
+              Master switch to enable or disable all guardrail checks
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}"
+            (change)="toggleEnabled()"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+        <div class="config-row" *ngIf="config.enabled">
+          <div class="config-info">
+            <span class="config-label">Max Retries</span>
+            <span class="config-description">
+              Number of retries for output guardrails that support retry
+            </span>
+          </div>
+          <mat-form-field appearance="outline" class="config-input">
+            <input matInput type="number" [(ngModel)]="config.maxRetries" [ngModelOptions]="{standalone: true}" min="0" max="5">
+          </mat-form-field>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Input Guardrails -->
+    <mat-expansion-panel [expanded]="true" *ngIf="config.enabled">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>input</mat-icon>
+          Input Guardrails
+        </mat-panel-title>
+        <mat-panel-description>
+          Protect against malicious or inappropriate user inputs
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <!-- Prompt Injection -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar color="warn">warning</mat-icon>
+          <mat-card-title>Prompt Injection Detection</mat-card-title>
+          <mat-card-subtitle>Detects attempts to manipulate the AI system</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.input.promptInjection.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <div class="config-row" *ngIf="config.input.promptInjection.enabled">
+            <div class="config-info">
+              <span class="config-label">Detection Threshold</span>
+              <span class="config-description">{{ formatThreshold(config.input.promptInjection.threshold) }}</span>
+            </div>
+            <mat-slider min="0" max="1" step="0.05" discrete>
+              <input matSliderThumb [(ngModel)]="config.input.promptInjection.threshold" [ngModelOptions]="{standalone: true}">
+            </mat-slider>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- PII Detection -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar color="accent">fingerprint</mat-icon>
+          <mat-card-title>PII Detection</mat-card-title>
+          <mat-card-subtitle>Detects personally identifiable information</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.input.pii.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <ng-container *ngIf="config.input.pii.enabled">
+            <mat-divider></mat-divider>
+            <div class="pii-options">
+              <div class="config-row toggle-row">
+                <span class="config-label">Detect Email</span>
+                <mat-slide-toggle [(ngModel)]="config.input.pii.detectEmail" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="config-row toggle-row">
+                <span class="config-label">Detect Phone</span>
+                <mat-slide-toggle [(ngModel)]="config.input.pii.detectPhone" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="config-row toggle-row">
+                <span class="config-label">Detect SSN</span>
+                <mat-slide-toggle [(ngModel)]="config.input.pii.detectSsn" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="config-row toggle-row">
+                <span class="config-label">Detect Credit Card</span>
+                <mat-slide-toggle [(ngModel)]="config.input.pii.detectCreditCard" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+              </div>
+              <mat-divider></mat-divider>
+              <div class="config-row toggle-row">
+                <div class="config-info">
+                  <span class="config-label">Block on Detection</span>
+                  <span class="config-description">Block requests containing PII (vs warn only)</span>
+                </div>
+                <mat-slide-toggle [(ngModel)]="config.input.pii.blockOnDetection" [ngModelOptions]="{standalone: true}" color="warn"></mat-slide-toggle>
+              </div>
+            </div>
+          </ng-container>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Toxicity Detection -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar color="warn">report</mat-icon>
+          <mat-card-title>Toxicity Detection</mat-card-title>
+          <mat-card-subtitle>Detects harmful or toxic content</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.input.toxicity.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <div class="config-row" *ngIf="config.input.toxicity.enabled">
+            <div class="config-info">
+              <span class="config-label">Detection Threshold</span>
+              <span class="config-description">{{ formatThreshold(config.input.toxicity.threshold) }}</span>
+            </div>
+            <mat-slider min="0" max="1" step="0.05" discrete>
+              <input matSliderThumb [(ngModel)]="config.input.toxicity.threshold" [ngModelOptions]="{standalone: true}">
+            </mat-slider>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Topic Guardrail -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>topic</mat-icon>
+          <mat-card-title>Topic Filtering</mat-card-title>
+          <mat-card-subtitle>Restrict queries to allowed topics</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.input.topic.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <ng-container *ngIf="config.input.topic.enabled">
+            <mat-divider></mat-divider>
+            <div class="topic-section">
+              <h4>Allowed Topics</h4>
+              <mat-chip-set>
+                <mat-chip *ngFor="let topic of config.input.topic.allowedTopics"
+                          (removed)="removeAllowedTopic(topic)">
+                  {{ topic }}
+                  <button matChipRemove>
+                    <mat-icon>cancel</mat-icon>
+                  </button>
+                </mat-chip>
+              </mat-chip-set>
+              <div class="add-topic">
+                <mat-form-field appearance="outline">
+                  <input matInput [(ngModel)]="newAllowedTopic" [ngModelOptions]="{standalone: true}" placeholder="Add topic"
+                         (keyup.enter)="addAllowedTopic()">
+                </mat-form-field>
+                <button mat-icon-button color="primary" (click)="addAllowedTopic()">
+                  <mat-icon>add</mat-icon>
+                </button>
+              </div>
+            </div>
+            <div class="topic-section">
+              <h4>Blocked Topics</h4>
+              <mat-chip-set>
+                <mat-chip *ngFor="let topic of config.input.topic.blockedTopics"
+                          color="warn"
+                          (removed)="removeBlockedTopic(topic)">
+                  {{ topic }}
+                  <button matChipRemove>
+                    <mat-icon>cancel</mat-icon>
+                  </button>
+                </mat-chip>
+              </mat-chip-set>
+              <div class="add-topic">
+                <mat-form-field appearance="outline">
+                  <input matInput [(ngModel)]="newBlockedTopic" [ngModelOptions]="{standalone: true}" placeholder="Add blocked topic"
+                         (keyup.enter)="addBlockedTopic()">
+                </mat-form-field>
+                <button mat-icon-button color="warn" (click)="addBlockedTopic()">
+                  <mat-icon>add</mat-icon>
+                </button>
+              </div>
+            </div>
+          </ng-container>
+        </mat-card-content>
+      </mat-card>
+    </mat-expansion-panel>
+
+    <!-- Output Guardrails -->
+    <mat-expansion-panel [expanded]="true" *ngIf="config.enabled">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>output</mat-icon>
+          Output Guardrails
+        </mat-panel-title>
+        <mat-panel-description>
+          Validate AI responses before returning to users
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <!-- Hallucination Detection -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar color="warn">psychology</mat-icon>
+          <mat-card-title>Hallucination Detection</mat-card-title>
+          <mat-card-subtitle>Detects fabricated information not in the context</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.output.hallucination.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <ng-container *ngIf="config.output.hallucination.enabled">
+            <div class="config-row">
+              <div class="config-info">
+                <span class="config-label">Detection Threshold</span>
+                <span class="config-description">{{ formatThreshold(config.output.hallucination.threshold) }}</span>
+              </div>
+              <mat-slider min="0" max="1" step="0.05" discrete>
+                <input matSliderThumb [(ngModel)]="config.output.hallucination.threshold" [ngModelOptions]="{standalone: true}">
+              </mat-slider>
+            </div>
+            <div class="config-row toggle-row">
+              <div class="config-info">
+                <span class="config-label">Allow Retry</span>
+                <span class="config-description">Retry generation if hallucination detected</span>
+              </div>
+              <mat-slide-toggle [(ngModel)]="config.output.hallucination.supportsRetry" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+            </div>
+          </ng-container>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Relevancy Check -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar color="primary">fact_check</mat-icon>
+          <mat-card-title>Relevancy Check</mat-card-title>
+          <mat-card-subtitle>Ensures response is relevant to the query</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.output.relevancy.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <ng-container *ngIf="config.output.relevancy.enabled">
+            <div class="config-row">
+              <div class="config-info">
+                <span class="config-label">Relevancy Threshold</span>
+                <span class="config-description">{{ formatThreshold(config.output.relevancy.threshold) }}</span>
+              </div>
+              <mat-slider min="0" max="1" step="0.05" discrete>
+                <input matSliderThumb [(ngModel)]="config.output.relevancy.threshold" [ngModelOptions]="{standalone: true}">
+              </mat-slider>
+            </div>
+            <div class="config-row toggle-row">
+              <div class="config-info">
+                <span class="config-label">Allow Retry</span>
+                <span class="config-description">Retry generation if not relevant</span>
+              </div>
+              <mat-slide-toggle [(ngModel)]="config.output.relevancy.supportsRetry" [ngModelOptions]="{standalone: true}" color="primary"></mat-slide-toggle>
+            </div>
+          </ng-container>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Format Validation -->
+      <mat-card class="guardrail-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>code</mat-icon>
+          <mat-card-title>Format Validation</mat-card-title>
+          <mat-card-subtitle>Validates output format and length</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Enable</span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.output.format.enabled" [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+          <ng-container *ngIf="config.output.format.enabled">
+            <div class="config-row">
+              <div class="config-info">
+                <span class="config-label">Expected Format</span>
+                <span class="config-description">e.g., JSON, XML, or leave empty for any</span>
+              </div>
+              <mat-form-field appearance="outline" class="config-input">
+                <input matInput [(ngModel)]="config.output.format.expectedFormat" [ngModelOptions]="{standalone: true}" placeholder="e.g., JSON">
+              </mat-form-field>
+            </div>
+            <div class="config-row">
+              <div class="config-info">
+                <span class="config-label">Min Length</span>
+                <span class="config-description">Minimum response length (0 = no minimum)</span>
+              </div>
+              <mat-form-field appearance="outline" class="config-input">
+                <input matInput type="number" [(ngModel)]="config.output.format.minLength" [ngModelOptions]="{standalone: true}" min="0">
+              </mat-form-field>
+            </div>
+            <div class="config-row">
+              <div class="config-info">
+                <span class="config-label">Max Length</span>
+                <span class="config-description">Maximum response length (0 = no limit)</span>
+              </div>
+              <mat-form-field appearance="outline" class="config-input">
+                <input matInput type="number" [(ngModel)]="config.output.format.maxLength" [ngModelOptions]="{standalone: true}" min="0">
+              </mat-form-field>
+            </div>
+          </ng-container>
+        </mat-card-content>
+      </mat-card>
+    </mat-expansion-panel>
+
+    <!-- Save Button -->
+    <div class="actions" *ngIf="config.enabled">
+      <button mat-raised-button color="primary"
+              (click)="saveConfiguration()"
+              [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        Save Configuration
+      </button>
+      <mat-spinner *ngIf="saving" diameter="24"></mat-spinner>
+    </div>
+  </ng-container>
+</div>

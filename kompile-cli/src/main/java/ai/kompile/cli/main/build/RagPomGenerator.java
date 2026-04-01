@@ -39,7 +39,8 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-@CommandLine.Command(name = "rag-pom-generate", mixinStandardHelpOptions = false, description = "Generates a pom.xml for a RAG MCP Assistant application instance.")
+@Deprecated(since = "0.2.0", forRemoval = true)
+@CommandLine.Command(name = "rag-pom-generate", mixinStandardHelpOptions = false, description = "Generates a pom.xml for a RAG MCP Assistant application instance. DEPRECATED: Use 'kompile build app' instead.")
 public class RagPomGenerator implements Callable<Void> {
 
     // ##################################################################################
@@ -2763,6 +2764,17 @@ public class RagPomGenerator implements Callable<Void> {
         addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer$NativeDeallocator");
         addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.PointerScope");
 
+        // Lucene MMapDirectory fix: ensure NIOFSDirectory is used in native image
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.apache.lucene");
+
+        // Static UI resources
+        addBuildArg(buildArgsDom, "-H:IncludeResources=static/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=application\\.properties");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=application-.*\\.properties");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=org/bytedeco/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=org/nd4j/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=model-sources\\.yml");
+
         nativePluginConfig.addChild(buildArgsDom);
         nativeMavenPlugin.setConfiguration(nativePluginConfig);
 
@@ -2775,6 +2787,63 @@ public class RagPomGenerator implements Callable<Void> {
         nativeProfileBuild.addPlugin(nativeMavenPlugin);
         nativeProfile.setBuild(nativeProfileBuild);
         model.addProfile(nativeProfile);
+
+        // Add subprocess native image profiles
+        addSubprocessNativeProfile("native-ingest",
+                "ai.kompile.app.subprocess.IngestSubprocessMain", "kompile-ingest");
+        addSubprocessNativeProfile("native-vector",
+                "ai.kompile.app.subprocess.VectorPopulationSubprocessMain", "kompile-vector");
+        addSubprocessNativeProfile("native-embedding",
+                "ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain", "kompile-embedding");
+        addSubprocessNativeProfile("native-model-init",
+                "ai.kompile.app.subprocess.model.ModelInitSubprocessMain", "kompile-model-init");
+    }
+
+    private void addSubprocessNativeProfile(String profileId, String mainClass, String imageName) {
+        Profile profile = new Profile();
+        profile.setId(profileId);
+        Build build = new Build();
+
+        Plugin nativeMavenPlugin = createPlugin("org.graalvm.buildtools", "native-maven-plugin",
+                "${native-maven-plugin.version}");
+        nativeMavenPlugin.setExtensions(true);
+
+        Xpp3Dom config = new Xpp3Dom("configuration");
+        addChild(config, "imageName", imageName);
+        addChild(config, "mainClass", mainClass);
+
+        Xpp3Dom buildArgsDom = new Xpp3Dom("buildArgs");
+        addBuildArg(buildArgsDom, "-J-Xmx18g");
+        addBuildArg(buildArgsDom, "--no-fallback");
+        addBuildArg(buildArgsDom, "--allow-incomplete-classpath");
+        addBuildArg(buildArgsDom, "-H:+ReportExceptionStackTraces");
+        addBuildArg(buildArgsDom, "-Dorg.bytedeco.javacpp.nopointergc=true");
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.slf4j.LoggerFactory,ch.qos.logback.classic.LoggerContext,ch.qos.logback.classic.spi.StaticLoggerBinder,ch.qos.logback.core.spi.StatusManager");
+        addBuildArg(buildArgsDom, "--initialize-at-build-time=org.slf4j.helpers");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Loader");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.eclipse.deeplearning4j");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.nd4j");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.apache.lucene");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.Pointer$NativeDeallocator");
+        addBuildArg(buildArgsDom, "--initialize-at-run-time=org.bytedeco.javacpp.PointerScope");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=org/bytedeco/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=org/nd4j/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/services/.*");
+        addBuildArg(buildArgsDom, "-H:IncludeResources=META-INF/native-image/.*\\.json");
+        config.addChild(buildArgsDom);
+
+        nativeMavenPlugin.setConfiguration(config);
+
+        PluginExecution execution = new PluginExecution();
+        execution.setId("build-" + profileId);
+        execution.addGoal("compile-no-fork");
+        execution.setPhase("package");
+        nativeMavenPlugin.addExecution(execution);
+
+        build.addPlugin(nativeMavenPlugin);
+        profile.setBuild(build);
+        model.addProfile(profile);
     }
 
     private void addSpringRepositories() {

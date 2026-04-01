@@ -1,0 +1,601 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ */
+
+.nd4j-container {
+  padding: 16px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.nd4j-container.modal-mode {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.nd4j-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.header-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.header-title h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 500;
+}
+
+.header-title .subtitle {
+  margin: 4px 0 0 0;
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 0.875rem;
+}
+
+.header-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  color: #1976d2;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.loading-container,
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  gap: 16px;
+}
+
+.error-container {
+  color: #f44336;
+}
+
+.error-container mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+.preset-card {
+  margin-bottom: 16px;
+}
+
+.preset-card mat-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+}
+
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.preset-buttons button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+mat-expansion-panel {
+  margin-bottom: 8px;
+}
+
+mat-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-group {
+  padding: 8px 0;
+}
+
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-row.highlight {
+  background-color: rgba(25, 118, 210, 0.05);
+  margin: 0 -16px;
+  padding: 12px 16px;
+  border-radius: 4px;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setting-label {
+  font-weight: 500;
+}
+
+.setting-description {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.setting-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.value-display {
+  min-width: 32px;
+  text-align: center;
+  font-weight: 500;
+  color: #1976d2;
+}
+
+mat-slider {
+  width: 150px;
+}
+
+.tracker-chips {
+  margin-top: 16px;
+}
+
+.debug-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-label {
+  font-weight: 500;
+}
+
+.config-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.summary-section {
+  padding: 12px;
+  background-color: rgba(0, 0, 0, 0.02);
+  border-radius: 4px;
+}
+
+.summary-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 0.875rem;
+  color: #1976d2;
+}
+
+.summary-section table {
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.summary-section table td {
+  padding: 4px 0;
+}
+
+.summary-section table td:first-child {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.summary-section table td:last-child {
+  text-align: right;
+  font-weight: 500;
+}
+
+.config-path {
+  font-family: monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+  margin: 0 0 8px 0;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+/* Active chip styling */
+mat-chip.active {
+  background-color: #1976d2 !important;
+  color: white !important;
+}
+
+.tracker-chips {
+  margin-top: 16px;
+}
+
+.tracker-chips mat-chip {
+  margin: 4px;
+}
+
+/* Memory Configuration Styles */
+.memory-control {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.memory-input {
+  width: 120px;
+}
+
+.memory-input ::ng-deep .mat-mdc-form-field-subscript-wrapper {
+  display: none;
+}
+
+.memory-input ::ng-deep .mat-mdc-text-field-wrapper {
+  padding: 0 8px;
+}
+
+.memory-input ::ng-deep input {
+  text-align: right;
+}
+
+.memory-info-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  background-color: rgba(25, 118, 210, 0.05);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.memory-info-note mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #1976d2;
+}
+
+/* Op Timing Profiler Styles */
+.op-timing-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.op-timing-controls .control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.op-timing-controls .status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  background-color: rgba(0, 0, 0, 0.05);
+  font-size: 0.875rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.op-timing-controls .status-indicator.enabled {
+  background-color: rgba(76, 175, 80, 0.15);
+  color: #2e7d32;
+}
+
+.op-timing-controls .status-indicator mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.op-timing-controls .mode-toggles {
+  display: flex;
+  gap: 24px;
+}
+
+.op-timing-controls .action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.op-timing-controls .action-buttons button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.op-timing-summary {
+  display: flex;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.op-timing-summary .summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.op-timing-summary .summary-label {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.op-timing-summary .summary-value {
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: #1976d2;
+}
+
+.op-timing-table-container {
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+.op-timing-table {
+  width: 100%;
+}
+
+.op-timing-table code {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.8rem;
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.op-timing-table th {
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.op-timing-table .helper-high {
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.op-timing-table .helper-medium {
+  color: #f57c00;
+}
+
+.op-timing-table .helper-low {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.op-timing-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  color: rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+
+.op-timing-empty mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.op-timing-empty p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.op-timing-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.op-timing-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  margin-top: 16px;
+  background-color: rgba(255, 152, 0, 0.1);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  border-radius: 4px;
+}
+
+.op-timing-warning mat-icon {
+  color: #f57c00;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.op-timing-warning p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: rgba(0, 0, 0, 0.7);
+  line-height: 1.5;
+}
+
+/* ========== Available Devices Section ========== */
+.devices-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.device-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(245, 245, 247, 0.9) 100%);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.device-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.device-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.device-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.device-icon.cpu {
+  color: #1976d2;
+  background: rgba(25, 118, 210, 0.1);
+}
+
+.device-icon.gpu {
+  color: #76b900;
+  background: rgba(118, 185, 0, 0.1);
+}
+
+.device-icon.cuda {
+  color: #76b900;
+  background: rgba(118, 185, 0, 0.1);
+}
+
+.device-icon.no-gpu {
+  color: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.device-title {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.device-name {
+  font-weight: 600;
+  font-size: 1rem;
+  color: #1a1a2e;
+}
+
+.device-type {
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.cuda-chip {
+  background-color: rgba(118, 185, 0, 0.15) !important;
+  color: #558b00 !important;
+  font-weight: 600 !important;
+}
+
+.cpu-chip {
+  background-color: rgba(25, 118, 210, 0.15) !important;
+  color: #1565c0 !important;
+  font-weight: 600 !important;
+}
+
+.device-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 80px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1976d2;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: rgba(0, 0, 0, 0.6);
+  text-align: center;
+}
+
+.gpu-card .stat-value {
+  color: #76b900;
+}
+
+.backend-card {
+  background: linear-gradient(135deg, rgba(25, 118, 210, 0.05) 0%, rgba(25, 118, 210, 0.02) 100%);
+  border-color: rgba(25, 118, 210, 0.15);
+}
+
+.backend-card.cuda-active {
+  background: linear-gradient(135deg, rgba(118, 185, 0, 0.08) 0%, rgba(118, 185, 0, 0.02) 100%);
+  border-color: rgba(118, 185, 0, 0.2);
+}
+
+.no-gpu-card {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.device-info-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background-color: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.device-info-note mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: rgba(0, 0, 0, 0.4);
+}

@@ -118,6 +118,165 @@
   letter-spacing: 0.5px;
 }
 
+/* Assignments Section */
+.assignments-section {
+  margin-bottom: 32px;
+}
+
+.section-subtitle {
+  color: #888;
+  font-size: 0.9rem;
+  margin: -8px 0 16px 0;
+}
+
+.assignments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.assignment-card {
+  border-radius: 12px;
+  border: 1px solid #e0e0e0;
+  transition: box-shadow 0.2s;
+}
+
+.assignment-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.assignment-card.assigned {
+  border-left: 4px solid #4caf50;
+}
+
+.assignment-card.unassigned {
+  border-left: 4px solid #e0e0e0;
+  opacity: 0.7;
+}
+
+.assignment-card mat-card-content {
+  padding: 16px;
+}
+
+.assignment-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.assignment-role-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: #666;
+}
+
+.assignment-role-icon.role-dense_encoder,
+.assignment-role-icon.role-encoder {
+  color: #1976d2;
+}
+
+.assignment-role-icon.role-sparse_encoder {
+  color: #7b1fa2;
+}
+
+.assignment-role-icon.role-cross_encoder {
+  color: #9c27b0;
+}
+
+.assignment-role-icon.role-ocr_detection,
+.assignment-role-icon.role-ocr_recognition,
+.assignment-role-icon.role-ocr_table,
+.assignment-role-icon.role-ocr_pipeline,
+.assignment-role-icon.role-layout_model,
+.assignment-role-icon.role-document_classifier {
+  color: #e65100;
+}
+
+.assignment-role-icon.role-vlm_pipeline {
+  color: #00897b;
+}
+
+.assignment-role-icon.role-llm_ggml {
+  color: #5c6bc0;
+}
+
+.assignment-role {
+  display: flex;
+  flex-direction: column;
+}
+
+.assignment-role-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #333;
+}
+
+.assignment-role-type {
+  font-size: 0.75rem;
+  color: #888;
+}
+
+.assignment-model {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f5f9f5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.assignment-model.unassigned-label {
+  background: #fafafa;
+  color: #aaa;
+  align-items: center;
+}
+
+.assignment-model.unassigned-label mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  color: #ccc;
+}
+
+.active-indicator {
+  color: #4caf50;
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.model-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.model-name {
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: #333;
+  word-break: break-all;
+}
+
+.model-meta {
+  font-size: 0.78rem;
+  color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assignment-description {
+  font-size: 0.78rem;
+  color: #999;
+  line-height: 1.3;
+}
+
 /* Staging Section */
 .staging-section {
   margin-bottom: 32px;
@@ -254,6 +413,10 @@
 
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .assignments-grid {
+    grid-template-columns: 1fr;
   }
 
   .action-buttons {

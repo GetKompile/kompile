@@ -36,21 +36,114 @@
           </mat-card-subtitle>
         </mat-card-header>
         <mat-card-content>
-          <mat-progress-bar *ngIf="model.progress > 0 && model.progress < 100"
-                            mode="determinate"
-                            [value]="model.progress">
-          </mat-progress-bar>
-          <mat-progress-bar *ngIf="model.status === 'downloading' && model.progress === 0"
-                            mode="indeterminate">
-          </mat-progress-bar>
-          <div class="progress-text" *ngIf="model.progress > 0">
-            {{ model.progress }}% complete
+
+          <!-- Progress section - always visible for active models -->
+          <div class="progress-section" *ngIf="isActiveStatus(model.status)">
+            <div class="progress-header">
+              <span class="progress-label">{{ getPhaseLabel(model.status) }}</span>
+              <span class="progress-percent">{{ model.progress }}%</span>
+            </div>
+            <div class="progress-bar-container">
+              <div class="progress-bar-track">
+                <div class="progress-bar-fill"
+                     [ngClass]="'fill-' + model.status"
+                     [style.width.%]="model.progress"
+                     [class.animated]="isActiveStatus(model.status) && model.progress < 100">
+                </div>
+              </div>
+            </div>
+
+            <!-- Download details -->
+            <div class="download-details" *ngIf="model.status === 'downloading' && (model.bytes_downloaded || 0) > 0">
+              <span class="detail-item" *ngIf="model.current_file">
+                <mat-icon class="detail-icon">insert_drive_file</mat-icon>
+                {{ model.current_file }}
+              </span>
+              <span class="detail-item">
+                <mat-icon class="detail-icon">cloud_download</mat-icon>
+                {{ formatBytes(model.bytes_downloaded || 0) }}
+                <span *ngIf="(model.total_bytes || 0) > 0"> / {{ formatBytes(model.total_bytes || 0) }}</span>
+              </span>
+              <span class="detail-item" *ngIf="(model.bytes_per_second || 0) > 0">
+                <mat-icon class="detail-icon">speed</mat-icon>
+                {{ formatBytes(model.bytes_per_second || 0) }}/s
+              </span>
+              <span class="detail-item" *ngIf="(model.bytes_per_second || 0) > 0 && (model.total_bytes || 0) > 0">
+                <mat-icon class="detail-icon">schedule</mat-icon>
+                ~{{ getEta(model) }} remaining
+              </span>
+            </div>
           </div>
+
+          <!-- Completed progress -->
+          <div class="progress-section completed-section" *ngIf="model.status === 'completed' || model.status === 'ready'">
+            <div class="progress-header">
+              <span class="progress-label">{{ model.status === 'completed' ? 'Completed' : 'Ready for promotion' }}</span>
+              <span class="progress-percent">100%</span>
+            </div>
+            <div class="progress-bar-container">
+              <div class="progress-bar-track">
+                <div class="progress-bar-fill fill-completed" style="width: 100%"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Failed progress -->
+          <div class="progress-section failed-section" *ngIf="model.status === 'failed'">
+            <div class="progress-header">
+              <span class="progress-label">Failed</span>
+              <span class="progress-percent">{{ model.progress }}%</span>
+            </div>
+            <div class="progress-bar-container">
+              <div class="progress-bar-track">
+                <div class="progress-bar-fill fill-failed" [style.width.%]="model.progress"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Status message -->
           <div class="message" *ngIf="model.message">{{ model.message }}</div>
-          <div class="error" *ngIf="model.error">{{ model.error }}</div>
+          <div class="error" *ngIf="model.error">
+            <mat-icon class="error-icon">error_outline</mat-icon>
+            {{ model.error }}
+          </div>
+
+          <!-- Pipeline steps indicator -->
+          <div class="pipeline-steps" *ngIf="isActiveStatus(model.status) || model.status === 'completed' || model.status === 'ready'">
+            <div class="step" [ngClass]="getStepClass(model, 'downloading')">
+              <mat-icon>cloud_download</mat-icon>
+              <span>Download</span>
+            </div>
+            <div class="step-connector" [class.active]="isStepDone(model, 'downloading')"></div>
+            <div class="step" [ngClass]="getStepClass(model, 'converting')">
+              <mat-icon>transform</mat-icon>
+              <span>Convert</span>
+            </div>
+            <div class="step-connector" [class.active]="isStepDone(model, 'converting')"></div>
+            <div class="step" [ngClass]="getStepClass(model, 'validating')">
+              <mat-icon>fact_check</mat-icon>
+              <span>Validate</span>
+            </div>
+            <div class="step-connector" [class.active]="isStepDone(model, 'validating')"></div>
+            <div class="step" [ngClass]="getStepClass(model, 'completed')">
+              <mat-icon>check_circle</mat-icon>
+              <span>Ready</span>
+            </div>
+          </div>
+
           <div class="timestamps">
-            <span *ngIf="model.started_at">Started: {{ model.started_at }}</span>
-            <span *ngIf="model.completed_at">Completed: {{ model.completed_at }}</span>
+            <span *ngIf="model.started_at">
+              <mat-icon class="detail-icon">play_arrow</mat-icon>
+              Started: {{ formatTime(model.started_at) }}
+            </span>
+            <span *ngIf="model.completed_at">
+              <mat-icon class="detail-icon">stop</mat-icon>
+              Completed: {{ formatTime(model.completed_at) }}
+            </span>
+            <span *ngIf="model.started_at && !model.completed_at && isActiveStatus(model.status)">
+              <mat-icon class="detail-icon">timer</mat-icon>
+              Elapsed: {{ getElapsed(model.started_at) }}
+            </span>
           </div>
         </mat-card-content>
         <mat-card-actions>

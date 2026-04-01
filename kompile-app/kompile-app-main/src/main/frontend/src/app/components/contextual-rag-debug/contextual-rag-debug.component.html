@@ -1,0 +1,431 @@
+<div class="contextual-rag-debug">
+  <div class="header">
+    <h2>Contextual RAG Debug</h2>
+    <p class="subtitle">Test chunk contextualization and source attribution</p>
+  </div>
+
+  <!-- Status Banner -->
+  <div class="status-banner" [class.enabled]="config?.enabled" [class.disabled]="!config?.enabled">
+    <div class="status-info">
+      <span class="status-indicator"></span>
+      <span>Contextual Enrichment: {{ config?.enabled ? 'Enabled' : 'Disabled' }}</span>
+      <span class="separator">|</span>
+      <span>Enricher: {{ enricherAvailable ? 'Available' : 'Not Available' }}</span>
+      <span class="separator">|</span>
+      <span>Provider: {{ config?.llmProvider || 'Not Set' }}</span>
+      <span class="separator">|</span>
+      <span>Model: {{ config?.llmModel || 'Not Set' }}</span>
+    </div>
+    <button mat-raised-button [color]="config?.enabled ? 'warn' : 'primary'" (click)="toggleEnabled()">
+      {{ config?.enabled ? 'Disable' : 'Enable' }}
+    </button>
+  </div>
+
+  <mat-tab-group>
+    <!-- Test Tab -->
+    <mat-tab label="Test Contextualization">
+      <div class="tab-content">
+        <div class="test-section">
+          <div class="input-group">
+            <h3>Test Input</h3>
+            <button mat-stroked-button color="accent" (click)="loadSampleChunk()">
+              Load Sample
+            </button>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Chunk Text</mat-label>
+            <textarea matInput [(ngModel)]="testChunkText" [ngModelOptions]="{standalone: true}" rows="4"
+                      placeholder="Enter the chunk text to contextualize..."></textarea>
+          </mat-form-field>
+
+          <div class="row">
+            <mat-form-field appearance="outline">
+              <mat-label>Document Title</mat-label>
+              <input matInput [(ngModel)]="testDocumentTitle" [ngModelOptions]="{standalone: true}" placeholder="e.g., Q3 Financial Report">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Chunk Index</mat-label>
+              <input matInput type="number" [(ngModel)]="testChunkIndex" [ngModelOptions]="{standalone: true}" min="0">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Total Chunks</mat-label>
+              <input matInput type="number" [(ngModel)]="testTotalChunks" [ngModelOptions]="{standalone: true}" min="1">
+            </mat-form-field>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Document Summary (Optional)</mat-label>
+            <textarea matInput [(ngModel)]="testDocumentSummary" [ngModelOptions]="{standalone: true}" rows="3"
+                      placeholder="Provide document context for better results..."></textarea>
+          </mat-form-field>
+
+          <div class="button-group">
+            <button mat-raised-button color="primary" (click)="testContextualization()" [disabled]="loading || !enricherAvailable">
+              <mat-icon>play_arrow</mat-icon>
+              Test Contextualization
+            </button>
+            <button mat-raised-button (click)="compareTexts()" [disabled]="loading || !enricherAvailable">
+              <mat-icon>compare_arrows</mat-icon>
+              Compare
+            </button>
+            <button mat-raised-button (click)="previewPrompt()">
+              <mat-icon>preview</mat-icon>
+              Preview Prompt
+            </button>
+          </div>
+
+          <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
+
+          <!-- Test Result -->
+          <div *ngIf="testResult" class="result-section">
+            <h3>Result</h3>
+            <div class="result-card" [class.success]="testResult.success" [class.error]="!testResult.success">
+              <div *ngIf="testResult.success">
+                <div class="result-header">
+                  <span class="badge success">Success</span>
+                  <span class="timing">{{ testResult.processingTimeMs }}ms</span>
+                  <span class="badge" [class.contextualized]="testResult.wasContextualized">
+                    {{ testResult.wasContextualized ? 'Contextualized' : 'Not Contextualized' }}
+                  </span>
+                </div>
+
+                <div class="text-comparison">
+                  <div class="text-block">
+                    <h4>Original</h4>
+                    <pre>{{ testResult.originalText }}</pre>
+                  </div>
+
+                  <div class="text-block context-prefix" *ngIf="testResult.contextPrefix">
+                    <h4>Context Prefix</h4>
+                    <pre>{{ testResult.contextPrefix }}</pre>
+                  </div>
+
+                  <div class="text-block">
+                    <h4>Contextualized</h4>
+                    <pre>{{ testResult.contextualizedText }}</pre>
+                    <button mat-icon-button (click)="copyToClipboard(testResult.contextualizedText || '')">
+                      <mat-icon>content_copy</mat-icon>
+                    </button>
+                  </div>
+                </div>
+
+                <mat-expansion-panel>
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>Metadata</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <pre class="metadata-json">{{ testResult.metadata | json }}</pre>
+                </mat-expansion-panel>
+              </div>
+
+              <div *ngIf="!testResult.success" class="error-message">
+                <mat-icon>error</mat-icon>
+                <span>{{ testResult.error }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Compare Result -->
+          <div *ngIf="compareResult" class="result-section">
+            <h3>Comparison</h3>
+            <div class="comparison-grid">
+              <div class="compare-card">
+                <h4>Original</h4>
+                <div class="stats">
+                  <span>{{ compareResult.original?.length }} chars</span>
+                  <span>{{ compareResult.original?.wordCount }} words</span>
+                </div>
+                <pre>{{ compareResult.original?.text }}</pre>
+              </div>
+
+              <div class="compare-card contextualized" *ngIf="compareResult.contextualized">
+                <h4>Contextualized</h4>
+                <div class="stats">
+                  <span>{{ compareResult.contextualized?.length }} chars</span>
+                  <span>{{ compareResult.contextualized?.wordCount }} words</span>
+                  <span class="added">+{{ compareResult.contextualized?.addedLength }} chars</span>
+                  <span class="added">+{{ compareResult.contextualized?.addedWords }} words</span>
+                </div>
+                <pre>{{ compareResult.contextualized?.text }}</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prompt Preview -->
+          <div *ngIf="promptPreview" class="result-section">
+            <h3>Prompt Preview</h3>
+            <mat-expansion-panel expanded>
+              <mat-expansion-panel-header>
+                <mat-panel-title>Rendered Prompt</mat-panel-title>
+              </mat-expansion-panel-header>
+              <pre class="prompt-preview">{{ promptPreview.renderedPrompt }}</pre>
+              <button mat-stroked-button (click)="copyToClipboard(promptPreview.renderedPrompt)">
+                <mat-icon>content_copy</mat-icon> Copy
+              </button>
+            </mat-expansion-panel>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Batch Test Tab -->
+    <mat-tab label="Batch Test">
+      <div class="tab-content">
+        <div class="test-section">
+          <div class="input-group">
+            <h3>Batch Contextualization Test</h3>
+            <button mat-stroked-button color="accent" (click)="loadSampleBatch()">
+              Load Sample Batch
+            </button>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Chunks (separated by ---)</mat-label>
+            <textarea matInput [(ngModel)]="batchChunksText" [ngModelOptions]="{standalone: true}" rows="10"
+                      placeholder="Enter multiple chunks separated by ---"></textarea>
+            <mat-hint>Separate chunks with a line containing only ---</mat-hint>
+          </mat-form-field>
+
+          <div class="row">
+            <mat-form-field appearance="outline">
+              <mat-label>Document Title</mat-label>
+              <input matInput [(ngModel)]="testDocumentTitle" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+
+          <button mat-raised-button color="primary" (click)="testBatch()" [disabled]="loading || !enricherAvailable">
+            <mat-icon>playlist_play</mat-icon>
+            Run Batch Test
+          </button>
+
+          <mat-progress-bar *ngIf="loading" mode="indeterminate"></mat-progress-bar>
+
+          <!-- Batch Results -->
+          <div *ngIf="batchResults" class="result-section">
+            <h3>Batch Results</h3>
+            <div class="batch-summary">
+              <span>Processed: {{ batchResults.processedChunks }} / {{ batchResults.totalChunks }}</span>
+              <span>Total Time: {{ batchResults.processingTimeMs }}ms</span>
+              <span>Avg per Chunk: {{ batchResults.avgTimePerChunk }}ms</span>
+            </div>
+
+            <div class="batch-results-list">
+              <mat-expansion-panel *ngFor="let result of batchResults.results; let i = index">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    Chunk {{ i + 1 }}
+                    <span class="badge" [class.contextualized]="result.wasContextualized">
+                      {{ result.wasContextualized ? 'Contextualized' : 'Original' }}
+                    </span>
+                  </mat-panel-title>
+                </mat-expansion-panel-header>
+
+                <div class="batch-result-content">
+                  <div class="text-block">
+                    <h4>Original</h4>
+                    <pre>{{ result.originalText }}</pre>
+                  </div>
+                  <div class="text-block" *ngIf="result.contextPrefix">
+                    <h4>Context Prefix</h4>
+                    <pre>{{ result.contextPrefix }}</pre>
+                  </div>
+                  <div class="text-block">
+                    <h4>Contextualized</h4>
+                    <pre>{{ result.contextualizedText }}</pre>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Configuration Tab -->
+    <mat-tab label="Configuration">
+      <div class="tab-content">
+        <div class="config-section">
+          <h3>Quick Presets</h3>
+          <div class="presets-grid">
+            <mat-card *ngFor="let preset of presets" class="preset-card" (click)="applyPreset(preset.name)">
+              <mat-card-header>
+                <mat-card-title>{{ preset.displayName }}</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <p>{{ preset.description }}</p>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <h3>Current Configuration</h3>
+          <div *ngIf="config" class="config-form">
+            <div class="config-group">
+              <h4>LLM Settings</h4>
+              <div class="row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Provider</mat-label>
+                  <mat-select [(ngModel)]="config.llmProvider" [ngModelOptions]="{standalone: true}">
+                    <mat-option *ngFor="let provider of providers" [value]="provider.id">
+                      {{ provider.displayName }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Model</mat-label>
+                  <mat-select [(ngModel)]="config.llmModel" [ngModelOptions]="{standalone: true}">
+                    <mat-option *ngFor="let model of getModelsForProvider(config.llmProvider)" [value]="model.id">
+                      {{ model.displayName }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Temperature</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.temperature" [ngModelOptions]="{standalone: true}" min="0" max="2" step="0.1">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Context Tokens</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.maxContextTokens" [ngModelOptions]="{standalone: true}" min="10" max="2000">
+                </mat-form-field>
+              </div>
+            </div>
+
+            <div class="config-group">
+              <h4>Context Options</h4>
+              <div class="toggles">
+                <mat-slide-toggle [(ngModel)]="config.includeDocumentSummary" [ngModelOptions]="{standalone: true}">
+                  Include Document Summary
+                </mat-slide-toggle>
+                <mat-slide-toggle [(ngModel)]="config.includeSurroundingChunks" [ngModelOptions]="{standalone: true}">
+                  Include Surrounding Chunks
+                </mat-slide-toggle>
+                <mat-slide-toggle [(ngModel)]="config.sourceAttributionEnabled" [ngModelOptions]="{standalone: true}">
+                  Source Attribution
+                </mat-slide-toggle>
+                <mat-slide-toggle [(ngModel)]="config.cachingEnabled" [ngModelOptions]="{standalone: true}">
+                  Enable Caching
+                </mat-slide-toggle>
+                <mat-slide-toggle [(ngModel)]="config.fallbackOnError" [ngModelOptions]="{standalone: true}">
+                  Fallback on Error
+                </mat-slide-toggle>
+              </div>
+            </div>
+
+            <div class="config-group">
+              <h4>Batch Processing</h4>
+              <div class="row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Batch Size</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.batchSize" [ngModelOptions]="{standalone: true}" min="1" max="100">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Concurrent Requests</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.maxConcurrentRequests" [ngModelOptions]="{standalone: true}" min="1" max="50">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Request Timeout (s)</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.requestTimeoutSeconds" [ngModelOptions]="{standalone: true}" min="5" max="300">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Retries</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.maxRetries" [ngModelOptions]="{standalone: true}" min="0" max="10">
+                </mat-form-field>
+              </div>
+            </div>
+
+            <div class="button-group">
+              <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="loading">
+                <mat-icon>save</mat-icon>
+                Save Configuration
+              </button>
+              <button mat-raised-button (click)="resetConfig()" [disabled]="loading">
+                <mat-icon>restore</mat-icon>
+                Reset to Defaults
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Cache Tab -->
+    <mat-tab label="Cache">
+      <div class="tab-content">
+        <div class="cache-section">
+          <h3>Cache Statistics</h3>
+          <div *ngIf="cacheStats" class="cache-stats">
+            <div class="stat-card">
+              <span class="stat-value">{{ cacheStats.documentSummaryCount || 0 }}</span>
+              <span class="stat-label">Document Summaries</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">{{ cacheStats.chunkContextCount || 0 }}</span>
+              <span class="stat-label">Chunk Contexts</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" [class.enabled]="cacheStats.cachingEnabled">
+                {{ cacheStats.cachingEnabled ? 'Enabled' : 'Disabled' }}
+              </span>
+              <span class="stat-label">Caching Status</span>
+            </div>
+          </div>
+
+          <button mat-raised-button color="warn" (click)="clearCaches()">
+            <mat-icon>delete_sweep</mat-icon>
+            Clear All Caches
+          </button>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Prompt Template Tab -->
+    <mat-tab label="Prompt Template">
+      <div class="tab-content">
+        <div class="prompt-section">
+          <h3>Current Prompt Template</h3>
+          <p class="info-text">
+            This template is used to generate contextual descriptions for each chunk.
+            Placeholders: &#123;document_title&#125;, &#123;document_summary&#125;, &#123;chunk_text&#125;, &#123;chunk_index&#125;, &#123;total_chunks&#125;
+          </p>
+
+          <pre class="prompt-template">{{ promptTemplate }}</pre>
+
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>Placeholder Reference</mat-panel-title>
+            </mat-expansion-panel-header>
+            <table class="placeholder-table">
+              <tr>
+                <td><code>&#123;document_title&#125;</code></td>
+                <td>The title/filename of the source document</td>
+              </tr>
+              <tr>
+                <td><code>&#123;document_summary&#125;</code></td>
+                <td>LLM-generated summary of the full document</td>
+              </tr>
+              <tr>
+                <td><code>&#123;chunk_text&#125;</code></td>
+                <td>The actual chunk content to contextualize</td>
+              </tr>
+              <tr>
+                <td><code>&#123;chunk_index&#125;</code></td>
+                <td>Position of this chunk (1-indexed)</td>
+              </tr>
+              <tr>
+                <td><code>&#123;total_chunks&#125;</code></td>
+                <td>Total number of chunks in the document</td>
+              </tr>
+            </table>
+          </mat-expansion-panel>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

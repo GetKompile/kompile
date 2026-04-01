@@ -1,0 +1,185 @@
+<div class="peft-config">
+  <h2>PEFT / LoRA Configuration</h2>
+
+  <mat-stepper linear #stepper>
+    <!-- Step 1: Select Model -->
+    <mat-step label="Select Base Model">
+      <mat-card>
+        <mat-card-content [formGroup]="configForm">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Base Model</mat-label>
+            <mat-select formControlName="baseModelId">
+              <mat-option *ngFor="let m of models" [value]="m.model_id">
+                {{ m.model_id }} ({{ m.type }})
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <div *ngIf="models.length === 0" class="empty-state">
+            <p>No models in registry. Please download or stage a model first.</p>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-raised-button color="primary" matStepperNext [disabled]="!configForm.get('baseModelId')?.value">Next</button>
+        </mat-card-actions>
+      </mat-card>
+    </mat-step>
+
+    <!-- Step 2: Choose PEFT Type -->
+    <mat-step label="Choose PEFT Method">
+      <div class="peft-type-grid">
+        <mat-card *ngFor="let type of ['LORA', 'QLORA', 'ADALORA', 'DYLORA', 'DORA', 'IA3', 'PROMPT_TUNING', 'PREFIX_TUNING']"
+                  [class.selected]="selectedPeftType === type"
+                  (click)="selectPeftType($any(type))" class="peft-type-card">
+          <mat-card-header>
+            <mat-card-title>{{ type }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p>{{ peftTypeDescriptions[type] }}</p>
+          </mat-card-content>
+        </mat-card>
+      </div>
+      <div class="step-actions">
+        <button mat-button matStepperPrevious>Back</button>
+        <button mat-raised-button color="primary" matStepperNext>Next</button>
+      </div>
+    </mat-step>
+
+    <!-- Step 3: Configure Parameters -->
+    <mat-step label="Configure Parameters">
+      <mat-card>
+        <mat-card-content [formGroup]="configForm">
+          <!-- LoRA / QLoRA / DyLoRA / DoRA common fields -->
+          <div *ngIf="['LORA','QLORA','DYLORA','DORA'].includes(selectedPeftType)" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Rank</mat-label>
+              <input matInput type="number" formControlName="rank">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Alpha</mat-label>
+              <input matInput type="number" formControlName="alpha">
+            </mat-form-field>
+            <mat-form-field appearance="outline" *ngIf="selectedPeftType !== 'DORA'">
+              <mat-label>Dropout</mat-label>
+              <input matInput type="number" formControlName="dropout" step="0.01">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Target Modules (comma-separated)</mat-label>
+              <input matInput formControlName="targetModules" placeholder="q_proj,v_proj">
+            </mat-form-field>
+          </div>
+
+          <!-- QLoRA specific -->
+          <div *ngIf="selectedPeftType === 'QLORA'" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Quant Type</mat-label>
+              <mat-select formControlName="quantType">
+                <mat-option value="nf4">NF4</mat-option>
+                <mat-option value="fp4">FP4</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Bits</mat-label>
+              <mat-select formControlName="bits">
+                <mat-option [value]="4">4-bit</mat-option>
+                <mat-option [value]="8">8-bit</mat-option>
+              </mat-select>
+            </mat-form-field>
+            <mat-slide-toggle formControlName="doubleQuant">Double Quantization</mat-slide-toggle>
+          </div>
+
+          <!-- AdaLoRA specific -->
+          <div *ngIf="selectedPeftType === 'ADALORA'" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Initial Rank</mat-label>
+              <input matInput type="number" formControlName="initialRank">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Target Rank</mat-label>
+              <input matInput type="number" formControlName="targetRank">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Warmup Steps</mat-label>
+              <input matInput type="number" formControlName="warmupSteps">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Pruning Threshold</mat-label>
+              <input matInput type="number" formControlName="pruningThreshold" step="0.01">
+            </mat-form-field>
+          </div>
+
+          <!-- DyLoRA specific -->
+          <div *ngIf="selectedPeftType === 'DYLORA'" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Min Rank</mat-label>
+              <input matInput type="number" formControlName="minRank">
+            </mat-form-field>
+          </div>
+
+          <!-- DoRA specific -->
+          <div *ngIf="selectedPeftType === 'DORA'" class="config-grid">
+            <mat-slide-toggle formControlName="decomposeWeight">Decompose Weight</mat-slide-toggle>
+          </div>
+
+          <!-- IA3 -->
+          <div *ngIf="selectedPeftType === 'IA3'" class="config-grid">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Target Modules (comma-separated)</mat-label>
+              <input matInput formControlName="targetModules" placeholder="k_proj,v_proj,down_proj">
+            </mat-form-field>
+          </div>
+
+          <!-- Prompt Tuning -->
+          <div *ngIf="selectedPeftType === 'PROMPT_TUNING'" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Num Virtual Tokens</mat-label>
+              <input matInput type="number" formControlName="numVirtualTokens">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Init Text</mat-label>
+              <input matInput formControlName="initText" placeholder="Classify the following:">
+            </mat-form-field>
+          </div>
+
+          <!-- Prefix Tuning -->
+          <div *ngIf="selectedPeftType === 'PREFIX_TUNING'" class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Num Prefix Tokens</mat-label>
+              <input matInput type="number" formControlName="numPrefixTokens">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Projection Dim</mat-label>
+              <input matInput type="number" formControlName="projectionDim">
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button matStepperPrevious>Back</button>
+          <button mat-raised-button color="primary" matStepperNext>Review</button>
+        </mat-card-actions>
+      </mat-card>
+    </mat-step>
+
+    <!-- Step 4: Review & Create -->
+    <mat-step label="Review & Create">
+      <mat-card>
+        <mat-card-content>
+          <div class="review-summary">
+            <p><strong>Base Model:</strong> {{ configForm.get('baseModelId')?.value }}</p>
+            <p><strong>PEFT Method:</strong> {{ selectedPeftType }}</p>
+            <p *ngIf="['LORA','QLORA','DYLORA','DORA'].includes(selectedPeftType)">
+              <strong>Rank:</strong> {{ configForm.get('rank')?.value }} |
+              <strong>Alpha:</strong> {{ configForm.get('alpha')?.value }}
+            </p>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button matStepperPrevious>Back</button>
+          <button mat-raised-button color="primary" (click)="createPeftModel()" [disabled]="creating">
+            <mat-icon>tune</mat-icon>
+            {{ creating ? 'Creating...' : 'Create PEFT Model' }}
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </mat-step>
+  </mat-stepper>
+</div>

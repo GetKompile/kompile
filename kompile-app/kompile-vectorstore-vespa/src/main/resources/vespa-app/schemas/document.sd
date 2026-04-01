@@ -1,0 +1,104 @@
+# =============================================================================
+# Vespa Schema for Kompile VectorStore
+# =============================================================================
+# This schema defines the document structure for vector-based document storage
+# and retrieval. It supports:
+# - Dense vector similarity search (HNSW approximate nearest neighbor)
+# - Hybrid search combining BM25 text matching with vector similarity
+# - Metadata storage for document attribution
+#
+# Deploy this schema by placing it in your Vespa application package at:
+#   application/schemas/document.sd
+#
+# For more information: https://docs.vespa.ai/en/schemas.html
+# =============================================================================
+
+schema document {
+
+    # Document definition
+    document document {
+
+        # Unique document identifier
+        field id type string {
+            indexing: attribute | summary
+        }
+
+        # Main text content for the document/chunk
+        field content type string {
+            indexing: index | summary
+            index: enable-bm25
+            stemming: best
+        }
+
+        # Vector embedding for semantic search
+        # Adjust dimensions to match your embedding model:
+        # - 768: BERT-based models (bge-base, arctic-embed-m)
+        # - 384: MiniLM, bge-small
+        # - 1024: bge-large, arctic-embed-l
+        # - 1536: OpenAI text-embedding-3-small
+        # - 3072: OpenAI text-embedding-3-large
+        field embedding type tensor<float>(x[768]) {
+            indexing: attribute | index
+            attribute {
+                distance-metric: angular
+            }
+            index {
+                hnsw {
+                    max-links-per-node: 16
+                    neighbors-to-explore-at-insert: 200
+                }
+            }
+        }
+
+        # Metadata for document attribution and filtering
+        field metadata type map<string, string> {
+            indexing: summary
+        }
+
+        # Source document ID for bulk operations
+        field source_id type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        # Timestamp for freshness ranking
+        field timestamp type long {
+            indexing: attribute | summary
+        }
+    }
+
+    # Query input for the embedding vector
+    rank-profile default {
+        inputs {
+            query(query_embedding) tensor<float>(x[768])
+        }
+        first-phase {
+            expression: closeness(field, embedding)
+        }
+    }
+
+    # Hybrid ranking profile combining vector + BM25
+    rank-profile hybrid inherits default {
+        inputs {
+            query(query_embedding) tensor<float>(x[768])
+            query(vector_weight) double: 0.7
+        }
+        first-phase {
+            expression {
+                query(vector_weight) * closeness(field, embedding) +
+                (1 - query(vector_weight)) * bm25(content)
+            }
+        }
+    }
+
+    # Pure BM25 text ranking
+    rank-profile bm25 {
+        first-phase {
+            expression: bm25(content)
+        }
+    }
+
+    # Pure vector ranking (alias for default)
+    rank-profile vector inherits default {
+    }
+}

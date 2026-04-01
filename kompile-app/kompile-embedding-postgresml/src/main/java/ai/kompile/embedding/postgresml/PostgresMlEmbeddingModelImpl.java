@@ -24,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service("postgresMlEmbeddingModelImpl")
+@ConditionalOnClass(name = "ai.kompile.embedding.postgresml.PostgresMlEmbeddingModelImpl")
 @ConditionalOnProperty(prefix = "spring.ai.postgresml.embedding", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class PostgresMlEmbeddingModelImpl implements EmbeddingModel {
 

@@ -1,0 +1,103 @@
+<div class="device-routing-container">
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading">
+    <!-- Master Toggle -->
+    <div class="master-toggle">
+      <mat-slide-toggle
+        [(ngModel)]="config.enabled"
+        (change)="onEnabledChange()">
+        Enable Per-Service Device Routing
+      </mat-slide-toggle>
+      <span class="description">
+        Route different services (embedding, indexing, ingest) to specific devices (CPU or GPU)
+      </span>
+    </div>
+
+    <div *ngIf="!config.enabled" class="status-message">
+      Device routing is disabled. All services use the global ND4J configuration.
+    </div>
+
+    <!-- Service Cards -->
+    <div class="service-cards">
+      <mat-card *ngFor="let svc of services"
+                class="service-card"
+                [class.disabled-card]="!config.enabled">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>{{ svc.icon }}</mat-icon>
+          <mat-card-title>{{ svc.label }}</mat-card-title>
+          <mat-card-subtitle>{{ svc.description }}</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <!-- Device Selection -->
+          <div class="config-field">
+            <mat-form-field appearance="outline">
+              <mat-label>Device</mat-label>
+              <mat-select [(ngModel)]="svc.config.deviceType"
+                          (selectionChange)="onDeviceTypeChange(svc)">
+                <mat-option [value]="null">Global Default</mat-option>
+                <mat-option value="cpu">CPU</mat-option>
+                <mat-option *ngFor="let device of gpuDevices"
+                            [value]="'cuda'"
+                            (click)="svc.config.cudaDeviceId = device.id">
+                  GPU {{ device.id }} - {{ device.name }}
+                  ({{ formatMemory(device.totalMemory) }})
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <!-- GPU ID (shown when cuda selected and multiple GPUs) -->
+          <div class="config-field" *ngIf="svc.config.deviceType === 'cuda' && gpuDevices.length > 1">
+            <mat-form-field appearance="outline">
+              <mat-label>GPU Device ID</mat-label>
+              <mat-select [(ngModel)]="svc.config.cudaDeviceId">
+                <mat-option *ngFor="let device of gpuDevices" [value]="device.id">
+                  GPU {{ device.id }} - {{ device.name }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <!-- Max Threads -->
+          <div class="config-field">
+            <mat-form-field appearance="outline">
+              <mat-label>Max Threads (optional)</mat-label>
+              <input matInput type="number"
+                     [(ngModel)]="svc.config.maxThreads"
+                     placeholder="Use global default"
+                     min="1" max="256">
+              <mat-hint>Override thread count for this service</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Max Device Memory -->
+          <div class="config-field">
+            <mat-form-field appearance="outline">
+              <mat-label>Max Device Memory (MB, optional)</mat-label>
+              <input matInput type="number"
+                     [(ngModel)]="svc.memoryMb"
+                     placeholder="Unlimited"
+                     min="0"
+                     (change)="onMemoryChange(svc)">
+              <mat-hint>Memory limit in MB (0 = unlimited)</mat-hint>
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+
+    <!-- Action Bar -->
+    <div class="action-bar">
+      <button mat-stroked-button color="warn" (click)="resetToDefaults()">
+        <mat-icon>restore</mat-icon> Reset
+      </button>
+      <button mat-flat-button color="primary" (click)="saveConfig()" [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        {{ saving ? 'Saving...' : 'Save Configuration' }}
+      </button>
+    </div>
+  </div>
+</div>

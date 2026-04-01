@@ -31,6 +31,7 @@ import org.springframework.aot.hint.MemberCategory;
 import org.springframework.aot.hint.RuntimeHints;
 import org.springframework.aot.hint.RuntimeHintsRegistrar;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.ImportRuntimeHints;
 import org.springframework.core.io.ClassPathResource;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Service("openAiEmbeddingModelImpl")
+@ConditionalOnClass(name = "ai.kompile.embedding.openai.OpenAiEmbeddingModelImpl")
 @ConditionalOnProperty(name = "spring.ai.openai.api-key")
 @ImportRuntimeHints(OpenAiEmbeddingModelImpl.OpenAiEmbeddingsHints.class)
 public class OpenAiEmbeddingModelImpl implements EmbeddingModel {

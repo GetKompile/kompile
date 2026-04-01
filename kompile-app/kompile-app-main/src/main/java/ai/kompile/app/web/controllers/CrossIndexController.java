@@ -23,6 +23,7 @@ import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.app.services.CrossIndexTrackingService;
 import ai.kompile.app.services.CrossIndexTrackingService.CrossIndexStatistics;
 import ai.kompile.app.services.CrossIndexTrackingService.CrossIndexSummary;
+import ai.kompile.app.services.DocumentFreshnessService;
 import ai.kompile.app.services.IndexSyncService;
 import ai.kompile.app.services.IndexSyncService.*;
 import lombok.RequiredArgsConstructor;
@@ -53,6 +54,9 @@ public class CrossIndexController {
     private final CrossIndexTrackingService trackingService;
     private final IndexSyncService syncService;
     private final FactSheetService factSheetService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private DocumentFreshnessService freshnessService;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STATUS ENDPOINTS
@@ -410,6 +414,43 @@ public class CrossIndexController {
                 .toList();
 
         return ResponseEntity.ok(jobs);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FRESHNESS ENDPOINTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * POST /api/cross-index/documents/{id}/mark-stale
+     * Manually mark a document as stale.
+     */
+    @PostMapping("/documents/{id}/mark-stale")
+    public ResponseEntity<Map<String, Object>> markDocumentStale(@PathVariable Long id) {
+        if (freshnessService == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Freshness service is not enabled. Set kompile.freshness.enabled=true"));
+        }
+        freshnessService.markDocumentStale(id);
+        return ResponseEntity.ok(Map.of("status", "marked_stale", "documentId", id));
+    }
+
+    /**
+     * POST /api/cross-index/fact-sheets/{id}/scan-freshness
+     * Scan all documents in a fact sheet for staleness (checksum + TTL).
+     */
+    @PostMapping("/fact-sheets/{id}/scan-freshness")
+    public ResponseEntity<Map<String, Object>> scanFreshness(@PathVariable Long id) {
+        if (freshnessService == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Freshness service is not enabled. Set kompile.freshness.enabled=true"));
+        }
+        int checksumStale = freshnessService.scanForStaleDocuments(id);
+        int ttlStale = freshnessService.markStaleByTtl(id);
+        return ResponseEntity.ok(Map.of(
+                "factSheetId", id,
+                "documentsMarkedStaleByChecksum", checksumStale,
+                "documentsMarkedStaleByTtl", ttlStale
+        ));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

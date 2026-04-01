@@ -102,6 +102,10 @@ export class StagingService {
       sourceOrigin?: string;
       sourceRepository?: string;
       vocabSize?: number;
+      visionEncoderPixelValuesName?: string;
+      visionEncoderPixelAttentionMaskName?: string;
+      visionEncoderPrimaryOutputName?: string;
+      visionEncoderOutputNames?: string[];
     };
     tokenizer?: {
       doLowerCase?: boolean;
@@ -111,8 +115,39 @@ export class StagingService {
       padding?: string;
       truncation?: boolean;
     };
+    preprocessor?: {
+      imageProcessorType?: string;
+      doResize?: boolean;
+      sizeHeight?: number;
+      sizeWidth?: number;
+      sizeShortestEdge?: number;
+      sizeLongestEdge?: number;
+      resample?: number;
+      doRescale?: boolean;
+      rescaleFactor?: number;
+      doNormalize?: boolean;
+      imageMean?: number[];
+      imageStd?: number[];
+      doConvertRgb?: boolean;
+      doCenterCrop?: boolean;
+      cropSizeHeight?: number;
+      cropSizeWidth?: number;
+      doPad?: boolean;
+      padSizeHeight?: number;
+      padSizeWidth?: number;
+      patchSize?: number;
+      numChannels?: number;
+    };
   }): Observable<ApiResponse<any>> {
     return this.http.put<ApiResponse<any>>(`${this.baseUrl}/registry/model/${modelId}`, updates)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Re-probe a VLM model's vision encoder IO config from the SameDiff graph.
+   */
+  probeVisionEncoderIO(modelId: string): Observable<ApiResponse<any>> {
+    return this.http.post<ApiResponse<any>>(`${this.baseUrl}/registry/model/${modelId}/probe-vision-io`, {})
       .pipe(catchError(this.handleError));
   }
 
@@ -438,6 +473,43 @@ export class StagingService {
       .pipe(catchError(this.handleError));
   }
 
+  // ==================== Auto-Optimization Configuration ====================
+
+  /**
+   * Get the current auto-optimization configuration.
+   */
+  getAutoOptimizeConfig(): Observable<any> {
+    return this.http.get<any>(`${this.baseUrl}/config/auto-optimize`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Set the auto-optimization configuration.
+   * When set, newly staged models will be automatically optimized.
+   */
+  setAutoOptimizeConfig(config: any): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/config/auto-optimize`, config)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Clear the auto-optimization configuration.
+   */
+  clearAutoOptimizeConfig(): Observable<any> {
+    return this.http.delete<any>(`${this.baseUrl}/config/auto-optimize`)
+      .pipe(catchError(this.handleError));
+  }
+
+  /**
+   * Stage a model from catalog with optimization configuration.
+   */
+  stageFromCatalogWithOptimization(modelId: string, request: any): Observable<StagingModelInfo> {
+    return this.http.post<StagingModelInfo>(
+      `${this.baseUrl}/stage/catalog/${modelId}/with-optimization`,
+      request
+    ).pipe(catchError(this.handleError));
+  }
+
   // ==================== Optimization Operations ====================
 
   /**
@@ -458,9 +530,31 @@ export class StagingService {
 
   /**
    * Optimize a model with configurable optimization options.
+   * Hits the compiler controller at /api/compiler/optimize.
    */
   optimizeModelConfigurable(modelId: string, request: any): Observable<any> {
-    return this.http.post<any>(`${this.baseUrl}/optimize-configurable/${encodeURIComponent(modelId)}`, request)
+    // Build the compiler base URL (same host, /api/compiler)
+    let compilerUrl: string;
+    if (typeof window !== 'undefined' && window.location) {
+      const protocol = window.location.protocol;
+      const hostname = window.location.hostname;
+      const port = window.location.port;
+      compilerUrl = `${protocol}//${hostname}${port ? ':' + port : ''}/api/compiler`;
+    } else {
+      compilerUrl = '/api/compiler';
+    }
+
+    const compilerRequest = {
+      modelId: modelId,
+      selectedPasses: request.enabledOptimizations || [],
+      profile: request.preset || 'FULL',
+      maxIterations: request.maxIterations || 3,
+      createBackup: request.createBackup !== false,
+      force: request.force || false,
+      quantizationType: request.quantizationType
+    };
+
+    return this.http.post<any>(`${compilerUrl}/optimize`, compilerRequest)
       .pipe(catchError(this.handleError));
   }
 

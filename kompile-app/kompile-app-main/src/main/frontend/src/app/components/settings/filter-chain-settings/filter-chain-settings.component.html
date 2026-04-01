@@ -1,0 +1,335 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="filter-chain-settings">
+  <!-- Loading State -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading filter chain configuration...</span>
+  </div>
+
+  <!-- Error Message -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="error = null">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Success Message -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <!-- Not Available Message -->
+  <div *ngIf="config && !config.available" class="not-available-message">
+    <mat-icon>info</mat-icon>
+    <span>{{ config.message || 'Filter chain module not enabled. Set kompile.filterchain.enabled=true' }}</span>
+  </div>
+
+  <!-- Main Configuration -->
+  <div *ngIf="config && config.available && !loading" class="config-container">
+    <!-- Global Settings -->
+    <mat-card class="settings-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>filter_list</mat-icon>
+          Filter Chain
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="global-toggle">
+          <mat-slide-toggle
+            [checked]="config.enabled"
+            (change)="toggleEnabled()"
+            color="primary">
+            Enable Filter Chain
+          </mat-slide-toggle>
+          <p class="toggle-description">
+            When enabled, requests will flow through configured filters before and after RAG operations.
+          </p>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <div class="global-settings" *ngIf="config.enabled">
+          <h4>Global Settings</h4>
+
+          <mat-form-field appearance="outline" class="setting-field">
+            <mat-label>Global Timeout (ms)</mat-label>
+            <input matInput type="number" [(ngModel)]="config.globalTimeoutMs" [ngModelOptions]="{standalone: true}" min="1000" max="60000">
+            <mat-hint>Maximum time for each filter execution</mat-hint>
+          </mat-form-field>
+
+          <div class="toggle-setting">
+            <mat-slide-toggle [(ngModel)]="config.continueOnError" [ngModelOptions]="{standalone: true}" color="primary">
+              Continue on Error
+            </mat-slide-toggle>
+            <span class="setting-hint">If enabled, filter errors won't block the request</span>
+          </div>
+
+          <div class="toggle-setting">
+            <mat-slide-toggle [(ngModel)]="config.tracingEnabled" [ngModelOptions]="{standalone: true}" color="primary">
+              Enable Tracing
+            </mat-slide-toggle>
+            <span class="setting-hint">Collect detailed execution traces for debugging</span>
+          </div>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-button (click)="saveConfiguration()" [disabled]="saving">
+          <mat-icon>save</mat-icon>
+          {{ saving ? 'Saving...' : 'Save Settings' }}
+        </button>
+        <button mat-button (click)="resetToDefaults()">
+          <mat-icon>restore</mat-icon>
+          Reset to Defaults
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Configured Filters -->
+    <mat-card class="filters-card" *ngIf="config.enabled">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>tune</mat-icon>
+          Configured Filters
+        </mat-card-title>
+        <div class="header-actions">
+          <button mat-button [matMenuTriggerFor]="addMenu">
+            <mat-icon>add</mat-icon>
+            Add Filter
+          </button>
+          <mat-menu #addMenu="matMenu">
+            <button mat-menu-item (click)="addNewFilter('LOCAL')">
+              <mat-icon>extension</mat-icon>
+              Built-in Filter
+            </button>
+            <button mat-menu-item (click)="addNewFilter('HTTP')">
+              <mat-icon>http</mat-icon>
+              HTTP Remote Filter
+            </button>
+            <button mat-menu-item (click)="addNewFilter('MCP')">
+              <mat-icon>hub</mat-icon>
+              MCP Remote Filter
+            </button>
+          </mat-menu>
+        </div>
+      </mat-card-header>
+      <mat-card-content>
+        <div *ngIf="configuredFilters.length === 0" class="no-filters">
+          <mat-icon>filter_list_off</mat-icon>
+          <p>No filters configured. Add filters to start processing requests through the filter chain.</p>
+        </div>
+
+        <div cdkDropList
+             (cdkDropListDropped)="onDrop($event)"
+             class="filter-list">
+          <div *ngFor="let filter of configuredFilters"
+               cdkDrag
+               class="filter-item"
+               [class.disabled]="!filter.enabled">
+            <div class="drag-handle" cdkDragHandle>
+              <mat-icon>drag_indicator</mat-icon>
+            </div>
+            <div class="filter-info">
+              <div class="filter-header">
+                <span class="filter-name">{{ filter.name }}</span>
+                <mat-chip-set class="filter-badges">
+                  <mat-chip class="type-chip" [ngClass]="filter.type.toLowerCase()">
+                    {{ getTypeDisplayName(filter.type) }}
+                  </mat-chip>
+                  <mat-chip *ngFor="let phase of filter.phases" class="phase-chip">
+                    {{ getPhaseDisplayName(phase) }}
+                  </mat-chip>
+                </mat-chip-set>
+              </div>
+              <div class="filter-details" *ngIf="filter.description">
+                {{ filter.description }}
+              </div>
+            </div>
+            <div class="filter-actions">
+              <mat-slide-toggle
+                [checked]="filter.enabled"
+                (change)="toggleFilter(filter)"
+                color="primary"
+                matTooltip="Enable/Disable filter">
+              </mat-slide-toggle>
+              <button mat-icon-button (click)="editFilter(filter)" matTooltip="Edit filter">
+                <mat-icon>edit</mat-icon>
+              </button>
+              <button mat-icon-button (click)="deleteFilter(filter)" matTooltip="Delete filter">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Available Built-in Filters -->
+    <mat-card class="available-filters-card" *ngIf="config.enabled && availableFilters.length > 0">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>widgets</mat-icon>
+          Available Built-in Filters
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="available-filter-list">
+          <div *ngFor="let filter of availableFilters" class="available-filter-item">
+            <div class="filter-info">
+              <span class="filter-name">{{ filter.name }}</span>
+              <span class="filter-description">{{ filter.description }}</span>
+            </div>
+            <button mat-button (click)="addLocalFilter(filter)">
+              <mat-icon>add</mat-icon>
+              Add
+            </button>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Edit Filter Dialog -->
+    <mat-card class="edit-filter-card" *ngIf="editingFilter">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>{{ isNewFilter ? 'add' : 'edit' }}</mat-icon>
+          {{ isNewFilter ? 'Add New Filter' : 'Edit Filter' }}
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="edit-form">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Filter ID</mat-label>
+            <input matInput [(ngModel)]="editingFilter.id" [ngModelOptions]="{standalone: true}" [readonly]="!isNewFilter">
+            <mat-hint>Unique identifier for this filter</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Filter Name</mat-label>
+            <input matInput [(ngModel)]="editingFilter.name" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Filter Type</mat-label>
+            <mat-select [(ngModel)]="editingFilter.type" [ngModelOptions]="{standalone: true}" [disabled]="!isNewFilter">
+              <mat-option *ngFor="let type of filterTypes" [value]="type.value">
+                {{ type.label }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Priority</mat-label>
+            <input matInput type="number" [(ngModel)]="editingFilter.priority" [ngModelOptions]="{standalone: true}" min="1">
+            <mat-hint>Lower values execute first</mat-hint>
+          </mat-form-field>
+
+          <div class="phases-section">
+            <label>Execution Phases</label>
+            <div class="phase-toggles">
+              <mat-chip-set>
+                <mat-chip *ngFor="let phase of allPhases"
+                          (click)="togglePhase(phase)"
+                          [class.phase-selected]="isPhaseSelected(phase)"
+                          class="phase-select-chip">
+                  {{ getPhaseDisplayName(phase) }}
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+          </div>
+
+          <!-- LOCAL Filter Settings -->
+          <div *ngIf="editingFilter.type === 'LOCAL'" class="type-settings">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Local Filter ID</mat-label>
+              <mat-select [(ngModel)]="editingFilter.localFilterId" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let filter of availableFilters" [value]="filter.id">
+                  {{ filter.name }}
+                </mat-option>
+              </mat-select>
+              <mat-hint>Select the built-in filter to use</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- HTTP Filter Settings -->
+          <div *ngIf="editingFilter.type === 'HTTP' && editingFilter.remoteConfig" class="type-settings">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Endpoint URL</mat-label>
+              <input matInput [(ngModel)]="editingFilter.remoteConfig.endpoint" [ngModelOptions]="{standalone: true}"
+                     placeholder="https://api.example.com/filter">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>HTTP Method</mat-label>
+              <mat-select [(ngModel)]="editingFilter.remoteConfig.httpMethod" [ngModelOptions]="{standalone: true}">
+                <mat-option value="POST">POST</mat-option>
+                <mat-option value="GET">GET</mat-option>
+                <mat-option value="PUT">PUT</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Timeout (ms)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingFilter.remoteConfig.timeoutMs" [ngModelOptions]="{standalone: true}" min="100">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Retries</mat-label>
+              <input matInput type="number" [(ngModel)]="editingFilter.remoteConfig.retries" [ngModelOptions]="{standalone: true}" min="0" max="10">
+            </mat-form-field>
+
+            <div class="toggle-setting">
+              <mat-slide-toggle [(ngModel)]="editingFilter.remoteConfig.verifySsl" [ngModelOptions]="{standalone: true}" color="primary">
+                Verify SSL Certificate
+              </mat-slide-toggle>
+            </div>
+          </div>
+
+          <!-- MCP Filter Settings -->
+          <div *ngIf="editingFilter.type === 'MCP' && editingFilter.remoteConfig" class="type-settings">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>MCP Server ID</mat-label>
+              <input matInput [(ngModel)]="editingFilter.remoteConfig.endpoint" [ngModelOptions]="{standalone: true}"
+                     placeholder="mcp-server-id">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Tool Name</mat-label>
+              <input matInput [(ngModel)]="editingFilter.remoteConfig.mcpToolName" [ngModelOptions]="{standalone: true}"
+                     placeholder="filter_tool">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Timeout (ms)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingFilter.remoteConfig.timeoutMs" [ngModelOptions]="{standalone: true}" min="100">
+            </mat-form-field>
+          </div>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-raised-button color="primary" (click)="saveFilter()" [disabled]="saving">
+          {{ saving ? 'Saving...' : (isNewFilter ? 'Add Filter' : 'Save Changes') }}
+        </button>
+        <button mat-button (click)="cancelEdit()">Cancel</button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+</div>

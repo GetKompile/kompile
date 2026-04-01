@@ -1,0 +1,215 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="developer-hub-container">
+  <!-- Developer Hub Header with Diagnostics Button -->
+  <div class="developer-hub-header">
+    <div class="header-left">
+      <mat-icon class="header-icon">code</mat-icon>
+      <div>
+        <h2>Developer Tools</h2>
+        <p class="header-subtitle">Debug, test, configure, and monitor system components</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-raised-button color="primary" (click)="openDiagnosticsDialog()">
+        <mat-icon>health_and_safety</mat-icon>
+        System Diagnostics
+      </button>
+    </div>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="selectedTabIndex" (selectedTabChange)="onTabChange($event)">
+    <!-- Testers Section -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">science</mat-icon>
+        Testers
+      </ng-template>
+      <div class="tab-content section-content">
+        <mat-tab-group class="inner-tabs">
+          <mat-tab label="RAG Tester">
+            <div class="inner-tab-content">
+              <app-rag-tester></app-rag-tester>
+            </div>
+          </mat-tab>
+          <mat-tab label="Contextual RAG">
+            <div class="inner-tab-content">
+              <app-contextual-rag-debug></app-contextual-rag-debug>
+            </div>
+          </mat-tab>
+          <mat-tab label="Chunking & Loading Test">
+            <div class="inner-tab-content">
+              <app-chunking-loader-test></app-chunking-loader-test>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      </div>
+    </mat-tab>
+
+    <!-- Debuggers Section -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">bug_report</mat-icon>
+        Debuggers
+      </ng-template>
+      <div class="tab-content section-content">
+        <mat-tab-group class="inner-tabs">
+          <mat-tab label="Model Debug">
+            <div class="inner-tab-content">
+              <app-model-debug></app-model-debug>
+            </div>
+          </mat-tab>
+          <mat-tab label="Document Debugger">
+            <div class="inner-tab-content">
+              <app-document-debugger></app-document-debugger>
+            </div>
+          </mat-tab>
+          <mat-tab label="OCR Debug">
+            <div class="inner-tab-content">
+              <app-ocr-debug></app-ocr-debug>
+            </div>
+          </mat-tab>
+          <mat-tab label="VLM Test">
+            <div class="inner-tab-content">
+              <app-vlm-test-workflow></app-vlm-test-workflow>
+            </div>
+          </mat-tab>
+          <mat-tab label="Eval Debugger">
+            <div class="inner-tab-content">
+              <app-eval-debugger></app-eval-debugger>
+            </div>
+          </mat-tab>
+          <mat-tab label="Evaluation Sets">
+            <div class="inner-tab-content">
+              <app-managed-eval></app-managed-eval>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      </div>
+    </mat-tab>
+
+    <!-- Management Section -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">settings</mat-icon>
+        Management
+      </ng-template>
+      <div class="tab-content section-content">
+        <mat-tab-group class="inner-tabs">
+          <mat-tab label="Job History">
+            <div class="inner-tab-content">
+              <app-job-history></app-job-history>
+            </div>
+          </mat-tab>
+          <mat-tab label="Event Log">
+            <div class="inner-tab-content">
+              <app-ingest-event-viewer></app-ingest-event-viewer>
+            </div>
+          </mat-tab>
+          <mat-tab label="Processing Settings">
+            <div class="inner-tab-content">
+              <app-processing-settings></app-processing-settings>
+            </div>
+          </mat-tab>
+          <mat-tab label="Subprocess Config">
+            <div class="inner-tab-content">
+              <app-subprocess-config></app-subprocess-config>
+            </div>
+          </mat-tab>
+          <mat-tab label="Device Routing">
+            <div class="inner-tab-content">
+              <app-device-routing></app-device-routing>
+            </div>
+          </mat-tab>
+          <mat-tab label="Staging Manager">
+            <div class="inner-tab-content">
+              <app-staging-config></app-staging-config>
+            </div>
+          </mat-tab>
+          <mat-tab label="VLM Models">
+            <div class="inner-tab-content">
+              <app-vlm-models></app-vlm-models>
+            </div>
+          </mat-tab>
+          <mat-tab label="Archive Assembly">
+            <div class="inner-tab-content">
+              <app-archive-assembly></app-archive-assembly>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      </div>
+    </mat-tab>
+
+    <!-- SDX SDK Section -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">developer_board</mat-icon>
+        SDX SDK
+      </ng-template>
+      <div class="tab-content section-content">
+        <app-sdk-hub></app-sdk-hub>
+      </div>
+    </mat-tab>
+
+    <!-- System Section -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">memory</mat-icon>
+        System
+      </ng-template>
+      <div class="tab-content section-content">
+        <mat-tab-group class="inner-tabs" #systemInnerTabs>
+          <mat-tab label="ND4J Environment">
+            <div class="inner-tab-content">
+              <app-nd4j-environment></app-nd4j-environment>
+            </div>
+          </mat-tab>
+          <mat-tab label="Op Timing">
+            <div class="inner-tab-content">
+              <app-op-timing></app-op-timing>
+            </div>
+          </mat-tab>
+          <mat-tab label="Embedding Subprocess">
+            <div class="inner-tab-content">
+              <app-subprocess-logs logSource="embedding" height="500px" [maxLogs]="1000"></app-subprocess-logs>
+            </div>
+          </mat-tab>
+          <mat-tab label="Benchmark Runner">
+            <div class="inner-tab-content">
+              <app-benchmark-runner></app-benchmark-runner>
+            </div>
+          </mat-tab>
+          <mat-tab label="System Diagnostics">
+            <div class="inner-tab-content">
+              <app-system-diagnostics></app-system-diagnostics>
+            </div>
+          </mat-tab>
+          <mat-tab label="KV Cache">
+            <div class="inner-tab-content">
+              <app-kvcache-dashboard></app-kvcache-dashboard>
+            </div>
+          </mat-tab>
+          <mat-tab label="Tool Permissions">
+            <div class="inner-tab-content">
+              <app-tool-permissions></app-tool-permissions>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

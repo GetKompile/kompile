@@ -59,6 +59,7 @@ import { ExportImportComponent } from './components/export-import/export-import.
 import { ArchiveManagerComponent } from './components/archive-manager/archive-manager.component';
 import { DownloadModelComponent } from './components/download-model/download-model.component';
 import { ModelDetailsDialogComponent } from './components/model-details-dialog/model-details-dialog.component';
+import { CatalogModelInfoDialogComponent } from './components/catalog-model-info-dialog/catalog-model-info-dialog.component';
 import { ModelConverterComponent } from './components/model-converter/model-converter.component';
 import { ArchiveConfigComponent } from './components/archive-config/archive-config.component';
 import { AlignmentConfigComponent } from './components/alignment-config/alignment-config.component';
@@ -74,6 +75,14 @@ import { TrainingConfigComponent } from './components/training-config/training-c
 import { TrainingDashboardComponent } from './components/training-dashboard/training-dashboard.component';
 import { TrainingMetricsComponent } from './components/training-metrics/training-metrics.component';
 import { VlmExecutionComponent } from './components/vlm-execution/vlm-execution.component';
+import { VlmModelsComponent } from './components/vlm-models/vlm-models.component';
+import { ExperimentDashboardComponent } from './components/experiment-dashboard/experiment-dashboard.component';
+import { ExperimentDetailComponent } from './components/experiment-detail/experiment-detail.component';
+import { ExperimentComparisonComponent } from './components/experiment-comparison/experiment-comparison.component';
+import { EvalDatasetManagerComponent } from './components/eval-dataset-manager/eval-dataset-manager.component';
+import { ModelEvalHistoryComponent } from './components/model-eval-history/model-eval-history.component';
+import { OptimizeDialogComponent } from './components/optimize-dialog/optimize-dialog.component';
+import { ModelGraphDialogComponent } from './components/model-graph-visualizer/model-graph-visualizer.component';
 
 // Routes
 const routes: Routes = [
@@ -99,7 +108,13 @@ const routes: Routes = [
   { path: 'training', component: TrainingDashboardComponent },
   { path: 'training/new', component: TrainingConfigComponent },
   { path: 'training/:jobId/metrics', component: TrainingMetricsComponent },
-  { path: 'vlm', component: VlmExecutionComponent }
+  { path: 'vlm', component: VlmExecutionComponent },
+  { path: 'vlm-models', component: VlmModelsComponent },
+  { path: 'experiments', component: ExperimentDashboardComponent },
+  { path: 'experiments/:id', component: ExperimentDetailComponent },
+  { path: 'experiments/:id/compare', component: ExperimentComparisonComponent },
+  { path: 'eval-datasets', component: EvalDatasetManagerComponent },
+  { path: 'models/:modelId/eval-history', component: ModelEvalHistoryComponent }
 ];
 
 @NgModule({
@@ -113,6 +128,7 @@ const routes: Routes = [
     ArchiveManagerComponent,
     DownloadModelComponent,
     ModelDetailsDialogComponent,
+    CatalogModelInfoDialogComponent,
     ModelConverterComponent,
     ArchiveConfigComponent,
     AlignmentConfigComponent,
@@ -127,7 +143,14 @@ const routes: Routes = [
     TrainingConfigComponent,
     TrainingDashboardComponent,
     TrainingMetricsComponent,
-    VlmExecutionComponent
+    VlmExecutionComponent,
+    ExperimentDashboardComponent,
+    ExperimentDetailComponent,
+    ExperimentComparisonComponent,
+    EvalDatasetManagerComponent,
+    ModelEvalHistoryComponent,
+    OptimizeDialogComponent,
+    ModelGraphDialogComponent
   ],
   imports: [
     BrowserModule,
@@ -162,7 +185,9 @@ const routes: Routes = [
     MatButtonToggleModule,
     MatRadioModule,
     MatSlideToggleModule,
-    MatStepperModule
+    MatStepperModule,
+    // Standalone components
+    VlmModelsComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

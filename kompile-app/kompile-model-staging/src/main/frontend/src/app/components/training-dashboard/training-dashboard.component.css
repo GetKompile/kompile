@@ -1,0 +1,14 @@
+.training-dashboard { padding: 16px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.header h2 { margin: 0; }
+.loading-spinner { display: flex; justify-content: center; padding: 32px; }
+.empty-state { text-align: center; padding: 48px; color: rgba(0,0,0,0.5); }
+.empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; }
+.jobs-table { width: 100%; }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: rgba(0,0,0,0.04); }
+.status-text { margin-left: 8px; font-size: 0.85rem; }
+.status-success mat-icon { color: #4caf50; }
+.status-pending mat-icon { color: #ff9800; }
+.status-error mat-icon { color: #f44336; }
+.progress-text { font-size: 0.75rem; color: rgba(0,0,0,0.6); }

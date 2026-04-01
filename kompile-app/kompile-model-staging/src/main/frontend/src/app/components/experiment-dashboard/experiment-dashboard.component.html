@@ -1,0 +1,83 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="experiment-dashboard">
+  <div class="header">
+    <h2>Experiments</h2>
+    <button mat-raised-button color="primary" (click)="showCreateForm = !showCreateForm">
+      <mat-icon>add</mat-icon> New Experiment
+    </button>
+  </div>
+
+  <mat-card *ngIf="showCreateForm" class="create-form">
+    <mat-card-header>
+      <mat-card-title>Create Experiment</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="newName" placeholder="e.g., BGE vs Arctic comparison">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Description</mat-label>
+        <textarea matInput [(ngModel)]="newDescription" rows="2"></textarea>
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Eval Suite ID</mat-label>
+        <input matInput [(ngModel)]="newSuiteId" placeholder="UUID of the eval suite to use">
+      </mat-form-field>
+      <div class="form-actions">
+        <button mat-button (click)="showCreateForm = false">Cancel</button>
+        <button mat-raised-button color="primary" (click)="createExperiment()">Create</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading && experiments.length === 0" class="empty-state">
+    <mat-icon>science</mat-icon>
+    <p>No experiments yet. Create one to start comparing models.</p>
+  </div>
+
+  <div class="experiment-list" *ngIf="!loading">
+    <mat-card *ngFor="let exp of experiments" class="experiment-card" (click)="openExperiment(exp.id)">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [class]="getStatusColor(exp.status)">
+          {{ getStatusIcon(exp.status) }}
+        </mat-icon>
+        <mat-card-title>{{ exp.name }}</mat-card-title>
+        <mat-card-subtitle>
+          <span class="status-chip" [class]="getStatusColor(exp.status)">{{ exp.status }}</span>
+          <span class="date" *ngIf="exp.createdAt">Created {{ exp.createdAt | date:'short' }}</span>
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p *ngIf="exp.description">{{ exp.description }}</p>
+        <div class="meta">
+          <span><mat-icon inline>assignment</mat-icon> Suite: {{ exp.suiteId | slice:0:8 }}...</span>
+        </div>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button mat-icon-button color="warn" (click)="deleteExperiment(exp.id, $event)" matTooltip="Delete">
+          <mat-icon>delete</mat-icon>
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+</div>

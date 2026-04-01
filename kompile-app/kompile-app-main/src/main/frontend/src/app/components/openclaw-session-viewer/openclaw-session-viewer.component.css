@@ -1,0 +1,124 @@
+.session-viewer {
+  padding: 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.header-row h3 {
+  margin: 0;
+}
+
+.search-row {
+  margin-bottom: 16px;
+}
+
+.search-field {
+  width: 100%;
+}
+
+.content-area {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.sessions-list {
+  width: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--mat-app-surface-container-highest);
+  border-radius: 8px;
+}
+
+.session-detail {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.session-detail mat-card {
+  height: 100%;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px;
+  color: var(--mat-app-on-surface-variant);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: 32px;
+}
+
+.messages-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-message {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--mat-app-surface-container-high);
+}
+
+.session-message .message-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.session-message .message-header mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.session-message .role {
+  font-weight: 500;
+}
+
+.session-message .timestamp {
+  color: var(--mat-app-on-surface-variant);
+  margin-left: auto;
+}
+
+.session-message .message-content {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.session-message .message-thought {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--mat-app-surface-container);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--mat-app-on-surface-variant);
+}
+
+.empty-messages {
+  text-align: center;
+  padding: 32px;
+  color: var(--mat-app-on-surface-variant);
+}

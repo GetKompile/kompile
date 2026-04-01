@@ -22,6 +22,7 @@ import ai.kompile.chat.history.repository.ChatMessageRepository;
 import ai.kompile.chat.history.repository.ChatSessionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +40,7 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 @Transactional
+@ConditionalOnClass(name = "ai.kompile.chat.history.service.ChatHistoryService")
 @ConditionalOnProperty(name = "kompile.chat.history.enabled", havingValue = "true", matchIfMissing = true)
 public class ChatHistoryService {
 
