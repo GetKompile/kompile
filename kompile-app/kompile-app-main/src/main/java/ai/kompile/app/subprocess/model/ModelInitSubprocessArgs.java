@@ -75,6 +75,12 @@ public record ModelInitSubprocessArgs(
         // === Memory Configuration ===
         int memoryThresholdPercent,             // Warning threshold (default 80%)
         int memoryCriticalPercent,              // Critical threshold (default 90%)
+        int memoryKillThresholdPercent,         // Kill threshold (default 95%)
+        long memoryCheckIntervalMs,             // Check interval (default 2000ms)
+        // GPU memory thresholds
+        int gpuMemoryThresholdPercent,          // GPU warning threshold (default 75%)
+        int gpuMemoryCriticalPercent,           // GPU critical threshold (default 85%)
+        int gpuMemoryKillThresholdPercent,      // GPU kill threshold (default 92%)
 
         // === Validation Configuration ===
         boolean skipValidation,                 // Skip model output validation
@@ -91,6 +97,12 @@ public record ModelInitSubprocessArgs(
     private static final int DEFAULT_MAX_BATCH = 64;
     private static final int DEFAULT_MEMORY_THRESHOLD = 80;
     private static final int DEFAULT_MEMORY_CRITICAL = 90;
+    private static final int DEFAULT_MEMORY_KILL = 95;
+    private static final long DEFAULT_MEMORY_CHECK_INTERVAL = 2000L;
+    // GPU threshold defaults
+    private static final int DEFAULT_GPU_MEMORY_THRESHOLD = 75;
+    private static final int DEFAULT_GPU_MEMORY_CRITICAL = 85;
+    private static final int DEFAULT_GPU_MEMORY_KILL = 92;
     private static final String DEFAULT_VALIDATION_TEXT = "This is a validation test for the embedding model.";
 
     /**
@@ -151,6 +163,12 @@ public record ModelInitSubprocessArgs(
         private String callbackBaseUrl;
         private int memoryThresholdPercent = DEFAULT_MEMORY_THRESHOLD;
         private int memoryCriticalPercent = DEFAULT_MEMORY_CRITICAL;
+        private int memoryKillThresholdPercent = DEFAULT_MEMORY_KILL;
+        private long memoryCheckIntervalMs = DEFAULT_MEMORY_CHECK_INTERVAL;
+        // GPU memory thresholds
+        private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD;
+        private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL;
+        private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL;
         private boolean skipValidation = false;
         private String validationTestText = DEFAULT_VALIDATION_TEXT;
         private Map<String, Object> options;
@@ -215,6 +233,31 @@ public record ModelInitSubprocessArgs(
             return this;
         }
 
+        public Builder memoryKillThresholdPercent(int memoryKillThresholdPercent) {
+            this.memoryKillThresholdPercent = memoryKillThresholdPercent;
+            return this;
+        }
+
+        public Builder memoryCheckIntervalMs(long memoryCheckIntervalMs) {
+            this.memoryCheckIntervalMs = memoryCheckIntervalMs;
+            return this;
+        }
+
+        public Builder gpuMemoryThresholdPercent(int gpuMemoryThresholdPercent) {
+            this.gpuMemoryThresholdPercent = gpuMemoryThresholdPercent;
+            return this;
+        }
+
+        public Builder gpuMemoryCriticalPercent(int gpuMemoryCriticalPercent) {
+            this.gpuMemoryCriticalPercent = gpuMemoryCriticalPercent;
+            return this;
+        }
+
+        public Builder gpuMemoryKillThresholdPercent(int gpuMemoryKillThresholdPercent) {
+            this.gpuMemoryKillThresholdPercent = gpuMemoryKillThresholdPercent;
+            return this;
+        }
+
         public Builder skipValidation(boolean skipValidation) {
             this.skipValidation = skipValidation;
             return this;
@@ -247,6 +290,11 @@ public record ModelInitSubprocessArgs(
                     callbackBaseUrl,
                     memoryThresholdPercent,
                     memoryCriticalPercent,
+                    memoryKillThresholdPercent,
+                    memoryCheckIntervalMs,
+                    gpuMemoryThresholdPercent,
+                    gpuMemoryCriticalPercent,
+                    gpuMemoryKillThresholdPercent,
                     skipValidation,
                     validationTestText,
                     options
