@@ -75,7 +75,8 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
 
     // GPU memory monitoring fields
     private final boolean gpuMonitoringEnabled;
-    private final int gpuDeviceId;
+    private final int gpuDeviceId;  // Primary device (current thread)
+    private final int gpuDeviceCount;  // Total available GPUs
     private final int gpuMemoryThresholdPercent;
     private final int gpuMemoryCriticalPercent;
     private final int gpuMemoryKillThresholdPercent;
@@ -165,12 +166,14 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         // Detect GPU backend and initialize GPU monitoring
         boolean gpuEnabled = false;
         int deviceId = 0;
+        int deviceCount = 1;
         try {
             String backend = Nd4j.getBackend().getClass().getSimpleName().toLowerCase();
             gpuEnabled = backend.contains("cuda") || backend.contains("aurora") || backend.contains("gpu");
             if (gpuEnabled) {
                 deviceId = Nd4j.getAffinityManager().getDeviceForCurrentThread();
-                logger.info("GPU backend detected: {}, device={}, GPU monitoring enabled", backend, deviceId);
+                deviceCount = Nd4j.getAffinityManager().getNumberOfDevices();
+                logger.info("GPU backend detected: {}, primary device={}, total devices={}", backend, deviceId, deviceCount);
             } else {
                 logger.info("CPU backend detected: {}, GPU monitoring disabled", backend);
             }
@@ -179,6 +182,7 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         }
         this.gpuMonitoringEnabled = gpuEnabled;
         this.gpuDeviceId = deviceId;
+        this.gpuDeviceCount = deviceCount;
 
         this.executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "subprocess-memory-watchdog");
@@ -432,45 +436,83 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                 }
             }
 
-            // GPU VRAM check (only if CUDA backend is active)
-            if (gpuMonitoringEnabled) {
+            // GPU VRAM check - scan ALL GPUs for multi-GPU support
+            // DeviceAwareOpExecutioner handles multi-device routing automatically
+            // We need to monitor all devices since models can span multiple GPUs
+            if (gpuMonitoringEnabled && gpuDeviceCount > 0) {
                 try {
                     NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
-                    long gpuTotal = ops.getDeviceTotalMemory(gpuDeviceId);
-                    long gpuFree = ops.getDeviceFreeMemory(gpuDeviceId);
-                    long gpuUsed = gpuTotal - gpuFree;
-                    double gpuUsage = gpuTotal > 0 ? ((gpuUsed) * 100.0) / gpuTotal : 0.0;
-
-                    // Calculate GPU memory velocity
+                    
+                    // Find the GPU with highest usage (most constrained device)
+                    double maxGpuUsage = 0.0;
+                    long maxGpuUsed = 0;
+                    long maxGpuTotal = 0;
+                    int maxGpuDeviceId = gpuDeviceId;
+                    double totalGpuUsed = 0;
+                    double totalGpuTotal = 0;
+                    
+                    for (int deviceId = 0; deviceId < gpuDeviceCount; deviceId++) {
+                        try {
+                            long gpuTotal = ops.getDeviceTotalMemory(deviceId);
+                            long gpuFree = ops.getDeviceFreeMemory(deviceId);
+                            long gpuUsed = gpuTotal - gpuFree;
+                            double gpuUsage = gpuTotal > 0 ? ((gpuUsed) * 100.0) / gpuTotal : 0.0;
+                            
+                            totalGpuUsed += gpuUsed;
+                            totalGpuTotal += gpuTotal;
+                            
+                            // Track the most constrained GPU
+                            if (gpuUsage > maxGpuUsage) {
+                                maxGpuUsage = gpuUsage;
+                                maxGpuUsed = gpuUsed;
+                                maxGpuTotal = gpuTotal;
+                                maxGpuDeviceId = deviceId;
+                            }
+                        } catch (Exception e) {
+                            logger.debug("Failed to query GPU {}: {}", deviceId, e.getMessage());
+                        }
+                    }
+                    
+                    // Use the most constrained GPU for threshold checks
+                    double primaryGpuUsage = maxGpuUsage;
+                    long primaryGpuUsed = maxGpuUsed;
+                    long primaryGpuTotal = maxGpuTotal;
+                    
+                    // Calculate GPU memory velocity based on max usage device
                     if (lastVelocityCheckTimeMs > 0 && lastGpuUsagePercent > 0) {
                         long elapsedMs = now - lastVelocityCheckTimeMs;
                         if (elapsedMs > 0) {
                             double elapsedSeconds = elapsedMs / 1000.0;
-                            double gpuChange = gpuUsage - lastGpuUsagePercent;
+                            double gpuChange = primaryGpuUsage - lastGpuUsagePercent;
                             gpuVelocityPercentPerSecond = gpuChange / elapsedSeconds;
                             
-                            // GPU rapid growth check (same threshold)
+                            // GPU rapid growth check
                             if (gpuVelocityPercentPerSecond >= RAPID_GROWTH_THRESHOLD_PERCENT_PER_SECOND) {
                                 if (!rapidMemoryGrowth.get()) {
                                     rapidMemoryGrowth.set(true);
-                                    logger.warn("RAPID GPU MEMORY GROWTH DETECTED: GPU{} increasing at {}/s",
-                                            gpuDeviceId, String.format("%.1f%%", gpuVelocityPercentPerSecond));
+                                    if (gpuDeviceCount > 1) {
+                                        logger.warn("RAPID GPU MEMORY GROWTH DETECTED: max usage on GPU{} at {}/s (monitoring {} devices)",
+                                                maxGpuDeviceId, String.format("%.1f%%", gpuVelocityPercentPerSecond), gpuDeviceCount);
+                                    } else {
+                                        logger.warn("RAPID GPU MEMORY GROWTH DETECTED: GPU{} increasing at {}/s",
+                                                maxGpuDeviceId, String.format("%.1f%%", gpuVelocityPercentPerSecond));
+                                    }
                                 }
                             }
                         }
                     }
-                    lastGpuUsagePercent = gpuUsage;
-
-                    // Update snapshot with GPU info
+                    lastGpuUsagePercent = primaryGpuUsage;
+                    
+                    // Update snapshot with primary (most constrained) GPU info
                     snapshot = new MemorySnapshot(
                             snapshot.maxMB, snapshot.totalMB, snapshot.freeMB, snapshot.usedMB, snapshot.usagePercent,
                             snapshot.timestampMs,
-                            gpuUsed / (1024 * 1024), gpuTotal / (1024 * 1024), gpuUsage, gpuDeviceId
+                            primaryGpuUsed / (1024 * 1024), primaryGpuTotal / (1024 * 1024), primaryGpuUsage, maxGpuDeviceId
                     );
                     this.lastSnapshot = snapshot;
-
-                    // Check GPU kill threshold
-                    if (gpuMemoryKillThresholdPercent > 0 && gpuUsage >= gpuMemoryKillThresholdPercent) {
+                    
+                    // Check GPU kill threshold on most constrained device
+                    if (gpuMemoryKillThresholdPercent > 0 && primaryGpuUsage >= gpuMemoryKillThresholdPercent) {
                         int count = consecutiveGpuKillChecks.incrementAndGet();
                         if (count >= KILL_DEBOUNCE_COUNT && !shouldKill.get()) {
                             shouldKill.set(true);
@@ -480,24 +522,30 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     } else {
                         consecutiveGpuKillChecks.set(0);
                     }
-
+                    
                     // Check GPU critical threshold
-                    if (gpuUsage >= gpuMemoryCriticalPercent) {
+                    if (primaryGpuUsage >= gpuMemoryCriticalPercent) {
                         if (!criticalMemory.get()) {
                             criticalMemory.set(true);
-                            logger.warn("CRITICAL GPU MEMORY: {}% used ({}MB/{}MB) on device {}",
-                                    String.format("%.1f", gpuUsage),
-                                    snapshot.gpuUsedMB, snapshot.gpuTotalMB, gpuDeviceId);
+                            if (gpuDeviceCount > 1) {
+                                logger.warn("CRITICAL GPU MEMORY: {}% used ({}MB/{}MB) on GPU{} (max of {} devices)",
+                                        String.format("%.1f", primaryGpuUsage),
+                                        snapshot.gpuUsedMB, snapshot.gpuTotalMB, maxGpuDeviceId, gpuDeviceCount);
+                            } else {
+                                logger.warn("CRITICAL GPU MEMORY: {}% used ({}MB/{}MB) on device {}",
+                                        String.format("%.1f", primaryGpuUsage),
+                                        snapshot.gpuUsedMB, snapshot.gpuTotalMB, maxGpuDeviceId);
+                            }
                         }
                     } else {
                         if (criticalMemory.get()) {
                             criticalMemory.set(false);
-                            logger.info("GPU memory recovered from critical: {}%", String.format("%.1f", gpuUsage));
+                            logger.info("GPU memory recovered from critical: {}%", String.format("%.1f", primaryGpuUsage));
                         }
                     }
-
+                    
                     // Check GPU stop threshold
-                    if (gpuUsage >= gpuMemoryThresholdPercent) {
+                    if (primaryGpuUsage >= gpuMemoryThresholdPercent) {
                         int count = consecutiveGpuStopChecks.incrementAndGet();
                         if (count >= STOP_DEBOUNCE_COUNT && !shouldStop.get()) {
                             shouldStop.set(true);
@@ -506,12 +554,12 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
                     } else {
                         consecutiveGpuStopChecks.set(0);
                         // Allow GPU recovery
-                        if (shouldStop.get() && !shouldKill.get() && gpuUsage < gpuMemoryThresholdPercent - 10) {
+                        if (shouldStop.get() && !shouldKill.get() && primaryGpuUsage < gpuMemoryThresholdPercent - 10) {
                             shouldStop.set(false);
-                            logger.info("GPU memory recovered below threshold ({}%), resuming", String.format("%.1f", gpuUsage));
+                            logger.info("GPU memory recovered below threshold ({}%), resuming", String.format("%.1f", primaryGpuUsage));
                         }
                     }
-
+                    
                 } catch (Exception e) {
                     logger.debug("GPU memory query failed (non-fatal): {}", e.getMessage());
                 }
@@ -566,21 +614,44 @@ public class SubprocessMemoryWatchdog implements AutoCloseable {
         long usedMemory = totalMemory - freeMemory;
         double usagePercent = (usedMemory * 100.0) / maxMemory;
 
-        // GPU snapshot (if enabled)
+        // GPU snapshot (if enabled) - scan ALL GPUs for multi-GPU support
         long gpuUsedMB = 0;
         long gpuTotalMB = 0;
         double gpuUsagePercent = 0.0;
         int gpuDevId = -1;
 
-        if (gpuMonitoringEnabled) {
+        if (gpuMonitoringEnabled && gpuDeviceCount > 0) {
             try {
                 NativeOps ops = NativeOpsHolder.getInstance().getDeviceNativeOps();
-                long gpuTotal = ops.getDeviceTotalMemory(gpuDeviceId);
-                long gpuFree = ops.getDeviceFreeMemory(gpuDeviceId);
-                gpuUsedMB = (gpuTotal - gpuFree) / (1024 * 1024);
-                gpuTotalMB = gpuTotal / (1024 * 1024);
-                gpuUsagePercent = gpuTotal > 0 ? ((gpuTotal - gpuFree) * 100.0) / gpuTotal : 0.0;
-                gpuDevId = gpuDeviceId;
+                
+                // Find the GPU with highest usage (most constrained)
+                double maxUsage = 0.0;
+                long maxUsed = 0;
+                long maxTotal = 0;
+                int maxDeviceId = gpuDeviceId;
+                
+                for (int deviceId = 0; deviceId < gpuDeviceCount; deviceId++) {
+                    try {
+                        long deviceTotal = ops.getDeviceTotalMemory(deviceId);
+                        long deviceFree = ops.getDeviceFreeMemory(deviceId);
+                        long deviceUsed = deviceTotal - deviceFree;
+                        double deviceUsage = deviceTotal > 0 ? ((deviceUsed) * 100.0) / deviceTotal : 0.0;
+                        
+                        if (deviceUsage > maxUsage) {
+                            maxUsage = deviceUsage;
+                            maxUsed = deviceUsed;
+                            maxTotal = deviceTotal;
+                            maxDeviceId = deviceId;
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Failed to query GPU {}: {}", deviceId, e.getMessage());
+                    }
+                }
+                
+                gpuUsedMB = maxUsed / (1024 * 1024);
+                gpuTotalMB = maxTotal / (1024 * 1024);
+                gpuUsagePercent = maxUsage;
+                gpuDevId = maxDeviceId;
             } catch (Exception e) {
                 logger.debug("GPU snapshot failed: {}", e.getMessage());
             }
