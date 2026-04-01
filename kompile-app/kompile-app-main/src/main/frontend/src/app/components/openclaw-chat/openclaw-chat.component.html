@@ -1,0 +1,66 @@
+<div class="openclaw-chat">
+  <div class="chat-header">
+    <div class="agent-selector">
+      <mat-form-field appearance="outline" class="agent-select">
+        <mat-label>Agent</mat-label>
+        <mat-select formControlName="agentId" (selectionChange)="selectAgent($event.value)">
+          <mat-option *ngFor="let agent of agents" [value]="agent.name">
+            {{ agent.name }}
+            <span class="agent-desc">{{ agent.description }}</span>
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+    
+    <div class="session-info">
+      <span class="session-key">{{ sessionKey }}</span>
+      <button mat-icon-button (click)="newSession()" matTooltip="New Session">
+        <mat-icon>add</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <div class="messages-container">
+    <div *ngFor="let msg of messages" class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'" [class.error]="msg.role === 'error'">
+      <div class="message-header">
+        <mat-icon *ngIf="msg.role === 'user'">person</mat-icon>
+        <mat-icon *ngIf="msg.role === 'assistant'">smart_toy</mat-icon>
+        <mat-icon *ngIf="msg.role === 'error'" color="warn">error</mat-icon>
+        <span class="role-name">{{ msg.role | titlecase }}</span>
+        <span class="timestamp">{{ msg.timestamp | date:'shortTime' }}</span>
+      </div>
+      <div class="message-content">{{ msg.content }}
+        <span *ngIf="msg.isStreaming" class="streaming-cursor">|</span>
+      </div>
+      <div *ngIf="msg.tokenUsage" class="token-usage">
+        <span>Input: {{ msg.tokenUsage.inputTokens }}</span>
+        <span>Output: {{ msg.tokenUsage.outputTokens }}</span>
+      </div>
+    </div>
+    
+    <div *ngIf="isLoading && !isStreaming" class="loading-indicator">
+      <mat-spinner diameter="24"></mat-spinner>
+      <span>Thinking...</span>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <form [formGroup]="chatForm" (ngSubmit)="sendMessage()">
+      <mat-form-field appearance="outline" class="message-input">
+        <mat-label>Message</mat-label>
+        <textarea matInput formControlName="message" rows="2" 
+          placeholder="Ask {{ selectedAgent?.name || 'assistant' }}..."
+          [disabled]="isLoading"
+          (keydown.enter)="sendMessage()"></textarea>
+      </mat-form-field>
+      
+      <div class="input-actions">
+        <mat-checkbox formControlName="stream">Stream</mat-checkbox>
+        <button mat-raised-button color="primary" type="submit" [disabled]="chatForm.invalid || isLoading">
+          <mat-icon>send</mat-icon>
+          Send
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

@@ -1,0 +1,509 @@
+<div class="archive-assembly-container">
+  <!-- Header -->
+  <div class="page-header">
+    <h1>
+      <mat-icon>build</mat-icon>
+      Archive Assembly
+    </h1>
+    <p class="subtitle">
+      Select models from the catalog to create a custom Kompile Archive (.karch) for offline deployment
+    </p>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="loading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <p>Loading model catalog...</p>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-state" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <p>{{ error }}</p>
+    <button mat-raised-button color="primary" (click)="loadCatalog()">
+      <mat-icon>refresh</mat-icon>
+      Retry
+    </button>
+  </div>
+
+  <!-- Main Content -->
+  <div class="assembly-content" *ngIf="catalog && !loading && !error">
+
+    <!-- RAG Pipeline Overview -->
+    <mat-card class="pipeline-overview-card">
+      <mat-card-content>
+        <h3 class="pipeline-title">
+          <mat-icon>account_tree</mat-icon>
+          RAG Pipeline Model Roles
+        </h3>
+        <div class="pipeline-flow">
+          <div class="pipeline-stage">
+            <div class="stage-header retrieval">
+              <mat-icon>search</mat-icon>
+              <span>Phase 1: Retrieval</span>
+            </div>
+            <div class="stage-models">
+              <div class="model-role">
+                <mat-icon class="role-icon dense">memory</mat-icon>
+                <div class="role-info">
+                  <span class="role-name">Dense Encoders</span>
+                  <span class="role-desc">Convert text to fixed-dimension vectors for semantic similarity search. Best for understanding meaning and context.</span>
+                </div>
+              </div>
+              <div class="model-role">
+                <mat-icon class="role-icon sparse">scatter_plot</mat-icon>
+                <div class="role-info">
+                  <span class="role-name">Sparse Encoders</span>
+                  <span class="role-desc">Generate learned sparse representations (like SPLADE). Combines neural learning with term-based matching for hybrid search.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="pipeline-arrow">
+            <mat-icon>arrow_forward</mat-icon>
+          </div>
+          <div class="pipeline-stage">
+            <div class="stage-header reranking">
+              <mat-icon>sort</mat-icon>
+              <span>Phase 2: Reranking</span>
+            </div>
+            <div class="stage-models">
+              <div class="model-role">
+                <mat-icon class="role-icon cross">swap_horiz</mat-icon>
+                <div class="role-info">
+                  <span class="role-name">Cross-Encoders</span>
+                  <span class="role-desc">Score query-document pairs together for precise relevance ranking. More accurate but slower than bi-encoders.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Selection Summary Bar -->
+    <mat-card class="selection-summary-card">
+      <mat-card-content>
+        <div class="summary-row">
+          <div class="summary-stats">
+            <div class="stat-item">
+              <mat-icon>memory</mat-icon>
+              <span class="stat-value">{{ selectedDenseEncoders.size }}</span>
+              <span class="stat-label">Dense Encoders</span>
+            </div>
+            <div class="stat-item">
+              <mat-icon>scatter_plot</mat-icon>
+              <span class="stat-value">{{ selectedSparseEncoders.size }}</span>
+              <span class="stat-label">Sparse Encoders</span>
+            </div>
+            <div class="stat-item">
+              <mat-icon>swap_horiz</mat-icon>
+              <span class="stat-value">{{ selectedCrossEncoders.size }}</span>
+              <span class="stat-label">Cross-Encoders</span>
+            </div>
+            <div class="stat-item total">
+              <mat-icon>archive</mat-icon>
+              <span class="stat-value">{{ totalSelectedCount }}</span>
+              <span class="stat-label">Total Models</span>
+            </div>
+          </div>
+          <div class="summary-actions">
+            <button mat-button color="warn" (click)="clearAllSelections()" [disabled]="!hasSelection">
+              <mat-icon>clear_all</mat-icon>
+              Clear All
+            </button>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- RAG Pipeline Phases -->
+    <div class="pipeline-phases">
+
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+      <!-- PHASE 1: RETRIEVAL (Encoders) -->
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+      <mat-card class="phase-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar class="phase-icon retrieval">search</mat-icon>
+          <mat-card-title>Phase 1: Retrieval</mat-card-title>
+          <mat-card-subtitle>Select embedding models for semantic and lexical search</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+
+          <!-- Dense Encoders Section -->
+          <mat-expansion-panel expanded>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>memory</mat-icon>
+                Dense Encoders
+                <mat-chip class="count-chip">{{ catalog.denseEncoders.length }}</mat-chip>
+              </mat-panel-title>
+              <mat-panel-description>
+                Vector embeddings for semantic similarity search
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="section-actions">
+              <button mat-stroked-button size="small" (click)="selectAllDenseEncoders(); $event.stopPropagation()">
+                Select All
+              </button>
+              <button mat-stroked-button size="small" (click)="clearAllDenseEncoders(); $event.stopPropagation()">
+                Clear
+              </button>
+            </div>
+
+            <div class="model-grid">
+              <div class="model-card" *ngFor="let model of catalog.denseEncoders"
+                   [class.selected]="isDenseEncoderSelected(model.modelId)"
+                   (click)="toggleDenseEncoder(model.modelId)">
+                <div class="model-card-header">
+                  <mat-checkbox [checked]="isDenseEncoderSelected(model.modelId)"
+                                (click)="$event.stopPropagation()"
+                                (change)="toggleDenseEncoder(model.modelId)">
+                  </mat-checkbox>
+                  <span class="model-id">{{ model.modelId }}</span>
+                  <span class="role-badge dense" matTooltip="Creates dense vector embeddings for semantic search">
+                    <mat-icon>memory</mat-icon>
+                    Semantic Search
+                  </span>
+                </div>
+                <div class="model-card-body">
+                  <p class="model-description">{{ model.description }}</p>
+                  <div class="model-specs">
+                    <span class="spec" matTooltip="Embedding dimension - size of output vector">
+                      <mat-icon>straighten</mat-icon>
+                      {{ formatDimension(model.embeddingDim) }}d vectors
+                    </span>
+                    <span class="spec" matTooltip="Max sequence length - maximum input tokens">
+                      <mat-icon>notes</mat-icon>
+                      {{ formatSequenceLength(model.maxSequenceLength) }} tokens
+                    </span>
+                  </div>
+                  <div class="model-meta">
+                    <mat-chip *ngIf="model.trainingData" class="training-chip"
+                              matTooltip="Training dataset used">
+                      {{ model.trainingData }}
+                    </mat-chip>
+                    <a *ngIf="model.huggingfaceSource" [href]="model.huggingfaceSource" target="_blank"
+                       class="hf-link" (click)="$event.stopPropagation()" matTooltip="View on HuggingFace">
+                      <mat-icon>open_in_new</mat-icon>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <!-- Sparse Encoders Section -->
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>scatter_plot</mat-icon>
+                Sparse Encoders
+                <mat-chip class="count-chip">{{ catalog.sparseEncoders.length }}</mat-chip>
+              </mat-panel-title>
+              <mat-panel-description>
+                Learned sparse representations (e.g., SPLADE) for hybrid retrieval
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="section-actions">
+              <button mat-stroked-button size="small" (click)="selectAllSparseEncoders(); $event.stopPropagation()">
+                Select All
+              </button>
+              <button mat-stroked-button size="small" (click)="clearAllSparseEncoders(); $event.stopPropagation()">
+                Clear
+              </button>
+            </div>
+
+            <div class="model-grid" *ngIf="catalog.sparseEncoders.length > 0">
+              <div class="model-card sparse-encoder" *ngFor="let model of catalog.sparseEncoders"
+                   [class.selected]="isSparseEncoderSelected(model.modelId)"
+                   (click)="toggleSparseEncoder(model.modelId)">
+                <div class="model-card-header">
+                  <mat-checkbox [checked]="isSparseEncoderSelected(model.modelId)"
+                                (click)="$event.stopPropagation()"
+                                (change)="toggleSparseEncoder(model.modelId)">
+                  </mat-checkbox>
+                  <span class="model-id">{{ model.modelId }}</span>
+                  <span class="role-badge sparse" matTooltip="Learned sparse representations for hybrid search">
+                    <mat-icon>scatter_plot</mat-icon>
+                    Hybrid Search
+                  </span>
+                </div>
+                <div class="model-card-body">
+                  <p class="model-description">{{ model.description }}</p>
+                  <div class="model-specs">
+                    <span class="spec sparse" matTooltip="Vocabulary size - dimension of sparse vector">
+                      <mat-icon>scatter_plot</mat-icon>
+                      {{ formatDimension(model.embeddingDim) }} vocab
+                    </span>
+                    <span class="spec" matTooltip="Max sequence length - maximum input tokens">
+                      <mat-icon>notes</mat-icon>
+                      {{ formatSequenceLength(model.maxSequenceLength) }} tokens
+                    </span>
+                  </div>
+                  <div class="sparse-info">
+                    <mat-icon>info_outline</mat-icon>
+                    <span>Combines neural term weighting with lexical matching</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="empty-state" *ngIf="catalog.sparseEncoders.length === 0">
+              <mat-icon>scatter_plot</mat-icon>
+              <p>No sparse encoders available</p>
+            </div>
+          </mat-expansion-panel>
+
+        </mat-card-content>
+      </mat-card>
+
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+      <!-- PHASE 2: RERANKING (Cross-Encoders) -->
+      <!-- ═══════════════════════════════════════════════════════════════════════ -->
+      <mat-card class="phase-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar class="phase-icon reranking">sort</mat-icon>
+          <mat-card-title>Phase 2: Reranking</mat-card-title>
+          <mat-card-subtitle>Select cross-encoder models for result reranking</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+
+          <!-- Cross-Encoders Section -->
+          <mat-expansion-panel expanded>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>swap_horiz</mat-icon>
+                Cross-Encoders
+                <mat-chip class="count-chip">{{ catalog.crossEncoders.length }}</mat-chip>
+              </mat-panel-title>
+              <mat-panel-description>
+                Score query-document pairs for relevance-based reranking
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="section-actions">
+              <button mat-stroked-button size="small" (click)="selectAllCrossEncoders(); $event.stopPropagation()">
+                Select All
+              </button>
+              <button mat-stroked-button size="small" (click)="clearAllCrossEncoders(); $event.stopPropagation()">
+                Clear
+              </button>
+            </div>
+
+            <div class="model-grid">
+              <div class="model-card cross-encoder" *ngFor="let model of catalog.crossEncoders"
+                   [class.selected]="isCrossEncoderSelected(model.modelId)"
+                   (click)="toggleCrossEncoder(model.modelId)">
+                <div class="model-card-header">
+                  <mat-checkbox [checked]="isCrossEncoderSelected(model.modelId)"
+                                (click)="$event.stopPropagation()"
+                                (change)="toggleCrossEncoder(model.modelId)">
+                  </mat-checkbox>
+                  <span class="model-id">{{ model.modelId }}</span>
+                  <span class="role-badge cross" matTooltip="Scores query-document pairs for precise reranking">
+                    <mat-icon>swap_horiz</mat-icon>
+                    Reranking
+                  </span>
+                </div>
+                <div class="model-card-body">
+                  <p class="model-description">{{ model.description }}</p>
+                  <div class="model-specs">
+                    <span class="spec" matTooltip="Hidden size - transformer hidden dimension">
+                      <mat-icon>layers</mat-icon>
+                      {{ model.hiddenSize || 'N/A' }} hidden
+                    </span>
+                    <span class="spec" matTooltip="Number of transformer layers">
+                      <mat-icon>stacked_bar_chart</mat-icon>
+                      {{ model.numLayers || 'N/A' }} layers
+                    </span>
+                    <span class="spec" matTooltip="Max combined query+document length">
+                      <mat-icon>notes</mat-icon>
+                      {{ formatSequenceLength(model.maxSequenceLength) }} tokens
+                    </span>
+                  </div>
+                  <div class="model-meta">
+                    <mat-chip *ngIf="model.trainingData" class="training-chip"
+                              matTooltip="Training dataset used">
+                      {{ model.trainingData }}
+                    </mat-chip>
+                    <mat-chip *ngIf="model.outputType" class="output-chip"
+                              matTooltip="Output type (relevance score, similarity)">
+                      {{ model.outputType }}
+                    </mat-chip>
+                    <mat-chip *ngIf="model.languages" class="lang-chip"
+                              matTooltip="Supported languages">
+                      {{ model.languages }}
+                    </mat-chip>
+                  </div>
+                  <div class="input-format" *ngIf="model.inputFormat">
+                    <mat-icon>input</mat-icon>
+                    <code>{{ model.inputFormat }}</code>
+                  </div>
+                  <div class="cross-encoder-info">
+                    <mat-icon>info_outline</mat-icon>
+                    <span>Jointly encodes query + document for accurate relevance scoring</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+        </mat-card-content>
+      </mat-card>
+
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- ARCHIVE CONFIGURATION -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <mat-card class="config-card" *ngIf="hasSelection">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>settings</mat-icon>
+        <mat-card-title>Archive Configuration</mat-card-title>
+        <mat-card-subtitle>Configure your custom archive</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <form [formGroup]="archiveForm" class="archive-form">
+          <div class="form-row">
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Archive Name</mat-label>
+              <input matInput formControlName="archiveName" placeholder="My Custom Archive">
+              <mat-error *ngIf="archiveForm.get('archiveName')?.hasError('required')">
+                Archive name is required
+              </mat-error>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Version</mat-label>
+              <input matInput formControlName="version" placeholder="1.0.0">
+              <mat-error *ngIf="archiveForm.get('version')?.hasError('pattern')">
+                Use semantic versioning (e.g., 1.0.0)
+              </mat-error>
+            </mat-form-field>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput formControlName="description" rows="2"
+                      placeholder="Description of what this archive contains"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Archive ID (optional)</mat-label>
+            <input matInput formControlName="archiveId" placeholder="auto-generated if empty">
+            <mat-hint>Custom identifier for the archive (auto-generated if left empty)</mat-hint>
+          </mat-form-field>
+        </form>
+
+        <!-- Selected Models Summary -->
+        <div class="selected-summary">
+          <h4>Selected Models:</h4>
+
+          <div class="selected-section" *ngIf="selectedDenseEncoders.size > 0">
+            <h5>
+              <mat-icon>memory</mat-icon>
+              Dense Encoders ({{ selectedDenseEncoders.size }})
+            </h5>
+            <div class="selected-chips">
+              <mat-chip *ngFor="let model of getSelectedDenseEncoderModels()"
+                        (removed)="toggleDenseEncoder(model.modelId)">
+                {{ model.modelId }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </div>
+          </div>
+
+          <div class="selected-section" *ngIf="selectedSparseEncoders.size > 0">
+            <h5>
+              <mat-icon>scatter_plot</mat-icon>
+              Sparse Encoders ({{ selectedSparseEncoders.size }})
+            </h5>
+            <div class="selected-chips">
+              <mat-chip *ngFor="let model of getSelectedSparseEncoderModels()"
+                        (removed)="toggleSparseEncoder(model.modelId)">
+                {{ model.modelId }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </div>
+          </div>
+
+          <div class="selected-section" *ngIf="selectedCrossEncoders.size > 0">
+            <h5>
+              <mat-icon>swap_horiz</mat-icon>
+              Cross-Encoders ({{ selectedCrossEncoders.size }})
+            </h5>
+            <div class="selected-chips">
+              <mat-chip *ngFor="let model of getSelectedCrossEncoderModels()"
+                        (removed)="toggleCrossEncoder(model.modelId)">
+                {{ model.modelId }}
+                <mat-icon matChipRemove>cancel</mat-icon>
+              </mat-chip>
+            </div>
+          </div>
+        </div>
+
+        <!-- Assembly Button -->
+        <div class="assembly-actions">
+          <button mat-raised-button color="primary" (click)="assembleArchive()"
+                  [disabled]="assembling || archiveForm.invalid || !hasSelection">
+            <mat-icon *ngIf="!assembling">build</mat-icon>
+            <mat-spinner *ngIf="assembling" diameter="20"></mat-spinner>
+            {{ assembling ? 'Assembling...' : 'Assemble Archive' }}
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- ASSEMBLY RESULT -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <mat-card class="result-card" *ngIf="assemblyResult">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [class.success]="assemblyResult.success"
+                  [class.error]="!assemblyResult.success">
+          {{ assemblyResult.success ? 'check_circle' : 'error' }}
+        </mat-icon>
+        <mat-card-title>
+          {{ assemblyResult.success ? 'Archive Ready' : 'Assembly Failed' }}
+        </mat-card-title>
+        <mat-card-subtitle>
+          {{ assemblyResult.success ? assemblyResult.archiveId : assemblyResult.error }}
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content *ngIf="assemblyResult.success">
+        <div class="result-details">
+          <div class="result-item">
+            <span class="result-label">Archive Path:</span>
+            <code>{{ assemblyResult.archivePath }}</code>
+          </div>
+          <div class="result-item">
+            <span class="result-label">Models Included:</span>
+            <span>{{ assemblyResult.modelCount }}</span>
+          </div>
+        </div>
+
+        <div class="included-models">
+          <h5>Included Models:</h5>
+          <div class="model-list">
+            <div class="model-item" *ngFor="let model of assemblyResult.includedModels">
+              <mat-icon>{{ getModelTypeIcon(model.modelType) }}</mat-icon>
+              <span class="model-name">{{ model.modelId }}</span>
+              <span class="model-type">{{ getModelTypeDisplayName(model.modelType) }}</span>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+      <mat-card-actions>
+        <button mat-button (click)="resetAssembly()">
+          <mat-icon>refresh</mat-icon>
+          Start Over
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+  </div>
+</div>

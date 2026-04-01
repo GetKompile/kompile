@@ -1,0 +1,342 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.filter-chain-settings {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.loading-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 48px;
+  color: #666;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: #fdecea;
+  color: #c62828;
+  border-radius: 4px;
+
+  mat-icon {
+    flex-shrink: 0;
+  }
+
+  span {
+    flex: 1;
+  }
+}
+
+.success-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 4px;
+}
+
+.not-available-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background-color: #fff3e0;
+  color: #ef6c00;
+  border-radius: 4px;
+}
+
+.config-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-card, .filters-card, .available-filters-card, .edit-filter-card {
+  mat-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+
+    mat-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 18px;
+      margin: 0;
+    }
+  }
+}
+
+.global-toggle {
+  padding: 16px 0;
+
+  .toggle-description {
+    margin-top: 8px;
+    color: #666;
+    font-size: 14px;
+  }
+}
+
+.global-settings {
+  padding: 16px 0;
+
+  h4 {
+    margin-bottom: 16px;
+  }
+
+  .setting-field {
+    width: 300px;
+    margin-bottom: 16px;
+  }
+
+  .toggle-setting {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+
+    .setting-hint {
+      color: #666;
+      font-size: 13px;
+    }
+  }
+}
+
+.header-actions {
+  margin-left: auto;
+}
+
+.no-filters {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px;
+  color: #666;
+
+  mat-icon {
+    font-size: 48px;
+    height: 48px;
+    width: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  p {
+    text-align: center;
+    max-width: 400px;
+  }
+}
+
+.filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background-color: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+
+  &:hover {
+    background-color: #f5f5f5;
+    border-color: #1976d2;
+  }
+
+  &.disabled {
+    opacity: 0.6;
+  }
+
+  &.cdk-drag-preview {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+}
+
+.drag-handle {
+  cursor: move;
+  color: #9e9e9e;
+
+  &:hover {
+    color: #616161;
+  }
+}
+
+.filter-info {
+  flex: 1;
+
+  .filter-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .filter-name {
+    font-weight: 500;
+    font-size: 15px;
+  }
+
+  .filter-badges {
+    display: flex;
+    gap: 4px;
+  }
+
+  .filter-details {
+    margin-top: 4px;
+    color: #666;
+    font-size: 13px;
+  }
+}
+
+.type-chip {
+  font-size: 11px !important;
+  min-height: 22px !important;
+
+  &.local {
+    background-color: #e3f2fd !important;
+    color: #1565c0 !important;
+  }
+
+  &.http {
+    background-color: #f3e5f5 !important;
+    color: #7b1fa2 !important;
+  }
+
+  &.mcp {
+    background-color: #e8f5e9 !important;
+    color: #2e7d32 !important;
+  }
+}
+
+.phase-chip {
+  font-size: 10px !important;
+  min-height: 20px !important;
+  background-color: #fff8e1 !important;
+  color: #f57c00 !important;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.available-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.available-filter-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background-color: #fafafa;
+  border-radius: 4px;
+
+  .filter-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    .filter-name {
+      font-weight: 500;
+    }
+
+    .filter-description {
+      color: #666;
+      font-size: 13px;
+    }
+  }
+}
+
+.edit-filter-card {
+  border: 2px solid #1976d2;
+
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .full-width {
+    width: 100%;
+  }
+
+  .phases-section {
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: rgba(0, 0, 0, 0.6);
+    }
+  }
+
+  .phase-toggles {
+    .phase-select-chip {
+      cursor: pointer;
+
+      &.phase-selected {
+        background-color: #1976d2 !important;
+        color: white !important;
+      }
+    }
+  }
+
+  .type-settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 16px;
+    background-color: #fafafa;
+    border-radius: 4px;
+    margin-top: 8px;
+
+    mat-form-field {
+      min-width: 200px;
+    }
+  }
+}
+
+/* Drag and drop placeholder */
+.cdk-drag-placeholder {
+  opacity: 0.3;
+}
+
+.cdk-drag-animating {
+  transition: transform 250ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.filter-list.cdk-drop-list-dragging .filter-item:not(.cdk-drag-placeholder) {
+  transition: transform 250ms cubic-bezier(0, 0, 0.2, 1);
+}

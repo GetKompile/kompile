@@ -1,0 +1,162 @@
+/* Optimize Dialog Styles */
+
+:host {
+  display: block;
+}
+
+h2[mat-dialog-title] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 20px;
+}
+
+h2[mat-dialog-title] mat-icon {
+  color: #ff9800;
+}
+
+.model-id {
+  color: #666;
+  font-size: 13px;
+  margin: 0 0 16px 0;
+  font-family: monospace;
+}
+
+.preset-section {
+  margin-bottom: 8px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+/* Pass Tree */
+.pass-tree {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.15s;
+}
+
+.group-header:hover {
+  background: #f5f5f5;
+}
+
+.category-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.group-name {
+  flex: 1;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.category-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: white;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sub-count {
+  font-size: 12px;
+  color: #888;
+  min-width: 30px;
+  text-align: right;
+}
+
+.expand-icon {
+  color: #999;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+/* Sub-passes */
+.sub-passes {
+  background: #fafafa;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.sub-pass-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 12px 6px 48px;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.sub-pass-row:last-child {
+  border-bottom: none;
+}
+
+.sub-pass-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+}
+
+.sub-pass-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.sub-pass-desc {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.3;
+}
+
+/* Iterations */
+.iterations-section {
+  margin-bottom: 8px;
+}
+
+.iterations-field {
+  width: 180px;
+}
+
+/* Summary */
+.selection-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #e3f2fd;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #1565c0;
+}
+
+.selection-summary mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+}
+
+/* Dialog actions */
+mat-dialog-actions button mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-right: 4px;
+}

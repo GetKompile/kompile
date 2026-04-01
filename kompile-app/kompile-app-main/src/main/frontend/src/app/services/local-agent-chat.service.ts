@@ -179,6 +179,11 @@ export class LocalAgentChatService extends BaseService {
       ragSimilarityThreshold?: number;
       includeKeywordSearch?: boolean;
       includeSemanticSearch?: boolean;
+      // Graph RAG options
+      enableGraphRag?: boolean;
+      graphRagMaxResults?: number;
+      graphRagSearchType?: string;
+      graphRagConversationId?: string;
       // Folder context injection
       folderId?: string;
       // Timeout (0 = no timeout, default 300 = 5 minutes)
@@ -222,6 +227,11 @@ export class LocalAgentChatService extends BaseService {
       ragSimilarityThreshold: options.ragSimilarityThreshold ?? 0.0,
       includeKeywordSearch: options.includeKeywordSearch ?? true,
       includeSemanticSearch: options.includeSemanticSearch ?? true,
+      // Graph RAG configuration
+      enableGraphRag: options.enableGraphRag ?? false,
+      graphRagMaxResults: options.graphRagMaxResults ?? 5,
+      graphRagSearchType: options.graphRagSearchType ?? 'LOCAL',
+      graphRagConversationId: options.graphRagConversationId,
       // Folder context injection
       folderId: options.folderId,
       // Timeout configuration (0 = no timeout)

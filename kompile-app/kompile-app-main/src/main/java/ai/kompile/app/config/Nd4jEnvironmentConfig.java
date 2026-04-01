@@ -18,6 +18,7 @@ package ai.kompile.app.config;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.nd4j.common.config.ND4JSystemProperties;
 
 /**
  * Configuration record for ND4J environment settings.
@@ -140,7 +141,20 @@ public record Nd4jEnvironmentConfig(
         @JsonProperty("tritonEnableFpFusion") Boolean tritonEnableFpFusion,
         @JsonProperty("tritonCacheDir") String tritonCacheDir,
         @JsonProperty("tritonDumpDir") String tritonDumpDir,
-        @JsonProperty("tritonOverrideArch") String tritonOverrideArch
+        @JsonProperty("tritonOverrideArch") String tritonOverrideArch,
+
+        // SameDiff graph optimizer / DSP (decode-side processing) configuration
+        @JsonProperty("optimizerEnabled") Boolean optimizerEnabled,       // nd4j.optimizer.enabled
+        @JsonProperty("optimizerFp16") Boolean optimizerFp16,             // nd4j.optimizer.fp16
+        @JsonProperty("dspNoFreeze") Boolean dspNoFreeze,                 // nd4j.dsp.nofreeze
+        @JsonProperty("dspNoNativeDecode") Boolean dspNoNativeDecode,     // nd4j.dsp.noNativeDecodeInputs
+        @JsonProperty("dspNoAttnOverride") Boolean dspNoAttnOverride,     // nd4j.dsp.noAttnOverride
+        @JsonProperty("dspNoDirect") Boolean dspNoDirect,                 // nd4j.dsp.noDirect
+        @JsonProperty("tritonSkipKernels") Boolean tritonSkipKernels,     // nd4j.triton.skipKernels
+        @JsonProperty("tritonTf32") Boolean tritonTf32,                   // nd4j.triton.tf32
+        @JsonProperty("cublasDisableWorkspace") Boolean cublasDisableWorkspace, // nd4j.cublas.captureWorkspace=0
+        @JsonProperty("dspDiagnostics") String dspDiagnostics,            // nd4j.dsp.diagnostics (e.g. "ALL")
+        @JsonProperty("opTiming") Boolean opTiming                        // nd4j.opTiming
 ) {
 
     /**
@@ -232,8 +246,137 @@ public record Nd4jEnvironmentConfig(
                 null,   // tritonEnableFpFusion
                 null,   // tritonCacheDir
                 null,   // tritonDumpDir
-                null    // tritonOverrideArch
+                null,   // tritonOverrideArch
+                // SameDiff graph optimizer / DSP defaults
+                true,   // optimizerEnabled - graph optimizer ON by default
+                true,   // optimizerFp16 - FP16 weight conversion ON by default (halves VRAM)
+                false,  // dspNoFreeze - freeze ON by default (false = don't skip freeze)
+                false,  // dspNoNativeDecode - native decode inputs ON by default
+                false,  // dspNoAttnOverride - attention override ON by default
+                false,  // dspNoDirect - direct mode ON by default
+                false,  // tritonSkipKernels - triton kernels ON by default
+                false,  // tritonTf32 - TF32 precision OFF by default
+                false,  // cublasDisableWorkspace - workspace capture ON by default
+                null,   // dspDiagnostics - no diagnostics by default
+                false   // opTiming - op timing OFF by default
         );
+    }
+
+    /**
+     * Captures the actual ND4J environment state from the running process.
+     * Use this instead of manually constructing with 100+ positional args.
+     *
+     * @param currentConfig optional current persisted config for fields with no native getter
+     * @param ompThreadsOverride OMP threads override (omp_get_num_threads returns 1 outside parallel regions)
+     * @return snapshot of the live ND4J environment
+     */
+    public static Nd4jEnvironmentConfig captureFromEnvironment(Nd4jEnvironmentConfig currentConfig, int ompThreadsOverride) {
+        var env = org.nd4j.linalg.factory.Nd4j.getEnvironment();
+        boolean isCuda = !env.isCPU();
+
+        return Nd4jEnvironmentConfig.builder()
+                .maxThreads((int) env.maxThreads())
+                .maxMasterThreads((int) env.maxMasterThreads())
+                .debug(env.isDebug())
+                .verbose(env.isVerbose())
+                .profiling(env.isProfiling())
+                .enableBlas(env.isEnableBlas())
+                .helpersAllowed(env.helpersAllowed())
+                .leaksDetector(env.isDetectingLeaks())
+                .tadThreshold(env.tadThreshold())
+                .elementwiseThreshold(env.elementwiseThreshold())
+                .maxPrimaryMemory(0L)
+                .maxSpecialMemory(0L)
+                .maxDeviceMemory(0L)
+                .lifecycleTracking(env.isLifecycleTracking())
+                .trackViews(env.isTrackViews())
+                .trackDeletions(env.isTrackDeletions())
+                .snapshotFiles(env.isSnapshotFiles())
+                .trackOperations(env.isTrackOperations())
+                .stackDepth((int) env.getStackDepth())
+                .reportInterval((int) env.getReportInterval())
+                .maxDeletionHistory((int) env.getMaxDeletionHistory())
+                .ndArrayTracking(env.isNDArrayTracking())
+                .dataBufferTracking(env.isDataBufferTracking())
+                .tadCacheTracking(env.isTADCacheTracking())
+                .shapeCacheTracking(env.isShapeCacheTracking())
+                .opContextTracking(env.isOpContextTracking())
+                .funcTracePrintAllocate(env.isFuncTracePrintAllocate())
+                .funcTracePrintDeallocate(env.isFuncTracePrintDeallocate())
+                .funcTracePrintJavaOnly(env.isFuncTracePrintJavaOnly())
+                .logNativeNDArrayCreation(env.isLogNativeNDArrayCreation())
+                .logNDArrayEvents(env.isLogNDArrayEvents())
+                .truncateNDArrayLogStrings(env.isTruncateNDArrayLogStrings())
+                .numWorkspaceEventsToKeep(env.numWorkspaceEventsToKeep())
+                .checkInputChange(env.isCheckInputChange())
+                .checkOutputChange(env.isCheckOutputChange())
+                .trackWorkspaceOpenClose(env.isTrackWorkspaceOpenClose())
+                .deleteShapeInfo(env.isDeleteShapeInfo())
+                .deletePrimary(env.isDeletePrimary())
+                .deleteSpecial(env.isDeleteSpecial())
+                .variableTracingEnabled(env.isVariableTracingEnabled())
+                .javacppLoggerDebug("true".equals(System.getProperty("org.bytedeco.javacpp.logger.debug")))
+                .javacppPathsFirst("true".equals(System.getProperty("org.bytedeco.javacpp.pathsFirst")))
+                .blasSerializationEnabled(currentConfig != null ? currentConfig.blasSerializationEnabled() : true)
+                .openBlasThreads(currentConfig != null ? currentConfig.openBlasThreads() : 1)
+                .ompNumThreads(ompThreadsOverride)
+                // CUDA settings - only populated if running on CUDA backend
+                .cudaCurrentDevice(isCuda ? env.cudaCurrentDevice() : null)
+                .cudaMemoryPinned(isCuda ? env.cudaMemoryPinned() : null)
+                .cudaUseManagedMemory(isCuda ? env.cudaUseManagedMemory() : null)
+                .cudaMemoryPoolSize(isCuda ? env.cudaMemoryPoolSize() : null)
+                .cudaForceP2P(isCuda ? env.cudaForceP2P() : null)
+                .cudaAllocatorEnabled(isCuda ? env.cudaAllocatorEnabled() : null)
+                .cudaMaxBlocks(isCuda ? env.cudaMaxBlocks() : null)
+                .cudaMaxThreadsPerBlock(isCuda ? env.cudaMaxThreadsPerBlock() : null)
+                .cudaAsyncExecution(isCuda ? env.cudaAsyncExecution() : null)
+                .cudaStreamLimit(isCuda ? env.cudaStreamLimit() : null)
+                .cudaUseDeviceHost(isCuda ? env.cudaUseDeviceHost() : null)
+                .cudaEventLimit(isCuda ? env.cudaEventLimit() : null)
+                .cudaCachingAllocatorLimit(isCuda ? env.cudaCachingAllocatorLimit() : null)
+                .cudaUseUnifiedMemory(isCuda ? env.cudaUseUnifiedMemory() : null)
+                .cudaPrefetchSize(isCuda ? env.cudaPrefetchSize() : null)
+                .cudaGraphOptimization(isCuda ? env.cudaGraphOptimization() : null)
+                .cudaTensorCoreEnabled(isCuda ? env.cudaTensorCoreEnabled() : null)
+                .cudaBlockingSync(isCuda ? env.cudaBlockingSync() : null)
+                .cudaDeviceSchedule(isCuda ? env.cudaDeviceSchedule() : null)
+                .cudaStackSize(isCuda ? env.cudaStackSize() : null)
+                .cudaMallocHeapSize(isCuda ? env.cudaMallocHeapSize() : null)
+                .cudaPrintfFifoSize(isCuda ? env.cudaPrintfFifoSize() : null)
+                .cudaDevRuntimeSyncDepth(isCuda ? env.cudaDevRuntimeSyncDepth() : null)
+                .cudaDevRuntimePendingLaunchCount(isCuda ? env.cudaDevRuntimePendingLaunchCount() : null)
+                .cudaMaxL2FetchGranularity(isCuda ? env.cudaMaxL2FetchGranularity() : null)
+                .cudaPersistingL2CacheSize(isCuda ? env.cudaPersistingL2CacheSize() : null)
+                // Triton settings
+                .tritonBuildThreads(isCuda ? env.tritonBuildThreads() : null)
+                .tritonCacheEnabled(isCuda ? env.tritonCacheEnabled() : null)
+                .tritonVerbose(isCuda ? env.tritonVerbose() : null)
+                .tritonAlwaysCompile(isCuda ? env.tritonAlwaysCompile() : null)
+                .tritonNumWarps(isCuda ? env.tritonNumWarps() : null)
+                .tritonNumStages(isCuda ? env.tritonNumStages() : null)
+                .tritonNumCTAs(isCuda ? env.tritonNumCTAs() : null)
+                .tritonEnableFpFusion(isCuda ? env.tritonEnableFpFusion() : null)
+                .tritonCacheDir(isCuda ? env.tritonCacheDir() : null)
+                .tritonDumpDir(isCuda ? env.tritonDumpDir() : null)
+                .tritonOverrideArch(isCuda ? env.tritonOverrideArch() : null)
+                // DSP/optimizer - capture from system properties (these are set by config, not ND4J env)
+                .optimizerEnabled(getBoolProp(ND4JSystemProperties.OPTIMIZER_ENABLED))
+                .optimizerFp16(getBoolProp(ND4JSystemProperties.OPTIMIZER_FP16))
+                .dspNoFreeze(getBoolProp(ND4JSystemProperties.DSP_NO_FREEZE))
+                .dspNoNativeDecode(getBoolProp(ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS))
+                .dspNoAttnOverride(getBoolProp(ND4JSystemProperties.DSP_NO_ATTN_OVERRIDE))
+                .dspNoDirect(getBoolProp(ND4JSystemProperties.DSP_NO_DIRECT))
+                .tritonSkipKernels(getBoolProp(ND4JSystemProperties.TRITON_SKIP_KERNELS))
+                .tritonTf32(getBoolProp(ND4JSystemProperties.TRITON_TF32))
+                .cublasDisableWorkspace("0".equals(System.getProperty(ND4JSystemProperties.CUBLAS_CAPTURE_WORKSPACE)) ? true : null)
+                .dspDiagnostics(System.getProperty(ND4JSystemProperties.DSP_DIAGNOSTICS))
+                .opTiming(getBoolProp(ND4JSystemProperties.OP_TIMING))
+                .build();
+    }
+
+    private static Boolean getBoolProp(String key) {
+        String val = System.getProperty(key);
+        return val != null ? Boolean.parseBoolean(val) : null;
     }
 
     /**
@@ -328,7 +471,19 @@ public record Nd4jEnvironmentConfig(
                 other.tritonEnableFpFusion() != null ? other.tritonEnableFpFusion() : this.tritonEnableFpFusion(),
                 other.tritonCacheDir() != null ? other.tritonCacheDir() : this.tritonCacheDir(),
                 other.tritonDumpDir() != null ? other.tritonDumpDir() : this.tritonDumpDir(),
-                other.tritonOverrideArch() != null ? other.tritonOverrideArch() : this.tritonOverrideArch()
+                other.tritonOverrideArch() != null ? other.tritonOverrideArch() : this.tritonOverrideArch(),
+                // DSP/optimizer settings
+                other.optimizerEnabled() != null ? other.optimizerEnabled() : this.optimizerEnabled(),
+                other.optimizerFp16() != null ? other.optimizerFp16() : this.optimizerFp16(),
+                other.dspNoFreeze() != null ? other.dspNoFreeze() : this.dspNoFreeze(),
+                other.dspNoNativeDecode() != null ? other.dspNoNativeDecode() : this.dspNoNativeDecode(),
+                other.dspNoAttnOverride() != null ? other.dspNoAttnOverride() : this.dspNoAttnOverride(),
+                other.dspNoDirect() != null ? other.dspNoDirect() : this.dspNoDirect(),
+                other.tritonSkipKernels() != null ? other.tritonSkipKernels() : this.tritonSkipKernels(),
+                other.tritonTf32() != null ? other.tritonTf32() : this.tritonTf32(),
+                other.cublasDisableWorkspace() != null ? other.cublasDisableWorkspace() : this.cublasDisableWorkspace(),
+                other.dspDiagnostics() != null ? other.dspDiagnostics() : this.dspDiagnostics(),
+                other.opTiming() != null ? other.opTiming() : this.opTiming()
         );
     }
 
@@ -424,6 +579,18 @@ public record Nd4jEnvironmentConfig(
         private String tritonCacheDir;
         private String tritonDumpDir;
         private String tritonOverrideArch;
+        // DSP/optimizer fields
+        private Boolean optimizerEnabled;
+        private Boolean optimizerFp16;
+        private Boolean dspNoFreeze;
+        private Boolean dspNoNativeDecode;
+        private Boolean dspNoAttnOverride;
+        private Boolean dspNoDirect;
+        private Boolean tritonSkipKernels;
+        private Boolean tritonTf32;
+        private Boolean cublasDisableWorkspace;
+        private String dspDiagnostics;
+        private Boolean opTiming;
 
         public Builder maxThreads(Integer maxThreads) { this.maxThreads = maxThreads; return this; }
         public Builder maxMasterThreads(Integer maxMasterThreads) { this.maxMasterThreads = maxMasterThreads; return this; }
@@ -509,6 +676,18 @@ public record Nd4jEnvironmentConfig(
         public Builder tritonCacheDir(String tritonCacheDir) { this.tritonCacheDir = tritonCacheDir; return this; }
         public Builder tritonDumpDir(String tritonDumpDir) { this.tritonDumpDir = tritonDumpDir; return this; }
         public Builder tritonOverrideArch(String tritonOverrideArch) { this.tritonOverrideArch = tritonOverrideArch; return this; }
+        // DSP/optimizer builder methods
+        public Builder optimizerEnabled(Boolean optimizerEnabled) { this.optimizerEnabled = optimizerEnabled; return this; }
+        public Builder optimizerFp16(Boolean optimizerFp16) { this.optimizerFp16 = optimizerFp16; return this; }
+        public Builder dspNoFreeze(Boolean dspNoFreeze) { this.dspNoFreeze = dspNoFreeze; return this; }
+        public Builder dspNoNativeDecode(Boolean dspNoNativeDecode) { this.dspNoNativeDecode = dspNoNativeDecode; return this; }
+        public Builder dspNoAttnOverride(Boolean dspNoAttnOverride) { this.dspNoAttnOverride = dspNoAttnOverride; return this; }
+        public Builder dspNoDirect(Boolean dspNoDirect) { this.dspNoDirect = dspNoDirect; return this; }
+        public Builder tritonSkipKernels(Boolean tritonSkipKernels) { this.tritonSkipKernels = tritonSkipKernels; return this; }
+        public Builder tritonTf32(Boolean tritonTf32) { this.tritonTf32 = tritonTf32; return this; }
+        public Builder cublasDisableWorkspace(Boolean cublasDisableWorkspace) { this.cublasDisableWorkspace = cublasDisableWorkspace; return this; }
+        public Builder dspDiagnostics(String dspDiagnostics) { this.dspDiagnostics = dspDiagnostics; return this; }
+        public Builder opTiming(Boolean opTiming) { this.opTiming = opTiming; return this; }
 
         public Nd4jEnvironmentConfig build() {
             return new Nd4jEnvironmentConfig(
@@ -535,7 +714,11 @@ public record Nd4jEnvironmentConfig(
                     // Triton settings
                     tritonBuildThreads, tritonCacheEnabled, tritonVerbose, tritonAlwaysCompile,
                     tritonNumWarps, tritonNumStages, tritonNumCTAs, tritonEnableFpFusion,
-                    tritonCacheDir, tritonDumpDir, tritonOverrideArch
+                    tritonCacheDir, tritonDumpDir, tritonOverrideArch,
+                    // DSP/optimizer settings
+                    optimizerEnabled, optimizerFp16, dspNoFreeze, dspNoNativeDecode,
+                    dspNoAttnOverride, dspNoDirect, tritonSkipKernels, tritonTf32,
+                    cublasDisableWorkspace, dspDiagnostics, opTiming
             );
         }
     }

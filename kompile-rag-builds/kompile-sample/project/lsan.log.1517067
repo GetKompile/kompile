@@ -1,0 +1,565 @@
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_scanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_sscanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_fscanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_vscanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_vsscanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_vfscanf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_printf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_sprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_snprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_fprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_vprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_vsprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_vsnprintf'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc99_vfprintf'
+==1517067==Registered root region at 0x7fc55b101e80 of size 128
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b101e80 of size 128
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__b64_ntop'
+==1517067==Registered root region at 0x7fc55b101e80 of size 128
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b101e80 of size 128
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__b64_pton'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_strtoimax'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_strtoumax'
+==1517067==Registered root region at 0x7fc55af02620 of size 160
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55af02620 of size 160
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept 'pthread_mutexattr_getrobust_np'
+==1517067==Registered root region at 0x7fc55b101e80 of size 128
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b101e80 of size 128
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept 'xdr_quad_t'
+==1517067==Registered root region at 0x7fc55b101e80 of size 128
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b101e80 of size 128
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept 'xdr_u_quad_t'
+==1517067==Registered root region at 0x7fc55b101e80 of size 128
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b101e80 of size 128
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept 'xdr_destroy'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_strtol'
+==1517067==Registered root region at 0x7fc55b702250 of size 144
+==1517067==Registered root region at 0x7fc55b3007a0 of size 32
+==1517067==Unregistered root region at 0x7fc55b702250 of size 144
+==1517067==Unregistered root region at 0x7fc55b3007a0 of size 32
+==1517067==AddressSanitizer: failed to intercept '__isoc23_strtoll'
+==1517067==AddressSanitizer: libc interceptors initialized
+|| `[0x10007fff8000, 0x7fffffffffff]` || HighMem    ||
+|| `[0x02008fff7000, 0x10007fff7fff]` || HighShadow ||
+|| `[0x00008fff7000, 0x02008fff6fff]` || ShadowGap  ||
+|| `[0x00007fff8000, 0x00008fff6fff]` || LowShadow  ||
+|| `[0x000000000000, 0x00007fff7fff]` || LowMem     ||
+MemToShadow(shadow): 0x00008fff7000 0x000091ff6dff 0x004091ff6e00 0x02008fff6fff
+redzone=16
+max_redzone=2048
+quarantine_size_mb=256M
+thread_local_quarantine_size_kb=1024K
+malloc_context_size=30
+SHADOW_SCALE: 3
+SHADOW_GRANULARITY: 8
+SHADOW_OFFSET: 0x00007fff8000
+==1517067==Installed the sigaction for signal 11
+==1517067==Installed the sigaction for signal 7
+==1517067==Installed the sigaction for signal 8
+==1517067==T0: FakeStack created: 0x7bc559bd5000 -- 0x7bc55a6de000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T0: stack [0x7fffc3710000,0x7fffc3f10000) size 0x800000; local=0x7fffc3f05e34
+==1517067==AddressSanitizer Init done
+==1517067==T1: FakeStack created: 0x7bc5566f7000 -- 0x7bc557200000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T1: stack [0x7fc55b400000,0x7fc55b4feec0) size 0xfeec0; local=0x7fc55b4fed34
+==1517067==T2: FakeStack created: 0x7bbd69227000 -- 0x7bbd69d30000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T2: stack [0x7bc5308a5000,0x7bc5309a4ec0) size 0xffec0; local=0x7bc5309a4d34
+==1517067==T3: FakeStack created: 0x7bbd6871e000 -- 0x7bbd69227000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T3: stack [0x7bc5307a3000,0x7bc5308a2ec0) size 0xffec0; local=0x7bc5308a2d34
+==1517067==T4: FakeStack created: 0x7bbd67c15000 -- 0x7bbd6871e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T4: stack [0x7bc5306a1000,0x7bc5307a0ec0) size 0xffec0; local=0x7bc5307a0d34
+==1517067==T5: FakeStack created: 0x7bbd63ee8000 -- 0x7bbd649f1000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T5: stack [0x7bbd649f2000,0x7bbd64af1ec0) size 0xffec0; local=0x7bbd64af1d34
+==1517067==T6: FakeStack created: 0x7bbd632dd000 -- 0x7bbd63de6000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T6: stack [0x7bbd63de7000,0x7bbd63ee6ec0) size 0xffec0; local=0x7bbd63ee6d34
+==1517067==T7: FakeStack created: 0x7bbd1d4f7000 -- 0x7bbd1e000000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T7: stack [0x7bbd631dc000,0x7bbd632dbec0) size 0xffec0; local=0x7bbd632dbd34
+==1517067==T8: FakeStack created: 0x7bbd1c9ee000 -- 0x7bbd1d4f7000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T8: stack [0x7bbd630db000,0x7bbd631d9ec0) size 0xfeec0; local=0x7bbd631d9d34
+==1517067==T9: FakeStack created: 0x7bbd1bde5000 -- 0x7bbd1c8ee000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T9: stack [0x7bbd1c8ee000,0x7bbd1c9ecec0) size 0xfeec0; local=0x7bbd1c9ecd34
+==1517067==T10: FakeStack created: 0x7bbd1b1dc000 -- 0x7bbd1bce5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T10: stack [0x7bbd1bce5000,0x7bbd1bde3ec0) size 0xfeec0; local=0x7bbd1bde3d34
+==1517067==T11: FakeStack created: 0x7bbd1a5d3000 -- 0x7bbd1b0dc000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T11: stack [0x7bbd1b0dc000,0x7bbd1b1daec0) size 0xfeec0; local=0x7bbd1b1dad34
+==1517067==T12: FakeStack created: 0x7bbd199ca000 -- 0x7bbd1a4d3000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T12: stack [0x7bbd1a4d3000,0x7bbd1a5d1ec0) size 0xfeec0; local=0x7bbd1a5d1d34
+==1517067==T13: FakeStack created: 0x7bbd18dc1000 -- 0x7bbd198ca000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T13: stack [0x7bbd198ca000,0x7bbd199c8ec0) size 0xfeec0; local=0x7bbd199c8d34
+==1517067==T14: FakeStack created: 0x7bbd181b8000 -- 0x7bbd18cc1000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T14: stack [0x7bbd18cc1000,0x7bbd18dbfec0) size 0xfeec0; local=0x7bbd18dbfd34
+==1517067==T15: FakeStack created: 0x7bbd175af000 -- 0x7bbd180b8000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T15: stack [0x7bbd180b8000,0x7bbd181b6ec0) size 0xfeec0; local=0x7bbd181b6d34
+==1517067==T16: FakeStack created: 0x7bbd169a6000 -- 0x7bbd174af000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T16: stack [0x7bbd174af000,0x7bbd175adec0) size 0xfeec0; local=0x7bbd175add34
+==1517067==T17: FakeStack created: 0x7bbd15d9d000 -- 0x7bbd168a6000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T17: stack [0x7bbd168a6000,0x7bbd169a4ec0) size 0xfeec0; local=0x7bbd169a4d34
+==1517067==T18: FakeStack created: 0x7bbd15194000 -- 0x7bbd15c9d000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T18: stack [0x7bbd15c9d000,0x7bbd15d9bec0) size 0xfeec0; local=0x7bbd15d9bd34
+==1517067==T19: FakeStack created: 0x7bbd1458b000 -- 0x7bbd15094000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T19: stack [0x7bbd15094000,0x7bbd15192ec0) size 0xfeec0; local=0x7bbd15192d34
+==1517067==T20: FakeStack created: 0x7bbd13982000 -- 0x7bbd1448b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T20: stack [0x7bbd1448b000,0x7bbd14589ec0) size 0xfeec0; local=0x7bbd14589d34
+==1517067==T21: FakeStack created: 0x7bbd12d79000 -- 0x7bbd13882000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T21: stack [0x7bbd13882000,0x7bbd13980ec0) size 0xfeec0; local=0x7bbd13980d34
+==1517067==T22: FakeStack created: 0x7bbd12170000 -- 0x7bbd12c79000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T22: stack [0x7bbd12c79000,0x7bbd12d77ec0) size 0xfeec0; local=0x7bbd12d77d34
+==1517067==T23: FakeStack created: 0x7bbd11565000 -- 0x7bbd1206e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T23: stack [0x7bbd1206f000,0x7bbd1216eec0) size 0xffec0; local=0x7bbd1216ed34
+==1517067==T24: FakeStack created: 0x7bbd1095c000 -- 0x7bbd11465000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T24: stack [0x7bbd11465000,0x7bbd11563ec0) size 0xfeec0; local=0x7bbd11563d34
+==1517067==T25: FakeStack created: 0x7bbd0ee7c000 -- 0x7bbd0f985000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T25: stack [0x7bbd0f985000,0x7bbd0fa83ec0) size 0xfeec0; local=0x7bbd0fa83d34
+==1517067==T26: FakeStack created: 0x7bbd0cd22000 -- 0x7bbd0d82b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T26: stack [0x7bbd0d82b000,0x7bbd0d929ec0) size 0xfeec0; local=0x7bbd0d929d34
+==1517067==T25 TSDDtor
+==1517067==T25 exited
+==1517067==T18 TSDDtor
+==1517067==T18 exited
+==1517067==T27: FakeStack created: 0x7bbd0ee7c000 -- 0x7bbd0f985000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T27: stack [0x7bbd15c9d000,0x7bbd15d9bec0) size 0xfeec0; local=0x7bbd15d9bd34
+==1517067==T28: FakeStack created: 0x7bbd07cf5000 -- 0x7bbd087fe000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T28: stack [0x7bbd0f985000,0x7bbd0fa83ec0) size 0xfeec0; local=0x7bbd0fa83d34
+==1517067==T29: FakeStack created: 0x7bbd07092000 -- 0x7bbd07b9b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T29: stack [0x7bbd07b9c000,0x7bbd07c9bec0) size 0xffec0; local=0x7bbd07c9bd34
+==1517067==T30: FakeStack created: 0x7bbd0646b000 -- 0x7bbd06f74000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T30: stack [0x7bbd06f75000,0x7bbd07074ec0) size 0xffec0; local=0x7bbd07074d34
+==1517067==T31: FakeStack created: 0x7bbd05844000 -- 0x7bbd0634d000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T31: stack [0x7bbd0634e000,0x7bbd0644dec0) size 0xffec0; local=0x7bbd0644dd34
+==1517067==T32: FakeStack created: 0x7bbd04c1d000 -- 0x7bbd05726000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T32: stack [0x7bbd05727000,0x7bbd05826ec0) size 0xffec0; local=0x7bbd05826d34
+==1517067==T33: FakeStack created: 0x7bbd03ff6000 -- 0x7bbd04aff000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T33: stack [0x7bbd04b00000,0x7bbd04bffec0) size 0xffec0; local=0x7bbd04bffd34
+==1517067==T34: FakeStack created: 0x7bbd033cf000 -- 0x7bbd03ed8000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T34: stack [0x7bbd03ed9000,0x7bbd03fd8ec0) size 0xffec0; local=0x7bbd03fd8d34
+==1517067==T35: FakeStack created: 0x7bbd027a8000 -- 0x7bbd032b1000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T35: stack [0x7bbd032b2000,0x7bbd033b1ec0) size 0xffec0; local=0x7bbd033b1d34
+==1517067==T36: FakeStack created: 0x7bbd01b81000 -- 0x7bbd0268a000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T36: stack [0x7bbd0268b000,0x7bbd0278aec0) size 0xffec0; local=0x7bbd0278ad34
+==1517067==T37: FakeStack created: 0x7bbd00f5a000 -- 0x7bbd01a63000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T37: stack [0x7bbd01a64000,0x7bbd01b63ec0) size 0xffec0; local=0x7bbd01b63d34
+==1517067==T38: FakeStack created: 0x7bbd00333000 -- 0x7bbd00e3c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T38: stack [0x7bbd00e3d000,0x7bbd00f3cec0) size 0xffec0; local=0x7bbd00f3cd34
+==1517067==T39: FakeStack created: 0x7bbcff70c000 -- 0x7bbd00215000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T39: stack [0x7bbd00216000,0x7bbd00315ec0) size 0xffec0; local=0x7bbd00315d34
+==1517067==T40: FakeStack created: 0x7bbcfeae5000 -- 0x7bbcff5ee000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T40: stack [0x7bbcff5ef000,0x7bbcff6eeec0) size 0xffec0; local=0x7bbcff6eed34
+==1517067==T41: FakeStack created: 0x7bbcfdebe000 -- 0x7bbcfe9c7000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T41: stack [0x7bbcfe9c8000,0x7bbcfeac7ec0) size 0xffec0; local=0x7bbcfeac7d34
+==1517067==T42: FakeStack created: 0x7bbcfd297000 -- 0x7bbcfdda0000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T42: stack [0x7bbcfdda1000,0x7bbcfdea0ec0) size 0xffec0; local=0x7bbcfdea0d34
+==1517067==T43: FakeStack created: 0x7bbcfc670000 -- 0x7bbcfd179000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T43: stack [0x7bbcfd17a000,0x7bbcfd279ec0) size 0xffec0; local=0x7bbcfd279d34
+==1517067==T44: FakeStack created: 0x7bbcfba49000 -- 0x7bbcfc552000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T44: stack [0x7bbcfc553000,0x7bbcfc652ec0) size 0xffec0; local=0x7bbcfc652d34
+==1517067==T45: FakeStack created: 0x7bbcfae22000 -- 0x7bbcfb92b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T45: stack [0x7bbcfb92c000,0x7bbcfba2bec0) size 0xffec0; local=0x7bbcfba2bd34
+==1517067==T46: FakeStack created: 0x7bbcfa1fb000 -- 0x7bbcfad04000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T46: stack [0x7bbcfad05000,0x7bbcfae04ec0) size 0xffec0; local=0x7bbcfae04d34
+==1517067==T47: FakeStack created: 0x7bbcf95d4000 -- 0x7bbcfa0dd000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T47: stack [0x7bbcfa0de000,0x7bbcfa1ddec0) size 0xffec0; local=0x7bbcfa1ddd34
+==1517067==T48: FakeStack created: 0x7bbcf89ad000 -- 0x7bbcf94b6000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T48: stack [0x7bbcf94b7000,0x7bbcf95b6ec0) size 0xffec0; local=0x7bbcf95b6d34
+==1517067==T49: FakeStack created: 0x7bbcf7d86000 -- 0x7bbcf888f000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T49: stack [0x7bbcf8890000,0x7bbcf898fec0) size 0xffec0; local=0x7bbcf898fd34
+==1517067==T50: FakeStack created: 0x7bbcf715f000 -- 0x7bbcf7c68000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T50: stack [0x7bbcf7c69000,0x7bbcf7d68ec0) size 0xffec0; local=0x7bbcf7d68d34
+==1517067==T51: FakeStack created: 0x7bbbf18f2000 -- 0x7bbbf23fb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T51: stack [0x7bbbf4400000,0x7bbbf4bfeec0) size 0x7feec0; local=0x7bbbf4bfed34
+==1517067==T52: FakeStack created: 0x7bbbf05e8000 -- 0x7bbbf10f1000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T52: stack [0x7bbbf3bff000,0x7bbbf43fdec0) size 0x7feec0; local=0x7bbbf43fdd34
+==1517067==T53: FakeStack created: 0x7bbbefadf000 -- 0x7bbbf05e8000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T53: stack [0x7bbbf33fe000,0x7bbbf3bfcec0) size 0x7feec0; local=0x7bbbf3bfcd34
+==1517067==T54: FakeStack created: 0x7bbbeefd6000 -- 0x7bbbefadf000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T54: stack [0x7bbbf2bfd000,0x7bbbf33fbec0) size 0x7feec0; local=0x7bbbf33fbd34
+==1517067==T55: FakeStack created: 0x7bbbed4cb000 -- 0x7bbbedfd4000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T55: stack [0x7bbbf23fc000,0x7bbbf2bfaec0) size 0x7feec0; local=0x7bbbf2bfad34
+==1517067==T57: FakeStack created: 0x7bbbeae9b000 -- 0x7bbbeb9a4000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T56: FakeStack created: 0x7bbbeb9a4000 -- 0x7bbbec4ad000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T57: stack [0x7bbbee7d6000,0x7bbbeefd4ec0) size 0x7feec0; local=0x7bbbeefd4d34
+==1517067==T56: stack [0x7bbbf10f2000,0x7bbbf18f0ec0) size 0x7feec0; local=0x7bbbf18f0d34
+==1517067==T58: FakeStack created: 0x7bbbe9b83000 -- 0x7bbbea68c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T58: stack [0x7bbbedfd5000,0x7bbbee7d3ec0) size 0x7feec0; local=0x7bbbee7d3d34
+==1517067==T59: FakeStack created: 0x7bbbe8032000 -- 0x7bbbe8b3b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T59: stack [0x7bbbecccb000,0x7bbbed4c9ec0) size 0x7feec0; local=0x7bbbed4c9d34
+==1517067==T61: FakeStack created: 0x7bbbe6cfe000 -- 0x7bbbe7807000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T61: stack [0x7bbbea68d000,0x7bbbeae8bec0) size 0x7feec0; local=0x7bbbeae8bd34
+==1517067==T60: FakeStack created: 0x7bbbe56ec000 -- 0x7bbbe61f5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T60: stack [0x7bbbec4ae000,0x7bbbeccacec0) size 0x7feec0; local=0x7bbbeccacd34
+==1517067==T63: FakeStack created: 0x7bbbe61f5000 -- 0x7bbbe6cfe000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T63: stack [0x7bbbe8b3c000,0x7bbbe933aec0) size 0x7feec0; local=0x7bbbe933ad34
+==1517067==T62: FakeStack created: 0x7bbbe3ba9000 -- 0x7bbbe46b2000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T62: stack [0x7bbbe934b000,0x7bbbe9b49ec0) size 0x7feec0; local=0x7bbbe9b49d34
+==1517067==T65: FakeStack created: 0x7bbbe2883000 -- 0x7bbbe338c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T65: stack [0x7bbbe4eec000,0x7bbbe56eaec0) size 0x7feec0; local=0x7bbbe56ead34
+==1517067==T64: FakeStack created: 0x7bbbe1d7a000 -- 0x7bbbe2883000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T64: stack [0x7bbbe7816000,0x7bbbe8014ec0) size 0x7feec0; local=0x7bbbe8014d34
+==1517067==T66: FakeStack created: 0x7bbbdf720000 -- 0x7bbbe0229000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T67: FakeStack created: 0x7bbbe0229000 -- 0x7bbbe0d32000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T66: stack [0x7bbbe46b3000,0x7bbbe4eb1ec0) size 0x7feec0; local=0x7bbbe4eb1d34
+==1517067==T67: stack [0x7bbbe338d000,0x7bbbe3b8bec0) size 0x7feec0; local=0x7bbbe3b8bd34
+==1517067==T68: FakeStack created: 0x7bbbde416000 -- 0x7bbbdef1f000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T68: stack [0x7bbbe155e000,0x7bbbe1d5cec0) size 0x7feec0; local=0x7bbbe1d5cd34
+==1517067==T69: FakeStack created: 0x7bbbdd0c6000 -- 0x7bbbddbcf000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T69: stack [0x7bbbe0d41000,0x7bbbe153fec0) size 0x7feec0; local=0x7bbbe153fd34
+==1517067==T70: FakeStack created: 0x7bbbdb59f000 -- 0x7bbbdc0a8000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T70: stack [0x7bbbdef20000,0x7bbbdf71eec0) size 0x7feec0; local=0x7bbbdf71ed34
+==1517067==T71: FakeStack created: 0x7bbbda279000 -- 0x7bbbdad82000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T71: stack [0x7bbbddbde000,0x7bbbde3dcec0) size 0x7feec0; local=0x7bbbde3dcd34
+==1517067==T72: FakeStack created: 0x7bbbd8f45000 -- 0x7bbbd9a4e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T72: stack [0x7bbbdc8c6000,0x7bbbdd0c4ec0) size 0x7feec0; local=0x7bbbdd0c4d34
+==1517067==T73: FakeStack created: 0x7bbbd843c000 -- 0x7bbbd8f45000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T73: stack [0x7bbbdc0a9000,0x7bbbdc8a7ec0) size 0x7feec0; local=0x7bbbdc8a7d34
+==1517067==T74: FakeStack created: 0x7bbbd685d000 -- 0x7bbbd7366000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T74: stack [0x7bbbdad83000,0x7bbbdb581ec0) size 0x7feec0; local=0x7bbbdb581d34
+==1517067==T75: FakeStack created: 0x7bbbd5529000 -- 0x7bbbd6032000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T75: stack [0x7bbbd9a5d000,0x7bbbda25bec0) size 0x7feec0; local=0x7bbbda25bd34
+==1517067==T76: FakeStack created: 0x7bbbd4203000 -- 0x7bbbd4d0c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T76: stack [0x7bbbd7c3c000,0x7bbbd843aec0) size 0x7feec0; local=0x7bbbd843ad34
+==1517067==T77: FakeStack created: 0x7bbbd26dc000 -- 0x7bbbd31e5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T77: stack [0x7bbbd741f000,0x7bbbd7c1dec0) size 0x7feec0; local=0x7bbbd7c1dd34
+==1517067==T78: FakeStack created: 0x7bbbd1bd3000 -- 0x7bbbd26dc000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T78: stack [0x7bbbd6041000,0x7bbbd683fec0) size 0x7feec0; local=0x7bbbd683fd34
+==1517067==T79: FakeStack created: 0x7bbbd10bc000 -- 0x7bbbd1bc5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T79: stack [0x7bbbd4d29000,0x7bbbd5527ec0) size 0x7feec0; local=0x7bbbd5527d34
+==1517067==T81: FakeStack created: 0x7bbbd05a5000 -- 0x7bbbd10ae000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T81: stack [0x7bbbd31e6000,0x7bbbd39e4ec0) size 0x7feec0; local=0x7bbbd39e4d34
+==1517067==T80: FakeStack created: 0x7bbbcfa9c000 -- 0x7bbbd05a5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T80: stack [0x7bbbd3a03000,0x7bbbd4201ec0) size 0x7feec0; local=0x7bbbd4201d34
+==1517067==T82: FakeStack created: 0x7bbbce6f7000 -- 0x7bbbcf200000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T82: stack [0x7bbbcf44a000,0x7bbbcf548ec0) size 0xfeec0; local=0x7bbbcf548d34
+==1517067==T83: FakeStack created: 0x7bbac8eb6000 -- 0x7bbac99bf000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T83: stack [0x7bbacb1d1000,0x7bbacb9cfec0) size 0x7feec0; local=0x7bbacb9cfd34
+==1517067==T84: FakeStack created: 0x7bbac7b90000 -- 0x7bbac8699000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T85: FakeStack created: 0x7bbac7087000 -- 0x7bbac7b90000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T84: stack [0x7bbaca9d0000,0x7bbacb1ceec0) size 0x7feec0; local=0x7bbacb1ced34
+==1517067==T85: stack [0x7bbaca1cf000,0x7bbaca9cdec0) size 0x7feec0; local=0x7bbaca9cdd34
+==1517067==T87: FakeStack created: 0x7bbac423a000 -- 0x7bbac4d43000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T87: stack [0x7bbac86b6000,0x7bbac8eb4ec0) size 0x7feec0; local=0x7bbac8eb4d34
+==1517067==T86: FakeStack created: 0x7bbac5544000 -- 0x7bbac604d000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T86: stack [0x7bbac99ce000,0x7bbaca1ccec0) size 0x7feec0; local=0x7bbaca1ccd34
+==1517067==T89: FakeStack created: 0x7bbac3715000 -- 0x7bbac421e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T88: FakeStack created: 0x7bbac2c0c000 -- 0x7bbac3715000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T89: stack [0x7bbac606a000,0x7bbac6868ec0) size 0x7feec0; local=0x7bbac6868d34
+==1517067==T88: stack [0x7bbac6887000,0x7bbac7085ec0) size 0x7feec0; local=0x7bbac7085d34
+==1517067==T90: FakeStack created: 0x7bbac08ba000 -- 0x7bbac13c3000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T90: stack [0x7bbac4d44000,0x7bbac5542ec0) size 0x7feec0; local=0x7bbac5542d34
+==1517067==T92: FakeStack created: 0x7bbabed85000 -- 0x7bbabf88e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T92: stack [0x7bbac1bd3000,0x7bbac23d1ec0) size 0x7feec0; local=0x7bbac23d1d34
+==1517067==T91: FakeStack created: 0x7bbabda5f000 -- 0x7bbabe568000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T91: stack [0x7bbac23fe000,0x7bbac2bfcec0) size 0x7feec0; local=0x7bbac2bfcd34
+==1517067==T93: FakeStack created: 0x7bbabbf2a000 -- 0x7bbabca33000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T93: stack [0x7bbac13c4000,0x7bbac1bc2ec0) size 0x7feec0; local=0x7bbac1bc2d34
+==1517067==T96: FakeStack created: 0x7bbab95f2000 -- 0x7bbaba0fb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T95: FakeStack created: 0x7bbaba0fb000 -- 0x7bbabac04000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T94: FakeStack created: 0x7bbabac04000 -- 0x7bbabb70d000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T96: stack [0x7bbabe577000,0x7bbabed75ec0) size 0x7feec0; local=0x7bbabed75d34
+==1517067==T95: stack [0x7bbabf88f000,0x7bbac008dec0) size 0x7feec0; local=0x7bbac008dd34
+==1517067==T94: stack [0x7bbac00ac000,0x7bbac08aaec0) size 0x7feec0; local=0x7bbac08aad34
+==1517067==T97: FakeStack created: 0x7bbab82b0000 -- 0x7bbab8db9000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T97: stack [0x7bbabd251000,0x7bbabda4fec0) size 0x7feec0; local=0x7bbabda4fd34
+==1517067==T98: FakeStack created: 0x7bbab778b000 -- 0x7bbab8294000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T98: stack [0x7bbabca34000,0x7bbabd232ec0) size 0x7feec0; local=0x7bbabd232d34
+==1517067==T99: FakeStack created: 0x7bbab6465000 -- 0x7bbab6f6e000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T99: stack [0x7bbabb70e000,0x7bbabbf0cec0) size 0x7feec0; local=0x7bbabbf0cd34
+==1517067==T101: FakeStack created: 0x7bbab4930000 -- 0x7bbab5439000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T101: stack [0x7bbab6f8b000,0x7bbab7789ec0) size 0x7feec0; local=0x7bbab7789d34
+==1517067==T100: FakeStack created: 0x7bbab3618000 -- 0x7bbab4121000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T100: stack [0x7bbab8dba000,0x7bbab95b8ec0) size 0x7feec0; local=0x7bbab95b8d34
+==1517067==T102: FakeStack created: 0x7bbab22f2000 -- 0x7bbab2dfb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T102: stack [0x7bbab5c65000,0x7bbab6463ec0) size 0x7feec0; local=0x7bbab6463d34
+==1517067==T104: FakeStack created: 0x7bbab0f72000 -- 0x7bbab1a7b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T104: stack [0x7bbab4130000,0x7bbab492eec0) size 0x7feec0; local=0x7bbab492ed34
+==1517067==T105: FakeStack created: 0x7bbaaf101000 -- 0x7bbaafc0a000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T105: stack [0x7bbab2e0a000,0x7bbab3608ec0) size 0x7feec0; local=0x7bbab3608d34
+==1517067==T103: FakeStack created: 0x7bbaafc18000 -- 0x7bbab0721000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T103: stack [0x7bbab5448000,0x7bbab5c46ec0) size 0x7feec0; local=0x7bbab5c46d34
+==1517067==T106: FakeStack created: 0x7bbaad5be000 -- 0x7bbaae0c7000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T106: stack [0x7bbab1ad6000,0x7bbab22d4ec0) size 0x7feec0; local=0x7bbab22d4d34
+==1517067==T108: FakeStack created: 0x7bbaaca99000 -- 0x7bbaad5a2000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T107: FakeStack created: 0x7bbaabf5f000 -- 0x7bbaaca68000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T108: stack [0x7bbaae8e5000,0x7bbaaf0e3ec0) size 0x7feec0; local=0x7bbaaf0e3d34
+==1517067==T107: stack [0x7bbab0722000,0x7bbab0f20ec0) size 0x7feec0; local=0x7bbab0f20d34
+==1517067==T109: FakeStack created: 0x7bbaaac39000 -- 0x7bbaab742000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T109: stack [0x7bbaae0d6000,0x7bbaae8d4ec0) size 0x7feec0; local=0x7bbaae8d4d34
+==1517067==T113: FakeStack created: 0x7bbaa87b1000 -- 0x7bbaa92ba000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T113: stack [0x7bbaa92bb000,0x7bbaa9ab9ec0) size 0x7feec0; local=0x7bbaa9ab9d34
+==1517067==T111: FakeStack created: 0x7bbaa7ca8000 -- 0x7bbaa87b1000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T111: stack [0x7bbaaa2d9000,0x7bbaaaad7ec0) size 0x7feec0; local=0x7bbaaaad7d34
+==1517067==T112: FakeStack created: 0x7bbaa719f000 -- 0x7bbaa7ca8000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T112: stack [0x7bbaa9aca000,0x7bbaaa2c8ec0) size 0x7feec0; local=0x7bbaaa2c8d34
+==1517067==T110: FakeStack created: 0x7bbaa6486000 -- 0x7bbaa6f8f000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T110: stack [0x7bbaab743000,0x7bbaabf41ec0) size 0x7feec0; local=0x7bbaabf41d34
+==1517067==T114: FakeStack created: 0x7bbaa3b26000 -- 0x7bbaa462f000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T114: stack [0x7bbaa4773000,0x7bbaa4871ec0) size 0xfeec0; local=0x7bbaa4871d34
+==1517067==T115: FakeStack created: 0x7bbaa2ce0000 -- 0x7bbaa37e9000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T115: stack [0x7bbaa37e9000,0x7bbaa38e7ec0) size 0xfeec0; local=0x7bbaa38e7d34
+==1517067==T116: FakeStack created: 0x7bba743cd000 -- 0x7bba74ed6000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T116: stack [0x7bbd0dee6000,0x7bbd0dfe5ec0) size 0xffec0; local=0x7bbd0dfe5d34
+==1517067==T117: FakeStack created: 0x7bba738c4000 -- 0x7bba743cd000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T117: stack [0x7bbd0dcd3000,0x7bbd0ddd2ec0) size 0xffec0; local=0x7bbd0ddd2d34
+==1517067==T118: FakeStack created: 0x7bba72dbb000 -- 0x7bba738c4000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T118: stack [0x7bbd0da9d000,0x7bbd0db9cec0) size 0xffec0; local=0x7bbd0db9cd34
+==1517067==T119: FakeStack created: 0x7bba71f1c000 -- 0x7bba72a25000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T119: stack [0x7bba72b78000,0x7bba72c77ec0) size 0xffec0; local=0x7bba72c77d34
+==1517067==T120: FakeStack created: 0x7bba71311000 -- 0x7bba71e1a000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T120: stack [0x7bba71e1b000,0x7bba71f1aec0) size 0xffec0; local=0x7bba71f1ad34
+==1517067==T121: FakeStack created: 0x7bba6f25a000 -- 0x7bba6fd63000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T121: stack [0x7bbd0e2f0000,0x7bbd0e3eeec0) size 0xfeec0; local=0x7bbd0e3eed34
+==1517067==T122: FakeStack created: 0x7bba6ceaa000 -- 0x7bba6d9b3000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T122: stack [0x7bba75c47000,0x7bba75d45ec0) size 0xfeec0; local=0x7bba75d45d34
+==1517067==T123: FakeStack created: 0x7bba6bf1d000 -- 0x7bba6ca26000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T123: stack [0x7bba6ca26000,0x7bba6cb24ec0) size 0xfeec0; local=0x7bba6cb24d34
+==1517067==T124: FakeStack created: 0x7bba6ab86000 -- 0x7bba6b68f000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T124: stack [0x7bbbcf87c000,0x7bbbcf97aec0) size 0xfeec0; local=0x7bbbcf97ad34
+==1517067==T124 TSDDtor
+==1517067==T124 exited
+==1517067==T121 TSDDtor
+==1517067==T121 exited
+==1517067==T125: FakeStack created: 0x7bba6f32f000 -- 0x7bba6fe38000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T125: stack [0x7bbd0e2f0000,0x7bbd0e3eeec0) size 0xfeec0; local=0x7bbd0e3eed34
+==1517067==T126: FakeStack created: 0x7bba67da5000 -- 0x7bba688ae000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T126: stack [0x7bbbcf87c000,0x7bbbcf97aec0) size 0xfeec0; local=0x7bbbcf97ad34
+==1517067==T127: FakeStack created: 0x7bba6729c000 -- 0x7bba67da5000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T127: stack [0x7bba70b6c000,0x7bba70c6aec0) size 0xfeec0; local=0x7bba70c6ad34
+==1517067==T128: FakeStack created: 0x7bba70063000 -- 0x7bba70b6c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T128: stack [0x7bbd104fc000,0x7bbd105faec0) size 0xfeec0; local=0x7bbd105fad34
+==1517067==T123 TSDDtor
+==1517067==T115 TSDDtor
+==1517067==T128 TSDDtor
+==1517067==T114 TSDDtor
+==1517067==T128 exited
+==1517067==T115 exited
+==1517067==T114 exited
+==1517067==T123 exited
+==1517067==T122 TSDDtor
+==1517067==T122 exited
+==1517067==T28 TSDDtor
+==1517067==T27 TSDDtor
+==1517067==T28 exited
+==1517067==T27 exited
+==1517067==T26 TSDDtor
+==1517067==T24 TSDDtor
+==1517067==T26 exited
+==1517067==T24 exited
+==1517067==T16 TSDDtor
+==1517067==T16 exited
+==1517067==T129: FakeStack created: 0x7bbd169a6000 -- 0x7bbd174af000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T129: stack [0x7bbd0f985000,0x7bbd0fa83ec0) size 0xfeec0; local=0x7bbd0fa83d34
+==1517067==T130: FakeStack created: 0x7bbd0ee7c000 -- 0x7bbd0f985000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T130: stack [0x7bbd11465000,0x7bbd11563ec0) size 0xfeec0; local=0x7bbd11563d34
+==1517067==T131: FakeStack created: 0x7bbd0cd22000 -- 0x7bbd0d82b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T131: stack [0x7bbd0d82b000,0x7bbd0d929ec0) size 0xfeec0; local=0x7bbd0d929d34
+==1517067==T131 TSDDtor
+==1517067==T131 exited
+==1517067==T132: FakeStack created: 0x7bbd0cd22000 -- 0x7bbd0d82b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T132: stack [0x7bbd0d82b000,0x7bbd0d929ec0) size 0xfeec0; local=0x7bbd0d929d34
+==1517067==T133: FakeStack created: 0x7bbd07cf5000 -- 0x7bbd087fe000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T133: stack [0x7bbd174af000,0x7bbd175adec0) size 0xfeec0; local=0x7bbd175add34
+==1517067==T134: FakeStack created: 0x7bbaa3c6a000 -- 0x7bbaa4773000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T134: stack [0x7bbaa37e9000,0x7bbaa38e7ec0) size 0xfeec0; local=0x7bbaa38e7d34
+==1517067==T135: FakeStack created: 0x7bbaa2ce0000 -- 0x7bbaa37e9000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T135: stack [0x7bbd15c9d000,0x7bbd15d9bec0) size 0xfeec0; local=0x7bbd15d9bd34
+==1517067==T136: FakeStack created: 0x7bba70063000 -- 0x7bba70b6c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T136: stack [0x7bbaa4773000,0x7bbaa4871ec0) size 0xfeec0; local=0x7bbaa4871d34
+==1517067==T137: FakeStack created: 0x7bba6d919000 -- 0x7bba6e422000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T137: stack [0x7bba6ca26000,0x7bba6cb24ec0) size 0xfeec0; local=0x7bba6cb24d34
+==1517067==T138: FakeStack created: 0x7bba6ce10000 -- 0x7bba6d919000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T138: stack [0x7bbd104fc000,0x7bbd105faec0) size 0xfeec0; local=0x7bbd105fad34
+==1517067==T139: FakeStack created: 0x7bba7513e000 -- 0x7bba75c47000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T139: stack [0x7bba75c47000,0x7bba75d45ec0) size 0xfeec0; local=0x7bba75d45d34
+==1517067==T140: FakeStack created: 0x7bba65f93000 -- 0x7bba66a9c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T140: stack [0x7bba68a99000,0x7bba68b97ec0) size 0xfeec0; local=0x7bba68b97d34
+==1517067==T141: FakeStack created: 0x7bba604f7000 -- 0x7bba61000000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T141: stack [0x7bba6c903000,0x7bba6ca01ec0) size 0xfeec0; local=0x7bba6ca01d34
+==1517067==T142: FakeStack created: 0x7bba5f9ee000 -- 0x7bba604f7000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T142: stack [0x7bba6c4fb000,0x7bba6c5f9ec0) size 0xfeec0; local=0x7bba6c5f9d34
+==1517067==T138 TSDDtor
+==1517067==T138 exited
+==1517067==T137 TSDDtor
+==1517067==T137 exited
+==1517067==T143: FakeStack created: 0x7bba6af88000 -- 0x7bba6ba91000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T143: stack [0x7bba6ca26000,0x7bba6cb24ec0) size 0xfeec0; local=0x7bba6cb24d34
+==1517067==T144: FakeStack created: 0x7bba6548a000 -- 0x7bba65f93000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T144: stack [0x7bbd104fc000,0x7bbd105faec0) size 0xfeec0; local=0x7bbd105fad34
+==1517067==T144 TSDDtor
+==1517067==T143 TSDDtor
+==1517067==T144 exited
+==1517067==T143 exited
+==1517067==T132 TSDDtor
+==1517067==T136 TSDDtor
+==1517067==T132 exited
+==1517067==T136 exited
+==1517067==T145: FakeStack created: 0x7bbd0cd22000 -- 0x7bbd0d82b000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T145: stack [0x7bbaa4773000,0x7bbaa4871ec0) size 0xfeec0; local=0x7bbaa4871d34
+==1517067==T139 TSDDtor
+==1517067==T139 exited
+==1517067==T140 TSDDtor
+==1517067==T140 exited
+==1517067==T133 TSDDtor
+==1517067==T133 exited
+==1517067==T146: FakeStack created: 0x7bba6d919000 -- 0x7bba6e422000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T146: stack [0x7bba68a99000,0x7bba68b97ec0) size 0xfeec0; local=0x7bba68b97d34
+==1517067==T146 TSDDtor
+==1517067==T146 exited
+==1517067==T147: FakeStack created: 0x7bba6d919000 -- 0x7bba6e422000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T147: stack [0x7bba68a99000,0x7bba68b97ec0) size 0xfeec0; local=0x7bba68b97d34
+==1517067==T148: FakeStack created: 0x7bba6b9f2000 -- 0x7bba6c4fb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T148: stack [0x7bbd174af000,0x7bbd175adec0) size 0xfeec0; local=0x7bbd175add34
+==1517067==T147 TSDDtor
+==1517067==T148 TSDDtor
+==1517067==T147 exited
+==1517067==T148 exited
+==1517067==T149: FakeStack created: 0x7bba6d919000 -- 0x7bba6e422000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T149: stack [0x7bbd174af000,0x7bbd175adec0) size 0xfeec0; local=0x7bbd175add34
+==1517067==T150: FakeStack created: 0x7bba6b9f2000 -- 0x7bba6c4fb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T150: stack [0x7bba68a99000,0x7bba68b97ec0) size 0xfeec0; local=0x7bba68b97d34
+==1517067==T151: FakeStack created: 0x7bba6aee9000 -- 0x7bba6b9f2000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T151: stack [0x7bba75c47000,0x7bba75d45ec0) size 0xfeec0; local=0x7bba75d45d34
+==1517067==T152: FakeStack created: 0x7bba6a3e0000 -- 0x7bba6aee9000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T152: stack [0x7bbd0d82b000,0x7bbd0d929ec0) size 0xfeec0; local=0x7bbd0d929d34
+==1517067==T152 TSDDtor
+==1517067==T152 exited
+==1517067==T150 TSDDtor
+==1517067==T151 TSDDtor
+==1517067==T150 exited
+==1517067==T151 exited
+==1517067==T149 TSDDtor
+==1517067==T149 exited
+==1517067==T153: FakeStack created: 0x7bba7513e000 -- 0x7bba75c47000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T153: stack [0x7bbd174af000,0x7bbd175adec0) size 0xfeec0; local=0x7bbd175add34
+==1517067==T154: FakeStack created: 0x7bba70063000 -- 0x7bba70b6c000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T154: stack [0x7bba75c47000,0x7bba75d45ec0) size 0xfeec0; local=0x7bba75d45d34
+==1517067==T155: FakeStack created: 0x7bba6d919000 -- 0x7bba6e422000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T155: stack [0x7bba68a99000,0x7bba68b97ec0) size 0xfeec0; local=0x7bba68b97d34
+==1517067==T156: FakeStack created: 0x7bba6b9f2000 -- 0x7bba6c4fb000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T156: stack [0x7bbd0d82b000,0x7bbd0d929ec0) size 0xfeec0; local=0x7bbd0d929d34
+==1517067==T157: FakeStack created: 0x7bba6aee9000 -- 0x7bba6b9f2000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T157: stack [0x7bba6ca26000,0x7bba6cb24ec0) size 0xfeec0; local=0x7bba6cb24d34
+==1517067==T158: FakeStack created: 0x7bba6a3e0000 -- 0x7bba6aee9000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T158: stack [0x7bbd104fc000,0x7bbd105faec0) size 0xfeec0; local=0x7bbd105fad34
+==1517067==T158 TSDDtor
+==1517067==T158 exited
+==1517067==T153 TSDDtor
+==1517067==T153 exited
+==1517067==T157 TSDDtor
+==1517067==T157 exited
+==1517067==T159: FakeStack created: 0x7bba5b50e000 -- 0x7bba5c017000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T159: stack [0x7bba6ca26000,0x7bba6cb24ec0) size 0xfeec0; local=0x7bba6cb24d34
+==1517067==T159 TSDDtor
+==1517067==T159 exited
+==1517067==T155 TSDDtor
+==1517067==T156 TSDDtor
+==1517067==T155 exited
+==1517067==T156 exited
+==1517067==T154 TSDDtor
+==1517067==T154 exited
+==1517067==T160: FakeStack created: 0x7bba58987000 -- 0x7bba59490000 stack_size_log: 20; mmapped 11300K, noreserve=0 
+==1517067==T160: stack [0x7bba75c47000,0x7bba75d45ec0) size 0xfeec0; local=0x7bba75d45d34
+==1517067==T160 TSDDtor
+==1517067==T160 exited
+=================================================================
+==1517067==ERROR: AddressSanitizer: SEGV on unknown address (pc 0x7bba767463cc bp 0x7fc55b4f6f10 sp 0x7fc55b4f6ee0 T1)
+==1517067==The signal is caused by a READ memory access.
+==1517067==Hint: this fault was caused by a dereference of a high value address (see register values below).  Disassemble the provided pc to learn which register was used.
+    #0 0x7bba767463cc in sd::ConstantShapeBuffer::primary() /home/agibsonccc/Documents/GitHub/deeplearning4j/libnd4j/include/array/impl/ConstantShapeBuffer.cpp:64:24
+    #1 0x7bba760e407f in sd::NDArray::shapeInfo() /home/agibsonccc/Documents/GitHub/deeplearning4j/libnd4j/include/array/NDArray.h:2072:35
+    #2 0x7bba760f29a6 in sd::graph::Context::setInputArray(int, sd::NDArray*, bool) /home/agibsonccc/Documents/GitHub/deeplearning4j/libnd4j/include/graph/impl/Context.cpp:601:13
+    #3 0x7bba778513e8 in setGraphContextInputArraysArr(sd::graph::Context*, int, sd::NDArray**) /home/agibsonccc/Documents/GitHub/deeplearning4j/libnd4j/include/legacy/impl/NativeOpsHelpers_Arrays.cpp:636:10
+    #4 0x7bba74ff47f8 in Java_org_nd4j_linalg_cpu_nativecpu_bindings_Nd4jCpu_setGraphContextInputArraysArr (/home/agibsonccc/.javacpp/cache/nd4j-native-1.0.0-SNAPSHOT-linux-x86_64.jar/org/nd4j/linalg/cpu/nativecpu/bindings/linux-x86_64/libjnind4jcpu.so+0x11e7f8)
+
+==1517067==Register values:
+rax = 0x616e696c2f6a3464  rbx = 0x00007bbd1f0fec20  rcx = 0x0000000000000000  rdx = 0x00007bbd14589580  
+rdi = 0x616e696c2f6a3464  rsi = 0x00007bba760e4080  rbp = 0x00007fc55b4f6f10  rsp = 0x00007fc55b4f6ee0  
+ r8 = 0x0000000000000001   r9 = 0x00007fffffffff01  r10 = 0x00007bba75e46d70  r11 = 0x00007bba76104a50  
+r12 = 0x00007bbdb1000000  r13 = 0x00007bbd1f0fec18  r14 = 0x00007fc55b4f7500  r15 = 0x00007d655aef1a80  
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV /home/agibsonccc/Documents/GitHub/deeplearning4j/libnd4j/include/array/impl/ConstantShapeBuffer.cpp:64:24 in sd::ConstantShapeBuffer::primary()
+Thread T1 created by T0 here:
+    #0 0x7fc55c0f1631 in pthread_create .llvm/build/runtimes/runtimes-bins/.compiler-rt/lib/asan/asan_interceptors.cpp:250:3
+    #1 0x7fc55cbcd77b in CallJavaMainInNewThread (/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-1.fc36.x86_64/bin/../lib/libjli.so+0xe77b) (BuildId: 782741eff8a0c9033777d0dc40a8cd733c93286d)
+    #2 0x7fc55cbca788 in ContinueInNewThread (/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-1.fc36.x86_64/bin/../lib/libjli.so+0xb788) (BuildId: 782741eff8a0c9033777d0dc40a8cd733c93286d)
+    #3 0x7fc55cbcb3d6 in JLI_Launch (/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-1.fc36.x86_64/bin/../lib/libjli.so+0xc3d6) (BuildId: 782741eff8a0c9033777d0dc40a8cd733c93286d)
+    #4 0x5654d72782c5 in main (/usr/lib/jvm/java-17-openjdk-17.0.7.0.7-1.fc36.x86_64/bin/java+0x12c5) (BuildId: 824017bb4d04633e3b0fe0df17da335c1364e81d)
+    #5 0x7fc55bc2950f in __libc_start_call_main (/lib64/libc.so.6+0x2950f) (BuildId: 8257ee907646e9b057197533d1e4ac8ede7a9c5c)
+
+==1517067==ABORTING

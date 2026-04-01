@@ -1,0 +1,215 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="backup-manager-container">
+  <!-- Header -->
+  <div class="page-header">
+    <h1>
+      <mat-icon>backup</mat-icon>
+      Backup Manager
+    </h1>
+    <p class="subtitle">Manage database and index backups</p>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-state" *ngIf="loading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading backup information...</p>
+  </div>
+
+  <!-- Content -->
+  <div class="content" *ngIf="!loading">
+    <!-- Status Card -->
+    <mat-card class="status-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar [class.active]="status?.enabled">cloud_done</mat-icon>
+        <mat-card-title>Backup Service Status</mat-card-title>
+        <mat-card-subtitle>
+          <span *ngIf="status?.enabled" class="status-enabled">Enabled</span>
+          <span *ngIf="!status?.enabled" class="status-disabled">Disabled</span>
+          <span *ngIf="status?.inProgress" class="status-in-progress">
+            <mat-spinner diameter="16"></mat-spinner>
+            Backup in progress...
+          </span>
+        </mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <div class="status-grid" *ngIf="status">
+          <div class="status-item">
+            <span class="label">Format</span>
+            <span class="value">
+              <mat-chip [highlighted]="status.format === 'COMPRESSED'">
+                {{ status.format === 'COMPRESSED' ? 'Compressed (tar.gz)' : 'Directory' }}
+              </mat-chip>
+            </span>
+          </div>
+          <div class="status-item">
+            <span class="label">Interval</span>
+            <span class="value">{{ formatInterval(status.intervalHours) }}</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Retention</span>
+            <span class="value">{{ status.retentionDays }} days</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Storage Path</span>
+            <span class="value path" [matTooltip]="status.backupPath">{{ status.backupPath }}</span>
+          </div>
+        </div>
+
+        <mat-divider class="section-divider"></mat-divider>
+
+        <!-- Last Backup Info -->
+        <div class="last-backup-section" *ngIf="status?.lastBackupTime">
+          <h3>Last Backup</h3>
+          <div class="last-backup-info">
+            <div class="last-backup-time">
+              <mat-icon>schedule</mat-icon>
+              {{ formatDate(status?.lastBackupTime || '') }}
+            </div>
+            <div class="last-backup-result" *ngIf="status?.lastResult">
+              <mat-icon [class.success]="status?.lastResult?.success" [class.error]="!status?.lastResult?.success">
+                {{ status?.lastResult?.success ? 'check_circle' : 'error' }}
+              </mat-icon>
+              <span>{{ status?.lastResult?.message }}</span>
+              <span class="details" *ngIf="status?.lastResult?.success">
+                ({{ status?.lastResult?.fileCount }} files, {{ formatSize(status?.lastResult?.totalMB || 0) }}, {{ formatDuration(status?.lastResult?.durationMs || 0) }})
+              </span>
+            </div>
+            <div class="last-backup-errors" *ngIf="status?.lastResult?.errors?.length">
+              <mat-icon class="warning">warning</mat-icon>
+              <span>{{ status?.lastResult?.errors?.length }} error(s): {{ status?.lastResult?.errors?.join(', ') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="no-backups-yet" *ngIf="!status?.lastBackupTime">
+          <mat-icon>info</mat-icon>
+          <span>No backups have been created yet.</span>
+        </div>
+      </mat-card-content>
+
+      <mat-card-actions>
+        <button mat-raised-button color="primary"
+                (click)="triggerBackup()"
+                [disabled]="operationInProgress || status?.inProgress">
+          <mat-icon>backup</mat-icon>
+          {{ status?.inProgress ? 'Backup in Progress...' : 'Trigger Backup Now' }}
+        </button>
+        <button mat-button
+                (click)="cleanup()"
+                [disabled]="operationInProgress || status?.inProgress">
+          <mat-icon>auto_delete</mat-icon>
+          Cleanup Old Backups
+        </button>
+        <button mat-button (click)="refresh()">
+          <mat-icon>refresh</mat-icon>
+          Refresh
+        </button>
+      </mat-card-actions>
+    </mat-card>
+
+    <!-- Backups List Card -->
+    <mat-card class="backups-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>folder</mat-icon>
+        <mat-card-title>Available Backups</mat-card-title>
+        <mat-card-subtitle>
+          {{ backups.length }} backup(s), {{ formatSize(totalSizeMB) }} total
+        </mat-card-subtitle>
+      </mat-card-header>
+
+      <mat-card-content>
+        <!-- Empty State -->
+        <div class="empty-state" *ngIf="backups.length === 0">
+          <mat-icon>inbox</mat-icon>
+          <p>No backups available</p>
+          <p class="hint">Click "Trigger Backup Now" to create your first backup.</p>
+        </div>
+
+        <!-- Backup List -->
+        <mat-list *ngIf="backups.length > 0">
+          <mat-list-item *ngFor="let backup of backups" class="backup-item">
+            <mat-icon matListItemIcon>
+              {{ backup.format === 'COMPRESSED' ? 'archive' : 'folder' }}
+            </mat-icon>
+            <div matListItemTitle class="backup-name">{{ backup.name }}</div>
+            <div matListItemLine class="backup-details">
+              <span class="backup-date">
+                <mat-icon>schedule</mat-icon>
+                {{ formatDate(backup.createdAt) }}
+              </span>
+              <span class="backup-size">
+                <mat-icon>storage</mat-icon>
+                {{ formatSize(backup.sizeMB) }}
+              </span>
+              <mat-chip size="small">{{ backup.format }}</mat-chip>
+            </div>
+            <div matListItemMeta class="backup-actions">
+              <button mat-icon-button
+                      matTooltip="Download"
+                      (click)="downloadBackup(backup)"
+                      [disabled]="backup.format !== 'COMPRESSED' || operationInProgress">
+                <mat-icon>download</mat-icon>
+              </button>
+              <button mat-icon-button
+                      matTooltip="Restore"
+                      color="primary"
+                      (click)="restoreBackup(backup)"
+                      [disabled]="operationInProgress || status?.inProgress">
+                <mat-icon>restore</mat-icon>
+              </button>
+              <button mat-icon-button
+                      matTooltip="Delete"
+                      color="warn"
+                      (click)="deleteBackup(backup)"
+                      [disabled]="operationInProgress">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </mat-list-item>
+        </mat-list>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Info Card -->
+    <mat-card class="info-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>info</mat-icon>
+        <mat-card-title>What Gets Backed Up</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="info-grid">
+          <div class="info-item">
+            <mat-icon>storage</mat-icon>
+            <div>
+              <strong>Databases</strong>
+              <p>H2 databases including orchestrator data and chat history</p>
+            </div>
+          </div>
+          <div class="info-item">
+            <mat-icon>search</mat-icon>
+            <div>
+              <strong>Search Indexes</strong>
+              <p>Lucene vector and text indexes for document retrieval</p>
+            </div>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

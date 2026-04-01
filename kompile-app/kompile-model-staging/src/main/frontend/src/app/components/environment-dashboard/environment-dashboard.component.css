@@ -1,0 +1,796 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* ==================== Layout ==================== */
+
+.environment-dashboard {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+  background: #1e1e1e;
+  min-height: 100vh;
+  color: #e0e0e0;
+}
+
+.dashboard-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.dashboard-header h2 {
+  margin: 0;
+  color: #64b5f6;
+  font-weight: 400;
+  font-size: 1.8rem;
+}
+
+.dashboard-header .subtitle {
+  color: #9e9e9e;
+  margin-top: 8px;
+  font-size: 0.95rem;
+}
+
+/* ==================== Loading & Error States ==================== */
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 16px;
+  color: #9e9e9e;
+}
+
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 16px;
+  color: #ef5350;
+  text-align: center;
+}
+
+.error-container mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+}
+
+.error-container button {
+  color: #e0e0e0;
+  border-color: #616161;
+}
+
+/* ==================== Tab Group ==================== */
+
+.env-tabs {
+  background: transparent;
+}
+
+::ng-deep .env-tabs .mat-mdc-tab-header {
+  background: #252525;
+  border-radius: 8px 8px 0 0;
+  border-bottom: 1px solid #333;
+}
+
+::ng-deep .env-tabs .mat-mdc-tab .mdc-tab__text-label {
+  color: #9e9e9e;
+}
+
+::ng-deep .env-tabs .mat-mdc-tab.mdc-tab--active .mdc-tab__text-label {
+  color: #64b5f6;
+}
+
+::ng-deep .env-tabs .mat-mdc-tab-body-wrapper {
+  background: #1e1e1e;
+}
+
+.tab-content {
+  padding: 24px 0;
+}
+
+/* ==================== Overview Grid ==================== */
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.overview-card {
+  background: #2a2a2a !important;
+  border: 1px solid #333;
+  border-radius: 12px !important;
+  color: #e0e0e0;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.overview-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+::ng-deep .overview-card .mat-mdc-card-header {
+  padding: 16px 16px 8px 16px;
+}
+
+::ng-deep .overview-card .mat-mdc-card-content {
+  padding: 0 16px 16px 16px;
+}
+
+::ng-deep .overview-card .mat-mdc-card-title {
+  color: #e0e0e0;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.card-icon {
+  font-size: 28px !important;
+  width: 28px !important;
+  height: 28px !important;
+}
+
+.backend-icon {
+  color: #64b5f6 !important;
+}
+
+.blas-icon {
+  color: #ce93d8 !important;
+}
+
+.memory-icon {
+  color: #81c784 !important;
+}
+
+.gpu-icon {
+  color: #ffb74d !important;
+}
+
+.threads-icon {
+  color: #4dd0e1 !important;
+}
+
+.jvm-icon {
+  color: #a1887f !important;
+}
+
+.overview-value {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin-bottom: 12px;
+}
+
+.overview-detail {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid #333;
+}
+
+.overview-detail:last-child {
+  border-bottom: none;
+}
+
+.detail-label {
+  color: #9e9e9e;
+}
+
+.status-enabled {
+  color: #81c784;
+}
+
+.status-disabled {
+  color: #ef5350;
+}
+
+/* ==================== Section Titles ==================== */
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.2rem;
+  font-weight: 500;
+  color: #64b5f6;
+  margin: 0 0 24px 0;
+}
+
+.section-title mat-icon {
+  color: #64b5f6;
+}
+
+.subsection-title {
+  font-size: 1rem;
+  font-weight: 500;
+  color: #ce93d8;
+  margin: 24px 0 16px 0;
+}
+
+/* ==================== Settings Forms ==================== */
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 600px;
+}
+
+.form-field {
+  width: 100%;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined {
+  background: #2a2a2a;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined .mdc-notched-outline__leading,
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined .mdc-notched-outline__notch,
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined .mdc-notched-outline__trailing {
+  border-color: #444;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined:hover .mdc-notched-outline__leading,
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined:hover .mdc-notched-outline__notch,
+::ng-deep .environment-dashboard .mat-mdc-form-field .mdc-text-field--outlined:hover .mdc-notched-outline__trailing {
+  border-color: #64b5f6;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mat-mdc-floating-label {
+  color: #9e9e9e;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mat-mdc-input-element {
+  color: #e0e0e0;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-form-field .mat-mdc-form-field-hint {
+  color: #757575;
+}
+
+/* ==================== Toggle Rows ==================== */
+
+.toggle-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 0;
+}
+
+.toggle-hint {
+  font-size: 0.8rem;
+  color: #757575;
+  margin-left: 46px;
+}
+
+/* ==================== Toggle Grid ==================== */
+
+.toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.toggle-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  transition: border-color 0.2s;
+}
+
+.toggle-card:hover {
+  border-color: #444;
+}
+
+.toggle-description {
+  font-size: 0.8rem;
+  color: #757575;
+  margin-left: 46px;
+  line-height: 1.4;
+}
+
+::ng-deep .environment-dashboard .mat-mdc-slide-toggle .mdc-label {
+  color: #e0e0e0;
+}
+
+/* ==================== Info Section ==================== */
+
+.info-section {
+  margin-top: 24px;
+  padding: 16px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-label {
+  font-size: 0.8rem;
+  color: #9e9e9e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.info-value {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+/* ==================== Form Actions ==================== */
+
+.form-actions {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+.form-actions button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-actions button mat-spinner {
+  display: inline-block;
+}
+
+/* ==================== GPU Section ==================== */
+
+.gpu-unavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 24px;
+  text-align: center;
+  color: #757575;
+}
+
+.gpu-unavailable mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 16px;
+  color: #616161;
+}
+
+.gpu-unavailable h3 {
+  color: #9e9e9e;
+  margin: 0 0 8px 0;
+}
+
+.gpu-unavailable p {
+  max-width: 480px;
+  line-height: 1.6;
+}
+
+.gpu-section {
+  margin-bottom: 32px;
+}
+
+.gpu-divider {
+  margin: 32px 0;
+  border-color: #333;
+}
+
+.cuda-info {
+  display: flex;
+  gap: 24px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+.cuda-info .info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cuda-info .info-label {
+  font-size: 0.75rem;
+  color: #9e9e9e;
+  text-transform: uppercase;
+}
+
+.cuda-info .info-value {
+  font-size: 1rem;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+/* ==================== Device Cards ==================== */
+
+.devices-info-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.devices-count {
+  color: #9e9e9e;
+  font-size: 0.9rem;
+}
+
+.refresh-btn {
+  color: #64b5f6 !important;
+  border-color: #444 !important;
+}
+
+.devices-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.device-card {
+  background: #2a2a2a !important;
+  border: 1px solid #333;
+  border-top: 3px solid #ff9800;
+  border-radius: 12px !important;
+  color: #e0e0e0;
+}
+
+::ng-deep .device-card .mat-mdc-card-header {
+  padding: 16px 16px 8px 16px;
+}
+
+::ng-deep .device-card .mat-mdc-card-content {
+  padding: 0 16px 16px 16px;
+}
+
+::ng-deep .device-card .mat-mdc-card-title {
+  color: #e0e0e0;
+  font-size: 1rem;
+}
+
+::ng-deep .device-card .mat-mdc-card-subtitle {
+  color: #9e9e9e;
+}
+
+.device-icon {
+  color: #ff9800 !important;
+}
+
+.device-detail {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid #333;
+}
+
+.device-detail:last-of-type {
+  border-bottom: none;
+}
+
+.detail-value {
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.device-memory-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.device-memory-bar {
+  flex: 1;
+  height: 8px;
+  background: #333;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.device-memory-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.device-memory-percent {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* ==================== Native Cache Cards ==================== */
+
+.native-caches-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.native-cache-card {
+  background: #2a2a2a !important;
+  border: 1px solid #333;
+  border-top: 3px solid #ab47bc;
+  border-radius: 12px !important;
+  color: #e0e0e0;
+}
+
+::ng-deep .native-cache-card .mat-mdc-card-header {
+  padding: 16px 16px 8px 16px;
+}
+
+::ng-deep .native-cache-card .mat-mdc-card-content {
+  padding: 0 16px 16px 16px;
+}
+
+::ng-deep .native-cache-card .mat-mdc-card-title {
+  color: #e0e0e0;
+  font-size: 1rem;
+}
+
+::ng-deep .native-cache-card .mat-mdc-card-subtitle {
+  color: #9e9e9e;
+}
+
+::ng-deep .native-cache-card .mat-mdc-card-actions {
+  padding: 8px 16px 16px 16px;
+}
+
+.tad-icon {
+  color: #ab47bc !important;
+}
+
+.shape-icon {
+  color: #7e57c2 !important;
+}
+
+.native-cache-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.cache-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  background: #252525;
+  border-radius: 6px;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: #9e9e9e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+::ng-deep .cache-contents-panel {
+  background: #252525 !important;
+  color: #e0e0e0 !important;
+  border: 1px solid #333;
+}
+
+::ng-deep .cache-contents-panel .mat-expansion-panel-header-title {
+  color: #9e9e9e !important;
+  font-size: 0.85rem;
+}
+
+.cache-contents-pre {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  color: #81c784;
+  background: #1a1a1a;
+  padding: 12px;
+  border-radius: 6px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 8px 0 0 0;
+}
+
+.native-cache-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+.native-cache-actions button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ==================== LLM Config Presets ==================== */
+
+.section-description {
+  color: #9e9e9e;
+  font-size: 0.9rem;
+  margin: -16px 0 20px 0;
+  line-height: 1.5;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.preset-card {
+  background: #2a2a2a !important;
+  border: 1px solid #333;
+  border-radius: 12px !important;
+  color: #e0e0e0;
+  transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+
+.preset-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-color: #444;
+}
+
+.preset-card.preset-applying {
+  opacity: 0.7;
+}
+
+::ng-deep .preset-card .mat-mdc-card-header {
+  padding: 16px 16px 8px 16px;
+}
+
+::ng-deep .preset-card .mat-mdc-card-content {
+  padding: 0 16px 8px 16px;
+}
+
+::ng-deep .preset-card .mat-mdc-card-actions {
+  padding: 8px 16px 16px 16px;
+}
+
+::ng-deep .preset-card .mat-mdc-card-title {
+  color: #e0e0e0;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.preset-description {
+  color: #9e9e9e;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.preset-optimal {
+  color: #66bb6a !important;
+}
+
+.preset-basic {
+  color: #42a5f5 !important;
+}
+
+.preset-debug {
+  color: #ffa726 !important;
+}
+
+.no-presets-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #757575;
+  font-size: 0.9rem;
+  padding: 16px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+/* ==================== Lifecycle Numbers ==================== */
+
+.lifecycle-numbers {
+  margin-top: 24px;
+}
+
+/* ==================== Responsive ==================== */
+
+@media (max-width: 768px) {
+  .environment-dashboard {
+    padding: 16px;
+  }
+
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toggle-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-form {
+    max-width: 100%;
+  }
+
+  .cuda-info {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .devices-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .native-caches-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .native-cache-actions {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-header h2 {
+    font-size: 1.4rem;
+  }
+
+  .overview-value {
+    font-size: 1.2rem;
+  }
+
+  .toggle-description,
+  .toggle-hint {
+    margin-left: 0;
+    margin-top: 4px;
+  }
+}

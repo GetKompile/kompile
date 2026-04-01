@@ -1,0 +1,2423 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="model-debug-container">
+  <div class="header-section">
+    <h1>Model Debug Console</h1>
+    <p class="subtitle">Inspect loaded models, ND4J environment, and resource usage</p>
+    <button mat-raised-button color="primary" (click)="refreshData()" [disabled]="isLoading">
+      <mat-icon>refresh</mat-icon>
+      {{ isLoading ? 'Loading...' : 'Refresh All' }}
+    </button>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div class="loading-overlay" *ngIf="isLoading">
+    <mat-card>
+      <mat-card-content class="loading-content">
+        <mat-spinner diameter="60"></mat-spinner>
+        <h2>Loading Model Data...</h2>
+        <p>Scanning application context for models</p>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- Main Content -->
+  <div class="debug-content" *ngIf="!isLoading">
+
+    <!-- Summary Cards -->
+    <div class="summary-section" *ngIf="modelsResponse?.summary">
+      <h2 class="section-title">
+        <mat-icon>dashboard</mat-icon>
+        Model Summary
+      </h2>
+      <div class="summary-cards">
+        <mat-card class="summary-card">
+          <mat-card-content>
+            <div class="summary-value">{{ modelsResponse?.summary?.totalEmbeddingModels || 0 }}</div>
+            <div class="summary-label">Embedding Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="summary-card">
+          <mat-card-content>
+            <div class="summary-value">{{ modelsResponse?.summary?.totalLanguageModels || 0 }}</div>
+            <div class="summary-label">Language Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="summary-card">
+          <mat-card-content>
+            <div class="summary-value">{{ modelsResponse?.summary?.totalSameDiffModels || 0 }}</div>
+            <div class="summary-label">SameDiff Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="summary-card">
+          <mat-card-content>
+            <div class="summary-value">{{ modelsResponse?.summary?.totalComputationGraphModels || 0 }}</div>
+            <div class="summary-label">Computation Graphs</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="summary-card">
+          <mat-card-content>
+            <div class="summary-value">{{ modelsResponse?.summary?.totalMultiLayerNetworkModels || 0 }}</div>
+            <div class="summary-label">MultiLayer Networks</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="summary-card" [class.available]="rerankerInfo?.available" [class.unavailable]="!rerankerInfo?.available">
+          <mat-card-content>
+            <div class="summary-value">{{ getSupportedRerankerTypes().length }}</div>
+            <div class="summary-label">Rerankers</div>
+            <div class="summary-status" *ngIf="rerankerInfo">
+              <mat-icon [class.status-ok]="rerankerInfo.available" [class.status-error]="!rerankerInfo.available">
+                {{ rerankerInfo.available ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+              {{ rerankerInfo.available ? 'Available' : 'Disabled' }}
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </div>
+
+    <!-- Active Embedding Model Status -->
+    <div class="active-model-section">
+      <h2 class="section-title">
+        <mat-icon>memory</mat-icon>
+        Active Embedding Model
+      </h2>
+      <div class="active-model-card" *ngIf="activeEmbeddingStatus">
+        <mat-card [ngClass]="{
+          'model-ready': activeEmbeddingStatus.initialized && activeEmbeddingStatus.dimensions > 0,
+          'model-not-ready': !activeEmbeddingStatus.initialized || activeEmbeddingStatus.dimensions <= 0
+        }">
+          <mat-card-header>
+            <mat-icon mat-card-avatar class="model-avatar" [ngClass]="{
+              'ready': activeEmbeddingStatus.initialized && activeEmbeddingStatus.dimensions > 0,
+              'not-ready': !activeEmbeddingStatus.initialized || activeEmbeddingStatus.dimensions <= 0
+            }">
+              {{ activeEmbeddingStatus.initialized && activeEmbeddingStatus.dimensions > 0 ? 'check_circle' : 'cancel' }}
+            </mat-icon>
+            <mat-card-title>{{ activeEmbeddingStatus.modelId || 'No Model Loaded' }}</mat-card-title>
+            <mat-card-subtitle>
+              <span class="status-badge" [ngClass]="{
+                'ready': activeEmbeddingStatus.initialized && activeEmbeddingStatus.dimensions > 0,
+                'not-ready': !activeEmbeddingStatus.initialized || activeEmbeddingStatus.dimensions <= 0
+              }">
+                {{ activeEmbeddingStatus.initialized && activeEmbeddingStatus.dimensions > 0 ? 'Ready for Inference' : 'Not Initialized' }}
+              </span>
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="model-details-grid">
+              <div class="detail-item">
+                <span class="detail-label">Source</span>
+                <span class="detail-value source-value">
+                  <mat-icon class="source-icon">{{ activeEmbeddingStatus.source === 'REGISTRY' ? 'storage' : 'archive' }}</mat-icon>
+                  {{ activeEmbeddingStatus.source || 'Unknown' }}
+                </span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Dimensions</span>
+                <span class="detail-value dim-value">{{ activeEmbeddingStatus.dimensions || 0 }}D</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Max Sequence Length</span>
+                <span class="detail-value">{{ activeEmbeddingStatus.maxSequenceLength || 'N/A' }} tokens</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Available</span>
+                <span class="detail-value" [ngClass]="{'available': activeEmbeddingStatus.available, 'unavailable': !activeEmbeddingStatus.available}">
+                  <mat-icon>{{ activeEmbeddingStatus.available ? 'check' : 'close' }}</mat-icon>
+                  {{ activeEmbeddingStatus.available ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Initialized</span>
+                <span class="detail-value" [ngClass]="{'available': activeEmbeddingStatus.initialized, 'unavailable': !activeEmbeddingStatus.initialized}">
+                  <mat-icon>{{ activeEmbeddingStatus.initialized ? 'check' : 'close' }}</mat-icon>
+                  {{ activeEmbeddingStatus.initialized ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Can Reload</span>
+                <span class="detail-value" [ngClass]="{'available': activeEmbeddingStatus.canReload, 'unavailable': !activeEmbeddingStatus.canReload}">
+                  <mat-icon>{{ activeEmbeddingStatus.canReload ? 'refresh' : 'block' }}</mat-icon>
+                  {{ activeEmbeddingStatus.canReload ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="detail-item full-width" *ngIf="activeEmbeddingStatus.message">
+                <span class="detail-label">Message</span>
+                <span class="detail-value message-value">{{ activeEmbeddingStatus.message }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+      <div class="no-model-message" *ngIf="!activeEmbeddingStatus">
+        <mat-icon>info_outline</mat-icon>
+        <p>No embedding model status available</p>
+      </div>
+    </div>
+
+    <!-- Algorithmic Rerankers Section -->
+    <div class="reranker-section" *ngIf="rerankerInfo">
+      <h2 class="section-title">
+        <mat-icon>auto_fix_high</mat-icon>
+        Algorithmic Rerankers
+      </h2>
+      <p class="section-description">
+        Query expansion and pseudo-relevance feedback methods. No neural models required.
+      </p>
+      <table class="reranker-table">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let type of getAlgorithmicRerankerTypes()" [class.supported]="type.supported" [class.unsupported]="!type.supported">
+            <td class="type-cell">
+              <mat-icon class="type-icon">{{ getRerankerIcon(type.id) }}</mat-icon>
+              <span class="type-name">{{ type.name }}</span>
+            </td>
+            <td class="desc-cell">{{ type.description }}</td>
+            <td class="status-cell">
+              <span class="status-badge" [class.available]="type.supported" [class.unavailable]="!type.supported">
+                {{ type.supported ? 'Available' : 'Unavailable' }}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Neural Reranker Models Section -->
+    <div class="reranker-section neural-section" *ngIf="rerankerInfo && getNeuralRerankerTypes().length > 0">
+      <h2 class="section-title">
+        <mat-icon>psychology</mat-icon>
+        Cross-Encoder Models
+      </h2>
+      <p class="section-description">
+        Neural reranking models available in ~/.kompile/models
+      </p>
+
+      <!-- Locally Available Models (Read-only) -->
+      <div *ngIf="getCachedCrossEncoderModels().length > 0" class="local-models-list">
+        <div *ngFor="let model of getCachedCrossEncoderModels()" class="local-model-item">
+          <mat-icon class="model-icon">check_circle</mat-icon>
+          <div class="model-details">
+            <span class="model-name">{{ model.modelId }}</span>
+            <span class="model-path" *ngIf="model.cachedPath">{{ model.cachedPath }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- No models available message -->
+      <div class="no-models-info" *ngIf="getCachedCrossEncoderModels().length === 0">
+        <mat-icon>info_outline</mat-icon>
+        <span>No cross-encoder models found. SameDiff conversion coming soon.</span>
+      </div>
+    </div>
+
+    <!-- Service Status Section -->
+    <div class="service-status-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <mat-icon>power_settings_new</mat-icon>
+          Service Status
+        </h2>
+        <div class="section-actions">
+          <button mat-icon-button (click)="refreshRagServiceStatus()" [disabled]="ragServiceLoading" matTooltip="Refresh Status">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <!-- Loading indicator -->
+      <div class="loading-section" *ngIf="ragServiceLoading">
+        <mat-spinner diameter="24"></mat-spinner>
+        <span>Checking service status...</span>
+      </div>
+
+      <!-- Service Status Cards -->
+      <div class="service-status-grid" *ngIf="!ragServiceLoading">
+        <!-- Main Service Status -->
+        <mat-card class="service-status-card" [class.service-online]="ragServiceStatus.available" [class.service-offline]="!ragServiceStatus.available">
+          <mat-card-content>
+            <div class="status-indicator">
+              <mat-icon *ngIf="ragServiceStatus.available" class="status-icon online">check_circle</mat-icon>
+              <mat-icon *ngIf="!ragServiceStatus.available" class="status-icon offline">error</mat-icon>
+            </div>
+            <div class="status-info">
+              <div class="status-label">RAG Service</div>
+              <div class="status-value" *ngIf="ragServiceStatus.available">Online</div>
+              <div class="status-value" *ngIf="!ragServiceStatus.available">Offline</div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Embedding Model Status -->
+        <mat-card class="service-status-card" [class.component-ready]="ragServiceStatus.embeddingModel?.available && !getRagEmbeddingDisplayName().includes('NoOp')" [class.component-not-ready]="!ragServiceStatus.embeddingModel?.available || getRagEmbeddingDisplayName().includes('NoOp')">
+          <mat-card-content>
+            <div class="status-indicator">
+              <mat-icon class="component-icon">transform</mat-icon>
+            </div>
+            <div class="status-info">
+              <div class="status-label">Embedding Model</div>
+              <div class="status-value">{{ getRagEmbeddingDisplayName() }}</div>
+              <div class="status-details" *ngIf="ragServiceStatus.embeddingModel?.dimensions">
+                {{ ragServiceStatus.embeddingModel?.dimensions }}d
+              </div>
+            </div>
+            <mat-chip *ngIf="ragServiceStatus.embeddingModel?.available && !getRagEmbeddingDisplayName().includes('NoOp')" class="ready-chip">Ready</mat-chip>
+            <mat-chip *ngIf="!ragServiceStatus.embeddingModel?.available || getRagEmbeddingDisplayName().includes('NoOp') || getRagEmbeddingDisplayName().includes('Not')" class="not-ready-chip">Not Ready</mat-chip>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Vector Store Status -->
+        <mat-card class="service-status-card" [class.component-ready]="ragServiceStatus.vectorStore?.available && !getRagVectorStoreDisplayName().includes('NoOp')" [class.component-not-ready]="!ragServiceStatus.vectorStore?.available || getRagVectorStoreDisplayName().includes('NoOp')">
+          <mat-card-content>
+            <div class="status-indicator">
+              <mat-icon class="component-icon">storage</mat-icon>
+            </div>
+            <div class="status-info">
+              <div class="status-label">Vector Store</div>
+              <div class="status-value">{{ getRagVectorStoreDisplayName() }}</div>
+            </div>
+            <mat-chip *ngIf="ragServiceStatus.vectorStore?.available && !getRagVectorStoreDisplayName().includes('NoOp')" class="ready-chip">Ready</mat-chip>
+            <mat-chip *ngIf="!ragServiceStatus.vectorStore?.available || getRagVectorStoreDisplayName().includes('NoOp') || getRagVectorStoreDisplayName().includes('Not')" class="not-ready-chip">Not Ready</mat-chip>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Reranker Status -->
+        <mat-card class="service-status-card" [class.component-ready]="ragServiceStatus.reranker?.available" [class.component-optional]="!ragServiceStatus.reranker?.available">
+          <mat-card-content>
+            <div class="status-indicator">
+              <mat-icon class="component-icon">sort</mat-icon>
+            </div>
+            <div class="status-info">
+              <div class="status-label">Reranker</div>
+              <div class="status-value">{{ ragServiceStatus.reranker?.className || 'Not Configured' }}</div>
+              <div class="status-details" *ngIf="ragServiceStatus.reranker?.supportedTypes?.length">
+                {{ ragServiceStatus.reranker?.supportedTypes?.length }} types
+              </div>
+            </div>
+            <mat-chip *ngIf="ragServiceStatus.reranker?.available" class="ready-chip">Available</mat-chip>
+            <mat-chip *ngIf="!ragServiceStatus.reranker?.available" class="optional-chip">Optional</mat-chip>
+          </mat-card-content>
+        </mat-card>
+      </div>
+
+      <!-- Overall Status Message -->
+      <div class="overall-status-message" *ngIf="!ragServiceLoading">
+        <div class="status-message ready" *ngIf="isRagServiceReady()">
+          <mat-icon>check_circle</mat-icon>
+          <span>RAG service is fully operational with models loaded</span>
+        </div>
+        <div class="status-message warning" *ngIf="ragServiceStatus.available && !isRagServiceReady()">
+          <mat-icon>warning</mat-icon>
+          <span>Service is running but no embedding models are loaded. Load a model or archive to enable RAG functionality.</span>
+        </div>
+        <div class="status-message error" *ngIf="!ragServiceStatus.available">
+          <mat-icon>error</mat-icon>
+          <span>Cannot connect to RAG service. Ensure the backend is running.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comprehensive Service State Section -->
+    <div class="service-state-section" *ngIf="serviceState">
+      <div class="section-header">
+        <h2 class="section-title">
+          <mat-icon>visibility</mat-icon>
+          Service State Transparency
+        </h2>
+        <div class="section-actions">
+          <span class="state-summary" [class.all-loaded]="areAllServicesLoaded()" [class.partial-loaded]="!areAllServicesLoaded()">
+            {{ getLoadedServiceCount() }}/{{ getTotalServiceCount() }} services loaded
+          </span>
+          <button mat-icon-button (click)="refreshServiceState()" [disabled]="serviceStateLoading" matTooltip="Refresh Service State">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <!-- Loading indicator -->
+      <div class="loading-section" *ngIf="serviceStateLoading">
+        <mat-spinner diameter="24"></mat-spinner>
+        <span>Loading service state...</span>
+      </div>
+
+      <!-- Service State Details -->
+      <div class="service-state-grid" *ngIf="!serviceStateLoading">
+
+        <!-- Embedding Model State -->
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.embeddingModel?.loaded" [class.state-not-loaded]="!serviceState.embeddingModel?.loaded">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.embeddingModel?.loaded || false)">
+              {{ getServiceStateIcon(serviceState.embeddingModel?.loaded || false) }}
+            </mat-icon>
+            <mat-card-title>Embedding Model</mat-card-title>
+            <mat-card-subtitle *ngIf="serviceState.embeddingModel?.loaded">
+              {{ serviceState.embeddingModel?.primary?.class || 'Unknown' }}
+            </mat-card-subtitle>
+            <mat-card-subtitle *ngIf="!serviceState.embeddingModel?.loaded">
+              {{ serviceState.embeddingModel?.reason || 'Not Loaded' }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content *ngIf="serviceState.embeddingModel?.loaded && serviceState.embeddingModel?.primary">
+            <div class="state-details">
+              <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.activeModelId">
+                <span class="detail-label">Active Model ID:</span>
+                <span class="detail-value model-id">{{ serviceState.embeddingModel?.primary?.activeModelId }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.encoderType">
+                <span class="detail-label">Encoder Type:</span>
+                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.encoderType }}</span>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">Dimensions:</span>
+                <span class="detail-value">{{ serviceState.embeddingModel?.primary?.dimensions }}d</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.batchConfig">
+                <span class="detail-label">Batch Size (512 tokens):</span>
+                <span class="detail-value">optimal {{ serviceState.embeddingModel?.primary?.batchConfig?.optimal512Tokens }}, max {{ serviceState.embeddingModel?.primary?.batchConfig?.max512Tokens }}</span>
+              </div>
+              <div class="model-info-section" *ngIf="serviceState.embeddingModel?.primary?.modelInfo">
+                <div class="detail-row">
+                  <span class="detail-label">Source:</span>
+                  <span class="detail-value">{{ serviceState.embeddingModel?.primary?.modelInfo?.source || 'N/A' }}</span>
+                </div>
+                <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.subprocessMode">
+                  <span class="detail-label">Subprocess Mode:</span>
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning">
+                    {{ serviceState.embeddingModel?.primary?.modelInfo?.subprocessRunning ? 'Running' : 'Not Running' }}
+                  </span>
+                </div>
+                <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.subprocessMode && serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded !== undefined">
+                  <span class="detail-label">Model Loaded:</span>
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded">
+                    {{ serviceState.embeddingModel?.primary?.modelInfo?.subprocessModelLoaded ? 'Yes' : 'No' }}
+                  </span>
+                </div>
+                <div class="detail-row" *ngIf="serviceState.embeddingModel?.primary?.modelInfo?.initialized !== undefined">
+                  <span class="detail-label">Initialized:</span>
+                  <span class="detail-value" [class.yes]="serviceState.embeddingModel?.primary?.modelInfo?.initialized" [class.no]="!serviceState.embeddingModel?.primary?.modelInfo?.initialized">
+                    {{ serviceState.embeddingModel?.primary?.modelInfo?.initialized ? 'Yes' : 'No' }}
+                  </span>
+                </div>
+              </div>
+              <div class="detail-row warning" *ngIf="serviceState.embeddingModel?.primary?.isShuttingDown">
+                <mat-icon>warning</mat-icon>
+                <span class="detail-value">Model is shutting down</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Vector Store State -->
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.vectorStore?.loaded" [class.state-not-loaded]="!serviceState.vectorStore?.loaded">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.vectorStore?.loaded || false)">
+              {{ getServiceStateIcon(serviceState.vectorStore?.loaded || false) }}
+            </mat-icon>
+            <mat-card-title>Vector Store</mat-card-title>
+            <mat-card-subtitle *ngIf="serviceState.vectorStore?.loaded">
+              {{ serviceState.vectorStore?.primary?.class || 'Unknown' }}
+            </mat-card-subtitle>
+            <mat-card-subtitle *ngIf="!serviceState.vectorStore?.loaded">
+              {{ serviceState.vectorStore?.reason || 'Not Loaded' }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content *ngIf="serviceState.vectorStore?.loaded && serviceState.vectorStore?.primary">
+            <div class="state-details">
+              <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.indexPath">
+                <span class="detail-label">Index Path:</span>
+                <span class="detail-value path">{{ serviceState.vectorStore?.primary?.indexPath }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.documentCount !== undefined">
+                <span class="detail-label">Document Count:</span>
+                <span class="detail-value">{{ serviceState.vectorStore?.primary?.documentCount }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.modelTracking?.encoderModelId">
+                <span class="detail-label">Encoder Model ID:</span>
+                <span class="detail-value model-id">{{ serviceState.vectorStore?.primary?.modelTracking?.encoderModelId }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.modelTracking?.rerankerModelId">
+                <span class="detail-label">Reranker Model ID:</span>
+                <span class="detail-value model-id">{{ serviceState.vectorStore?.primary?.modelTracking?.rerankerModelId }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.vectorStore?.primary?.rerankingAvailable !== undefined">
+                <span class="detail-label">Reranking Available:</span>
+                <span class="detail-value" [class.yes]="serviceState.vectorStore?.primary?.rerankingAvailable" [class.no]="!serviceState.vectorStore?.primary?.rerankingAvailable">
+                  {{ serviceState.vectorStore?.primary?.rerankingAvailable ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="detail-row warning" *ngIf="serviceState.vectorStore?.primary?.usingFallbackIndex">
+                <mat-icon>warning</mat-icon>
+                <span class="detail-value">Using fallback index</span>
+              </div>
+              <div class="detail-row warning" *ngFor="let warning of serviceState.vectorStore?.primary?.warnings || []">
+                <mat-icon>warning</mat-icon>
+                <span class="detail-value">{{ warning }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Reranker State -->
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.reranker?.loaded" [class.state-not-loaded]="!serviceState.reranker?.loaded">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.reranker?.loaded || false)">
+              {{ getServiceStateIcon(serviceState.reranker?.loaded || false) }}
+            </mat-icon>
+            <mat-card-title>Reranker Service</mat-card-title>
+            <mat-card-subtitle *ngIf="serviceState.reranker?.loaded">
+              {{ serviceState.reranker?.class || 'Unknown' }}
+            </mat-card-subtitle>
+            <mat-card-subtitle *ngIf="!serviceState.reranker?.loaded">
+              {{ serviceState.reranker?.reason || 'Not Loaded' }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content *ngIf="serviceState.reranker?.loaded">
+            <div class="state-details">
+              <div class="detail-row" *ngIf="serviceState.reranker?.supportedTypeCount">
+                <span class="detail-label">Supported Types:</span>
+                <span class="detail-value">{{ serviceState.reranker?.supportedTypeCount }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.reranker?.defaultConfig?.type">
+                <span class="detail-label">Default Type:</span>
+                <span class="detail-value">{{ serviceState.reranker?.defaultConfig?.type }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.reranker?.defaultConfig?.topK">
+                <span class="detail-label">Default Top-K:</span>
+                <span class="detail-value">{{ serviceState.reranker?.defaultConfig?.topK }}</span>
+              </div>
+              <div class="reranker-types" *ngIf="serviceState.reranker?.supportedTypes?.length">
+                <span class="types-label">Available Types:</span>
+                <div class="type-chips">
+                  <mat-chip *ngFor="let type of serviceState.reranker?.supportedTypes || []"
+                            [class.supported]="type.supported"
+                            [class.unsupported]="!type.supported"
+                            [matTooltip]="type.description">
+                    {{ type.name }}
+                  </mat-chip>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Document Retriever State -->
+        <mat-card class="service-state-card" [class.state-loaded]="serviceState.documentRetriever?.loaded" [class.state-not-loaded]="!serviceState.documentRetriever?.loaded">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class]="getServiceStateColorClass(serviceState.documentRetriever?.loaded || false)">
+              {{ getServiceStateIcon(serviceState.documentRetriever?.loaded || false) }}
+            </mat-icon>
+            <mat-card-title>Document Retriever</mat-card-title>
+            <mat-card-subtitle *ngIf="serviceState.documentRetriever?.loaded">
+              {{ serviceState.documentRetriever?.primary?.class || 'Unknown' }}
+            </mat-card-subtitle>
+            <mat-card-subtitle *ngIf="!serviceState.documentRetriever?.loaded">
+              {{ serviceState.documentRetriever?.reason || 'Not Loaded' }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content *ngIf="serviceState.documentRetriever?.loaded && serviceState.documentRetriever?.primary">
+            <div class="state-details">
+              <div class="detail-row">
+                <span class="detail-label">Class:</span>
+                <span class="detail-value">{{ serviceState.documentRetriever?.primary?.fullClass }}</span>
+              </div>
+              <div class="detail-row" *ngIf="serviceState.documentRetriever?.totalRetrievers">
+                <span class="detail-label">Total Retrievers:</span>
+                <span class="detail-value">{{ serviceState.documentRetriever?.totalRetrievers }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+      </div>
+
+      <!-- Timestamp -->
+      <div class="state-timestamp" *ngIf="serviceState?.timestamp">
+        <mat-icon>schedule</mat-icon>
+        <span>Last updated: {{ serviceState.timestamp }}</span>
+      </div>
+    </div>
+
+    <!-- Model Registry Section -->
+    <div class="model-registry-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <mat-icon>inventory_2</mat-icon>
+          Model Registry
+        </h2>
+        <div class="section-actions">
+          <span class="staging-status" *ngIf="stagingServiceAvailable">
+            <mat-icon class="status-connected">cloud_done</mat-icon>
+            External Staging Connected
+          </span>
+          <span class="staging-status disconnected" *ngIf="!stagingServiceAvailable" matTooltip="External kompile-model-staging service (optional)">
+            <mat-icon>cloud_off</mat-icon>
+            Staging Service N/A
+          </span>
+          <button mat-raised-button color="primary" (click)="showSdzUploadDialog()" matTooltip="Upload a pre-converted .sdz model file">
+            <mat-icon>upload_file</mat-icon>
+            Upload .sdz
+          </button>
+          <button mat-icon-button (click)="refreshModelRegistry()" [disabled]="registryLoading" matTooltip="Refresh Registry">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+      <p class="section-description">
+        Managed models in ~/.kompile/models/registry.json
+      </p>
+
+      <!-- Registry Loading Spinner -->
+      <div class="loading-section" *ngIf="registryLoading">
+        <mat-spinner diameter="32"></mat-spinner>
+        <span>Loading registry...</span>
+      </div>
+
+      <!-- Registry Summary Cards -->
+      <div class="registry-summary-cards" *ngIf="!registryLoading">
+        <mat-card class="registry-card">
+          <mat-card-content>
+            <div class="registry-value">{{ getRegistryModelCount() }}</div>
+            <div class="registry-label">Total Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="registry-card encoder">
+          <mat-card-content>
+            <mat-icon>transform</mat-icon>
+            <div class="registry-value">{{ getRegistryModelCount('encoder') }}</div>
+            <div class="registry-label">Encoders</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="registry-card cross-encoder">
+          <mat-card-content>
+            <mat-icon>compare_arrows</mat-icon>
+            <div class="registry-value">{{ getRegistryModelCount('cross_encoder') }}</div>
+            <div class="registry-label">Cross-Encoders</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="registry-card reranker">
+          <mat-card-content>
+            <mat-icon>sort</mat-icon>
+            <div class="registry-value">{{ getRegistryModelCount('reranker') }}</div>
+            <div class="registry-label">Rerankers</div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+
+      <!-- Models in Staging (if connected) -->
+      <div class="staging-models" *ngIf="stagingServiceAvailable && hasModelsInStaging()">
+        <h3 class="subsection-title">
+          <mat-icon>pending</mat-icon>
+          Models in Staging
+        </h3>
+        <div class="staging-model-list">
+          <div *ngFor="let model of getModelsInStaging()" class="staging-model-item">
+            <mat-icon [class]="getStagingColor(model.status)">{{ getStagingIcon(model.status) }}</mat-icon>
+            <span class="staging-model-id">{{ model.modelId }}</span>
+            <span class="staging-model-status">{{ model.status }}</span>
+            <mat-progress-bar *ngIf="model.progress > 0 && model.progress < 100"
+                              mode="determinate"
+                              [value]="model.progress">
+            </mat-progress-bar>
+            <span class="staging-error" *ngIf="model.error">{{ model.error }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Registered Models List -->
+      <div class="registered-models" *ngIf="!registryLoading && hasRegistryModels()">
+        <h3 class="subsection-title">
+          <mat-icon>list</mat-icon>
+          Registered Models
+        </h3>
+
+        <!-- Prominent Version & Provenance Banner -->
+        <div class="registry-version-banner" *ngIf="modelRegistry">
+          <div class="version-info-primary">
+            <div class="version-block">
+              <span class="version-label">Model Registry</span>
+              <span class="version-value">v{{ modelRegistry.version }}</span>
+            </div>
+            <div class="version-divider"></div>
+            <div class="version-block">
+              <span class="version-label">Last Updated</span>
+              <span class="version-value">{{ formatPromotedDate(modelRegistry.updatedAt) }}</span>
+            </div>
+            <div class="version-block" *ngIf="getActiveModelCount() > 0">
+              <span class="version-label">Active Models</span>
+              <span class="version-value">{{ getActiveModelCount() }}</span>
+            </div>
+          </div>
+
+          <!-- Installed Archives Summary -->
+          <div class="installed-archives-summary" *ngIf="getInstalledArchives().length > 0">
+            <span class="archives-label">Installed Archives:</span>
+            <div class="archive-badges">
+              <span class="archive-badge" *ngFor="let archive of getInstalledArchives()">
+                <mat-icon>archive</mat-icon>
+                {{ archive.archiveName || archive.archiveId }}
+                <span class="archive-version">v{{ archive.version }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Models List (card-based layout matching staging-config style) -->
+        <div class="model-list">
+          <div class="model-item" *ngFor="let model of getRegistryModels()"
+               [ngClass]="{
+                 'active-model': model.status === 'active',
+                 'staged-model': model.status === 'staged',
+                 'pending-model': model.status === 'pending',
+                 'failed-model': model.status === 'failed',
+                 'deprecated-model': model.status === 'deprecated'
+               }">
+            <div class="model-item-info">
+              <div class="model-name-row">
+                <mat-icon class="model-type-icon">{{ getModelTypeIcon(model.type) }}</mat-icon>
+                <span class="model-name">{{ model.modelId }}</span>
+                <span class="model-version-badge" *ngIf="getModelVersion(model)">v{{ getModelVersion(model) }}</span>
+              </div>
+              <div class="model-meta">
+                <mat-chip class="type-chip">{{ getModelTypeDisplayName(model.type) }}</mat-chip>
+                <span class="status-badge" [class]="getRegistryStatusColor(model.status)">
+                  <mat-icon>{{ getRegistryStatusIcon(model.status) }}</mat-icon>
+                  {{ model.status }}
+                </span>
+                <span class="dim-badge" *ngIf="model.metadata?.embeddingDim">{{ model.metadata.embeddingDim }}d</span>
+                <span class="seq-badge" *ngIf="model.metadata?.maxSequenceLength">max {{ model.metadata.maxSequenceLength }} tokens</span>
+              </div>
+            </div>
+            <div class="model-item-details">
+              <div class="source-info">
+                <span class="source-badge" [class]="getSourceClass(model)">
+                  <mat-icon>{{ getSourceIcon(model) }}</mat-icon>
+                  {{ formatModelSource(model) }}
+                </span>
+              </div>
+              <div class="date-info" *ngIf="model.metadata?.installedAt || model.promotedAt">
+                <mat-icon>schedule</mat-icon>
+                <span>{{ formatPromotedDate(model.metadata?.installedAt || model.promotedAt) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No Models Message -->
+      <div class="no-registry-models" *ngIf="!registryLoading && !hasRegistryModels()">
+        <mat-icon>info_outline</mat-icon>
+        <p>No models in registry. Use the kompile-model-staging service to download and convert models.</p>
+        <p class="hint">Run: <code>kompile model download bge-base-en-v1.5</code></p>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- ARCHIVES SECTION -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <div class="archives-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <mat-icon>archive</mat-icon>
+          Kompile Archives
+        </h2>
+        <div class="section-actions">
+          <button mat-icon-button (click)="refreshArchiveData()" [disabled]="isLoadingArchives" matTooltip="Refresh Archives">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+      <p class="section-description">
+        Kompile Archives (.karch) containing pre-converted SameDiff models for embedding and reranking.
+      </p>
+
+      <!-- Loading Spinner -->
+      <div class="loading-section" *ngIf="isLoadingArchives">
+        <mat-spinner diameter="32"></mat-spinner>
+        <span>Loading archives...</span>
+      </div>
+
+      <!-- Current Archive Status -->
+      <div class="current-archive-panel" *ngIf="!isLoadingArchives && isArchiveLoaded()">
+        <div class="archive-status-header">
+          <mat-icon class="status-icon loaded">check_circle</mat-icon>
+          <span class="status-title">Loaded Archive</span>
+          <button mat-stroked-button color="warn" (click)="unloadArchive()" [disabled]="isLoadingArchives">
+            <mat-icon>eject</mat-icon>
+            Unload
+          </button>
+        </div>
+        <div class="archive-status-details">
+          <div class="status-row">
+            <span class="status-label">Archive ID:</span>
+            <span class="status-value">{{ currentArchiveStatus?.archiveId || 'Unknown' }}</span>
+          </div>
+          <div class="status-row" *ngIf="currentArchiveStatus?.contentVersion">
+            <span class="status-label">Version:</span>
+            <span class="status-value">{{ currentArchiveStatus?.contentVersion }}</span>
+          </div>
+          <div class="status-row" *ngIf="currentArchiveStatus?.description">
+            <span class="status-label">Description:</span>
+            <span class="status-value">{{ currentArchiveStatus?.description }}</span>
+          </div>
+        </div>
+
+        <!-- Models in Archive -->
+        <div class="archive-models-summary">
+          <h4>
+            <mat-icon>inventory_2</mat-icon>
+            Models in Archive ({{ archiveModels.length }})
+          </h4>
+          <div class="archive-models-grid">
+            <!-- Encoders -->
+            <div class="archive-model-group" *ngIf="getArchiveEncoders().length > 0">
+              <span class="group-label">
+                <mat-icon>memory</mat-icon>
+                Encoders ({{ getArchiveEncoders().length }})
+              </span>
+              <div class="model-chips">
+                <div class="archive-model-chip encoder" *ngFor="let model of getArchiveEncoders()">
+                  <span class="model-id">{{ model.modelId }}</span>
+                  <span class="model-dim" *ngIf="model.embeddingDim">({{ model.embeddingDim }}d)</span>
+                </div>
+              </div>
+            </div>
+            <!-- Cross-Encoders -->
+            <div class="archive-model-group" *ngIf="getArchiveCrossEncoders().length > 0">
+              <span class="group-label">
+                <mat-icon>compare_arrows</mat-icon>
+                Cross-Encoders ({{ getArchiveCrossEncoders().length }})
+              </span>
+              <div class="model-chips">
+                <div class="archive-model-chip cross-encoder" *ngFor="let model of getArchiveCrossEncoders()">
+                  <span class="model-id">{{ model.modelId }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No Archive Loaded -->
+      <div class="no-archive-panel" *ngIf="!isLoadingArchives && !isArchiveLoaded()">
+        <mat-icon class="status-icon">info_outline</mat-icon>
+        <span>No archive currently loaded.</span>
+      </div>
+
+      <!-- Available Archives List -->
+      <div class="available-archives" *ngIf="!isLoadingArchives && availableArchives.length > 0">
+        <h3 class="subsection-title">
+          <mat-icon>folder</mat-icon>
+          Available Archives ({{ availableArchives.length }})
+        </h3>
+        <div class="archives-list">
+          <div class="archive-item" *ngFor="let archive of availableArchives"
+               [ngClass]="{'active': currentArchiveStatus?.archivePath === archive.path}">
+            <div class="archive-info">
+              <div class="archive-name">
+                <mat-icon>inventory_2</mat-icon>
+                {{ archive.name }}
+              </div>
+              <div class="archive-meta">
+                <span class="archive-id" *ngIf="archive.archiveId">{{ archive.archiveId }}</span>
+                <span class="archive-version" *ngIf="archive.version">v{{ archive.version }}</span>
+                <span class="archive-models" *ngIf="archive.modelCount">{{ archive.modelCount }} models</span>
+              </div>
+              <div class="archive-path">{{ archive.path }}</div>
+            </div>
+            <div class="archive-actions">
+              <button mat-raised-button color="primary"
+                      *ngIf="currentArchiveStatus?.archivePath !== archive.path"
+                      (click)="loadArchive(archive.path)"
+                      [disabled]="isLoadingArchives">
+                <mat-icon>download</mat-icon>
+                Load
+              </button>
+              <mat-chip *ngIf="currentArchiveStatus?.archivePath === archive.path" class="loaded-chip">
+                <mat-icon>check</mat-icon>
+                Loaded
+              </mat-chip>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No Archives Found -->
+      <div class="no-archives-panel" *ngIf="!isLoadingArchives && availableArchives.length === 0 && !isArchiveLoaded()">
+        <mat-icon>folder_off</mat-icon>
+        <p>No archives found.</p>
+        <p class="hint">Place .karch files in ~/.kompile/archives/ or use the kompile-model-staging service to create archives.</p>
+      </div>
+    </div>
+
+    <!-- Tabs for different sections -->
+    <mat-tab-group animationDuration="200ms" class="debug-tabs">
+
+      <!-- Embedding Models Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>memory</mat-icon>
+          <span class="tab-label">Embedding Models ({{ modelsResponse?.embeddingModelCount || 0 }})</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <div *ngIf="modelsResponse?.embeddingModels?.length === 0" class="no-data-message">
+            <mat-icon>info_outline</mat-icon>
+            <p>No embedding models loaded</p>
+          </div>
+
+          <mat-accordion *ngIf="modelsResponse?.embeddingModels?.length">
+            <mat-expansion-panel *ngFor="let model of modelsResponse?.embeddingModels; let i = index"
+                                  [expanded]="expandedEmbeddingIndex === i"
+                                  (opened)="toggleEmbeddingExpansion(i)"
+                                  (closed)="expandedEmbeddingIndex === i && toggleEmbeddingExpansion(i)">
+              <mat-expansion-panel-header>
+                <mat-panel-title>
+                  <mat-icon class="model-icon">psychology</mat-icon>
+                  {{ model.className }}
+                </mat-panel-title>
+                <mat-panel-description>
+                  <mat-chip color="primary" selected>{{ model.dimensions }}D</mat-chip>
+                  <mat-chip *ngIf="model.type" color="accent" selected>{{ model.type }}</mat-chip>
+                  <mat-chip *ngIf="hasSameDiffModel(model)" color="warn" selected>SameDiff</mat-chip>
+                </mat-panel-description>
+              </mat-expansion-panel-header>
+
+              <div class="model-details">
+                <div class="detail-row">
+                  <span class="detail-label">Full Class Name:</span>
+                  <code class="detail-value">{{ model.fullClassName }}</code>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Index:</span>
+                  <span class="detail-value">{{ model.index }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Dimensions:</span>
+                  <span class="detail-value">{{ model.dimensions }}</span>
+                </div>
+                <div class="detail-row" *ngIf="model.type">
+                  <span class="detail-label">Type:</span>
+                  <span class="detail-value">{{ model.type }}</span>
+                </div>
+
+                <!-- Batch Size Configuration Info -->
+                <div class="batch-config-info">
+                  <h4>
+                    <mat-icon>memory</mat-icon>
+                    Batch Size Configuration
+                    <span class="batch-type-badge model-badge">NDArray</span>
+                  </h4>
+                  <div class="batch-info-content">
+                    <div class="batch-info-row">
+                      <span class="batch-info-label">Inference Batch Size:</span>
+                      <span class="batch-info-desc">Controls how many text chunks are processed together in a single forward pass through this embedding model.</span>
+                    </div>
+                    <div class="batch-recommendations">
+                      <span class="rec-title">Recommended by RAM:</span>
+                      <div class="rec-values-grid">
+                        <span class="rec-item">&lt;4GB: <strong>4</strong></span>
+                        <span class="rec-item">4-8GB: <strong>8</strong></span>
+                        <span class="rec-item">8-16GB: <strong>16</strong></span>
+                        <span class="rec-item">&gt;16GB: <strong>32</strong></span>
+                      </div>
+                    </div>
+                    <div class="batch-info-note">
+                      <mat-icon>info_outline</mat-icon>
+                      <span>Higher batch sizes increase throughput but require more memory. Use the <strong>Batch Size Configuration</strong> component to run benchmarks and find optimal settings for your hardware.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- SameDiff Model Info -->
+                <div *ngIf="model.sameDiffModel" class="samediff-info">
+                  <h4>SameDiff Model Info</h4>
+                  <div class="detail-row">
+                    <span class="detail-label">Variables:</span>
+                    <span class="detail-value">{{ model.sameDiffModel.numVariables }}</span>
+                  </div>
+                  <div class="detail-row">
+                    <span class="detail-label">Operations:</span>
+                    <span class="detail-value">{{ model.sameDiffModel.numOperations }}</span>
+                  </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="model-actions">
+                  <button mat-stroked-button color="primary"
+                          (click)="loadModelSummary(model.index)"
+                          *ngIf="hasSameDiffModel(model)">
+                    <mat-icon>info</mat-icon>
+                    {{ selectedModelIndex === model.index ? 'Hide Details' : 'View Full Summary' }}
+                  </button>
+                  <button mat-stroked-button color="accent"
+                          (click)="loadRawSummary(model.index)"
+                          *ngIf="hasSameDiffModel(model)">
+                    <mat-icon>article</mat-icon>
+                    Raw Text Summary
+                  </button>
+                </div>
+
+                <!-- Model Summary Details -->
+                <div *ngIf="selectedModelIndex === model.index && selectedModelSummary" class="model-summary-details">
+                  <mat-divider></mat-divider>
+                  <h4>Detailed Model Summary</h4>
+
+                  <div class="summary-stats">
+                    <div class="stat-item">
+                      <span class="stat-value">{{ selectedModelSummary.totalVariables }}</span>
+                      <span class="stat-label">Total Variables</span>
+                    </div>
+                    <div class="stat-item">
+                      <span class="stat-value">{{ selectedModelSummary.totalOperations }}</span>
+                      <span class="stat-label">Total Operations</span>
+                    </div>
+                  </div>
+
+                  <!-- Variable Type Breakdown -->
+                  <div class="variable-breakdown" *ngIf="getVariableTypeKeys().length > 0">
+                    <h5>Variable Type Breakdown</h5>
+                    <div class="breakdown-chips">
+                      <mat-chip *ngFor="let key of getVariableTypeKeys()">
+                        {{ key }}: {{ selectedModelSummary.variableTypeBreakdown[key] }}
+                      </mat-chip>
+                    </div>
+                  </div>
+
+                  <!-- Training Config -->
+                  <div class="training-config" *ngIf="selectedModelSummary.trainingConfig">
+                    <h5>Training Configuration</h5>
+                    <p>Configured: {{ selectedModelSummary.trainingConfig.configured }}</p>
+                    <p *ngIf="selectedModelSummary.trainingConfig.updater">
+                      Updater: {{ selectedModelSummary.trainingConfig.updater }}
+                    </p>
+                  </div>
+
+                  <!-- Loss Variables -->
+                  <div *ngIf="selectedModelSummary.lossVariables?.length" class="loss-variables">
+                    <h5>Loss Variables</h5>
+                    <mat-chip-set>
+                      <mat-chip *ngFor="let loss of selectedModelSummary.lossVariables">{{ loss }}</mat-chip>
+                    </mat-chip-set>
+                  </div>
+
+                  <!-- Graph Visualizer Toggle -->
+                  <div class="graph-toggle-section">
+                    <button mat-raised-button
+                            [color]="showGraphView ? 'accent' : 'primary'"
+                            (click)="toggleGraphView()"
+                            *ngIf="selectedModelSummary.graphEdges?.length || selectedModelSummary.operations?.length">
+                      <mat-icon>{{ showGraphView ? 'visibility_off' : 'account_tree' }}</mat-icon>
+                      {{ showGraphView ? 'Hide Graph' : 'View Computation Graph' }}
+                    </button>
+                  </div>
+
+                  <!-- Computation Graph Visualization -->
+                  <div *ngIf="showGraphView" class="graph-visualizer-container">
+                    <app-samediff-graph [summaryData]="selectedModelSummary"></app-samediff-graph>
+                  </div>
+                </div>
+              </div>
+            </mat-expansion-panel>
+          </mat-accordion>
+        </div>
+      </mat-tab>
+
+      <!-- Language Models Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>chat</mat-icon>
+          <span class="tab-label">Language Models ({{ modelsResponse?.languageModelCount || 0 }})</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <div *ngIf="modelsResponse?.languageModels?.length === 0" class="no-data-message">
+            <mat-icon>info_outline</mat-icon>
+            <p>No language models loaded</p>
+          </div>
+
+          <mat-list *ngIf="modelsResponse?.languageModels?.length">
+            <mat-list-item *ngFor="let model of modelsResponse?.languageModels">
+              <mat-icon matListItemIcon>smart_toy</mat-icon>
+              <div matListItemTitle>{{ model.className }}</div>
+              <div matListItemLine>
+                <code>{{ model.fullClassName }}</code>
+              </div>
+            </mat-list-item>
+          </mat-list>
+        </div>
+      </mat-tab>
+
+      <!-- Bean Models Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>inventory_2</mat-icon>
+          <span class="tab-label">All Bean Models ({{ modelsResponse?.allBeanModelCount || 0 }})</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <div *ngIf="modelsResponse?.allBeanModels?.length === 0" class="no-data-message">
+            <mat-icon>info_outline</mat-icon>
+            <p>No additional bean models found</p>
+          </div>
+
+          <mat-accordion *ngIf="modelsResponse?.allBeanModels?.length">
+            <mat-expansion-panel *ngFor="let bean of modelsResponse?.allBeanModels; let i = index"
+                                  [expanded]="expandedBeanIndex === i"
+                                  (opened)="toggleBeanExpansion(i)"
+                                  (closed)="expandedBeanIndex === i && toggleBeanExpansion(i)">
+              <mat-expansion-panel-header>
+                <mat-panel-title>
+                  <mat-icon class="bean-icon">folder</mat-icon>
+                  {{ bean.beanName }}
+                </mat-panel-title>
+                <mat-panel-description>
+                  {{ bean.beanClass }}
+                </mat-panel-description>
+              </mat-expansion-panel-header>
+
+              <div class="bean-details">
+                <div class="detail-row">
+                  <span class="detail-label">Full Class:</span>
+                  <code class="detail-value">{{ bean.beanFullClass }}</code>
+                </div>
+
+                <div *ngIf="bean.sameDiff?.length" class="nested-models">
+                  <h5>SameDiff Models ({{ bean.sameDiff?.length || 0 }})</h5>
+                  <div *ngFor="let sd of bean.sameDiff" class="nested-model-info">
+                    <mat-chip>Type: {{ sd.type }}</mat-chip>
+                    <span>Variables: {{ sd.numVariables }}, Operations: {{ sd.numOperations }}</span>
+                  </div>
+                </div>
+
+                <div *ngIf="bean.computationGraph?.length" class="nested-models">
+                  <h5>Computation Graphs ({{ bean.computationGraph?.length || 0 }})</h5>
+                  <div *ngFor="let cg of bean.computationGraph" class="nested-model-info">
+                    <span>Layers: {{ cg.numLayers }}, Parameters: {{ cg.numParameters }}</span>
+                  </div>
+                </div>
+
+                <div *ngIf="bean.multiLayerNetwork?.length" class="nested-models">
+                  <h5>MultiLayer Networks ({{ bean.multiLayerNetwork?.length || 0 }})</h5>
+                  <div *ngFor="let mln of bean.multiLayerNetwork" class="nested-model-info">
+                    <span>Layers: {{ mln.numLayers }}, Parameters: {{ mln.numParameters }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-expansion-panel>
+          </mat-accordion>
+        </div>
+      </mat-tab>
+
+      <!-- Embedding Test Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>science</mat-icon>
+          <span class="tab-label">Test Embedding</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <mat-card class="test-card">
+            <mat-card-header>
+              <mat-card-title>Test Embedding Model</mat-card-title>
+              <mat-card-subtitle>Generate an embedding vector from text input</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="test-form">
+                <mat-form-field appearance="outline" class="test-input">
+                  <mat-label>Test Text</mat-label>
+                  <textarea matInput [(ngModel)]="testText" [ngModelOptions]="{standalone: true}" rows="3"
+                            placeholder="Enter text to embed..."></textarea>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="model-select">
+                  <mat-label>Model Index</mat-label>
+                  <mat-select [(ngModel)]="testModelIndex" [ngModelOptions]="{standalone: true}">
+                    <mat-option *ngFor="let model of modelsResponse?.embeddingModels; let i = index" [value]="i">
+                      {{ i }}: {{ model.className }} ({{ model.dimensions }}D)
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <button mat-raised-button color="primary" (click)="testEmbedding()"
+                        [disabled]="isTesting || !testText.trim()">
+                  <mat-icon>play_arrow</mat-icon>
+                  {{ isTesting ? 'Testing...' : 'Run Test' }}
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Test Results -->
+          <mat-card class="results-card" *ngIf="testResult">
+            <mat-card-header>
+              <mat-card-title>Test Results</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="test-results" [class.error]="testResult.status === 'error'">
+                <div class="result-row" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Model Class:</span>
+                  <span class="result-value">{{ testResult.modelClass }}</span>
+                </div>
+                <div class="result-row" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Input Text:</span>
+                  <span class="result-value">{{ testResult.inputText }}</span>
+                </div>
+                <div class="result-row" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Embedding Shape:</span>
+                  <code class="result-value">{{ testResult.embeddingShape }}</code>
+                </div>
+                <div class="result-row" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Vector Length:</span>
+                  <span class="result-value">{{ testResult.embeddingLength }}</span>
+                </div>
+                <div class="result-row" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Inference Time:</span>
+                  <span class="result-value highlight">{{ testResult.inferenceTimeMs }}ms</span>
+                </div>
+                <div class="result-row preview" *ngIf="testResult.status !== 'error'">
+                  <span class="result-label">Vector Preview (first 10):</span>
+                  <code class="result-value vector-preview">{{ testResult.embeddingPreview }}</code>
+                  <button mat-icon-button (click)="copyToClipboard(testResult.embeddingPreview)" matTooltip="Copy">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div class="error-message" *ngIf="testResult.status === 'error'">
+                  <mat-icon color="warn">error</mat-icon>
+                  <span>{{ testResult.message }}</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+      <!-- ND4J Environment Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>settings</mat-icon>
+          <span class="tab-label">ND4J Environment</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <div *ngIf="!nd4jEnvironment" class="no-data-message">
+            <mat-icon>info_outline</mat-icon>
+            <p>Failed to load ND4J environment data</p>
+          </div>
+
+          <div *ngIf="nd4jEnvironment">
+            <!-- Backend Info -->
+            <mat-card class="env-card">
+              <mat-card-header>
+                <mat-card-title>
+                  <mat-icon>developer_board</mat-icon>
+                  Backend Information
+                </mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="backend-info-grid">
+                  <mat-chip color="primary" selected>{{ nd4jEnvironment.backendInfo?.backend || 'Unknown' }}</mat-chip>
+                  <mat-chip [color]="nd4jEnvironment.backendInfo?.isCPU ? 'primary' : 'accent'" selected>
+                    {{ nd4jEnvironment.backendInfo?.isCPU ? 'CPU Backend' : 'GPU Backend' }}
+                  </mat-chip>
+                  <mat-chip *ngIf="nd4jEnvironment.backendInfo?.blasVersion">
+                    BLAS {{ nd4jEnvironment.backendInfo?.blasVersion }}
+                  </mat-chip>
+                </div>
+
+                <!-- Read-only info -->
+                <div class="read-only-info" *ngIf="nd4jEnvironment.readOnlyInfo">
+                  <div class="info-item" *ngIf="nd4jEnvironment.readOnlyInfo?.debugAndVerbose !== undefined">
+                    <span class="info-label">Debug & Verbose Active:</span>
+                    <mat-chip [color]="nd4jEnvironment.readOnlyInfo?.debugAndVerbose ? 'warn' : 'primary'" selected>
+                      {{ nd4jEnvironment.readOnlyInfo?.debugAndVerbose ? 'Yes' : 'No' }}
+                    </mat-chip>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- Global Toggle Actions -->
+            <mat-card class="env-card">
+              <mat-card-header>
+                <mat-card-title>
+                  <mat-icon>toggle_on</mat-icon>
+                  Quick Actions
+                </mat-card-title>
+                <mat-card-subtitle>Bulk enable/disable all tracking features</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="toggle-actions">
+                  <button mat-raised-button color="primary" (click)="enableAllNd4jToggles()"
+                          [disabled]="nd4jUpdating"
+                          matTooltip="Enable all debugging/tracking toggles. WARNING: High overhead!">
+                    <mat-icon>toggle_on</mat-icon>
+                    Enable All Tracking
+                  </button>
+                  <button mat-raised-button color="warn" (click)="disableAllNd4jToggles()"
+                          [disabled]="nd4jUpdating"
+                          matTooltip="Disable all debugging/tracking toggles for production performance">
+                    <mat-icon>toggle_off</mat-icon>
+                    Disable All Tracking
+                  </button>
+                  <button mat-stroked-button color="primary" (click)="loadNd4jEnvironment()"
+                          [disabled]="nd4jUpdating">
+                    <mat-icon>refresh</mat-icon>
+                    Refresh
+                  </button>
+                </div>
+                <div class="warning-note" *ngIf="nd4jUpdating">
+                  <mat-icon>hourglass_empty</mat-icon>
+                  <span>Updating settings...</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- Grouped Boolean Toggles -->
+            <mat-accordion class="toggle-groups-accordion" multi>
+              <mat-expansion-panel *ngFor="let groupName of getToggleGroupNames()"
+                                   class="toggle-group-panel">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    <mat-icon class="group-icon">{{ getGroupIcon(groupName) }}</mat-icon>
+                    {{ formatGroupName(groupName) }}
+                  </mat-panel-title>
+                  <mat-panel-description>
+                    <span class="toggle-count">
+                      {{ getToggleKeysForGroup(groupName).length }} toggles
+                    </span>
+                  </mat-panel-description>
+                </mat-expansion-panel-header>
+
+                <div class="toggle-grid">
+                  <div *ngFor="let key of getToggleKeysForGroup(groupName)"
+                       class="toggle-item"
+                       [class.high-overhead]="isHighOverheadToggle(key)"
+                       [class.dangerous]="isDangerousToggle(key)">
+                    <mat-slide-toggle
+                      [checked]="nd4jEnvironment.booleanToggles[key]"
+                      (change)="toggleNd4jSetting(key, nd4jEnvironment.booleanToggles[key])"
+                      [disabled]="nd4jUpdating"
+                      [color]="isHighOverheadToggle(key) ? 'warn' : (isDangerousToggle(key) ? 'accent' : 'primary')">
+                      {{ formatToggleName(key) }}
+                    </mat-slide-toggle>
+                    <mat-icon *ngIf="isHighOverheadToggle(key)"
+                              class="warning-icon"
+                              color="warn"
+                              matTooltip="HIGH OVERHEAD: This toggle significantly impacts performance">
+                      warning
+                    </mat-icon>
+                    <mat-icon *ngIf="isDangerousToggle(key)"
+                              class="danger-icon"
+                              color="accent"
+                              matTooltip="CAUTION: Disabling may cause memory issues or performance problems">
+                      error_outline
+                    </mat-icon>
+                    <p class="toggle-description" *ngIf="getToggleDescription(key)">
+                      {{ getToggleDescription(key) }}
+                    </p>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+            </mat-accordion>
+
+            <!-- Grouped Integer Configs -->
+            <mat-card class="env-card">
+              <mat-card-header>
+                <mat-card-title>
+                  <mat-icon>tune</mat-icon>
+                  Numeric Configurations
+                </mat-card-title>
+                <mat-card-subtitle>Integer settings for ND4J behavior</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <mat-accordion multi>
+                  <mat-expansion-panel *ngFor="let groupName of getIntConfigGroupNames()">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>
+                        {{ formatIntConfigGroupName(groupName) }}
+                      </mat-panel-title>
+                    </mat-expansion-panel-header>
+
+                    <div class="config-grid">
+                      <div *ngFor="let key of getIntConfigKeysForGroup(groupName)" class="config-item">
+                        <mat-form-field appearance="outline">
+                          <mat-label>{{ formatToggleName(key) }}</mat-label>
+                          <input matInput type="number"
+                                 [value]="nd4jEnvironment.integerConfigs[key]"
+                                 (blur)="updateNd4jConfig(key, $any($event.target).value)"
+                                 [disabled]="nd4jUpdating">
+                        </mat-form-field>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+                </mat-accordion>
+
+                <!-- Fallback for flat configs if grouped not available -->
+                <div class="config-grid" *ngIf="getIntConfigGroupNames().length === 0">
+                  <div *ngFor="let key of getConfigKeys()" class="config-item">
+                    <mat-form-field appearance="outline">
+                      <mat-label>{{ formatToggleName(key) }}</mat-label>
+                      <input matInput type="number"
+                             [value]="nd4jEnvironment.integerConfigs[key]"
+                             (blur)="updateNd4jConfig(key, $any($event.target).value)"
+                             [disabled]="nd4jUpdating">
+                    </mat-form-field>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- CUDA Settings (GPU Backend Only) -->
+            <mat-card class="env-card cuda-card" *ngIf="hasCudaSettings()">
+              <mat-card-header>
+                <mat-card-title>
+                  <mat-icon>memory</mat-icon>
+                  CUDA Settings (GPU)
+                </mat-card-title>
+                <mat-card-subtitle>GPU-specific configuration (read-only)</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="cuda-info-grid">
+                  <div class="cuda-info-item">
+                    <span class="info-label">CUDA Devices:</span>
+                    <span class="info-value">{{ nd4jEnvironment.cudaSettings?.cudaDeviceCount }}</span>
+                  </div>
+                  <div class="cuda-info-item">
+                    <span class="info-label">Current Device:</span>
+                    <span class="info-value">{{ nd4jEnvironment.cudaSettings?.cudaCurrentDevice }}</span>
+                  </div>
+                </div>
+
+                <mat-accordion>
+                  <!-- CUDA Memory Settings -->
+                  <mat-expansion-panel *ngIf="getCudaMemoryKeys().length > 0">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>Memory Settings</mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="cuda-settings-grid">
+                      <div *ngFor="let key of getCudaMemoryKeys()" class="cuda-setting-item">
+                        <span class="setting-label">{{ formatToggleName(key) }}:</span>
+                        <span class="setting-value">{{ nd4jEnvironment.cudaSettings?.memory?.[key] }}</span>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+
+                  <!-- CUDA Execution Settings -->
+                  <mat-expansion-panel *ngIf="getCudaExecutionKeys().length > 0">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>Execution Settings</mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="cuda-settings-grid">
+                      <div *ngFor="let key of getCudaExecutionKeys()" class="cuda-setting-item">
+                        <span class="setting-label">{{ formatToggleName(key) }}:</span>
+                        <span class="setting-value">{{ nd4jEnvironment.cudaSettings?.execution?.[key] }}</span>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+
+                  <!-- CUDA Thread Settings -->
+                  <mat-expansion-panel *ngIf="getCudaThreadKeys().length > 0">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>Thread/Block Settings</mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="cuda-settings-grid">
+                      <div *ngFor="let key of getCudaThreadKeys()" class="cuda-setting-item">
+                        <span class="setting-label">{{ formatToggleName(key) }}:</span>
+                        <span class="setting-value">{{ nd4jEnvironment.cudaSettings?.threads?.[key] }}</span>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+
+                  <!-- CUDA Advanced Settings -->
+                  <mat-expansion-panel *ngIf="getCudaAdvancedKeys().length > 0">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>Advanced Settings</mat-panel-title>
+                    </mat-expansion-panel-header>
+                    <div class="cuda-settings-grid">
+                      <div *ngFor="let key of getCudaAdvancedKeys()" class="cuda-setting-item">
+                        <span class="setting-label">{{ formatToggleName(key) }}:</span>
+                        <span class="setting-value">{{ nd4jEnvironment.cudaSettings?.advanced?.[key] }}</span>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+                </mat-accordion>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Profiling & Metrics Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>analytics</mat-icon>
+          <span class="tab-label">Profiling & Metrics</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <!-- Controls Bar -->
+          <div class="resource-controls">
+            <button mat-raised-button color="primary" (click)="loadProfilingMetrics()" [disabled]="profilingLoading">
+              <mat-icon>refresh</mat-icon>
+              {{ profilingLoading ? 'Loading...' : 'Refresh Metrics' }}
+            </button>
+            <button mat-raised-button color="accent" (click)="loadThreadDump()" [disabled]="threadDumpLoading">
+              <mat-icon>view_list</mat-icon>
+              {{ threadDumpLoading ? 'Loading...' : 'Load Thread Dump' }}
+            </button>
+          </div>
+
+          <!-- Profiling Quick Presets -->
+          <mat-card class="profiling-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>tune</mat-icon>
+                Profiling Presets
+              </mat-card-title>
+              <mat-card-subtitle>Quick configuration profiles for different use cases</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="preset-buttons">
+                <button mat-raised-button
+                        *ngFor="let preset of getPresetKeys()"
+                        [color]="getPresetColor(preset)"
+                        (click)="applyProfilingPreset(preset)"
+                        [disabled]="presetApplying"
+                        [class.selected]="selectedPreset === preset"
+                        [matTooltip]="getPresetDescription(preset)">
+                  <mat-icon>{{ getPresetIcon(preset) }}</mat-icon>
+                  {{ formatPresetName(preset) }}
+                </button>
+              </div>
+              <div class="preset-description" *ngIf="selectedPreset">
+                <mat-icon>info</mat-icon>
+                <span>{{ getPresetDescription(selectedPreset) }}</span>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Backend & BLAS Info -->
+          <mat-card class="profiling-card" *ngIf="profilingMetrics">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>developer_board</mat-icon>
+                Backend Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Backend</span>
+                  <span class="info-value">{{ profilingMetrics.backend?.backend }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">CPU Mode</span>
+                  <mat-chip [color]="profilingMetrics.backend?.isCPU ? 'primary' : 'accent'" selected>
+                    {{ profilingMetrics.backend?.isCPU ? 'CPU' : 'GPU' }}
+                  </mat-chip>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">BLAS Version</span>
+                  <span class="info-value">{{ profilingMetrics.backend?.blasVersion }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">BLAS Enabled</span>
+                  <mat-chip [color]="profilingMetrics.blas?.blasEnabled ? 'primary' : 'warn'" selected>
+                    {{ profilingMetrics.blas?.blasEnabled ? 'Yes' : 'No' }}
+                  </mat-chip>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Helpers Allowed</span>
+                  <mat-chip [color]="profilingMetrics.blas?.helpersAllowed ? 'primary' : 'warn'" selected>
+                    {{ profilingMetrics.blas?.helpersAllowed ? 'Yes' : 'No' }}
+                  </mat-chip>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Thread Configuration -->
+          <mat-card class="profiling-card" *ngIf="profilingMetrics">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>call_split</mat-icon>
+                Thread Configuration
+              </mat-card-title>
+              <mat-card-subtitle>Controls native BLAS/OpenMP thread usage</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="thread-config-grid">
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Threads</mat-label>
+                  <input matInput type="number" min="1" max="128"
+                         [value]="profilingMetrics.threads?.maxThreads"
+                         (blur)="updateThreadConfig('maxThreads', $any($event.target).value)">
+                  <mat-hint>Limit BLAS threads per operation</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Master Threads</mat-label>
+                  <input matInput type="number" min="1" max="128"
+                         [value]="profilingMetrics.threads?.maxMasterThreads"
+                         (blur)="updateThreadConfig('maxMasterThreads', $any($event.target).value)">
+                  <mat-hint>Limit master thread pool size</mat-hint>
+                </mat-form-field>
+
+                <div class="thread-info">
+                  <div class="info-item">
+                    <span class="info-label">Available Processors</span>
+                    <span class="info-value">{{ profilingMetrics.threads?.availableProcessors }}</span>
+                  </div>
+                  <div class="info-item">
+                    <span class="info-label">Active Thread Count</span>
+                    <span class="info-value">{{ profilingMetrics.threads?.activeThreadCount }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Profiling Status -->
+          <mat-card class="profiling-card" *ngIf="profilingMetrics">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>speed</mat-icon>
+                Profiling Status
+                <mat-chip [color]="isProfilingEnabled() ? 'warn' : 'primary'" selected class="status-chip">
+                  {{ getActiveProfilingCount() }} active
+                </mat-chip>
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="profiling-status-grid">
+                <div *ngFor="let key of getProfilingStatusKeys()" class="profiling-status-item">
+                  <mat-icon [color]="getProfilingStatusValue(key) ? 'warn' : ''">
+                    {{ getProfilingStatusValue(key) ? 'check_circle' : 'cancel' }}
+                  </mat-icon>
+                  <span class="status-label">{{ formatToggleName(key) }}</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Thresholds -->
+          <mat-card class="profiling-card" *ngIf="profilingMetrics">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>tune</mat-icon>
+                Performance Thresholds
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">TAD Threshold</span>
+                  <span class="info-value">{{ profilingMetrics.thresholds?.tadThreshold }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Elementwise Threshold</span>
+                  <span class="info-value">{{ profilingMetrics.thresholds?.elementwiseThreshold }}</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Thread Dump Section -->
+          <mat-card class="profiling-card thread-dump-card">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>bug_report</mat-icon>
+                Thread Dump Analysis
+                <mat-chip *ngIf="threadDump && getStuckThreadsCount() > 0" color="warn" selected class="stuck-chip">
+                  {{ getStuckThreadsCount() }} in native code
+                </mat-chip>
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <!-- Filter -->
+              <div class="thread-filter">
+                <mat-form-field appearance="outline" class="filter-input">
+                  <mat-label>Filter threads</mat-label>
+                  <input matInput [(ngModel)]="threadFilter" [ngModelOptions]="{standalone: true}" placeholder="e.g., embedding, worker">
+                  <mat-icon matSuffix>search</mat-icon>
+                </mat-form-field>
+                <button mat-raised-button color="primary" (click)="filterThreads()" [disabled]="threadDumpLoading">
+                  <mat-icon>filter_list</mat-icon>
+                  Filter
+                </button>
+                <button mat-stroked-button (click)="refreshThreadDump()" [disabled]="threadDumpLoading">
+                  <mat-icon>refresh</mat-icon>
+                  Refresh
+                </button>
+              </div>
+
+              <!-- Summary -->
+              <div class="thread-summary" *ngIf="threadDump">
+                <div class="summary-item">
+                  <span class="summary-value">{{ threadDump.totalThreads }}</span>
+                  <span class="summary-label">Total</span>
+                </div>
+                <div class="summary-item">
+                  <span class="summary-value">{{ threadDump.filteredThreads }}</span>
+                  <span class="summary-label">Shown</span>
+                </div>
+                <div class="summary-item warning" *ngIf="getStuckThreadsCount() > 0">
+                  <span class="summary-value">{{ getStuckThreadsCount() }}</span>
+                  <span class="summary-label">In Native Code</span>
+                </div>
+
+                <!-- State counts -->
+                <div *ngFor="let state of getThreadStateCountKeys()" class="state-count"
+                     [style.border-left-color]="getThreadStateColor(state)">
+                  <span class="state-name">{{ state }}</span>
+                  <span class="state-value">{{ threadDump.stateCounts[state] }}</span>
+                </div>
+              </div>
+
+              <!-- Thread List -->
+              <div class="thread-list" *ngIf="threadDump?.threads?.length">
+                <mat-accordion>
+                  <mat-expansion-panel *ngFor="let thread of threadDump?.threads"
+                                       [expanded]="expandedThreadId === thread.id"
+                                       (opened)="toggleThreadExpansion(thread.id)"
+                                       [class.stuck]="thread.mightBeStuck"
+                                       [class.native]="thread.inNativeCode">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title class="thread-title">
+                        <mat-icon *ngIf="thread.mightBeStuck" color="warn" matTooltip="Possibly stuck in native code">warning</mat-icon>
+                        <span class="thread-name">{{ thread.name }}</span>
+                      </mat-panel-title>
+                      <mat-panel-description>
+                        <mat-chip [style.background-color]="getThreadStateColor(thread.state)" class="state-chip">
+                          {{ thread.state }}
+                        </mat-chip>
+                        <mat-chip *ngIf="thread.inNativeCode" color="warn" selected>Native</mat-chip>
+                        <span class="thread-id">ID: {{ thread.id }}</span>
+                      </mat-panel-description>
+                    </mat-expansion-panel-header>
+
+                    <div class="thread-details">
+                      <div class="thread-info-row">
+                        <span><strong>Priority:</strong> {{ thread.priority }}</span>
+                        <span><strong>Daemon:</strong> {{ thread.isDaemon ? 'Yes' : 'No' }}</span>
+                        <span><strong>Stack Depth:</strong> {{ thread.stackDepth }}</span>
+                      </div>
+
+                      <div *ngIf="thread.nativeMethod" class="native-method">
+                        <mat-icon color="warn">code</mat-icon>
+                        <span><strong>Native Method:</strong> {{ thread.nativeMethod }}</span>
+                      </div>
+
+                      <div class="stack-trace" *ngIf="thread.stackTrace?.length">
+                        <h5>Stack Trace:</h5>
+                        <pre class="stack-trace-content"><code>{{ thread.stackTrace.join('\n') }}</code></pre>
+                      </div>
+                    </div>
+                  </mat-expansion-panel>
+                </mat-accordion>
+              </div>
+
+              <div *ngIf="!threadDump && !threadDumpLoading" class="no-data-message">
+                <mat-icon>info_outline</mat-icon>
+                <p>Click "Load Thread Dump" to analyze threads</p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+      <!-- System Resources Tab -->
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <mat-icon>monitor_heart</mat-icon>
+          <span class="tab-label">System Resources</span>
+        </ng-template>
+
+        <div class="tab-content">
+          <!-- Controls Bar -->
+          <div class="resource-controls">
+            <button mat-raised-button color="primary" (click)="refreshResources()" [disabled]="resourcesLoading">
+              <mat-icon>refresh</mat-icon>
+              {{ resourcesLoading ? 'Loading...' : 'Refresh' }}
+            </button>
+
+            <mat-slide-toggle
+              [checked]="autoRefreshEnabled"
+              (change)="toggleAutoRefresh()"
+              color="primary">
+              Auto-refresh
+            </mat-slide-toggle>
+
+            <!-- WebSocket Mode Toggle -->
+            <mat-slide-toggle
+              [checked]="useWebSocket"
+              (change)="toggleWebSocketMode()"
+              color="accent"
+              matTooltip="Use WebSocket for real-time updates (lower latency)">
+              WebSocket
+            </mat-slide-toggle>
+
+            <!-- WebSocket Connection Status -->
+            <span class="ws-status" [class.connected]="webSocketConnected" [class.disconnected]="!webSocketConnected">
+              <mat-icon>{{ webSocketConnected ? 'wifi' : 'wifi_off' }}</mat-icon>
+              {{ webSocketConnected ? 'Connected' : 'Disconnected' }}
+            </span>
+
+            <mat-form-field appearance="outline" class="interval-select" *ngIf="autoRefreshEnabled && !useWebSocket">
+              <mat-label>Interval</mat-label>
+              <mat-select [value]="refreshIntervalMs" (selectionChange)="setRefreshInterval($event.value)">
+                <mat-option [value]="500">0.5s</mat-option>
+                <mat-option [value]="1000">1s</mat-option>
+                <mat-option [value]="2000">2s</mat-option>
+                <mat-option [value]="5000">5s</mat-option>
+                <mat-option [value]="10000">10s</mat-option>
+                <mat-option [value]="30000">30s</mat-option>
+                <mat-option [value]="60000">60s</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <button mat-stroked-button color="warn" (click)="triggerGc()">
+              <mat-icon>delete_sweep</mat-icon>
+              Trigger GC
+            </button>
+
+            <span class="last-updated" *ngIf="systemResources?.timestampIso">
+              Last updated: {{ systemResources?.timestampIso }}
+            </span>
+          </div>
+
+          <!-- Real-time Gauges -->
+          <div class="resource-gauges" *ngIf="systemResources">
+            <mat-card class="gauge-card">
+              <mat-card-content>
+                <div class="gauge">
+                  <div class="gauge-value" [style.color]="getCpuUsage() > 80 ? '#f44336' : getCpuUsage() > 50 ? '#ff9800' : '#4caf50'">
+                    {{ getCpuUsage() | number:'1.1-1' }}%
+                  </div>
+                  <div class="gauge-label">CPU Usage</div>
+                  <mat-progress-bar mode="determinate" [value]="getCpuUsage()"
+                                    [color]="getCpuUsage() > 80 ? 'warn' : 'primary'"></mat-progress-bar>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="gauge-card">
+              <mat-card-content>
+                <div class="gauge">
+                  <div class="gauge-value" [style.color]="getMemoryUsage() > 85 ? '#f44336' : getMemoryUsage() > 70 ? '#ff9800' : '#4caf50'">
+                    {{ getMemoryUsage() | number:'1.1-1' }}%
+                  </div>
+                  <div class="gauge-label">JVM Heap</div>
+                  <mat-progress-bar mode="determinate" [value]="getMemoryUsage()"
+                                    [color]="getMemoryUsage() > 85 ? 'warn' : 'primary'"></mat-progress-bar>
+                  <div class="gauge-detail">
+                    {{ systemResources.memory?.heap?.usedMB | number }}MB / {{ systemResources.memory?.heap?.maxMB | number }}MB
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="gauge-card" *ngIf="systemResources.memory?.system">
+              <mat-card-content>
+                <div class="gauge">
+                  <div class="gauge-value" [style.color]="getSystemMemoryUsage() > 90 ? '#f44336' : getSystemMemoryUsage() > 75 ? '#ff9800' : '#4caf50'">
+                    {{ getSystemMemoryUsage() | number:'1.1-1' }}%
+                  </div>
+                  <div class="gauge-label">System RAM</div>
+                  <mat-progress-bar mode="determinate" [value]="getSystemMemoryUsage()"
+                                    [color]="getSystemMemoryUsage() > 90 ? 'warn' : 'primary'"></mat-progress-bar>
+                  <div class="gauge-detail">
+                    {{ systemResources?.memory?.system?.usedMB | number }}MB / {{ systemResources?.memory?.system?.totalMB | number }}MB
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <mat-card class="gauge-card">
+              <mat-card-content>
+                <div class="gauge">
+                  <div class="gauge-value">{{ systemResources.threads?.threadCount || 0 }}</div>
+                  <div class="gauge-label">Active Threads</div>
+                  <div class="gauge-detail">Peak: {{ systemResources.threads?.peakThreadCount || 0 }}</div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Devices Section -->
+          <mat-card class="resource-card" *ngIf="devices.length > 0">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>devices</mat-icon>
+                Available Devices (Backend-Agnostic via NativeOps)
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="devices-grid">
+                <div *ngFor="let device of devices" class="device-item" [class.current]="device.current">
+                  <mat-icon>{{ device.type === 'GPU' ? 'memory' : 'computer' }}</mat-icon>
+                  <div class="device-info">
+                    <div class="device-name">{{ device.name || device.type + ' ' + device.id }}</div>
+                    <div class="device-details">
+                      <mat-chip>{{ device.type }}</mat-chip>
+                      <mat-chip *ngIf="device.backend">{{ device.backend }}</mat-chip>
+                      <mat-chip *ngIf="device.cores">{{ device.cores }} cores</mat-chip>
+                      <mat-chip *ngIf="device.computeCapability">CC {{ device.computeCapability }}</mat-chip>
+                      <mat-chip *ngIf="device.current" color="primary" selected>Current</mat-chip>
+                    </div>
+                    <!-- Device Memory Info (from NativeOps) -->
+                    <div class="device-memory" *ngIf="device.totalMemoryMB">
+                      <mat-progress-bar mode="determinate" [value]="device.memoryUsagePercent || 0"
+                                        [color]="(device.memoryUsagePercent || 0) > 85 ? 'warn' : 'primary'"></mat-progress-bar>
+                      <div class="device-memory-stats">
+                        <span>{{ device.usedMemoryMB | number }}MB / {{ device.totalMemoryMB | number }}MB</span>
+                        <span class="memory-percent">({{ device.memoryUsagePercent | number:'1.1-1' }}% used)</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- CPU Details -->
+          <mat-card class="resource-card" *ngIf="systemResources?.cpu">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>memory</mat-icon>
+                CPU Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Architecture</span>
+                  <span class="info-value">{{ systemResources?.cpu?.arch }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Processors</span>
+                  <span class="info-value">{{ systemResources?.cpu?.availableProcessors }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">System Load</span>
+                  <span class="info-value">{{ systemResources?.cpu?.systemLoadAverage }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Process CPU</span>
+                  <span class="info-value">{{ systemResources?.cpu?.processCpuLoad }}%</span>
+                </div>
+                <div class="info-item" *ngIf="systemResources?.cpu?.processCpuTime">
+                  <span class="info-label">CPU Time</span>
+                  <span class="info-value">{{ systemResources?.cpu?.processCpuTime | number:'1.2-2' }}s</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Memory Details -->
+          <mat-card class="resource-card" *ngIf="systemResources?.memory">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>storage</mat-icon>
+                Memory Details
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <h4>JVM Memory</h4>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Used</span>
+                  <span class="info-value">{{ systemResources?.memory?.jvm?.usedMB | number }}MB</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Free</span>
+                  <span class="info-value">{{ systemResources?.memory?.jvm?.freeMB | number }}MB</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Total</span>
+                  <span class="info-value">{{ systemResources?.memory?.jvm?.totalMB | number }}MB</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Max</span>
+                  <span class="info-value">{{ systemResources?.memory?.jvm?.maxMB | number }}MB</span>
+                </div>
+              </div>
+
+              <h4 *ngIf="systemResources?.memory?.system">System Memory</h4>
+              <div class="info-grid" *ngIf="systemResources?.memory?.system">
+                <div class="info-item">
+                  <span class="info-label">Total RAM</span>
+                  <span class="info-value">{{ systemResources?.memory?.system?.totalMB | number }}MB</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Free RAM</span>
+                  <span class="info-value">{{ systemResources?.memory?.system?.freeMB | number }}MB</span>
+                </div>
+                <div class="info-item" *ngIf="systemResources?.memory?.system?.swapTotalMB">
+                  <span class="info-label">Swap Total</span>
+                  <span class="info-value">{{ systemResources?.memory?.system?.swapTotalMB | number }}MB</span>
+                </div>
+                <div class="info-item" *ngIf="systemResources?.memory?.system?.swapUsedMB">
+                  <span class="info-label">Swap Used</span>
+                  <span class="info-value">{{ systemResources?.memory?.system?.swapUsedMB | number }}MB</span>
+                </div>
+              </div>
+
+              <!-- Memory Pools -->
+              <h4 *ngIf="systemResources?.memory?.pools?.length">Memory Pools</h4>
+              <div class="pools-list" *ngIf="systemResources?.memory?.pools?.length">
+                <div *ngFor="let pool of systemResources?.memory?.pools" class="pool-item">
+                  <span class="pool-name">{{ pool.name }}</span>
+                  <span class="pool-type">({{ pool.type }})</span>
+                  <span class="pool-usage">{{ pool.usedMB }}MB / {{ pool.maxMB || pool.committedMB }}MB</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Thread Details -->
+          <mat-card class="resource-card" *ngIf="systemResources?.threads">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>call_split</mat-icon>
+                Thread Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Active</span>
+                  <span class="info-value">{{ systemResources?.threads?.threadCount }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Peak</span>
+                  <span class="info-value">{{ systemResources?.threads?.peakThreadCount }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Daemon</span>
+                  <span class="info-value">{{ systemResources?.threads?.daemonThreadCount }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Total Started</span>
+                  <span class="info-value">{{ systemResources?.threads?.totalStartedThreadCount }}</span>
+                </div>
+                <div class="info-item" [class.warning]="(systemResources?.threads?.deadlockedThreads || 0) > 0">
+                  <span class="info-label">Deadlocked</span>
+                  <span class="info-value">{{ systemResources?.threads?.deadlockedThreads }}</span>
+                </div>
+              </div>
+
+              <!-- Thread States -->
+              <h4>Thread States</h4>
+              <div class="thread-states">
+                <div *ngFor="let state of getThreadStateKeys()" class="thread-state"
+                     [style.border-left-color]="getThreadStateColor(state)">
+                  <span class="state-name">{{ state }}</span>
+                  <span class="state-count">{{ systemResources?.threads?.states?.[state] }}</span>
+                </div>
+              </div>
+
+              <!-- Top CPU Threads -->
+              <h4 *ngIf="systemResources?.threads?.topCpuThreads?.length">Top CPU Threads</h4>
+              <div class="top-threads" *ngIf="systemResources?.threads?.topCpuThreads?.length">
+                <div *ngFor="let thread of systemResources?.threads?.topCpuThreads; let i = index"
+                     class="thread-item">
+                  <span class="thread-rank">#{{ i + 1 }}</span>
+                  <span class="thread-name">{{ thread.name }}</span>
+                  <mat-chip [style.background-color]="getThreadStateColor(thread.state)" class="thread-state-chip">
+                    {{ thread.state }}
+                  </mat-chip>
+                  <span class="thread-cpu">{{ thread.cpuTimeMs | number }}ms</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Process Information -->
+          <mat-card class="resource-card" *ngIf="systemResources?.process">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>terminal</mat-icon>
+                Process Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">PID</span>
+                  <span class="info-value">{{ systemResources?.process?.pid }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">User</span>
+                  <span class="info-value">{{ systemResources?.process?.user || 'N/A' }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">JVM Uptime</span>
+                  <span class="info-value">{{ formatUptime(systemResources?.process?.jvmUptimeMs || 0) }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">VM Name</span>
+                  <span class="info-value">{{ systemResources?.process?.vmName }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">VM Version</span>
+                  <span class="info-value">{{ systemResources?.process?.vmVersion }}</span>
+                </div>
+              </div>
+
+              <!-- Class Loading -->
+              <h4 *ngIf="systemResources?.process?.classLoading">Class Loading</h4>
+              <div class="info-grid" *ngIf="systemResources?.process?.classLoading">
+                <div class="info-item">
+                  <span class="info-label">Loaded</span>
+                  <span class="info-value">{{ systemResources?.process?.classLoading?.loadedClassCount | number }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Total Loaded</span>
+                  <span class="info-value">{{ systemResources?.process?.classLoading?.totalLoadedClassCount | number }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Unloaded</span>
+                  <span class="info-value">{{ systemResources?.process?.classLoading?.unloadedClassCount | number }}</span>
+                </div>
+              </div>
+
+              <!-- Garbage Collectors -->
+              <h4 *ngIf="getGarbageCollectors().length">Garbage Collectors</h4>
+              <div class="gc-list" *ngIf="getGarbageCollectors().length">
+                <div *ngFor="let gc of getGarbageCollectors()" class="gc-item">
+                  <span class="gc-name">{{ gc.name }}</span>
+                  <span class="gc-stats">
+                    {{ gc.collectionCount | number }} collections, {{ gc.collectionTimeMs | number }}ms total
+                  </span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Disk Information -->
+          <mat-card class="resource-card" *ngIf="systemResources?.disk">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>folder</mat-icon>
+                Disk Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="disk-partitions">
+                <div *ngFor="let partition of getDiskPartitions()" class="partition-item">
+                  <div class="partition-header">
+                    <mat-icon>hard_drive</mat-icon>
+                    <span class="partition-path">{{ partition.path }}</span>
+                  </div>
+                  <mat-progress-bar mode="determinate" [value]="partition.usagePercent"
+                                    [color]="partition.usagePercent > 90 ? 'warn' : 'primary'"></mat-progress-bar>
+                  <div class="partition-details">
+                    <span>Used: {{ partition.usagePercent | number:'1.1-1' }}%</span>
+                    <span>Free: {{ partition.freeGB }}GB</span>
+                    <span>Total: {{ partition.totalGB }}GB</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- System Information -->
+          <mat-card class="resource-card" *ngIf="systemResources?.system">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>info</mat-icon>
+                System Information
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">OS</span>
+                  <span class="info-value">{{ systemResources?.system?.osName }} {{ systemResources?.system?.osVersion }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Architecture</span>
+                  <span class="info-value">{{ systemResources?.system?.osArch }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Java Version</span>
+                  <span class="info-value">{{ systemResources?.system?.javaVersion }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Java Vendor</span>
+                  <span class="info-value">{{ systemResources?.system?.javaVendor }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">User</span>
+                  <span class="info-value">{{ systemResources?.system?.userName }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Working Dir</span>
+                  <span class="info-value code">{{ systemResources?.system?.userDir }}</span>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- ND4J Resources -->
+          <mat-card class="resource-card" *ngIf="systemResources?.nd4j">
+            <mat-card-header>
+              <mat-card-title>
+                <mat-icon>developer_board</mat-icon>
+                ND4J Resources (Backend-Agnostic)
+              </mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="info-grid">
+                <div class="info-item">
+                  <span class="info-label">Backend</span>
+                  <span class="info-value">
+                    {{ systemResources?.nd4j?.backend }}
+                    <mat-chip *ngIf="systemResources?.nd4j?.isGpuBackend" color="accent" selected>GPU</mat-chip>
+                    <mat-chip *ngIf="systemResources?.nd4j && !systemResources?.nd4j?.isGpuBackend" color="primary" selected>CPU</mat-chip>
+                  </span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Data Type</span>
+                  <span class="info-value">{{ systemResources?.nd4j?.dataType }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Devices</span>
+                  <span class="info-value">{{ systemResources?.nd4j?.numberOfDevices }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Current Device</span>
+                  <span class="info-value">{{ systemResources?.nd4j?.currentDevice }}</span>
+                </div>
+                <div class="info-item" *ngIf="systemResources?.nd4j?.currentDeviceFreeMemoryMB">
+                  <span class="info-label">Current Device Free Memory</span>
+                  <span class="info-value">{{ systemResources?.nd4j?.currentDeviceFreeMemoryMB | number }}MB</span>
+                </div>
+              </div>
+
+              <!-- Device Memory Details (from NativeOps) -->
+              <h4 *ngIf="systemResources?.nd4j?.devices?.length">Device Memory (via NativeOps)</h4>
+              <div class="nd4j-devices" *ngIf="systemResources?.nd4j?.devices?.length">
+                <div *ngFor="let dev of systemResources?.nd4j?.devices" class="nd4j-device-item" [class.current]="dev.current">
+                  <div class="nd4j-device-header">
+                    <mat-icon>{{ systemResources?.nd4j?.isGpuBackend ? 'memory' : 'computer' }}</mat-icon>
+                    <span class="nd4j-device-name">{{ dev.name || 'Device ' + dev.deviceId }}</span>
+                    <mat-chip *ngIf="dev.current" color="primary" selected>Active</mat-chip>
+                    <mat-chip *ngIf="dev.computeCapability">CC {{ dev.computeCapability }}</mat-chip>
+                  </div>
+                  <div class="nd4j-device-memory" *ngIf="dev.totalMemoryMB">
+                    <mat-progress-bar mode="determinate" [value]="dev.usagePercent || 0"
+                                      [color]="(dev.usagePercent || 0) > 85 ? 'warn' : 'primary'"></mat-progress-bar>
+                    <div class="nd4j-device-stats">
+                      <span>Used: {{ dev.usedMemoryMB | number }}MB</span>
+                      <span>Free: {{ dev.freeMemoryMB | number }}MB</span>
+                      <span>Total: {{ dev.totalMemoryMB | number }}MB</span>
+                      <span class="usage-percent">({{ dev.usagePercent | number:'1.1-1' }}%)</span>
+                    </div>
+                  </div>
+                  <div *ngIf="dev.error" class="nd4j-device-error">
+                    <mat-icon color="warn">warning</mat-icon>
+                    <span>{{ dev.error }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <h4>Cache Statistics</h4>
+              <div class="cache-info">
+                <div class="cache-section">
+                  <h5>Shape Cache</h5>
+                  <span>Entries: {{ systemResources?.nd4j?.cache?.shape?.entries | number }}</span>
+                  <span>Size: {{ systemResources?.nd4j?.cache?.shape?.bytesMB }}MB</span>
+                  <span>Peak: {{ systemResources?.nd4j?.cache?.shape?.peakBytesMB }}MB</span>
+                </div>
+                <div class="cache-section">
+                  <h5>TAD Cache</h5>
+                  <span>Entries: {{ systemResources?.nd4j?.cache?.tad?.entries | number }}</span>
+                  <span>Size: {{ systemResources?.nd4j?.cache?.tad?.bytesMB }}MB</span>
+                  <span>Peak: {{ systemResources?.nd4j?.cache?.tad?.peakBytesMB }}MB</span>
+                </div>
+              </div>
+
+              <div *ngIf="systemResources?.nd4j?.currentWorkspace" class="workspace-info">
+                <h4>Current Workspace</h4>
+                <div class="info-grid">
+                  <div class="info-item">
+                    <span class="info-label">ID</span>
+                    <span class="info-value">{{ systemResources?.nd4j?.currentWorkspace?.id }}</span>
+                  </div>
+                  <div class="info-item">
+                    <span class="info-label">Size</span>
+                    <span class="info-value">{{ systemResources?.nd4j?.currentWorkspace?.currentSizeMB }}MB</span>
+                  </div>
+                  <div class="info-item">
+                    <span class="info-label">Spilled</span>
+                    <span class="info-value">{{ systemResources?.nd4j?.currentWorkspace?.spilledSizeMB }}MB</span>
+                  </div>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </mat-tab>
+
+    </mat-tab-group>
+  </div>
+
+  <!-- Raw Summary Modal -->
+  <div class="raw-summary-overlay" *ngIf="showRawSummary && rawSummaryText" (click)="showRawSummary = false">
+    <mat-card class="raw-summary-card" (click)="$event.stopPropagation()">
+      <mat-card-header>
+        <mat-card-title>Raw Model Summary</mat-card-title>
+        <button mat-icon-button (click)="showRawSummary = false" class="close-btn">
+          <mat-icon>close</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="raw-summary-actions">
+          <button mat-stroked-button (click)="copyToClipboard(rawSummaryText)">
+            <mat-icon>content_copy</mat-icon>
+            Copy All
+          </button>
+        </div>
+        <pre class="raw-summary-text">{{ rawSummaryText }}</pre>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+  <!-- SDZ Upload Dialog -->
+  <div class="sdz-upload-overlay" *ngIf="showSdzUpload" (click)="closeSdzUpload()">
+    <mat-card class="sdz-upload-card" (click)="$event.stopPropagation()">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>upload_file</mat-icon>
+          Upload SameDiff Model (.sdz)
+        </mat-card-title>
+        <button mat-icon-button (click)="closeSdzUpload()" class="close-btn">
+          <mat-icon>close</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <form class="sdz-upload-form" (ngSubmit)="submitSdzUpload()">
+          <!-- Model File -->
+          <div class="upload-field">
+            <label class="upload-label">Model File (.sdz) *</label>
+            <div class="file-input-wrapper">
+              <input type="file" #sdzFileInput accept=".sdz" (change)="onSdzFileSelected($event)" hidden>
+              <button type="button" mat-stroked-button (click)="sdzFileInput.click()">
+                <mat-icon>folder_open</mat-icon>
+                Choose File
+              </button>
+              <span class="file-name" *ngIf="sdzUploadFile">{{ sdzUploadFile.name }} ({{ formatFileSize(sdzUploadFile.size) }})</span>
+              <span class="file-name placeholder" *ngIf="!sdzUploadFile">No file selected</span>
+            </div>
+          </div>
+
+          <!-- Vocab File (optional) -->
+          <div class="upload-field">
+            <label class="upload-label">Vocabulary File (optional)</label>
+            <div class="file-input-wrapper">
+              <input type="file" #vocabFileInput accept=".txt,.json" (change)="onVocabFileSelected($event)" hidden>
+              <button type="button" mat-stroked-button (click)="vocabFileInput.click()">
+                <mat-icon>folder_open</mat-icon>
+                Choose File
+              </button>
+              <span class="file-name" *ngIf="vocabUploadFile">{{ vocabUploadFile.name }}</span>
+              <span class="file-name placeholder" *ngIf="!vocabUploadFile">No file selected</span>
+            </div>
+          </div>
+
+          <!-- Model ID -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Model ID *</mat-label>
+            <input matInput [(ngModel)]="sdzUploadModelId" name="modelId" required placeholder="e.g., my-custom-encoder">
+            <mat-hint>Unique identifier for this model</mat-hint>
+          </mat-form-field>
+
+          <!-- Model Type -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Model Type</mat-label>
+            <mat-select [(ngModel)]="sdzUploadModelType" name="modelType">
+              <mat-option value="dense_encoder">Dense Encoder</mat-option>
+              <mat-option value="sparse_encoder">Sparse Encoder</mat-option>
+              <mat-option value="cross_encoder">Cross-Encoder (Reranker)</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Version -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Version</mat-label>
+            <input matInput [(ngModel)]="sdzUploadVersion" name="version" placeholder="e.g., 1.0.0">
+          </mat-form-field>
+
+          <!-- Embedding Dimension -->
+          <mat-form-field appearance="outline" class="half-width">
+            <mat-label>Embedding Dimension</mat-label>
+            <input matInput type="number" [(ngModel)]="sdzUploadEmbeddingDim" name="embeddingDim" placeholder="e.g., 768">
+          </mat-form-field>
+
+          <!-- Max Sequence Length -->
+          <mat-form-field appearance="outline" class="half-width">
+            <mat-label>Max Sequence Length</mat-label>
+            <input matInput type="number" [(ngModel)]="sdzUploadMaxSeqLen" name="maxSeqLen" placeholder="e.g., 512">
+          </mat-form-field>
+
+          <!-- Description -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput [(ngModel)]="sdzUploadDescription" name="description" rows="2"></textarea>
+          </mat-form-field>
+
+          <!-- Overwrite existing -->
+          <mat-checkbox [(ngModel)]="sdzUploadOverwrite" name="overwrite">
+            Overwrite if model already exists
+          </mat-checkbox>
+
+          <!-- Error message -->
+          <div class="upload-error" *ngIf="sdzUploadError">
+            <mat-icon>error</mat-icon>
+            {{ sdzUploadError }}
+          </div>
+
+          <!-- Progress -->
+          <div class="upload-progress" *ngIf="sdzUploading">
+            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+            <span>Uploading...</span>
+          </div>
+
+          <!-- Actions -->
+          <div class="upload-actions">
+            <button mat-button type="button" (click)="closeSdzUpload()">Cancel</button>
+            <button mat-raised-button color="primary" type="submit"
+                    [disabled]="!sdzUploadFile || !sdzUploadModelId || sdzUploading">
+              <mat-icon>cloud_upload</mat-icon>
+              Upload & Register
+            </button>
+          </div>
+        </form>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
+</div>

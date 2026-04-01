@@ -1,0 +1,90 @@
+<div class="permission-manager">
+  <div class="header-row">
+    <h3>Command Permissions</h3>
+    <button mat-icon-button (click)="loadPermissions()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <div class="add-command-row">
+    <mat-form-field appearance="outline" class="command-input">
+      <mat-label>Command</mat-label>
+      <input matInput [(ngModel)]="newCommand" placeholder="Enter command to approve/deny">
+    </mat-form-field>
+    <button mat-raised-button color="primary" (click)="allowCustomCommand()" [disabled]="!newCommand.trim()">
+      <mat-icon>check</mat-icon>
+      Allow
+    </button>
+    <button mat-raised-button color="warn" (click)="denyCustomCommand()" [disabled]="!newCommand.trim()">
+      <mat-icon>block</mat-icon>
+      Deny
+    </button>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="activeTabIndex" class="permissions-tabs">
+    <mat-tab label="Pending ({{ pendingCommands.length }})">
+      <div class="commands-list">
+        <mat-card *ngFor="let cmd of pendingCommands" class="command-card pending">
+          <mat-card-content>
+            <div class="command-info">
+              <mat-icon [color]="getRiskColor(getRiskLevel(cmd))">
+                {{ getRiskIcon(getRiskLevel(cmd)) }}
+              </mat-icon>
+              <code class="command-text">{{ cmd }}</code>
+              <mat-chip [color]="getRiskColor(getRiskLevel(cmd))" class="risk-chip">
+                {{ getRiskLevel(cmd) | titlecase }} Risk
+              </mat-chip>
+            </div>
+            <div class="command-actions">
+              <button mat-raised-button color="primary" (click)="allowCommand(cmd)">
+                <mat-icon>check</mat-icon>
+                Allow
+              </button>
+              <button mat-raised-button color="warn" (click)="denyCommand(cmd)">
+                <mat-icon>block</mat-icon>
+                Deny
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+        
+        <div *ngIf="pendingCommands.length === 0" class="empty-state">
+          <mat-icon>inbox</mat-icon>
+          <p>No pending commands</p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Allowed ({{ allowedCommands.length }})">
+      <div class="commands-list">
+        <mat-chip-listbox>
+          <mat-chip *ngFor="let cmd of allowedCommands" (click)="denyCommand(cmd)" class="allowed-chip">
+            <mat-icon>check</mat-icon>
+            {{ cmd }}
+          </mat-chip>
+        </mat-chip-listbox>
+        
+        <div *ngIf="allowedCommands.length === 0" class="empty-state">
+          <mat-icon>check_circle</mat-icon>
+          <p>No allowed commands</p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <mat-tab label="Denied ({{ deniedCommands.length }})">
+      <div class="commands-list">
+        <mat-chip-listbox>
+          <mat-chip *ngFor="let cmd of deniedCommands" (click)="allowCommand(cmd)" class="denied-chip" color="warn">
+            <mat-icon>block</mat-icon>
+            {{ cmd }}
+          </mat-chip>
+        </mat-chip-listbox>
+        
+        <div *ngIf="deniedCommands.length === 0" class="empty-state">
+          <mat-icon>block</mat-icon>
+          <p>No denied commands</p>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

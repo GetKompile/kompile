@@ -154,12 +154,14 @@
           <!-- VLM Model Selection -->
           <mat-form-field appearance="outline" class="vlm-model-field">
             <mat-label>VLM Model</mat-label>
-            <mat-select [(ngModel)]="pdfProcessingConfig.vlmModelId" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting">
-              <mat-option value="smoldocling-256m">SmolDocling 256M (Fast)</mat-option>
-              <mat-option value="smoldocling-512m">SmolDocling 512M (Balanced)</mat-option>
-              <mat-option value="smoldocling-1b">SmolDocling 1B (High Quality)</mat-option>
+            <mat-select [(ngModel)]="pdfProcessingConfig.vlmModelId" [ngModelOptions]="{standalone: true}" [disabled]="isSubmitting || loadingVlmModels">
+              <mat-option *ngIf="loadingVlmModels" disabled>Loading models...</mat-option>
+              <mat-option *ngIf="!loadingVlmModels && availableVlmModels.length === 0" disabled>No VLM models staged</mat-option>
+              <mat-option *ngFor="let model of availableVlmModels" [value]="model.id">
+                {{ model.name }}
+              </mat-option>
             </mat-select>
-            <mat-hint>Choose model based on accuracy/speed tradeoff</mat-hint>
+            <mat-hint>Select a staged VLM model from the registry</mat-hint>
           </mat-form-field>
 
           <!-- VLM Output Format -->

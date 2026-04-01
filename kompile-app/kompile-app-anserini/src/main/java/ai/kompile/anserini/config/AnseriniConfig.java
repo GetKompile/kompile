@@ -16,9 +16,8 @@
 
 package ai.kompile.anserini.config; // New package for this module's config
 
-import ai.kompile.bindings.TokenizersNative;
 import ai.kompile.cli.main.util.PlatformDetector;
-import ai.kompile.presets.TokenizersHelper;
+import org.eclipse.deeplearning4j.tokenizers.bindings.TokenizersNative;
 import io.anserini.collection.JsonCollection;
 import io.anserini.index.generator.DefaultLuceneDocumentGenerator;
 import lombok.Data;
@@ -56,8 +55,7 @@ public class AnseriniConfig {
                     JsonCollection.class,
                     KeywordAttributeImpl.class,
                     DefaultLuceneDocumentGenerator.class,
-                    TokenizersNative.class,
-                    TokenizersHelper.class
+                    TokenizersNative.class
             }) {
                 for (MemberCategory memberCategory : MemberCategory.values()) {
                     hints.reflection().registerType(clazz, memberCategory);
@@ -65,11 +63,6 @@ public class AnseriniConfig {
             }
 
             // Register JNI hints
-            hints.jni().registerType(TokenizersHelper.class,
-                    MemberCategory.PUBLIC_FIELDS,
-                    MemberCategory.DECLARED_FIELDS,
-                    MemberCategory.DECLARED_CLASSES,
-                    MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS);
             hints.jni().registerType(TokenizersNative.class,
                     MemberCategory.PUBLIC_FIELDS,
                     MemberCategory.DECLARED_FIELDS,
@@ -83,24 +76,18 @@ public class AnseriniConfig {
         private void registerNativeLibraryResources(RuntimeHints hints) {
             PlatformDetector.PlatformInfo platformInfo = PlatformDetector.detectPlatform();
 
-            // Define all possible native library resource paths
+            // Define all possible native library resource paths (DL4J nd4j-tokenizers)
             String[] resourcePaths = {
                     // Primary tokenizers library
-                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so",
-                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1",
-                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1.0.0",
-
-                    // Alternative lib64 location
-                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so",
-                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1",
-                    "/ai/kompile/tokenizers/lib64/libtokenizers_wrapper.so.1.0.0",
+                    "/org/eclipse/deeplearning4j/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so",
+                    "/org/eclipse/deeplearning4j/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1",
+                    "/org/eclipse/deeplearning4j/tokenizers/" + platformInfo.getIdentifier() + "/libtokenizers_wrapper.so.1.0.0",
 
                     // JNI bindings library
-                    "/ai/kompile/bindings/" + platformInfo.getIdentifier() + "/libjnitokenizers.so",
+                    "/org/eclipse/deeplearning4j/tokenizers/bindings/" + platformInfo.getIdentifier() + "/libjnitokenizers.so",
 
                     // Include manifest files that might be needed
-                    "/ai/kompile/tokenizers/" + platformInfo.getIdentifier() + "/manifest.properties",
-                    "/ai/kompile/tokenizers/lib64/manifest.properties"
+                    "/org/eclipse/deeplearning4j/tokenizers/" + platformInfo.getIdentifier() + "/manifest.properties"
             };
 
             System.out.println("=== Registering Native Library Resources ===");

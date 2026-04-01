@@ -1,0 +1,23 @@
+.dataset-manager { padding: 16px; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.header h2 { margin: 0; }
+.upload-card { margin-bottom: 16px; }
+.list-card { margin-bottom: 16px; }
+.detail-card { margin-bottom: 16px; }
+.upload-form { display: flex; flex-direction: column; gap: 8px; }
+.form-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.form-row mat-form-field { flex: 1; min-width: 200px; }
+.file-upload-row { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+.file-size { color: rgba(0,0,0,0.6); font-size: 0.875rem; }
+.loading-spinner { display: flex; justify-content: center; padding: 32px; }
+.empty-state { text-align: center; padding: 48px; color: rgba(0,0,0,0.5); }
+.empty-state mat-icon { font-size: 48px; width: 48px; height: 48px; }
+.dataset-table { width: 100%; }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: rgba(0,0,0,0.04); }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.stat-item { background: rgba(0,0,0,0.04); border-radius: 8px; padding: 12px; text-align: center; }
+.stat-label { display: block; font-size: 0.75rem; color: rgba(0,0,0,0.6); margin-bottom: 4px; }
+.stat-value { display: block; font-size: 1.25rem; font-weight: 500; }
+.preview-container { max-height: 400px; overflow: auto; }
+.preview-data { background: rgba(0,0,0,0.04); padding: 16px; border-radius: 4px; font-size: 0.8rem; white-space: pre-wrap; }

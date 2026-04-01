@@ -57,7 +57,20 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
     private final SchemaRegistry schemaRegistry = SchemaRegistry.getInstance();
     private final Scanner scanner = new Scanner(System.in);
 
-    private static final Object TRANSFORMED_MARKER_KEY = NewStepCreator.class;
+    private static final Set<Integer> TRANSFORMED_SPECS = Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /**
+     * Known pipeline step runner types whose schemas are bundled with the CLI.
+     * This allows schema discovery without requiring the heavy step implementation
+     * modules (nd4j, python4j, etc.) on the classpath.
+     */
+    private static final List<String> KNOWN_RUNNER_TYPES = List.of(
+            "ai.kompile.pipelines.steps.python.PythonRunner",
+            "ai.kompile.pipelines.steps.samediff.SameDiffRunner",
+            "ai.kompile.pipelines.steps.samediff.trainer.SameDiffTrainerRunner",
+            "ai.kompile.pipelines.steps.deeplearning4j.DL4JRunner",
+            "ai.kompile.pipelines.steps.documentparser.DocumentParserRunner"
+    );
 
 
     @CommandLine.Spec
@@ -65,7 +78,7 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
 
     @Override
     public CommandLine.Model.CommandSpec transform(CommandLine.Model.CommandSpec rootCommandSpec) {
-        if (rootCommandSpec.userObject() == TRANSFORMED_MARKER_KEY) {
+        if (!TRANSFORMED_SPECS.add(System.identityHashCode(rootCommandSpec))) {
             return rootCommandSpec;
         }
 
@@ -79,7 +92,6 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
             String subcommandName = generateSubcommandName(runnerClassName);
 
             if (rootCommandSpec.subcommands().containsKey(subcommandName)) {
-                System.err.println("Warning: Subcommand '" + subcommandName + "' already exists or a name collision occurred for runner: " + runnerClassName + ". Skipping duplicate subcommand generation.");
                 continue;
             }
 
@@ -134,11 +146,26 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
     }
 
     private List<StepSchema> getAvailableSchemas() {
-        // This method uses the instance field schemaRegistry
+        // First, try loading schemas for known runner types bundled with the CLI.
+        // This avoids needing heavy step implementation modules on the classpath.
+        Set<String> retrievedRunnerClasses = new HashSet<>();
+        for (String runnerType : KNOWN_RUNNER_TYPES) {
+            try {
+                Optional<StepSchema> schemaOpt = this.schemaRegistry.getSchema(runnerType);
+                if (schemaOpt.isPresent()) {
+                    retrievedRunnerClasses.add(runnerType);
+                }
+            } catch (Exception e) {
+                // Schema file not found or parse error — skip silently
+            }
+        }
+
         List<StepSchema> schemas = new ArrayList<>(this.schemaRegistry.getAllSchemas());
-        Set<String> retrievedRunnerClasses = schemas.stream()
+        retrievedRunnerClasses.addAll(schemas.stream()
                 .map(StepSchema::getRunnerClassName)
-                .collect(Collectors.toSet());
+                .collect(Collectors.toSet()));
+
+        // Additionally, discover schemas via ServiceLoader factories (if step modules are on classpath)
         ServiceLoader<PipelineStepRunnerFactory> factories = ServiceLoader.load(PipelineStepRunnerFactory.class);
         for (PipelineStepRunnerFactory factory : factories) {
             try {
@@ -148,12 +175,10 @@ public class NewStepCreator implements Callable<Integer>, CommandLine.IModelTran
                     if (schemaOptional.isPresent()) {
                         schemas.add(schemaOptional.get());
                         retrievedRunnerClasses.add(runnerType);
-                    } else {
-                        System.err.println("Warning: CLI - Schema not found in registry for runner type from factory: " + runnerType);
                     }
                 }
             } catch (Exception e) {
-                System.err.println("Warning: CLI - Error processing factory " + factory.getClass().getName() + ": " + e.getMessage());
+                // Skip factories that fail to load
             }
         }
         if (schemas.isEmpty()) {

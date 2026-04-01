@@ -1,0 +1,58 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="unified-data-management-container">
+  <mat-tab-group #tabGroup (selectedIndexChange)="onTabChange($event)" [selectedIndex]="selectedTabIndex"
+    animationDuration="200ms" class="unified-tabs">
+
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">library_books</mat-icon>
+        Fact Sheets
+      </ng-template>
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <app-fact-sheet-manager></app-fact-sheet-manager>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">search</mat-icon>
+        Index Browser
+      </ng-template>
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <app-index-browser></app-index-browser>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">settings</mat-icon>
+        Settings
+      </ng-template>
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <app-settings></app-settings>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+  </mat-tab-group>
+</div>

@@ -54,6 +54,27 @@
             <div class="stat-label">Cross-Encoders</div>
           </mat-card-content>
         </mat-card>
+        <mat-card class="stat-card" *ngIf="getVlmPipelineCount() > 0">
+          <mat-card-content>
+            <mat-icon class="stat-icon">visibility</mat-icon>
+            <div class="stat-value">{{ getVlmPipelineCount() }}</div>
+            <div class="stat-label">VLM Pipelines</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card" *ngIf="getOcrModelCount() > 0">
+          <mat-card-content>
+            <mat-icon class="stat-icon">document_scanner</mat-icon>
+            <div class="stat-value">{{ getOcrModelCount() }}</div>
+            <div class="stat-label">OCR Models</div>
+          </mat-card-content>
+        </mat-card>
+        <mat-card class="stat-card" *ngIf="getLlmModelCount() > 0">
+          <mat-card-content>
+            <mat-icon class="stat-icon">smart_toy</mat-icon>
+            <div class="stat-value">{{ getLlmModelCount() }}</div>
+            <div class="stat-label">LLM Models</div>
+          </mat-card-content>
+        </mat-card>
         <mat-card class="stat-card active">
           <mat-card-content>
             <mat-icon class="stat-icon">check_circle</mat-icon>
@@ -61,6 +82,50 @@
             <div class="stat-label">Active</div>
           </mat-card-content>
         </mat-card>
+      </div>
+    </section>
+
+    <!-- Active Model Assignments -->
+    <section class="assignments-section">
+      <h2 class="section-title">
+        <mat-icon>assignment</mat-icon>
+        Active Model Assignments
+      </h2>
+      <p class="section-subtitle" *ngIf="!hasAnyActiveModels()">
+        No models are currently active. Stage and promote models from the catalog to assign them to roles.
+      </p>
+      <div class="assignments-grid">
+        <ng-container *ngFor="let assignment of activeModelsByRole">
+          <mat-card class="assignment-card" [ngClass]="{'assigned': assignment.model, 'unassigned': !assignment.model}">
+            <mat-card-content>
+              <div class="assignment-header">
+                <mat-icon class="assignment-role-icon" [ngClass]="'role-' + assignment.type">{{ assignment.icon }}</mat-icon>
+                <div class="assignment-role">
+                  <span class="assignment-role-name">{{ assignment.role }}</span>
+                  <span class="assignment-role-type">{{ getModelTypeDisplayName(assignment.type) }}</span>
+                </div>
+              </div>
+              <div class="assignment-model" *ngIf="assignment.model">
+                <mat-icon class="active-indicator">check_circle</mat-icon>
+                <div class="model-info">
+                  <span class="model-name">{{ assignment.model.model_id }}</span>
+                  <span class="model-meta" *ngIf="assignment.model.metadata?.embeddingDim">
+                    {{ assignment.model.metadata.embeddingDim }}d
+                    <span *ngIf="assignment.model.metadata?.maxSequenceLength"> · {{ assignment.model.metadata.maxSequenceLength }} tokens</span>
+                  </span>
+                  <span class="model-meta" *ngIf="assignment.model.metadata?.description">
+                    {{ assignment.model.metadata.description }}
+                  </span>
+                </div>
+              </div>
+              <div class="assignment-model unassigned-label" *ngIf="!assignment.model">
+                <mat-icon>radio_button_unchecked</mat-icon>
+                <span>No model assigned</span>
+              </div>
+              <div class="assignment-description">{{ assignment.description }}</div>
+            </mat-card-content>
+          </mat-card>
+        </ng-container>
       </div>
     </section>
 

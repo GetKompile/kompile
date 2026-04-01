@@ -1,0 +1,1001 @@
+========= COMPUTE-SANITIZER
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaMalloc.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3d14] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 
+========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to cudaGetLastError.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: sd::DataBuffer::allocateSpecial() [0x6c3a24] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::allocateBuffers(bool) [0x6c5835] in libnd4jcuda.so
+=========         Host Frame: sd::DataBuffer::DataBuffer(long, sd::DataType, sd::memory::Workspace*, bool) in DataBuffer.cpp:270 [0x861221] in libnd4jcuda.so
+=========         Host Frame: sd::InteropDataBuffer::InteropDataBuffer(unsigned long, sd::DataType, bool) in InteropDataBuffer.cpp:82 [0x866d63] in libnd4jcuda.so
+=========         Host Frame: allocateDataBuffer(long, int, bool) in NativeOpsHelpers_DataBuffers.cpp:600 [0x11c4200] in libnd4jcuda.so
+=========         Host Frame: Java_org_nd4j_linalg_jcublas_bindings_Nd4jCuda_allocateDataBuffer [0x1b9c16] in libjnind4jcuda.so
+=========         Host Frame:  [0x7fcdcd20cc47]
+========= 

@@ -1,0 +1,297 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ * Licensed under the Apache License, Version 2.0
+ */
+
+.state-machine-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fafafa;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 24px;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: #ffebee;
+  color: #c62828;
+  border-bottom: 1px solid #ef9a9a;
+
+  mat-icon {
+    flex-shrink: 0;
+  }
+
+  span {
+    flex: 1;
+  }
+}
+
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.canvas-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+
+  .loading-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10;
+  }
+
+  .empty-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: #757575;
+
+    mat-icon {
+      font-size: 64px;
+      width: 64px;
+      height: 64px;
+      margin-bottom: 16px;
+    }
+
+    p {
+      margin: 0 0 24px 0;
+      font-size: 1.1rem;
+    }
+
+    .or {
+      display: block;
+      margin: 12px 0;
+      color: #bdbdbd;
+    }
+  }
+}
+
+.canvas {
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+// Node styles
+.node-group {
+  cursor: pointer;
+
+  &:hover .node-rect {
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  }
+
+  &.selected .node-rect {
+    stroke-width: 3;
+    filter: drop-shadow(0 2px 8px rgba(25, 118, 210, 0.4));
+  }
+
+  &.dragging {
+    cursor: grabbing;
+
+    .node-rect {
+      filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.3));
+    }
+  }
+}
+
+.node-rect {
+  transition: filter 0.2s;
+}
+
+.node-name {
+  font-size: 14px;
+  font-weight: 500;
+  fill: #212121;
+  pointer-events: none;
+}
+
+.node-category {
+  font-size: 10px;
+  fill: #757575;
+  pointer-events: none;
+}
+
+.connect-handle {
+  opacity: 0;
+  transition: opacity 0.2s;
+  cursor: crosshair;
+}
+
+.connect-icon {
+  opacity: 0;
+  pointer-events: none;
+  font-weight: bold;
+}
+
+.node-group:hover {
+  .connect-handle,
+  .connect-icon {
+    opacity: 1;
+  }
+}
+
+// Edge styles
+.edge-group {
+  cursor: pointer;
+
+  &:hover .edge-path {
+    stroke-width: 3;
+  }
+
+  &.selected .edge-path {
+    stroke-width: 4;
+    filter: drop-shadow(0 0 4px rgba(25, 118, 210, 0.5));
+  }
+}
+
+.edge-path {
+  transition: stroke-width 0.2s;
+}
+
+.edge-label {
+  font-size: 11px;
+  fill: #616161;
+  pointer-events: none;
+}
+
+.temp-connection {
+  pointer-events: none;
+}
+
+// Properties Panel
+.properties-panel {
+  width: 320px;
+  background: white;
+  border-left: 1px solid #e0e0e0;
+  overflow-y: auto;
+}
+
+.panel-content {
+  padding: 20px;
+
+  h3 {
+    margin: 0 0 16px 0;
+    font-size: 1.1rem;
+    font-weight: 500;
+  }
+
+  .description {
+    color: #616161;
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+  }
+
+  .transition-info {
+    color: #757575;
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+  }
+
+  .full-width {
+    width: 100%;
+  }
+
+  mat-form-field {
+    margin-bottom: 8px;
+  }
+
+  mat-checkbox {
+    display: block;
+    margin-bottom: 12px;
+  }
+}
+
+.info-row {
+  display: flex;
+  margin-bottom: 8px;
+
+  .label {
+    width: 100px;
+    color: #757575;
+    font-size: 0.9rem;
+  }
+
+  .value {
+    flex: 1;
+    font-size: 0.9rem;
+
+    &.code {
+      font-family: monospace;
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+  }
+
+  .category-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: white;
+    font-size: 0.8rem;
+    font-weight: 500;
+  }
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+// Legend
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 24px;
+  background: white;
+  border-top: 1px solid #e0e0e0;
+  font-size: 0.85rem;
+
+  .legend-title {
+    color: #757575;
+    font-weight: 500;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #616161;
+  }
+
+  .legend-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+  }
+}

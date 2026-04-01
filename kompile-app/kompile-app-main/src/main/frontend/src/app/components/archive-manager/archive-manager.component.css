@@ -1,0 +1,258 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.archive-manager-container {
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+  position: relative;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 8px 0;
+  font-weight: 400;
+  font-size: 28px;
+}
+
+.page-header h1 mat-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  color: #1a237e;
+}
+
+.subtitle {
+  color: #666;
+  margin: 0;
+  font-size: 14px;
+}
+
+/* Loading State */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 24px;
+  text-align: center;
+  color: #666;
+}
+
+/* Status Card */
+.status-card {
+  margin-bottom: 24px;
+}
+
+.status-card mat-icon.loaded {
+  color: #4caf50;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-item .label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.status-item .value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.status-description {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.status-description .label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.status-description p {
+  margin: 8px 0 0 0;
+  font-size: 14px;
+}
+
+/* Tabs */
+mat-tab-group {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.tab-icon {
+  margin-right: 8px;
+}
+
+.tab-content {
+  padding: 24px;
+}
+
+/* Load Archive Card */
+.load-archive-card {
+  margin-bottom: 24px;
+}
+
+.load-archive-form {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.archive-path-field {
+  flex: 1;
+}
+
+/* Archives List */
+.archives-list h3 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.archive-item {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.archive-item.loaded {
+  background: #e8f5e9;
+}
+
+.archive-meta {
+  font-size: 12px;
+  color: #666;
+}
+
+/* No Archives */
+.no-archives, .no-models {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 24px;
+  text-align: center;
+  color: #999;
+}
+
+.no-archives mat-icon, .no-models mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  color: #ccc;
+  margin-bottom: 16px;
+}
+
+.no-archives p, .no-models p {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: #666;
+}
+
+.no-archives span {
+  font-size: 13px;
+}
+
+/* Models Section */
+.models-section {
+  margin-bottom: 32px;
+}
+
+.models-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.model-card {
+  height: 100%;
+}
+
+.model-description {
+  font-size: 13px;
+  color: #666;
+  margin: 8px 0 0 0;
+}
+
+/* Extract Form */
+.extract-card {
+  max-width: 600px;
+}
+
+.extract-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.extract-form mat-form-field {
+  width: 100%;
+}
+
+/* Refresh FAB */
+.refresh-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .archive-manager-container {
+    padding: 16px;
+  }
+
+  .load-archive-form {
+    flex-direction: column;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .models-grid {
+    grid-template-columns: 1fr;
+  }
+}

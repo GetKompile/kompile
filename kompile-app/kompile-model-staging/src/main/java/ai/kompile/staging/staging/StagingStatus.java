@@ -26,6 +26,7 @@ public enum StagingStatus {
     DOWNLOADING("downloading"),
     CONVERTING("converting"),
     VALIDATING("validating"),
+    OPTIMIZING("optimizing"),
     READY("ready"),
     PROMOTING("promoting"),
     COMPLETED("completed"),
@@ -57,6 +58,6 @@ public enum StagingStatus {
 
     public boolean isActive() {
         return this == DOWNLOADING || this == CONVERTING ||
-               this == VALIDATING || this == PROMOTING;
+               this == VALIDATING || this == OPTIMIZING || this == PROMOTING;
     }
 }

@@ -17,19 +17,32 @@
 // getkompile/kompile/kompile-ag_new_kompile_cli/kompile-cli/src/main/java/ai/kompile/cli/main/Info.java
 package ai.kompile.cli.main;
 
+import ai.kompile.cli.common.KompileHome;
+import ai.kompile.cli.common.registry.InstanceInfo;
+import ai.kompile.cli.common.registry.InstanceRegistry;
+import ai.kompile.cli.common.status.ConfigReader;
+import ai.kompile.cli.common.status.ServiceProber;
 import ai.kompile.cli.main.util.OSResolver;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import picocli.CommandLine;
 
 import java.io.File;
 import java.io.InputStream;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "info",mixinStandardHelpOptions = false,description = "Display information on current kompile installation.")
+@CommandLine.Command(name = "info", mixinStandardHelpOptions = false, description = "Display information on current kompile installation.")
 public class Info implements Callable<Integer> {
 
     private static final String KOMPILE_PROPERTIES_FILE = "kompile-cli-versions.properties";
     private static final Properties buildProperties = new Properties();
+
+    @CommandLine.Option(names = {"--json"}, description = "Output as JSON")
+    private boolean jsonOutput = false;
+
+    @CommandLine.Option(names = {"--section", "-s"}, description = "Section to display: version, services, instances, config, all")
+    private String section = "all";
 
     static {
         try (InputStream is = Info.class.getClassLoader().getResourceAsStream(KOMPILE_PROPERTIES_FILE)) {
@@ -46,15 +59,12 @@ public class Info implements Callable<Integer> {
     }
 
     private static void loadDefaultVersions() {
-        // These should match the current project versions if properties file fails
-        buildProperties.setProperty("kompile.cli.version", "0.1.0-SNAPSHOT"); // Version of the CLI itself (kompile parent)
-        buildProperties.setProperty("project.version", "0.1.0-SNAPSHOT"); // Version for kompile-pipelines-* modules
-        buildProperties.setProperty("kompile.app.version", "0.0.1-SNAPSHOT"); // Version for kompile-app-* modules (RAG parent)
+        buildProperties.setProperty("kompile.cli.version", "0.1.0-SNAPSHOT");
+        buildProperties.setProperty("project.version", "0.1.0-SNAPSHOT");
+        buildProperties.setProperty("kompile.app.version", "0.0.1-SNAPSHOT");
         buildProperties.setProperty("spring.boot.version", "3.4.5");
         buildProperties.setProperty("spring.ai.version", "1.0.0");
         buildProperties.setProperty("native.image.plugin.version", "0.10.6");
-
-        // Default versions for common Maven plugins
         buildProperties.setProperty("maven.compiler.plugin.version", "3.13.0");
         buildProperties.setProperty("maven.resources.plugin.version", "3.3.1");
         buildProperties.setProperty("maven.assembly.plugin.version", "3.7.1");
@@ -85,120 +95,234 @@ public class Info implements Callable<Integer> {
         return new File(homeDirectory(), "cmake");
     }
 
-    /**
-     * Gets the overall Kompile project version (typically from the parent POM of kompile-cli).
-     * @return The version string.
-     */
     public static String getVersion() {
         return buildProperties.getProperty("kompile.cli.version", "0.1.0-SNAPSHOT");
     }
 
-    /**
-     * Gets the version for Kompile Pipelines Framework modules.
-     * @return The version string.
-     */
     public static String getKompilePipelinesVersion() {
         return buildProperties.getProperty("project.version", getVersion());
     }
 
-    /**
-     * Gets the version for Kompile App modules (e.g., kompile-app and its children).
-     * @return The version string.
-     */
     public static String getKompileAppVersion() {
         return buildProperties.getProperty("kompile.app.version", "0.0.1-SNAPSHOT");
     }
 
-    /**
-     * Gets the Spring Boot version used by kompile-app modules.
-     * @return The version string.
-     */
     public static String getSpringBootVersion() {
         return buildProperties.getProperty("spring.boot.version", "3.4.5");
     }
 
-    /**
-     * Gets the Spring AI version used by kompile-app modules.
-     * @return The version string.
-     */
     public static String getSpringAiVersion() {
         return buildProperties.getProperty("spring.ai.version", "1.0.0");
     }
 
-    /**
-     * Gets the GraalVM Native Image Maven Plugin version.
-     * @return The version string.
-     */
     public static String getNativeImagePluginVersion() {
         return buildProperties.getProperty("native.image.plugin.version", "0.10.6");
     }
 
-    /**
-     * Gets the Maven Compiler Plugin version.
-     * @return The version string.
-     */
     public static String getMavenCompilerPluginVersion() {
         return buildProperties.getProperty("maven.compiler.plugin.version", "3.13.0");
     }
 
-    /**
-     * Gets the Maven Resources Plugin version.
-     * @return The version string.
-     */
     public static String getMavenResourcesPluginVersion() {
         return buildProperties.getProperty("maven.resources.plugin.version", "3.3.1");
     }
 
-    /**
-     * Gets the Maven Assembly Plugin version.
-     * @return The version string.
-     */
     public static String getMavenAssemblyPluginVersion() {
         return buildProperties.getProperty("maven.assembly.plugin.version", "3.7.1");
     }
 
-    /**
-     * Gets the Frontend Maven Plugin version.
-     * @return The version string.
-     */
     public static String getFrontendMavenPluginVersion() {
         return buildProperties.getProperty("frontend.maven.plugin.version", "1.15.0");
     }
 
-    /**
-     * Gets the OS Maven Plugin version.
-     * @return The version string.
-     */
     public static String getOsMavenPluginVersion() {
         return buildProperties.getProperty("os.maven.plugin.version", "1.7.1");
     }
 
-
     @Override
     public Integer call() throws Exception {
-        StringBuilder stringBuilder = new StringBuilder();
-        stringBuilder.append("Kompile CLI Version: ").append(getVersion()).append("\n");
-        stringBuilder.append("Kompile Pipelines Modules Version: ").append(getKompilePipelinesVersion()).append("\n");
-        stringBuilder.append("Kompile App Modules (RAG Parent) Version: ").append(getKompileAppVersion()).append("\n");
-        stringBuilder.append("  Spring Boot Version (for apps): ").append(getSpringBootVersion()).append("\n");
-        stringBuilder.append("  Spring AI Version (for apps): ").append(getSpringAiVersion()).append("\n");
-        stringBuilder.append("  Native Image Plugin Version (for apps): ").append(getNativeImagePluginVersion()).append("\n");
-        stringBuilder.append("Common Maven Plugin Versions:\n");
-        stringBuilder.append("  Maven Compiler Plugin: ").append(getMavenCompilerPluginVersion()).append("\n");
-        stringBuilder.append("  Maven Resources Plugin: ").append(getMavenResourcesPluginVersion()).append("\n");
-        stringBuilder.append("  Maven Assembly Plugin: ").append(getMavenAssemblyPluginVersion()).append("\n");
-        stringBuilder.append("  Frontend Maven Plugin: ").append(getFrontendMavenPluginVersion()).append("\n");
-        stringBuilder.append("  OS Maven Plugin: ").append(getOsMavenPluginVersion()).append("\n");
-        stringBuilder.append("Kompile Home Directory: ").append(homeDirectory().getAbsolutePath()).append(" (exists: ").append(homeDirectory().exists()).append(")\n");
-        stringBuilder.append("  GraalVM Installed: ").append(graalvmDirectory().exists()).append(" (at ").append(graalvmDirectory().getAbsolutePath()).append(")\n");
-        stringBuilder.append("  Maven Installed: ").append(mavenDirectory().exists()).append(" (at ").append(mavenDirectory().getAbsolutePath()).append(")\n");
-        stringBuilder.append("  Python Installed: ").append(pythonDirectory().exists()).append(" (at ").append(pythonDirectory().getAbsolutePath()).append(")\n");
-        stringBuilder.append("  CMake Installed: ").append(cmakeDirectory().exists()).append(" (at ").append(cmakeDirectory().getAbsolutePath()).append(")\n");
-        stringBuilder.append("Resolved OS for Install Commands: ").append(OSResolver.os()).append("\n");
-        stringBuilder.append("Resolved Architecture: ").append(OSResolver.arch()).append("\n");
-        stringBuilder.append("Shared Library Extension: ").append(OSResolver.sharedLibraryExtension()).append("\n");
-        System.out.println(stringBuilder);
+        boolean showAll = "all".equalsIgnoreCase(section);
+        LinkedHashMap<String, Object> output = new LinkedHashMap<>();
+
+        if (showAll || "version".equalsIgnoreCase(section)) {
+            output.put("version", buildVersionSection());
+        }
+
+        if (showAll || "services".equalsIgnoreCase(section)) {
+            output.put("services", buildServicesSection());
+        }
+
+        if (showAll || "instances".equalsIgnoreCase(section)) {
+            output.put("instances", buildInstancesSection());
+        }
+
+        if (showAll || "config".equalsIgnoreCase(section)) {
+            output.put("config", buildConfigSection());
+        }
+
+        if (jsonOutput) {
+            ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+            System.out.println(mapper.writeValueAsString(output));
+        } else {
+            renderText(output);
+        }
+
         return 0;
+    }
+
+    private Map<String, Object> buildVersionSection() {
+        LinkedHashMap<String, Object> version = new LinkedHashMap<>();
+        version.put("cli", getVersion());
+        version.put("pipelines", getKompilePipelinesVersion());
+        version.put("app", getKompileAppVersion());
+        version.put("springBoot", getSpringBootVersion());
+        version.put("springAi", getSpringAiVersion());
+        version.put("homeDirectory", homeDirectory().getAbsolutePath());
+        version.put("homeExists", homeDirectory().exists());
+        version.put("os", OSResolver.os());
+        version.put("arch", OSResolver.arch());
+
+        LinkedHashMap<String, Boolean> tools = new LinkedHashMap<>();
+        tools.put("graalvm", graalvmDirectory().exists());
+        tools.put("maven", mavenDirectory().exists());
+        tools.put("python", pythonDirectory().exists());
+        tools.put("cmake", cmakeDirectory().exists());
+        version.put("installedTools", tools);
+
+        return version;
+    }
+
+    private List<Map<String, Object>> buildServicesSection() {
+        List<ServiceProber.ServiceStatus> statuses = ServiceProber.probeAll();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ServiceProber.ServiceStatus s : statuses) {
+            LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+            entry.put("name", s.getName());
+            entry.put("port", s.getPort());
+            entry.put("healthy", s.isHealthy());
+            if (s.isHealthy()) {
+                entry.put("responseTimeMs", s.getResponseTimeMs());
+            }
+            result.add(entry);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> buildInstancesSection() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        try {
+            for (InstanceInfo info : InstanceRegistry.listAll()) {
+                LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+                entry.put("name", info.getName());
+                entry.put("type", info.getType());
+                entry.put("port", info.getPort());
+                entry.put("pid", info.getPid());
+                boolean alive = ProcessHandle.of(info.getPid())
+                        .map(ProcessHandle::isAlive)
+                        .orElse(false);
+                entry.put("alive", alive);
+                if (info.getStartedAt() != null) {
+                    entry.put("startedAt", info.getStartedAt().toString());
+                }
+                result.add(entry);
+            }
+        } catch (Exception e) {
+            // Registry unavailable
+        }
+        return result;
+    }
+
+    private Map<String, Object> buildConfigSection() {
+        return ConfigReader.readAll();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void renderText(LinkedHashMap<String, Object> output) {
+        StringBuilder sb = new StringBuilder();
+
+        // Version section
+        if (output.containsKey("version")) {
+            Map<String, Object> v = (Map<String, Object>) output.get("version");
+            sb.append("=== Kompile Version ===\n");
+            sb.append("  CLI: ").append(v.get("cli")).append("\n");
+            sb.append("  Pipelines: ").append(v.get("pipelines")).append("\n");
+            sb.append("  App: ").append(v.get("app")).append("\n");
+            sb.append("  Spring Boot: ").append(v.get("springBoot")).append("\n");
+            sb.append("  Spring AI: ").append(v.get("springAi")).append("\n");
+            sb.append("  Home: ").append(v.get("homeDirectory"))
+                    .append(" (exists: ").append(v.get("homeExists")).append(")\n");
+            sb.append("  OS: ").append(v.get("os")).append("  Arch: ").append(v.get("arch")).append("\n");
+            Map<String, Boolean> tools = (Map<String, Boolean>) v.get("installedTools");
+            if (tools != null) {
+                sb.append("  Installed Tools:");
+                for (Map.Entry<String, Boolean> t : tools.entrySet()) {
+                    sb.append(" ").append(t.getKey()).append("=").append(t.getValue() ? "yes" : "no");
+                }
+                sb.append("\n");
+            }
+            sb.append("\n");
+        }
+
+        // Services section
+        if (output.containsKey("services")) {
+            List<Map<String, Object>> services = (List<Map<String, Object>>) output.get("services");
+            sb.append("=== Running Services ===\n");
+            if (services.isEmpty()) {
+                sb.append("  (none detected)\n");
+            } else {
+                for (Map<String, Object> s : services) {
+                    String label = String.format("  %s (port %s)", s.get("name"), s.get("port"));
+                    boolean healthy = Boolean.TRUE.equals(s.get("healthy"));
+                    if (healthy) {
+                        sb.append(String.format("%-45s [RUNNING]  %sms%n", label, s.get("responseTimeMs")));
+                    } else {
+                        sb.append(String.format("%-45s [NOT RUNNING]%n", label));
+                    }
+                }
+            }
+            sb.append("\n");
+        }
+
+        // Instances section
+        if (output.containsKey("instances")) {
+            List<Map<String, Object>> instances = (List<Map<String, Object>>) output.get("instances");
+            sb.append("=== Registered Instances ===\n");
+            if (instances.isEmpty()) {
+                sb.append("  (none registered)\n");
+            } else {
+                for (Map<String, Object> inst : instances) {
+                    boolean alive = Boolean.TRUE.equals(inst.get("alive"));
+                    sb.append(String.format("  %s [%s] port=%s pid=%s [%s]%n",
+                            inst.get("name"), inst.get("type"), inst.get("port"), inst.get("pid"),
+                            alive ? "ALIVE" : "DEAD - stale entry"));
+                }
+            }
+            sb.append("\n");
+        }
+
+        // Config section
+        if (output.containsKey("config")) {
+            Map<String, Object> configs = (Map<String, Object>) output.get("config");
+            sb.append("=== Configuration (").append(KompileHome.configDirectory().getAbsolutePath()).append(") ===\n");
+            if (configs.isEmpty()) {
+                sb.append("  (no config files found)\n");
+            } else {
+                try {
+                    ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
+                    for (Map.Entry<String, Object> entry : configs.entrySet()) {
+                        sb.append("  ").append(entry.getKey()).append(":\n");
+                        String json = mapper.writeValueAsString(entry.getValue());
+                        for (String line : json.split("\n")) {
+                            sb.append("    ").append(line).append("\n");
+                        }
+                    }
+                } catch (Exception e) {
+                    sb.append("  (error rendering configs)\n");
+                }
+            }
+        }
+
+        System.out.println(sb);
     }
 
     public static class ManifestVersionProvider implements CommandLine.IVersionProvider {
@@ -206,13 +330,13 @@ public class Info implements Callable<Integer> {
         public String[] getVersion() throws Exception {
             String implTitle = Info.class.getPackage().getImplementationTitle();
             if (implTitle == null) {
-                implTitle = "Kompile CLI"; // Fallback if not in manifest
+                implTitle = "Kompile CLI";
             }
-            return new String[]{ implTitle + " version " + Info.getVersion() };
+            return new String[]{implTitle + " version " + Info.getVersion()};
         }
     }
 
-    public static void main(String...args) throws Exception {
+    public static void main(String... args) throws Exception {
         new CommandLine(new Info()).execute(args);
     }
 }

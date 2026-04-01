@@ -1,0 +1,330 @@
+<div class="benchmark-container">
+  <div class="benchmark-header">
+    <h2>
+      <mat-icon>speed</mat-icon>
+      SameDiff Benchmark Runner
+    </h2>
+    <p class="subtitle">Configure, test, and optimize Triton GPU inference profiles</p>
+  </div>
+
+  <div *ngIf="error" class="error-banner">
+    <mat-icon>error</mat-icon>
+    {{ error }}
+  </div>
+
+  <mat-tab-group>
+    <!-- Configurations Tab -->
+    <mat-tab label="Configurations">
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="startNewConfig()" [disabled]="isEditing">
+            <mat-icon>add</mat-icon> New Config
+          </button>
+          <button mat-button (click)="applyOptimal()">
+            <mat-icon>auto_awesome</mat-icon> Apply Optimal Defaults
+          </button>
+          <button mat-button (click)="loadConfigs()">
+            <mat-icon>refresh</mat-icon> Refresh
+          </button>
+        </div>
+
+        <!-- Config Edit Form -->
+        <mat-card *ngIf="isEditing" class="edit-card">
+          <mat-card-header>
+            <mat-card-title>{{ editConfig.name ? 'Edit' : 'New' }} Configuration</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="form-grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Config Name</mat-label>
+                <input matInput [(ngModel)]="editConfig.name" placeholder="my-config">
+              </mat-form-field>
+
+              <mat-expansion-panel>
+                <mat-expansion-panel-header>
+                  <mat-panel-title>Triton Settings</mat-panel-title>
+                </mat-expansion-panel-header>
+                <div class="form-grid">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Build Threads</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.tritonBuildThreads" min="1">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Num Warps</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.tritonNumWarps" min="0">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Num Stages</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.tritonNumStages" min="0">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Num CTAs</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.tritonNumCTAs" min="1">
+                  </mat-form-field>
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.tritonCacheEnabled">Cache Enabled</mat-slide-toggle>
+                  </div>
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.tritonEnableFpFusion">FP Fusion</mat-slide-toggle>
+                  </div>
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.tritonVerbose">Verbose</mat-slide-toggle>
+                  </div>
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.tritonAlwaysCompile">Always Compile</mat-slide-toggle>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+
+              <mat-expansion-panel>
+                <mat-expansion-panel-header>
+                  <mat-panel-title>CUDA & Generation</mat-panel-title>
+                </mat-expansion-panel-header>
+                <div class="form-grid">
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.cudaTensorCoreEnabled">Tensor Cores</mat-slide-toggle>
+                  </div>
+                  <div class="toggle-row">
+                    <mat-slide-toggle [(ngModel)]="editConfig.cudaGraphOptimization">Graph Optimization</mat-slide-toggle>
+                  </div>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Max Tokens</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.maxTokens" min="1">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Capture Min Exec</mat-label>
+                    <input matInput type="number" [(ngModel)]="editConfig.captureMinExec" min="1">
+                  </mat-form-field>
+                </div>
+              </mat-expansion-panel>
+            </div>
+
+            <div class="form-actions">
+              <button mat-raised-button color="primary" (click)="saveConfig()">
+                <mat-icon>save</mat-icon> Save
+              </button>
+              <button mat-button (click)="cancelEdit()">Cancel</button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Configs List -->
+        <div class="configs-list">
+          <mat-card *ngFor="let config of configs" class="config-card" [class.active]="config.isActive">
+            <mat-card-header>
+              <mat-card-title>
+                {{ config.name }}
+                <mat-chip *ngIf="config.isActive" class="active-chip">Active</mat-chip>
+              </mat-card-title>
+              <mat-card-subtitle>
+                Warps: {{ config.tritonNumWarps || 'auto' }} |
+                Stages: {{ config.tritonNumStages || 'auto' }} |
+                FP Fusion: {{ config.tritonEnableFpFusion !== false ? 'Yes' : 'No' }}
+              </mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-actions>
+              <button mat-button (click)="activateConfig(config.name)" [disabled]="config.isActive">
+                <mat-icon>check_circle</mat-icon> Activate
+              </button>
+              <button mat-button (click)="editExistingConfig(config)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button color="warn" (click)="deleteConfig(config.name)">
+                <mat-icon>delete</mat-icon> Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Run Benchmark Tab -->
+    <mat-tab label="Run Benchmark">
+      <div class="tab-content">
+        <div class="run-controls">
+          <mat-form-field appearance="outline" class="config-select">
+            <mat-label>Select Configuration</mat-label>
+            <mat-select [(ngModel)]="selectedConfigForRun">
+              <mat-option *ngFor="let config of configs" [value]="config.name">
+                {{ config.name }} {{ config.isActive ? '(Active)' : '' }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <button mat-raised-button color="primary" (click)="runBenchmark()" [disabled]="runningBenchmark || !selectedConfigForRun">
+            <mat-icon>play_arrow</mat-icon>
+            {{ runningBenchmark ? 'Running...' : 'Run Benchmark' }}
+          </button>
+        </div>
+
+        <mat-progress-bar *ngIf="runningBenchmark" mode="indeterminate"></mat-progress-bar>
+
+        <!-- Last Run Result -->
+        <mat-card *ngIf="lastRunResult" class="result-card" [class.passed]="lastRunResult.passed" [class.failed]="!lastRunResult.passed">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>{{ lastRunResult.passed ? 'check_circle' : 'error' }}</mat-icon>
+              {{ lastRunResult.configName }}
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="metrics-grid">
+              <div class="metric">
+                <span class="metric-label">Total tok/s</span>
+                <span class="metric-value">{{ lastRunResult.tokPerSec | number:'1.1-1' }}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Decode tok/s</span>
+                <span class="metric-value highlight">{{ lastRunResult.decodeTokPerSec | number:'1.1-1' }}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">First Token</span>
+                <span class="metric-value">{{ lastRunResult.firstTokenMs }}ms</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Total Time</span>
+                <span class="metric-value">{{ lastRunResult.totalMs }}ms</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Compile</span>
+                <span class="metric-value">{{ lastRunResult.compileMs }}ms</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Decode</span>
+                <span class="metric-value">{{ lastRunResult.decodeMs }}ms</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Tokens</span>
+                <span class="metric-value">{{ lastRunResult.tokenCount }}</span>
+              </div>
+              <div class="metric" *ngIf="lastRunResult.failureMessage">
+                <span class="metric-label">Error</span>
+                <span class="metric-value error">{{ lastRunResult.failureMessage }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- Profile Search Tab -->
+    <mat-tab label="Profile Search">
+      <div class="tab-content">
+        <p class="search-description">
+          Grid search over Triton parameters to find the optimal inference profile.
+          Tests all combinations of warps, stages, and FP fusion.
+        </p>
+
+        <div class="search-controls">
+          <mat-form-field appearance="outline">
+            <mat-label>Warps (comma-separated)</mat-label>
+            <input matInput [(ngModel)]="searchWarps" placeholder="4,8,16">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Stages (comma-separated)</mat-label>
+            <input matInput [(ngModel)]="searchStages" placeholder="2,3,4">
+          </mat-form-field>
+
+          <div class="toggle-row">
+            <mat-slide-toggle [(ngModel)]="searchFpFusion">Test both FP fusion on/off</mat-slide-toggle>
+          </div>
+
+          <button mat-raised-button color="primary" (click)="startSearch()" [disabled]="searchRunning">
+            <mat-icon>search</mat-icon>
+            {{ searchRunning ? 'Searching...' : 'Start Search' }}
+          </button>
+        </div>
+
+        <mat-progress-bar *ngIf="searchRunning" mode="indeterminate"></mat-progress-bar>
+
+        <mat-card *ngIf="searchBestResult" class="result-card passed">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>emoji_events</mat-icon>
+              Best Profile: {{ searchBestResult.configName }}
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="metrics-grid">
+              <div class="metric">
+                <span class="metric-label">Decode tok/s</span>
+                <span class="metric-value highlight">{{ searchBestResult.decodeTokPerSec | number:'1.1-1' }}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Total tok/s</span>
+                <span class="metric-value">{{ searchBestResult.tokPerSec | number:'1.1-1' }}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">First Token</span>
+                <span class="metric-value">{{ searchBestResult.firstTokenMs }}ms</span>
+              </div>
+            </div>
+            <p class="best-note">This config has been automatically activated.</p>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- Results History Tab -->
+    <mat-tab label="Results History">
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-button (click)="loadResults()">
+            <mat-icon>refresh</mat-icon> Refresh
+          </button>
+          <button mat-button color="warn" (click)="clearResults()" [disabled]="results.length === 0">
+            <mat-icon>delete_sweep</mat-icon> Clear All
+          </button>
+          <span class="result-count">{{ results.length }} results</span>
+        </div>
+
+        <table mat-table [dataSource]="results" class="results-table" *ngIf="results.length > 0">
+          <ng-container matColumnDef="configName">
+            <th mat-header-cell *matHeaderCellDef>Config</th>
+            <td mat-cell *matCellDef="let r">{{ r.configName }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="passed">
+            <th mat-header-cell *matHeaderCellDef>Status</th>
+            <td mat-cell *matCellDef="let r">
+              <mat-icon [class.pass-icon]="r.passed" [class.fail-icon]="!r.passed">
+                {{ r.passed ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+            </td>
+          </ng-container>
+
+          <ng-container matColumnDef="tokPerSec">
+            <th mat-header-cell *matHeaderCellDef>tok/s</th>
+            <td mat-cell *matCellDef="let r">{{ r.tokPerSec | number:'1.1-1' }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="decodeTokPerSec">
+            <th mat-header-cell *matHeaderCellDef>Decode tok/s</th>
+            <td mat-cell *matCellDef="let r" class="highlight-cell">{{ r.decodeTokPerSec | number:'1.1-1' }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="firstTokenMs">
+            <th mat-header-cell *matHeaderCellDef>First Token (ms)</th>
+            <td mat-cell *matCellDef="let r">{{ r.firstTokenMs }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="totalMs">
+            <th mat-header-cell *matHeaderCellDef>Total (ms)</th>
+            <td mat-cell *matCellDef="let r">{{ r.totalMs }}</td>
+          </ng-container>
+
+          <ng-container matColumnDef="timestamp">
+            <th mat-header-cell *matHeaderCellDef>Time</th>
+            <td mat-cell *matCellDef="let r">{{ formatTimestamp(r.timestamp) }}</td>
+          </ng-container>
+
+          <tr mat-header-row *matHeaderRowDef="resultsColumns"></tr>
+          <tr mat-row *matRowDef="let row; columns: resultsColumns;"></tr>
+        </table>
+
+        <p *ngIf="results.length === 0" class="no-results">No benchmark results yet. Run a benchmark to see results here.</p>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

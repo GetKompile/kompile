@@ -298,16 +298,21 @@
   <dependencies>
 
     <dependency>
-      <groupId>ai.kompile</groupId>
-      <artifactId>tokenizers-native</artifactId>
-      <version>${project.version}</version>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>samediff-llm</artifactId>
+      <version>${nd4j.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>tokenizers-native</artifactId>
+      <version>${nd4j.version}</version>
+    </dependency>
 
     <dependency>
-      <groupId>ai.kompile</groupId>
+      <groupId>org.eclipse.deeplearning4j</groupId>
       <artifactId>tokenizers-native</artifactId>
-      <version>${project.version}</version>
+      <version>${nd4j.version}</version>
       <classifier>${javacpp.platform}</classifier>
     </dependency>
 

@@ -1,0 +1,70 @@
+<div class="training-dashboard">
+  <div class="header">
+    <h2>Training Jobs</h2>
+    <button mat-raised-button color="primary" (click)="newTraining()">
+      <mat-icon>add</mat-icon> New Training Job
+    </button>
+  </div>
+
+  <mat-card>
+    <mat-card-content>
+      <div *ngIf="loading" class="loading-spinner">
+        <mat-spinner diameter="40"></mat-spinner>
+      </div>
+      <div *ngIf="!loading && jobs.length === 0" class="empty-state">
+        <mat-icon>model_training</mat-icon>
+        <p>No training jobs yet. Start a new training job to get started.</p>
+      </div>
+      <table mat-table [dataSource]="jobs" *ngIf="!loading && jobs.length > 0" class="jobs-table">
+        <ng-container matColumnDef="status">
+          <th mat-header-cell *matHeaderCellDef>Status</th>
+          <td mat-cell *matCellDef="let j">
+            <mat-icon [class]="getStatusColor(j.status)">{{ getStatusIcon(j.status) }}</mat-icon>
+            <span class="status-text">{{ j.status }}</span>
+          </td>
+        </ng-container>
+        <ng-container matColumnDef="jobId">
+          <th mat-header-cell *matHeaderCellDef>Job ID</th>
+          <td mat-cell *matCellDef="let j">{{ j.jobId }}</td>
+        </ng-container>
+        <ng-container matColumnDef="modelId">
+          <th mat-header-cell *matHeaderCellDef>Model</th>
+          <td mat-cell *matCellDef="let j">{{ j.modelId }}</td>
+        </ng-container>
+        <ng-container matColumnDef="progress">
+          <th mat-header-cell *matHeaderCellDef>Progress</th>
+          <td mat-cell *matCellDef="let j">
+            <mat-progress-bar [value]="j.overallProgress * 100" mode="determinate"></mat-progress-bar>
+            <span class="progress-text">{{ (j.overallProgress * 100) | number:'1.1-1' }}%</span>
+          </td>
+        </ng-container>
+        <ng-container matColumnDef="loss">
+          <th mat-header-cell *matHeaderCellDef>Loss</th>
+          <td mat-cell *matCellDef="let j">{{ j.loss ? (j.loss | number:'1.4-4') : '-' }}</td>
+        </ng-container>
+        <ng-container matColumnDef="epoch">
+          <th mat-header-cell *matHeaderCellDef>Epoch</th>
+          <td mat-cell *matCellDef="let j">{{ j.currentEpoch }}/{{ j.totalEpochs }}</td>
+        </ng-container>
+        <ng-container matColumnDef="elapsed">
+          <th mat-header-cell *matHeaderCellDef>Elapsed</th>
+          <td mat-cell *matCellDef="let j">{{ formatElapsed(j.elapsedMs) }}</td>
+        </ng-container>
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef>Actions</th>
+          <td mat-cell *matCellDef="let j">
+            <button mat-icon-button (click)="viewMetrics(j.jobId)" matTooltip="View Metrics">
+              <mat-icon>show_chart</mat-icon>
+            </button>
+            <button mat-icon-button color="warn" (click)="cancelJob(j.jobId)"
+                    *ngIf="j.status === 'TRAINING' || j.status === 'QUEUED'" matTooltip="Cancel">
+              <mat-icon>cancel</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: displayedColumns;" (click)="toggleExpand(row.jobId)" class="clickable-row"></tr>
+      </table>
+    </mat-card-content>
+  </mat-card>
+</div>

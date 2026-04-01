@@ -19,12 +19,19 @@ package ai.kompile.staging.staging;
 import ai.kompile.staging.conversion.ConversionResult;
 import ai.kompile.staging.conversion.ConversionService;
 import ai.kompile.staging.download.*;
+import ai.kompile.staging.download.DownloadProgress;
+import ai.kompile.staging.optimization.OptimizationService;
+import ai.kompile.staging.web.dto.StageWithOptimizationRequest;
 import ai.kompile.modelmanager.registry.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
+import org.nd4j.autodiff.samediff.SameDiff;
+
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.time.Instant;
@@ -43,6 +50,7 @@ public class StagingService {
     private final RegistryService registryService;
     private final ConversionService conversionService;
     private final List<DownloadService> downloadServices;
+    private final OptimizationService optimizationService;
     private final Path stagingDir;
     private final Path modelsDir;
 
@@ -50,16 +58,30 @@ public class StagingService {
     private final Map<String, StagingModelInfo> stagingModels = new ConcurrentHashMap<>();
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
 
+    // Auto-optimization configuration (set via API, applied to newly staged models)
+    private volatile StageWithOptimizationRequest.OptimizationConfigDto autoOptimizationConfig;
+
     @Autowired
     public StagingService(RegistryService registryService,
                           ConversionService conversionService,
-                          List<DownloadService> downloadServices) {
+                          List<DownloadService> downloadServices,
+                          @Lazy OptimizationService optimizationService) {
         this.registryService = registryService;
         this.conversionService = conversionService;
         this.downloadServices = downloadServices;
+        this.optimizationService = optimizationService;
         this.modelsDir = registryService.getModelDir();
         this.stagingDir = modelsDir.resolve(".staging");
         ensureDirectories();
+    }
+
+    public StageWithOptimizationRequest.OptimizationConfigDto getAutoOptimizationConfig() {
+        return autoOptimizationConfig;
+    }
+
+    public void setAutoOptimizationConfig(StageWithOptimizationRequest.OptimizationConfigDto config) {
+        this.autoOptimizationConfig = config;
+        log.info("Auto-optimization config {}", config != null ? "set" : "cleared");
     }
 
     private void ensureDirectories() {
@@ -100,11 +122,29 @@ public class StagingService {
 
         try {
             // 1. Download
-            info.withStatus(StagingStatus.DOWNLOADING, 10, "Downloading from " + source);
+            info.withStatus(StagingStatus.DOWNLOADING, 5, "Downloading from " + source);
             progressCallback.accept(info);
 
             Path pendingDir = stagingDir.resolve("pending").resolve(modelId);
-            DownloadResult downloadResult = download(request, pendingDir);
+            DownloadResult downloadResult = download(request, pendingDir, dlProgress -> {
+                if (dlProgress.getPhase() == DownloadProgress.Phase.DOWNLOADING) {
+                    // Map download 0-100% to staging 5-35%
+                    int dlPercent = dlProgress.getProgressPercent();
+                    int stagingPercent = 5 + (int)(dlPercent * 0.30);
+                    info.withDownloadProgress(
+                            stagingPercent,
+                            dlProgress.getMessage(),
+                            dlProgress.getBytesDownloaded(),
+                            dlProgress.getTotalBytes(),
+                            dlProgress.getBytesPerSecond(),
+                            dlProgress.getFileName()
+                    );
+                } else if (dlProgress.getPhase() == DownloadProgress.Phase.EXTRACTING) {
+                    info.withStatus(StagingStatus.DOWNLOADING, 36, dlProgress.getMessage());
+                } else if (dlProgress.getPhase() == DownloadProgress.Phase.VERIFYING) {
+                    info.withStatus(StagingStatus.DOWNLOADING, 37, dlProgress.getMessage());
+                }
+            });
 
             if (!downloadResult.isSuccess()) {
                 return info.failed("Download failed: " + downloadResult.getErrorMessage());
@@ -199,6 +239,14 @@ public class StagingService {
             // Calculate checksum
             String checksum = modelFile != null ? calculateChecksum(modelFile) : null;
 
+            // Auto-probe vision encoder IO config for VLM models
+            if (metadata == null) {
+                metadata = ModelMetadata.builder().build();
+            }
+            if (type.isVlm()) {
+                probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
+            }
+
             // Create registry entry
             ModelEntry entry = ModelEntry.builder()
                     .modelId(modelId)
@@ -225,6 +273,125 @@ public class StagingService {
         } catch (Exception e) {
             log.error("Failed to promote model {}", modelId, e);
             return false;
+        }
+    }
+
+    /**
+     * Public version of probe for use by REST endpoints on existing registry models.
+     */
+    public void probeVisionEncoderIOConfigPublic(Path productionDir, Path modelFile, ModelMetadata metadata) {
+        probeVisionEncoderIOConfig(productionDir, modelFile, metadata);
+    }
+
+    /**
+     * Auto-probe a vision encoder SameDiff model to discover I/O variable names.
+     * Populates metadata fields so they are saved in the registry and can be
+     * overridden by the user later via the model details UI.
+     */
+    private void probeVisionEncoderIOConfig(Path productionDir, Path modelFile, ModelMetadata metadata) {
+        // Find the vision encoder model file - could be the main model or a sub-component
+        Path visionEncoderFile = null;
+
+        // For VLM pipeline models, look for a vision_encoder subdirectory or file
+        try (var stream = Files.walk(productionDir, 2)) {
+            visionEncoderFile = stream
+                    .filter(p -> {
+                        String name = p.getFileName().toString().toLowerCase();
+                        String parent = p.getParent().getFileName().toString().toLowerCase();
+                        return (name.endsWith(".fb") || name.endsWith(".sdz"))
+                                && (parent.contains("vision") || name.contains("vision"));
+                    })
+                    .findFirst()
+                    .orElse(null);
+        } catch (IOException e) {
+            log.debug("Error searching for vision encoder file", e);
+        }
+
+        // Fall back to the main model file for VLM_VISION_ENCODER type
+        if (visionEncoderFile == null && modelFile != null) {
+            visionEncoderFile = modelFile;
+        }
+
+        if (visionEncoderFile == null || !Files.exists(visionEncoderFile)) {
+            log.debug("No vision encoder model file found for probing in {}", productionDir);
+            return;
+        }
+
+        try {
+            log.info("Auto-probing vision encoder IO config from: {}", visionEncoderFile);
+            SameDiff sd = SameDiff.load(visionEncoderFile.toFile(), false);
+
+            // Discover pixel values input
+            String pixelValuesName = null;
+            String pixelAttentionMaskName = null;
+            for (String input : sd.inputs()) {
+                String lower = input.toLowerCase();
+                if (pixelValuesName == null && lower.contains("pixel_value")) {
+                    pixelValuesName = input;
+                } else if (pixelValuesName == null && lower.contains("pixel") && !lower.contains("mask")) {
+                    pixelValuesName = input;
+                }
+                if (pixelAttentionMaskName == null && lower.contains("pixel_attention_mask")) {
+                    pixelAttentionMaskName = input;
+                }
+            }
+            if (pixelValuesName == null) {
+                pixelValuesName = "pixel_values";
+            }
+
+            // Discover outputs
+            String primaryOutput = null;
+            List<String> outputNames = new ArrayList<>();
+
+            List<String> registered = sd.outputs();
+            if (registered != null && !registered.isEmpty()) {
+                outputNames.addAll(registered);
+                primaryOutput = registered.get(0);
+                for (String name : registered) {
+                    String lower = name.toLowerCase();
+                    if (lower.contains("last_hidden_state") || lower.contains("image_embeds")) {
+                        primaryOutput = name;
+                        break;
+                    }
+                }
+            }
+
+            if (outputNames.isEmpty()) {
+                String[] wellKnown = {"image_embeds", "last_hidden_state", "pooler_output",
+                        "encoder_output", "hidden_states", "visual_features"};
+                for (String name : wellKnown) {
+                    if (sd.hasVariable(name)) {
+                        outputNames.add(name);
+                        if (primaryOutput == null) primaryOutput = name;
+                    }
+                }
+            }
+
+            if (outputNames.isEmpty()) {
+                for (String varName : sd.variableMap().keySet()) {
+                    String lower = varName.toLowerCase();
+                    if (lower.contains("last_hidden_state") || lower.contains("image_embeds")
+                            || lower.contains("pooler_output") || lower.contains("encoder_output")) {
+                        outputNames.add(varName);
+                        if (primaryOutput == null) primaryOutput = varName;
+                    }
+                }
+            }
+
+            if (outputNames.isEmpty()) {
+                primaryOutput = "image_embeds";
+                outputNames.add("image_embeds");
+            }
+
+            metadata.setVisionEncoderPixelValuesName(pixelValuesName);
+            metadata.setVisionEncoderPixelAttentionMaskName(pixelAttentionMaskName);
+            metadata.setVisionEncoderPrimaryOutputName(primaryOutput);
+            metadata.setVisionEncoderOutputNames(outputNames);
+
+            log.info("Vision encoder IO config probed: pixelValues={}, pixelAttentionMask={}, primaryOutput={}, outputs={}",
+                    pixelValuesName, pixelAttentionMaskName, primaryOutput, outputNames);
+        } catch (Exception e) {
+            log.warn("Failed to auto-probe vision encoder IO config from {}: {}", visionEncoderFile, e.getMessage());
         }
     }
 
@@ -269,7 +436,9 @@ public class StagingService {
                 Path localModelPath = pendingDir.resolve(modelPath.getFileName());
                 Files.copy(modelPath, localModelPath, StandardCopyOption.REPLACE_EXISTING);
 
-                info.withStatus(StagingStatus.DOWNLOADING, 20, "File copied to staging");
+                long fileSize = Files.exists(localModelPath) ? Files.size(localModelPath) : 0;
+                info.withDownloadProgress(20, "File copied to staging",
+                        fileSize, fileSize, 0, modelPath.getFileName().toString());
 
                 // 2. Convert if needed
                 Path outputPath;
@@ -445,9 +614,14 @@ public class StagingService {
     // Helper methods
 
     private DownloadResult download(DownloadRequest request, Path destination) {
+        return download(request, destination, progress -> {});
+    }
+
+    private DownloadResult download(DownloadRequest request, Path destination,
+                                     Consumer<DownloadProgress> progressCallback) {
         for (DownloadService downloader : downloadServices) {
             if (downloader.canHandle(request.getSource())) {
-                return downloader.download(request, destination);
+                return downloader.download(request, destination, progressCallback);
             }
         }
         return DownloadResult.failure("No downloader available for source: " + request.getSource());

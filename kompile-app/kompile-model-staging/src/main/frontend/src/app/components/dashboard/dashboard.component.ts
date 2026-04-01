@@ -16,15 +16,21 @@
 
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { Subscription } from 'rxjs';
+import { Subscription, timer } from 'rxjs';
+import { switchMap } from 'rxjs/operators';
 import { StagingService } from '../../services/staging.service';
 import {
   ModelRegistry,
+  ModelEntry,
+  ModelType,
   StagingStatusResponse,
   StagingModelInfo,
   getStatusColor,
   getStatusIcon,
-  getModelTypeIcon
+  getModelTypeIcon,
+  getModelTypeDisplayName,
+  getModelTypeDescription,
+  getModelTypeRole
 } from '../../models/api-models';
 
 @Component({
@@ -38,11 +44,13 @@ export class DashboardComponent implements OnInit, OnDestroy {
   registry: ModelRegistry | null = null;
   stagingStatus: StagingStatusResponse | null = null;
   modelsInStaging: StagingModelInfo[] = [];
+  activeModelsByRole: { role: string; type: ModelType; model: ModelEntry | null; icon: string; description: string }[] = [];
 
   isLoading = true;
   error: string | null = null;
 
   private pollSubscription: Subscription | null = null;
+  private registryPollSubscription: Subscription | null = null;
   autoRefresh = true;
 
   constructor(
@@ -58,6 +66,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.stopPolling();
+    this.stopRegistryPolling();
   }
 
   loadData(): void {
@@ -79,6 +88,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
       this.stagingService.getRegistry().subscribe({
         next: (registry) => {
           this.registry = registry;
+          this.computeActiveModelAssignments();
           resolve();
         },
         error: (err) => {
@@ -120,12 +130,30 @@ export class DashboardComponent implements OnInit, OnDestroy {
         }
       });
     }
+    if (this.autoRefresh && !this.registryPollSubscription) {
+      this.registryPollSubscription = timer(5000, 5000).pipe(
+        switchMap(() => this.stagingService.getRegistry())
+      ).subscribe({
+        next: (registry) => {
+          this.registry = registry;
+          this.computeActiveModelAssignments();
+          this.cdr.detectChanges();
+        }
+      });
+    }
   }
 
   stopPolling(): void {
     if (this.pollSubscription) {
       this.pollSubscription.unsubscribe();
       this.pollSubscription = null;
+    }
+  }
+
+  stopRegistryPolling(): void {
+    if (this.registryPollSubscription) {
+      this.registryPollSubscription.unsubscribe();
+      this.registryPollSubscription = null;
     }
   }
 
@@ -136,9 +164,52 @@ export class DashboardComponent implements OnInit, OnDestroy {
       this.showSnackbar('Auto-refresh enabled');
     } else {
       this.stopPolling();
+      this.stopRegistryPolling();
       this.showSnackbar('Auto-refresh disabled');
     }
   }
+
+  // ==================== Active Model Assignments ====================
+
+  private computeActiveModelAssignments(): void {
+    const roleTypes: ModelType[] = [
+      'dense_encoder', 'sparse_encoder', 'cross_encoder',
+      'ocr_detection', 'ocr_recognition', 'ocr_table',
+      'layout_model', 'ocr_pipeline', 'document_classifier', 'vlm_pipeline'
+    ];
+
+    const models = this.registry?.models ? Object.values(this.registry.models) : [];
+
+    this.activeModelsByRole = roleTypes.map(type => {
+      const activeModel = models.find(m =>
+        (m.type === type || (type === 'dense_encoder' && m.type === 'encoder')) && m.status === 'active'
+      ) || null;
+
+      return {
+        role: getModelTypeRole(type),
+        type,
+        model: activeModel,
+        icon: getModelTypeIcon(type),
+        description: getModelTypeDescription(type)
+      };
+    });
+  }
+
+  hasAnyActiveModels(): boolean {
+    return this.activeModelsByRole.some(r => r.model !== null);
+  }
+
+  hasAnyUnassignedRoles(): boolean {
+    // Only check roles that have at least one model of that type (active or not)
+    if (!this.registry?.models) return false;
+    const models = Object.values(this.registry.models);
+    return this.activeModelsByRole.some(r => {
+      const hasModelsOfType = models.some(m => m.type === r.type || (r.type === 'dense_encoder' && m.type === 'encoder'));
+      return hasModelsOfType && r.model === null;
+    });
+  }
+
+  getModelTypeDisplayName = getModelTypeDisplayName;
 
   // ==================== Stats Helpers ====================
 
@@ -148,12 +219,30 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
   getEncoderCount(): number {
     if (!this.registry?.models) return 0;
-    return Object.values(this.registry.models).filter(m => m.type === 'encoder').length;
+    return Object.values(this.registry.models).filter(m =>
+      m.type === 'encoder' || m.type === 'dense_encoder' || m.type === 'sparse_encoder'
+    ).length;
   }
 
   getCrossEncoderCount(): number {
     if (!this.registry?.models) return 0;
     return Object.values(this.registry.models).filter(m => m.type === 'cross_encoder').length;
+  }
+
+  getVlmPipelineCount(): number {
+    if (!this.registry?.models) return 0;
+    return Object.values(this.registry.models).filter(m => m.type === 'vlm_pipeline').length;
+  }
+
+  getOcrModelCount(): number {
+    if (!this.registry?.models) return 0;
+    const ocrTypes = ['ocr_detection', 'ocr_recognition', 'ocr_table', 'ocr_pipeline', 'layout_model'];
+    return Object.values(this.registry.models).filter(m => ocrTypes.includes(m.type)).length;
+  }
+
+  getLlmModelCount(): number {
+    if (!this.registry?.models) return 0;
+    return Object.values(this.registry.models).filter(m => m.type === 'llm_ggml').length;
   }
 
   getActiveCount(): number {

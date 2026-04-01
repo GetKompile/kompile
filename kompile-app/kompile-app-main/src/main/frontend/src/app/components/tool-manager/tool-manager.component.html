@@ -1,0 +1,357 @@
+<div class="tool-manager">
+  <!-- Header -->
+  <div class="header">
+    <div class="title-section">
+      <h2>Tool Manager</h2>
+      <p class="subtitle">Manage and configure MCP tools for agent discoverability</p>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" (click)="loadAgentPrompt()">
+        <span class="icon">&#128221;</span> View Agent Prompt
+      </button>
+      <button class="btn btn-secondary" (click)="refreshTools()">
+        <span class="icon">&#128260;</span> Refresh
+      </button>
+      <button class="btn btn-primary" (click)="startCreate()">
+        <span class="icon">&#43;</span> Create Tool
+      </button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="summary-cards" *ngIf="summary">
+    <div class="card">
+      <div class="card-value">{{ summary.totalTools }}</div>
+      <div class="card-label">Total Tools</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.enabledTools }}</div>
+      <div class="card-label">Enabled</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.builtInTools }}</div>
+      <div class="card-label">Built-in</div>
+    </div>
+    <div class="card">
+      <div class="card-value">{{ summary.customTools }}</div>
+      <div class="card-label">Custom</div>
+    </div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="alert alert-error" *ngIf="errorMessage">
+    {{ errorMessage }}
+    <button class="close-btn" (click)="errorMessage = null">&times;</button>
+  </div>
+  <div class="alert alert-success" *ngIf="successMessage">
+    {{ successMessage }}
+  </div>
+
+  <!-- Search and Filters -->
+  <div class="search-bar">
+    <div class="search-input-wrapper">
+      <input type="text" class="search-input" [(ngModel)]="searchQuery" [ngModelOptions]="{standalone: true}" (keyup.enter)="searchTools()"
+        placeholder="Search tools by name, description, or tags..." />
+      <button class="search-btn" (click)="searchTools()">Search</button>
+      <button class="clear-btn" *ngIf="searchQuery" (click)="clearSearch()">Clear</button>
+    </div>
+    <div class="view-toggle">
+      <button [class.active]="viewMode === 'categories'" (click)="viewMode = 'categories'">Categories</button>
+      <button [class.active]="viewMode === 'grid'" (click)="viewMode = 'grid'">Grid</button>
+      <button [class.active]="viewMode === 'list'" (click)="viewMode = 'list'">List</button>
+    </div>
+  </div>
+
+  <!-- Category Filters -->
+  <div class="category-filters">
+    <button class="filter-btn" [class.active]="selectedCategory === null" (click)="filterByCategory(null)">All</button>
+    <button *ngFor="let cat of categoryKeys; trackBy: trackByCategory" class="filter-btn"
+      [class.active]="selectedCategory === cat" (click)="filterByCategory(cat)">{{ getCategoryDisplayName(cat)
+      }}</button>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" *ngIf="isLoading">
+    <div class="spinner"></div>
+    <p>Loading tools...</p>
+  </div>
+
+  <!-- Content -->
+  <div class="content" *ngIf="!isLoading">
+    <!-- Categories View -->
+    <div class="categories-view" *ngIf="viewMode === 'categories'">
+      <div class="category-section" *ngFor="let cat of categoryKeys; trackBy: trackByCategory">
+        <div class="category-header">
+          <h3>{{ getCategoryDisplayName(cat) }}</h3>
+          <p class="category-desc">{{ getCategoryDescription(cat) }}</p>
+          <span class="tool-count">{{ toolsByCategory[cat].length || 0 }} tools</span>
+        </div>
+        <div class="tool-grid">
+          <div class="tool-card" *ngFor="let tool of toolsByCategory[cat]; trackBy: trackByToolName"
+            [class.disabled]="!tool.enabled" (click)="selectTool(tool)">
+            <div class="tool-card-header">
+              <span class="tool-name">{{ tool.displayName || tool.name }}</span>
+              <span class="badge" [ngClass]="getSourceBadgeClass(tool.source)">
+                {{ tool.source }}
+              </span>
+            </div>
+            <p class="tool-description">{{ tool.description }}</p>
+            <div class="tool-tags" *ngIf="tool.tags?.length">
+              <span class="tag" *ngFor="let tag of tool.tags?.slice(0, 3)">{{ tag }}</span>
+            </div>
+            <div class="tool-status">
+              <span class="status-dot" [class.enabled]="tool.enabled"></span>
+              {{ tool.enabled ? 'Enabled' : 'Disabled' }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grid View -->
+    <div class="tool-grid" *ngIf="viewMode === 'grid'">
+      <div class="tool-card" *ngFor="let tool of tools; trackBy: trackByToolName" [class.disabled]="!tool.enabled"
+        (click)="selectTool(tool)">
+        <div class="tool-card-header">
+          <span class="tool-name">{{ tool.displayName || tool.name }}</span>
+          <span class="badge" [ngClass]="getSourceBadgeClass(tool.source)">
+            {{ tool.source }}
+          </span>
+        </div>
+        <p class="tool-description">{{ tool.description }}</p>
+        <div class="tool-meta">
+          <span class="category-badge">{{ getCategoryDisplayName(tool.category || 'other') }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- List View -->
+    <div class="tool-list" *ngIf="viewMode === 'list'">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th>Source</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let tool of tools; trackBy: trackByToolName" [class.disabled]="!tool.enabled">
+            <td>
+              <span class="status-dot" [class.enabled]="tool.enabled"></span>
+            </td>
+            <td class="tool-name-cell" (click)="selectTool(tool)">
+              {{ tool.displayName || tool.name }}
+            </td>
+            <td class="description-cell">{{ tool.description }}</td>
+            <td>{{ getCategoryDisplayName(tool.category || 'other') }}</td>
+            <td>
+              <span class="badge" [ngClass]="getSourceBadgeClass(tool.source)">
+                {{ tool.source }}
+              </span>
+            </td>
+            <td>
+              <button class="action-btn" (click)="toggleToolEnabled(tool); $event.stopPropagation()">
+                {{ tool.enabled ? 'Disable' : 'Enable' }}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tool Detail Panel -->
+  <div class="detail-panel" *ngIf="selectedTool || isCreating">
+    <div class="panel-overlay" (click)="closeTool()"></div>
+    <div class="panel-content">
+      <div class="panel-header">
+        <h3 *ngIf="!isCreating && !isEditMode">{{ selectedTool?.displayName || selectedTool?.name }}</h3>
+        <h3 *ngIf="isCreating">Create New Tool</h3>
+        <h3 *ngIf="isEditMode && !isCreating">Edit Tool</h3>
+        <button class="close-btn" (click)="closeTool()">&times;</button>
+      </div>
+
+      <!-- View Mode -->
+      <div class="panel-body" *ngIf="!isEditMode && !isCreating && selectedTool">
+        <div class="detail-section">
+          <label>Name</label>
+          <p>{{ selectedTool.name }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Description</label>
+          <p>{{ selectedTool.description }}</p>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.detailedDescription">
+          <label>Detailed Description</label>
+          <p>{{ selectedTool.detailedDescription }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Category</label>
+          <p>{{ getCategoryDisplayName(selectedTool.category || 'other') }}</p>
+        </div>
+
+        <div class="detail-section">
+          <label>Source</label>
+          <span class="badge" [ngClass]="getSourceBadgeClass(selectedTool.source)">
+            {{ selectedTool.source }}
+          </span>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.tags?.length">
+          <label>Tags</label>
+          <div class="tags-list">
+            <span class="tag" *ngFor="let tag of selectedTool.tags">{{ tag }}</span>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.usageHints?.length">
+          <label>When to Use</label>
+          <ul>
+            <li *ngFor="let hint of selectedTool.usageHints">{{ hint }}</li>
+          </ul>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.parameters?.length">
+          <label>Parameters</label>
+          <div class="param-list">
+            <div class="param-item" *ngFor="let param of selectedTool.parameters">
+              <span class="param-name">{{ param.name }}</span>
+              <span class="param-type">({{ param.type }})</span>
+              <span class="param-required" *ngIf="param.required">[required]</span>
+              <p class="param-desc" *ngIf="param.description">{{ param.description }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.examples?.length">
+          <label>Examples</label>
+          <div class="example-item" *ngFor="let ex of selectedTool.examples">
+            <h5>{{ ex.title }}</h5>
+            <p *ngIf="ex.description">{{ ex.description }}</p>
+            <pre *ngIf="ex.input">{{ ex.input | json }}</pre>
+          </div>
+        </div>
+
+        <div class="detail-section" *ngIf="selectedTool.relatedTools?.length">
+          <label>Related Tools</label>
+          <div class="related-tools">
+            <span class="related-tool" *ngFor="let rt of selectedTool.relatedTools">{{ rt }}</span>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn btn-secondary" (click)="startEdit()">Edit</button>
+          <button class="btn btn-toggle" (click)="toggleToolEnabled(selectedTool)">{{ selectedTool.enabled ? 'Disable' :
+            'Enable' }}</button>
+          <button class="btn btn-danger" *ngIf="selectedTool.source === 'CUSTOM'"
+            (click)="deleteTool(selectedTool)">Delete</button>
+        </div>
+      </div>
+
+      <!-- Edit/Create Mode -->
+      <div class="panel-body edit-mode" *ngIf="isEditMode || isCreating">
+        <div class="form-group">
+          <label>Name *</label>
+          <input type="text" [(ngModel)]="editForm.name" [ngModelOptions]="{standalone: true}"
+            [disabled]="isEditMode && selectedTool?.source === 'BUILT_IN'" />
+        </div>
+
+        <div class="form-group">
+          <label>Display Name</label>
+          <input type="text" [(ngModel)]="editForm.displayName" [ngModelOptions]="{standalone: true}" />
+        </div>
+
+        <div class="form-group">
+          <label>Description *</label>
+          <textarea [(ngModel)]="editForm.description" [ngModelOptions]="{standalone: true}" rows="3"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Detailed Description</label>
+          <textarea [(ngModel)]="editForm.detailedDescription" [ngModelOptions]="{standalone: true}" rows="4"
+            placeholder="Detailed explanation for agents..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Category</label>
+          <select [(ngModel)]="editForm.category" [ngModelOptions]="{standalone: true}">
+            <option *ngFor="let cat of categoryKeys" [value]="cat">{{ getCategoryDisplayName(cat) }}</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Tags</label>
+          <div class="editable-list">
+            <div class="list-item" *ngFor="let tag of editForm.tags; let i = index">
+              <input type="text" [(ngModel)]="editForm.tags![i]" [ngModelOptions]="{standalone: true}" />
+              <button class="remove-btn" (click)="removeTag(i)">&times;</button>
+            </div>
+            <button class="add-btn" (click)="addTag()">+ Add Tag</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Usage Hints</label>
+          <div class="editable-list">
+            <div class="list-item" *ngFor="let hint of editForm.usageHints; let i = index">
+              <input type="text" [(ngModel)]="editForm.usageHints![i]" [ngModelOptions]="{standalone: true}" />
+              <button class="remove-btn" (click)="removeUsageHint(i)">&times;</button>
+            </div>
+            <button class="add-btn" (click)="addUsageHint()">+ Add Hint</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Examples</label>
+          <div class="example-editor" *ngFor="let ex of editForm.examples; let i = index">
+            <input type="text" [(ngModel)]="ex.title" [ngModelOptions]="{standalone: true}" placeholder="Example title" />
+            <textarea [(ngModel)]="ex.description" [ngModelOptions]="{standalone: true}" placeholder="Description" rows="2"></textarea>
+            <textarea [(ngModel)]="ex.scenario" [ngModelOptions]="{standalone: true}" placeholder="Scenario" rows="2"></textarea>
+            <button class="remove-btn" (click)="removeExample(i)">Remove Example</button>
+          </div>
+          <button class="add-btn" (click)="addExample()">+ Add Example</button>
+        </div>
+
+        <div class="form-group checkbox">
+          <label>
+            <input type="checkbox" [(ngModel)]="editForm.enabled" [ngModelOptions]="{standalone: true}" />
+            Enabled
+          </label>
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn btn-secondary" (click)="cancelEdit()">Cancel</button>
+          <button class="btn btn-primary" *ngIf="isCreating" (click)="createTool()">Create</button>
+          <button class="btn btn-primary" *ngIf="isEditMode" (click)="saveEdit()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Prompt Modal -->
+  <div class="modal" *ngIf="showAgentPrompt">
+    <div class="modal-overlay" (click)="closeAgentPrompt()"></div>
+    <div class="modal-content large">
+      <div class="modal-header">
+        <h3>Agent Tools Prompt</h3>
+        <button class="close-btn" (click)="closeAgentPrompt()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="info-text">This prompt describes all available tools for AI agents. Copy and use in your agent
+          configuration.</p>
+        <pre class="prompt-content">{{ agentPrompt }}</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" (click)="closeAgentPrompt()">Close</button>
+        <button class="btn btn-primary" (click)="copyAgentPrompt()">Copy to Clipboard</button>
+      </div>
+    </div>
+  </div>
+</div>

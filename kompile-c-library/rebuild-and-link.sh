@@ -15,8 +15,37 @@
 # limitations under the License.
 #
 
-cp ../konduit-serving/target/*.h include/
-cp ../konduit-serving/target/*.so lib/
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NATIVE_LIB_DIR="${SCRIPT_DIR}/../kompile-pipelines-framework/kompile-pipelines-framework-runtime/target"
+
+# Copy GraalVM-generated headers and shared library
+if [ -d "${NATIVE_LIB_DIR}" ]; then
+    echo "Copying native image headers and library from ${NATIVE_LIB_DIR}"
+    cp -f "${NATIVE_LIB_DIR}"/*.h "${SCRIPT_DIR}/include/" 2>/dev/null || true
+    mkdir -p "${SCRIPT_DIR}/lib"
+    cp -f "${NATIVE_LIB_DIR}"/libkompile_pipelines*.so "${SCRIPT_DIR}/lib/" 2>/dev/null || true
+else
+    echo "Warning: Native library directory not found at ${NATIVE_LIB_DIR}"
+    echo "Build the native shared library first:"
+    echo "  cd ../kompile-pipelines-framework/kompile-pipelines-framework-runtime"
+    echo "  mvn clean package -Pnative-library -DskipTests"
+fi
+
+# Build the C wrapper library
+cd "${SCRIPT_DIR}"
 cmake .
 make
-cp libkompile_c_library.so ../kompile-python/lib/
+
+# Copy to Python lib directory
+PYTHON_LIB_DIR="${SCRIPT_DIR}/../kompile-python/lib"
+mkdir -p "${PYTHON_LIB_DIR}"
+cp libkompile_c_library.so "${PYTHON_LIB_DIR}/"
+echo "Copied libkompile_c_library.so to ${PYTHON_LIB_DIR}/"
+
+# Also copy the native shared library for Python to load
+if [ -f "${SCRIPT_DIR}/lib/libkompile_pipelines.so" ]; then
+    cp "${SCRIPT_DIR}/lib/libkompile_pipelines.so" "${PYTHON_LIB_DIR}/"
+    echo "Copied libkompile_pipelines.so to ${PYTHON_LIB_DIR}/"
+fi

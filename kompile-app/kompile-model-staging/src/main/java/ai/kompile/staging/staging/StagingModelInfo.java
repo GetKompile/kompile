@@ -91,6 +91,30 @@ public class StagingModelInfo {
     private String message;
 
     /**
+     * Bytes downloaded so far.
+     */
+    @JsonProperty("bytes_downloaded")
+    private long bytesDownloaded;
+
+    /**
+     * Total bytes to download (-1 if unknown).
+     */
+    @JsonProperty("total_bytes")
+    private long totalBytes;
+
+    /**
+     * Current download speed in bytes per second.
+     */
+    @JsonProperty("bytes_per_second")
+    private long bytesPerSecond;
+
+    /**
+     * Name of the file currently being downloaded.
+     */
+    @JsonProperty("current_file")
+    private String currentFile;
+
+    /**
      * Create a new staging model info.
      */
     public static StagingModelInfo create(String modelId, String source, ModelType type) {
@@ -114,6 +138,22 @@ public class StagingModelInfo {
         if (newStatus.isTerminal()) {
             this.completedAt = Instant.now().toString();
         }
+        return this;
+    }
+
+    /**
+     * Update download progress details.
+     */
+    public StagingModelInfo withDownloadProgress(int progress, String message,
+                                                  long bytesDownloaded, long totalBytes,
+                                                  long bytesPerSecond, String currentFile) {
+        this.status = StagingStatus.DOWNLOADING;
+        this.progress = progress;
+        this.message = message;
+        this.bytesDownloaded = bytesDownloaded;
+        this.totalBytes = totalBytes;
+        this.bytesPerSecond = bytesPerSecond;
+        this.currentFile = currentFile;
         return this;
     }
 

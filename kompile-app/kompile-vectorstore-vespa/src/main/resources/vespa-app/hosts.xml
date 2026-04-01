@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Vespa Hosts Configuration
+
+  Defines the hosts in the Vespa cluster. For Docker/local development,
+  use localhost. For production, list actual hostnames.
+
+  For more information: https://docs.vespa.ai/en/reference/hosts.html
+-->
+<hosts>
+    <host name="localhost">
+        <alias>node1</alias>
+    </host>
+</hosts>

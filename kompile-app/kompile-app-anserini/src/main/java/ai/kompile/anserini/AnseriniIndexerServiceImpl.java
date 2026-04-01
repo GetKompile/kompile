@@ -35,8 +35,8 @@ import io.anserini.search.SimpleSearcher;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.SneakyThrows;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Field;
@@ -53,6 +53,7 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
+import ai.kompile.vectorstore.anserini.util.NativeCompatibleDirectoryFactory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.NoLockFactory;
@@ -88,7 +89,7 @@ import java.util.stream.Stream;
 
 @Service("anseriniIndexerService")
 public class AnseriniIndexerServiceImpl extends IndexerService {
-    private static final Logger logger = LogManager.getLogger(AnseriniIndexerServiceImpl.class);
+    private static final Logger logger = LoggerFactory.getLogger(AnseriniIndexerServiceImpl.class);
     private final AnseriniConfig anseriniConfig;
     private final ObjectMapper objectMapper;
     private final DocumentLoadingService documentLoadingService;
@@ -983,7 +984,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                 }
             }
             Files.createDirectories(indexPath);
-            try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+            try (Directory dir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
                     IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()))) {
                 writer.commit();
             }
@@ -1017,7 +1018,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
                     indexPath, loggedCollectionName);
             return 0;
         }
-        try (Directory anseriniDir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        try (Directory anseriniDir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
                 DirectoryReader reader = DirectoryReader.open(anseriniDir)) {
             long numDocs = reader.numDocs(); // This counts live documents.
             logger.debug("Approximate total document count in Anserini index {} (logging collection: {}): {}",
@@ -1256,7 +1257,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         }
 
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
-        try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        try (Directory dir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
              DirectoryReader reader = DirectoryReader.open(dir)) {
 
             for (int i = 0; i < reader.maxDoc(); i++) {
@@ -1312,7 +1313,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         }
 
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
-        try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        try (Directory dir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
              DirectoryReader reader = DirectoryReader.open(dir)) {
 
             for (int i = 0; i < reader.maxDoc(); i++) {
@@ -1393,7 +1394,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             Files.createDirectories(indexPath);
         }
 
-        keywordIndexDirectory = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        keywordIndexDirectory = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
 
         IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
         config.setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
@@ -1509,7 +1510,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             logger.warn(
                     "No documents were processed to JSON for keyword index. Creating a minimal empty Lucene index at {}.",
                     indexPath);
-            try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+            try (Directory dir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
                     IndexWriter writer = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()))) {
                 writer.commit();
             }
@@ -1549,7 +1550,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
             return docInfos;
         }
         Path indexPath = Paths.get(anseriniConfig.getIndexPath());
-        try (Directory anseriniDir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        try (Directory anseriniDir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
                 DirectoryReader reader = DirectoryReader.open(anseriniDir)) {
 
             int maxDoc = reader.maxDoc();
@@ -1698,7 +1699,7 @@ public class AnseriniIndexerServiceImpl extends IndexerService {
         IndexWriterConfig config = new IndexWriterConfig(new StandardAnalyzer());
         config.setOpenMode(IndexWriterConfig.OpenMode.APPEND);
 
-        try (Directory dir = FSDirectory.open(indexPath, NoLockFactory.INSTANCE);
+        try (Directory dir = NativeCompatibleDirectoryFactory.open(indexPath, NoLockFactory.INSTANCE);
                 IndexWriter writer = new IndexWriter(dir, config)) {
 
             // Retrieve the existing document to preserve its other fields

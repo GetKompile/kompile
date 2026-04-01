@@ -1,0 +1,67 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: kompile-model-staging
+
+  # File upload configuration - ML models can be several GB
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10GB
+      max-request-size: 10GB
+      file-size-threshold: 10MB
+
+# Model staging configuration
+kompile:
+  staging:
+    ui:
+      enabled: false
+    app:
+      enabled: true
+    model-dir: ${user.home}/.kompile/models
+    staging-dir: ${user.home}/.kompile/models/.staging
+
+  # Archive configuration
+  archive:
+    # Remote catalog URLs (checked in order)
+    catalog:
+      urls:
+        - https://github.com/GetKompile/kompile/releases/latest/download/catalog.json
+        - https://kompile.ai/archives/catalog.json
+      refresh-interval: 24h
+
+    # Authentication settings
+    auth:
+      bearer-token: ${KOMPILE_ARCHIVE_TOKEN:}
+      basic:
+        username: ${KOMPILE_ARCHIVE_USER:}
+        password: ${KOMPILE_ARCHIVE_PASS:}
+      s3:
+        region: ${AWS_REGION:us-east-1}
+        access-key: ${AWS_ACCESS_KEY_ID:}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:}
+
+    # Download settings
+    download:
+      resume-enabled: true
+      chunk-size: 8388608  # 8MB
+      timeout: 300000      # 5 minutes
+      connection-timeout: 10000
+      read-timeout: 30000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+
+logging:
+  level:
+    ai.kompile: INFO
+    org.nd4j: WARN
+    org.bytedeco: WARN

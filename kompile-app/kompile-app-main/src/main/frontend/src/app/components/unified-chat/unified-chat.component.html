@@ -1,0 +1,1061 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="unified-chat-wrapper">
+
+  <!-- Chat History Sidebar (Left) -->
+  <aside class="history-sidebar" [class.collapsed]="!showHistorySidebar">
+    <div class="history-sidebar-header">
+      <h3>Chats</h3>
+      <button class="new-chat-btn" (click)="newChat()" title="New Chat">
+        <span>+</span> New
+      </button>
+    </div>
+
+    <div class="history-sidebar-content">
+      <!-- Search/Filter -->
+      <div class="history-search">
+        <input type="text" class="search-input" placeholder="Search chats..." [(ngModel)]="chatSearchQuery" [ngModelOptions]="{standalone: true}">
+        <span class="search-icon">🔍</span>
+      </div>
+
+      <!-- Chat List -->
+      <div class="chat-list">
+        <!-- Current Chat (if exists and has messages) -->
+        <div class="chat-item current" *ngIf="currentSession && (currentSession.messages?.length || 0) > 0"
+          [class.editing]="editingSessionId === currentSession.id">
+
+          <div class="chat-item-content" *ngIf="editingSessionId !== currentSession.id"
+            (click)="loadSession(currentSession)">
+            <span class="chat-icon">💬</span>
+            <div class="chat-details">
+              <span class="chat-name">{{ currentSession.name || 'Current Chat' }}</span>
+              <span class="chat-meta">{{ currentSession.messages.length || 0 }} messages</span>
+            </div>
+          </div>
+
+          <!-- Inline Edit Mode -->
+          <div class="chat-edit-mode" *ngIf="editingSessionId === currentSession.id">
+            <input type="text" class="chat-name-input" [(ngModel)]="editingSessionName" [ngModelOptions]="{standalone: true}"
+              (keydown.enter)="saveSessionName(currentSession)" (keydown.escape)="cancelEditSessionName()">
+            <button class="edit-action-btn save" (click)="saveSessionName(currentSession)" title="Save">✓</button>
+            <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
+          </div>
+
+          <div class="chat-item-actions" *ngIf="editingSessionId !== currentSession.id">
+            <button class="chat-action-btn" (click)="startEditSessionName(currentSession); $event.stopPropagation()"
+              title="Rename">✏️</button>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="chat-list-divider"
+          *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && getFilteredSessions().length > 0">
+          <span>Previous</span>
+        </div>
+
+        <!-- Previous Chats -->
+        <div class="chat-item" *ngFor="let session of getFilteredSessions()"
+          [class.active]="session.id === currentSession?.id" [class.archived]="session.archived"
+          [class.editing]="editingSessionId === session.id">
+
+          <div class="chat-item-content" *ngIf="editingSessionId !== session.id" (click)="loadSession(session)">
+            <span class="chat-icon">{{ session.archived ? '📦' : '💬' }}</span>
+            <div class="chat-details">
+              <span class="chat-name">{{ session.name || 'Unnamed Chat' }}</span>
+              <span class="chat-meta">
+                {{ session.messages.length || 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+              </span>
+              <span class="chat-preview" *ngIf="getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
+            </div>
+          </div>
+
+          <!-- Inline Edit Mode -->
+          <div class="chat-edit-mode" *ngIf="editingSessionId === session.id">
+            <input type="text" class="chat-name-input" [(ngModel)]="editingSessionName" [ngModelOptions]="{standalone: true}"
+              (keydown.enter)="saveSessionName(session)" (keydown.escape)="cancelEditSessionName()">
+            <button class="edit-action-btn save" (click)="saveSessionName(session)" title="Save">✓</button>
+            <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
+          </div>
+
+          <div class="chat-item-actions" *ngIf="editingSessionId !== session.id">
+            <button class="chat-action-btn" (click)="startEditSessionName(session); $event.stopPropagation()"
+              title="Rename">✏️</button>
+            <button class="chat-action-btn" [matMenuTriggerFor]="folderMenu" (click)="$event.stopPropagation()"
+              title="Add to folder">📁</button>
+            <mat-menu #folderMenu="matMenu">
+              <button mat-menu-item disabled *ngIf="folders.length === 0">
+                <span>No folders available</span>
+              </button>
+              <button mat-menu-item *ngFor="let folder of folders" (click)="addSessionToFolder(session, folder)">
+                <span>📁 {{ folder.name }}</span>
+              </button>
+            </mat-menu>
+            <button class="chat-action-btn" (click)="archiveSession(session); $event.stopPropagation()"
+              [title]="session.archived ? 'Unarchive' : 'Archive'">
+              {{ session.archived ? '📤' : '📥' }}
+            </button>
+            <button class="chat-action-btn danger" (click)="deleteSession(session); $event.stopPropagation()"
+              title="Delete">🗑️</button>
+          </div>
+        </div>
+
+        <!-- Empty State -->
+        <div class="chat-list-empty"
+          *ngIf="getFilteredSessions().length === 0 && (!currentSession || (currentSession.messages?.length || 0) === 0)">
+          <span class="empty-icon">💭</span>
+          <span class="empty-text">No chats yet</span>
+          <span class="empty-hint">Start a new conversation</span>
+        </div>
+      </div>
+
+      <!-- Footer Actions -->
+      <div class="history-sidebar-footer">
+        <button class="footer-btn" (click)="toggleShowArchived()" [class.active]="showArchivedChats">
+          {{ showArchivedChats ? '📦 Hide Archived' : '📦 Show Archived' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapse Toggle -->
+    <button class="sidebar-collapse-btn" (click)="toggleHistorySidebar()"
+      [title]="showHistorySidebar ? 'Collapse' : 'Expand'">
+      {{ showHistorySidebar ? '◀' : '▶' }}
+    </button>
+  </aside>
+
+  <!-- Settings Sidebar (Right) -->
+  <aside class="settings-sidebar" [class.visible]="showSettings">
+    <div class="sidebar-header">
+      <h3>Chat Settings</h3>
+      <button class="close-btn" (click)="toggleSettings()">×</button>
+    </div>
+
+    <div class="settings-content">
+
+      <!-- Agent Selection -->
+      <div class="settings-section">
+        <div class="section-header">
+          <h4>Agent Selection</h4>
+          <button class="refresh-btn" (click)="refreshAgents()" [disabled]="agentsLoading"
+            title="Re-check CLI availability">
+            <span *ngIf="!agentsLoading">🔄</span>
+            <span *ngIf="agentsLoading" class="loading-spinner-small">⟳</span>
+          </button>
+        </div>
+
+        <div class="agent-selector">
+          <select class="select-input" [value]="selectedAgent?.name || ''"
+            (change)="selectAgent(agents[$any($event.target).selectedIndex - 1])" [disabled]="agentsLoading">
+            <option value="" disabled>{{ agentsLoading ? 'Detecting agents...' : 'Select an agent...' }}</option>
+            <option *ngFor="let agent of agents" [value]="agent.name" [disabled]="!agent.available">
+              {{ getAgentIcon(agent.name) }} {{ agent.displayName }}
+              {{ agent.agentType === 'API' ? '(API)' : '' }}
+              {{ agent.available ? '✓' : '✗' }}
+              {{ agent.isDefault ? '(default)' : '' }}
+            </option>
+          </select>
+        </div>
+
+        <div class="agent-counts">
+          <span *ngIf="agentsLoading">Detecting agents...</span>
+          <span *ngIf="!agentsLoading">{{ getAvailableAgentCount() }} of {{ agents.length }} agents detected</span>
+        </div>
+
+        <!-- Selected Agent Details -->
+        <div class="agent-details" *ngIf="selectedAgent">
+          <div class="agent-card" [class.available]="selectedAgent.available">
+            <div class="agent-icon">{{ getAgentIcon(selectedAgent.name) }}</div>
+            <div class="agent-info">
+              <strong>{{ selectedAgent.displayName }}</strong>
+              <span class="agent-command" *ngIf="!isApiAgent(selectedAgent)">{{ selectedAgent.command }}</span>
+              <span class="agent-command" *ngIf="isApiAgent(selectedAgent)">{{ selectedAgent.endpointUrl }} / {{ selectedAgent.modelName }}</span>
+            </div>
+            <div class="availability-badge" [class.available]="selectedAgent.available">
+              {{ selectedAgent.available ? 'Ready' : 'Unavailable' }}
+            </div>
+          </div>
+
+          <!-- Edit/Delete for API agents -->
+          <div class="api-agent-actions" *ngIf="isApiAgent(selectedAgent)">
+            <button class="text-btn" (click)="editApiAgent(selectedAgent)">Edit</button>
+            <button class="text-btn danger" (click)="deleteApiAgent(selectedAgent)">Remove</button>
+          </div>
+        </div>
+
+        <!-- Add API Endpoint Button -->
+        <button class="add-api-btn" (click)="toggleApiAgentConfig()">
+          {{ showApiAgentConfig ? '✕ Cancel' : '+ Add API Endpoint' }}
+        </button>
+
+        <!-- API Endpoint Configuration Form -->
+        <div class="api-agent-config" *ngIf="showApiAgentConfig">
+          <h5>{{ editingApiAgentName ? 'Edit' : 'New' }} API Endpoint</h5>
+
+          <div class="setting-row">
+            <label>Name</label>
+            <input type="text" class="text-input" [(ngModel)]="apiAgentName"
+              [ngModelOptions]="{standalone: true}" placeholder="e.g., my-ollama"
+              [disabled]="!!editingApiAgentName">
+          </div>
+
+          <div class="setting-row">
+            <label>Display Name</label>
+            <input type="text" class="text-input" [(ngModel)]="apiAgentDisplayName"
+              [ngModelOptions]="{standalone: true}" placeholder="e.g., Local Ollama">
+          </div>
+
+          <div class="setting-row">
+            <label>Endpoint URL</label>
+            <input type="text" class="text-input" [(ngModel)]="apiAgentEndpointUrl"
+              [ngModelOptions]="{standalone: true}" placeholder="e.g., http://localhost:11434/v1">
+          </div>
+
+          <div class="setting-row">
+            <label>API Key (optional)</label>
+            <input type="password" class="text-input" [(ngModel)]="apiAgentApiKey"
+              [ngModelOptions]="{standalone: true}" placeholder="sk-...">
+          </div>
+
+          <div class="setting-row">
+            <label>Model Name</label>
+            <input type="text" class="text-input" [(ngModel)]="apiAgentModelName"
+              [ngModelOptions]="{standalone: true}" placeholder="e.g., gpt-4o, llama3">
+          </div>
+
+          <div class="setting-row">
+            <label>Temperature</label>
+            <div class="slider-container">
+              <input type="range" [(ngModel)]="apiAgentTemperature" [ngModelOptions]="{standalone: true}"
+                min="0" max="2" step="0.1" class="slider">
+              <span class="slider-value">{{ apiAgentTemperature.toFixed(1) }}</span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label>Max Tokens</label>
+            <input type="number" class="number-input" [(ngModel)]="apiAgentMaxTokens"
+              [ngModelOptions]="{standalone: true}" min="1" max="128000">
+          </div>
+
+          <div class="api-agent-form-actions">
+            <button class="text-btn" (click)="testApiEndpoint()" [disabled]="apiAgentTestLoading || !apiAgentEndpointUrl">
+              {{ apiAgentTestLoading ? '⟳ Testing...' : '🔌 Test Connection' }}
+            </button>
+            <button class="text-btn primary" (click)="saveApiAgent()"
+              [disabled]="apiAgentSaving || !apiAgentName || !apiAgentEndpointUrl || !apiAgentModelName">
+              {{ apiAgentSaving ? '⟳ Saving...' : '💾 Save' }}
+            </button>
+          </div>
+
+          <div class="api-agent-test-result" *ngIf="apiAgentTestResult">
+            {{ apiAgentTestResult }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Models -->
+      <div class="settings-section" *ngIf="activeModelContext">
+        <div class="section-header-row">
+          <h4>Active Models</h4>
+          <button class="refresh-context-btn" (click)="refreshModelContext()" [disabled]="modelContextLoading"
+            [class.spinning]="modelContextLoading" title="Refresh model context">
+            &#x21bb;
+          </button>
+        </div>
+
+        <!-- Embedding Model Card -->
+        <div class="model-card" *ngIf="activeModelContext.embedding">
+          <div class="model-card-header">
+            <span class="model-type-badge embedding">Embedding</span>
+            <span class="model-status-dot" [class.ready]="activeModelContext.embedding.initialized"
+              [class.loading]="activeModelContext.embedding.status === 'loading'"
+              [class.error]="activeModelContext.embedding.status === 'error'"
+              [title]="activeModelContext.embedding.status"></span>
+          </div>
+          <div class="model-card-body">
+            <div class="model-card-name">{{ activeModelContext.embedding.modelId || 'Not configured' }}</div>
+            <div class="model-card-details" *ngIf="activeModelContext.embedding.modelId">
+              <span>{{ activeModelContext.embedding.dimensions }}d</span>
+              <span *ngIf="activeModelContext.embedding.encoderType"> · {{ activeModelContext.embedding.encoderType }}</span>
+            </div>
+          </div>
+          <div class="model-card-actions" *ngIf="activeModelContext.embedding.modelId">
+            <button class="text-btn small" *ngIf="activeModelContext.staging?.connected"
+              (click)="openStagingModelCard(activeModelContext.embedding.modelId)">
+              Model Card &#x2197;
+            </button>
+            <button class="text-btn small" *ngIf="activeModelContext.availableEmbeddingModels.length > 1"
+              (click)="toggleModelSwitchDropdown()" [disabled]="embeddingSwitchLoading">
+              {{ embeddingSwitchLoading ? 'Switching...' : 'Switch' }}
+            </button>
+          </div>
+          <!-- Switch Dropdown -->
+          <div class="model-switch-dropdown" *ngIf="showModelSwitchDropdown">
+            <div class="model-switch-option"
+              *ngFor="let m of activeModelContext.availableEmbeddingModels"
+              [class.current]="m === activeModelContext.embedding?.modelId"
+              (click)="switchEmbeddingModel(m)">
+              {{ m }}
+              <span class="current-badge" *ngIf="m === activeModelContext.embedding?.modelId">current</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reranker Model Card -->
+        <div class="model-card" *ngIf="activeModelContext.reranker">
+          <div class="model-card-header">
+            <span class="model-type-badge reranker">Reranker</span>
+            <span class="model-status-dot" [class.ready]="activeModelContext.reranker.available"></span>
+          </div>
+          <div class="model-card-body">
+            <div class="model-card-name">{{ activeModelContext.reranker.modelId || 'Not configured' }}</div>
+            <div class="model-card-details" *ngIf="!activeModelContext.reranker.available && !activeModelContext.reranker.modelId">
+              <span>No reranker active</span>
+            </div>
+          </div>
+          <div class="model-card-actions" *ngIf="activeModelContext.reranker.modelId && activeModelContext.staging?.connected">
+            <button class="text-btn small" (click)="openStagingModelCard(activeModelContext.reranker.modelId)">
+              Model Card &#x2197;
+            </button>
+          </div>
+        </div>
+
+        <!-- Chat Agent Card -->
+        <div class="model-card" *ngIf="selectedAgent">
+          <div class="model-card-header">
+            <span class="model-type-badge agent">Chat Agent</span>
+            <span class="model-status-dot ready"></span>
+          </div>
+          <div class="model-card-body">
+            <div class="model-card-name">{{ selectedAgent.displayName || selectedAgent.name }}</div>
+            <div class="model-card-details">
+              <span>{{ selectedAgent.name }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Open Staging App link -->
+        <div class="staging-link" *ngIf="activeModelContext.staging?.connected">
+          <button class="text-btn small" (click)="openStagingApp()">
+            Open Model Staging &#x2197;
+          </button>
+        </div>
+      </div>
+
+      <!-- Kompile Local Model -->
+      <div class="settings-section">
+        <h4>Kompile Local Model</h4>
+        <p class="setting-hint">Connect to a local kompile-model-staging instance</p>
+
+        <div class="setting-row" *ngIf="kompileLocalStatus">
+          <label>Status</label>
+          <span [style.color]="kompileLocalStatus.connected ? '#4caf50' : '#999'">
+            {{ kompileLocalStatus.message }}
+          </span>
+        </div>
+
+        <div class="setting-row">
+          <label>Staging URL</label>
+          <input type="text" class="text-input" [(ngModel)]="kompileLocalStagingUrl"
+            [ngModelOptions]="{standalone: true}" placeholder="http://localhost:8081">
+        </div>
+
+        <div class="setting-row" *ngIf="kompileLocalStatus?.modelId">
+          <label>Model</label>
+          <span>{{ kompileLocalStatus.modelId }}</span>
+        </div>
+
+        <div class="api-agent-form-actions">
+          <button class="text-btn" (click)="refreshKompileLocalStatus()" [disabled]="kompileLocalLoading">
+            {{ kompileLocalLoading ? 'Checking...' : 'Refresh' }}
+          </button>
+          <button class="text-btn primary" *ngIf="!kompileLocalStatus?.connected"
+            (click)="connectKompileLocal()" [disabled]="kompileLocalLoading || !kompileLocalStagingUrl">
+            Connect
+          </button>
+          <button class="text-btn danger" *ngIf="kompileLocalStatus?.connected"
+            (click)="disconnectKompileLocal()" [disabled]="kompileLocalLoading">
+            Disconnect
+          </button>
+        </div>
+      </div>
+
+      <!-- Agent Configuration -->
+      <div class="settings-section" *ngIf="selectedAgent">
+        <h4>Agent Options</h4>
+
+        <!-- Skip permissions (CLI agents only) -->
+        <div *ngIf="!isApiAgent(selectedAgent)">
+          <div class="setting-row toggle-row">
+            <label>Skip Permission Prompts</label>
+            <label class="toggle-switch">
+              <input type="checkbox" [(ngModel)]="skipPermissions" [ngModelOptions]="{standalone: true}" (change)="onSkipPermissionsChange()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <p class="setting-hint">Uses {{ selectedAgent.skipPermissionsFlag }} flag</p>
+        </div>
+
+        <div class="setting-row">
+          <label>Response Timeout</label>
+          <select [(ngModel)]="timeoutSeconds" [ngModelOptions]="{standalone: true}" class="select-input">
+            <option *ngFor="let opt of timeoutOptions" [value]="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
+        <p class="setting-hint">{{ timeoutSeconds === 0 ? 'Agent can run indefinitely' : 'Agent will stop after ' +
+          (timeoutSeconds / 60) + ' minute(s)' }}</p>
+      </div>
+
+      <!-- RAG (Document Lookup) Settings -->
+      <div class="settings-section">
+        <h4>Document Lookup (RAG)</h4>
+
+        <div class="setting-row toggle-row">
+          <label>Enable Document Search</label>
+          <label class="toggle-switch">
+            <input type="checkbox" [(ngModel)]="ragEnabled" [ngModelOptions]="{standalone: true}">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <p class="setting-hint">Augment prompts with context from indexed documents</p>
+
+        <div *ngIf="ragEnabled">
+          <!-- Search Type -->
+          <div class="setting-row">
+            <label>Search Type</label>
+            <select [(ngModel)]="searchType" [ngModelOptions]="{standalone: true}" class="select-input">
+              <option value="hybrid">Hybrid (Semantic + Keyword)</option>
+              <option value="semantic">Semantic Only</option>
+              <option value="keyword">Keyword Only</option>
+            </select>
+          </div>
+
+          <div class="setting-row" *ngIf="searchType === 'hybrid' || searchType === 'semantic'">
+            <label>Semantic Results (K)</label>
+            <input type="number" [(ngModel)]="semanticK" [ngModelOptions]="{standalone: true}" min="1" max="50" class="number-input">
+          </div>
+
+          <div class="setting-row" *ngIf="searchType === 'hybrid' || searchType === 'keyword'">
+            <label>Keyword Results (K)</label>
+            <input type="number" [(ngModel)]="keywordK" [ngModelOptions]="{standalone: true}" min="1" max="50" class="number-input">
+          </div>
+
+          <div class="setting-row">
+            <label>Similarity Threshold</label>
+            <div class="slider-container">
+              <input type="range" [(ngModel)]="similarityThreshold" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+              <span class="slider-value">{{ (similarityThreshold * 100).toFixed(0) }}%</span>
+            </div>
+          </div>
+
+          <div class="setting-summary">
+            Total results: <strong>{{ getTotalK() }}</strong> documents
+          </div>
+
+          <!-- Reranking -->
+          <div class="setting-row toggle-row">
+            <label>Enable Reranking</label>
+            <label class="toggle-switch">
+              <input type="checkbox" [(ngModel)]="rerankerEnabled" [ngModelOptions]="{standalone: true}">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div *ngIf="rerankerEnabled" class="reranker-settings">
+            <div class="setting-row">
+              <label>Reranker Type</label>
+              <select [(ngModel)]="rerankerType" [ngModelOptions]="{standalone: true}" class="select-input">
+                <option *ngFor="let type of rerankerTypes" [value]="type.id">
+                  {{ type.name }}
+                </option>
+              </select>
+            </div>
+
+            <!-- Reranker description -->
+            <p class="setting-hint reranker-desc" *ngIf="getRerankerDescription()">
+              {{ getRerankerDescription() }}
+            </p>
+
+            <!-- Common parameters (for most rerankers) -->
+            <div *ngIf="needsCommonParams()">
+              <div class="setting-row">
+                <label>Feedback Documents</label>
+                <input type="number" [(ngModel)]="rerankerFbDocs" [ngModelOptions]="{standalone: true}" min="1" max="50" class="number-input">
+              </div>
+
+              <div class="setting-row">
+                <label>Feedback Terms</label>
+                <input type="number" [(ngModel)]="rerankerFbTerms" [ngModelOptions]="{standalone: true}" min="1" max="100" class="number-input">
+              </div>
+            </div>
+
+            <!-- Advanced settings toggle -->
+            <div class="setting-row toggle-row" *ngIf="rerankerType !== 'none' && rerankerType !== 'score_ties'">
+              <label>Show Advanced Settings</label>
+              <label class="toggle-switch">
+                <input type="checkbox" [(ngModel)]="showAdvancedRerankerSettings" [ngModelOptions]="{standalone: true}">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <!-- RM3 specific parameters -->
+            <div *ngIf="showAdvancedRerankerSettings && isRm3()" class="advanced-params">
+              <h5 class="params-title">RM3 Parameters</h5>
+              <div class="setting-row">
+                <label>Original Query Weight</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerOriginalQueryWeight" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerOriginalQueryWeight.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div class="setting-row toggle-row">
+                <label>Filter Non-Alpha Terms</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="rerankerFilterTerms" [ngModelOptions]="{standalone: true}">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-row toggle-row">
+                <label>Output Expanded Query</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="rerankerOutputQuery" [ngModelOptions]="{standalone: true}">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- BM25-PRF specific parameters -->
+            <div *ngIf="showAdvancedRerankerSettings && isBm25Prf()" class="advanced-params">
+              <h5 class="params-title">BM25-PRF Parameters</h5>
+              <div class="setting-row">
+                <label>k1 Parameter</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerK1" [ngModelOptions]="{standalone: true}" min="0" max="2" step="0.1" class="slider">
+                  <span class="slider-value">{{ rerankerK1.toFixed(1) }}</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label>b Parameter</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerB" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerB.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label>New Term Weight</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerNewTermWeight" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerNewTermWeight.toFixed(2) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rocchio specific parameters -->
+            <div *ngIf="showAdvancedRerankerSettings && isRocchio()" class="advanced-params">
+              <h5 class="params-title">Rocchio Parameters</h5>
+              <div class="setting-row">
+                <label>Alpha (Original Weight)</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerAlpha" [ngModelOptions]="{standalone: true}" min="0" max="2" step="0.1" class="slider">
+                  <span class="slider-value">{{ rerankerAlpha.toFixed(1) }}</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label>Beta (Positive Weight)</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerBeta" [ngModelOptions]="{standalone: true}" min="0" max="2" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerBeta.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div class="setting-row">
+                <label>Gamma (Negative Weight)</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerGamma" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerGamma.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div class="setting-row toggle-row">
+                <label>Use Negative Feedback</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="rerankerUseNegative" [ngModelOptions]="{standalone: true}">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Axiom specific parameters -->
+            <div *ngIf="showAdvancedRerankerSettings && isAxiom()" class="advanced-params">
+              <h5 class="params-title">Axiom Parameters</h5>
+              <div class="setting-row">
+                <label>R (Terms from top passages)</label>
+                <input type="number" [(ngModel)]="rerankerR" [ngModelOptions]="{standalone: true}" min="1" max="100" class="number-input">
+              </div>
+              <div class="setting-row">
+                <label>N (Documents to consider)</label>
+                <input type="number" [(ngModel)]="rerankerN" [ngModelOptions]="{standalone: true}" min="1" max="100" class="number-input">
+              </div>
+              <div class="setting-row">
+                <label>Beta (Interpolation)</label>
+                <div class="slider-container">
+                  <input type="range" [(ngModel)]="rerankerAxiomBeta" [ngModelOptions]="{standalone: true}" min="0" max="1" step="0.05" class="slider">
+                  <span class="slider-value">{{ rerankerAxiomBeta.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div class="setting-row toggle-row">
+                <label>Deterministic Mode</label>
+                <label class="toggle-switch">
+                  <input type="checkbox" [(ngModel)]="rerankerDeterministic" [ngModelOptions]="{standalone: true}">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-row" *ngIf="rerankerDeterministic">
+                <label>Random Seed</label>
+                <input type="number" [(ngModel)]="rerankerSeed" [ngModelOptions]="{standalone: true}" min="0" class="number-input">
+              </div>
+            </div>
+
+            <!-- Cross-Encoder specific parameters -->
+            <div *ngIf="isCrossEncoder()" class="advanced-params">
+              <h5 class="params-title">Cross-Encoder Parameters</h5>
+              <div class="setting-row">
+                <label>Model</label>
+                <select [(ngModel)]="rerankerCrossEncoderModel" [ngModelOptions]="{standalone: true}" class="select-input">
+                  <option value="">Select model...</option>
+                  <option value="ms-marco-MiniLM-L-6-v2">ms-marco-MiniLM-L-6-v2</option>
+                  <option value="ms-marco-MiniLM-L-12-v2">ms-marco-MiniLM-L-12-v2</option>
+                  <option value="ms-marco-TinyBERT-L-2-v2">ms-marco-TinyBERT-L-2-v2</option>
+                  <option value="ms-marco-TinyBERT-L-6-v2">ms-marco-TinyBERT-L-6-v2</option>
+                </select>
+              </div>
+              <p class="setting-hint">Neural cross-encoder for high-quality reranking</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Graph RAG (Knowledge Graph) Settings -->
+      <div class="settings-section">
+        <h4>Knowledge Graph (Graph RAG)</h4>
+
+        <div class="setting-row toggle-row">
+          <label>Enable Graph RAG</label>
+          <label class="toggle-switch">
+            <input type="checkbox" [(ngModel)]="graphRagEnabled" [ngModelOptions]="{standalone: true}">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <p class="setting-hint">Augment prompts with entity and relationship context from the knowledge graph</p>
+
+        <div *ngIf="graphRagEnabled">
+          <div class="setting-row">
+            <label>Search Type</label>
+            <select [(ngModel)]="graphRagSearchType" [ngModelOptions]="{standalone: true}" class="select-input">
+              <option value="LOCAL">Local (Entity-focused)</option>
+              <option value="GLOBAL">Global (Full graph)</option>
+            </select>
+          </div>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'LOCAL'">Searches entities related to your query</p>
+          <p class="setting-hint" *ngIf="graphRagSearchType === 'GLOBAL'">Uses PageRank to find important entities across the entire graph</p>
+
+          <div class="setting-row">
+            <label>Max Graph Results</label>
+            <input type="number" [(ngModel)]="graphRagMaxResults" [ngModelOptions]="{standalone: true}" min="1" max="50" class="number-input">
+          </div>
+        </div>
+      </div>
+
+      <!-- Display Settings -->
+      <div class="settings-section">
+        <h4>Display Options</h4>
+
+        <div class="setting-row toggle-row">
+          <label>Show Retrieved Documents</label>
+          <label class="toggle-switch">
+            <input type="checkbox" [(ngModel)]="showDocuments" [ngModelOptions]="{standalone: true}">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row toggle-row">
+          <label>Show Performance Metrics</label>
+          <label class="toggle-switch">
+            <input type="checkbox" [(ngModel)]="showMetrics" [ngModelOptions]="{standalone: true}">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- Folder Sidebar (Right, before settings) -->
+  <aside class="folder-sidebar-container" [class.visible]="showFolderSidebar">
+    <app-folder-sidebar (folderSelected)="onFolderSelected($event)">
+    </app-folder-sidebar>
+  </aside>
+
+  <!-- Main Chat Container -->
+  <main class="chat-container">
+
+    <!-- Header -->
+    <header class="chat-header">
+      <div class="header-left">
+        <button class="icon-btn" (click)="toggleSettings()" title="Settings">
+          <span class="settings-icon">⚙</span>
+        </button>
+
+        <!-- Agent selector -->
+        <div class="inline-agent-selector">
+          <label class="selector-label">Agent:</label>
+          <select class="agent-select" [value]="selectedAgent?.name || ''"
+            (change)="selectAgent(agents[$any($event.target).selectedIndex - 1])" [disabled]="isStreaming">
+            <option value="" disabled>Select agent...</option>
+            <option *ngFor="let agent of agents" [value]="agent.name" [disabled]="!agent.available">
+              {{ getAgentIcon(agent.name) }} {{ agent.displayName }}
+              {{ agent.agentType === 'API' ? '(API)' : '' }}
+              {{ agent.available ? '' : '✗' }}
+            </option>
+          </select>
+          <span class="agent-status" *ngIf="selectedAgent">
+            <span class="status-dot" [class.available]="selectedAgent.available"></span>
+          </span>
+        </div>
+
+        <!-- RAG indicator -->
+        <span class="rag-badge" *ngIf="ragEnabled" title="Document lookup is enabled">
+          📚 RAG
+        </span>
+
+        <!-- Graph RAG indicator -->
+        <span class="rag-badge" *ngIf="graphRagEnabled" title="Knowledge graph lookup is enabled ({{ graphRagSearchType }})">
+          🔗 Graph
+        </span>
+
+        <!-- Folder indicator -->
+        <span class="folder-badge" *ngIf="selectedFolder" title="Folder context active: {{ selectedFolder.name }}">
+          📁 {{ selectedFolder.name }}
+          <button class="folder-clear-btn" (click)="clearFolderSelection(); $event.stopPropagation()"
+            title="Clear folder">×</button>
+        </span>
+
+        <!-- Folder toggle button -->
+        <button class="icon-btn folder-toggle-btn" (click)="toggleFolderSidebar()" title="Toggle folder sidebar">
+          <span>📂</span>
+        </button>
+      </div>
+
+      <div class="header-right">
+        <!-- Session Token Usage -->
+        <span class="session-token-usage" *ngIf="getSessionTokenUsage().totalTokens > 0" title="Session token usage: {{ getSessionTokenUsage().totalInput }} input + {{ getSessionTokenUsage().totalOutput }} output">
+          <span class="token-usage-label">Tokens:</span>
+          <span class="token-usage-in" title="Input tokens">{{ formatTokenCount(getSessionTokenUsage().totalInput) }} in</span>
+          <span class="token-usage-sep">/</span>
+          <span class="token-usage-out" title="Output tokens">{{ formatTokenCount(getSessionTokenUsage().totalOutput) }} out</span>
+          <span class="token-usage-sep">/</span>
+          <span class="token-usage-total" title="Total tokens">{{ formatTokenCount(getSessionTokenUsage().totalTokens) }}</span>
+        </span>
+
+        <button class="text-btn" (click)="newChat()" *ngIf="!isStreaming">+ New</button>
+        <button class="text-btn" (click)="exportConversation()" *ngIf="messages.length > 0 && !isStreaming"
+          title="Export conversation">
+          Export
+        </button>
+        <button class="text-btn danger" (click)="clearConversation()" *ngIf="messages.length > 0 && !isStreaming">
+          Clear
+        </button>
+        <!-- Prominent Stop button during streaming -->
+        <button class="stop-btn" (click)="cancelStreaming()" *ngIf="isStreaming" title="Stop agent execution">
+          <span class="stop-icon">⏹</span>
+          Stop
+        </button>
+      </div>
+    </header>
+
+    <!-- Conversation Area -->
+    <div class="conversation-area" #conversationArea>
+
+      <!-- Viewport indicator: more messages above -->
+      <div *ngIf="hasMoreAbove" class="viewport-indicator above" [class.loading]="isLoadingMore">
+        <span *ngIf="isLoadingMore" class="loading-spinner-small">⟳</span>
+        <span *ngIf="!isLoadingMore" class="indicator-icon">▲</span>
+        <span *ngIf="isLoadingMore">Loading older messages...</span>
+        <span *ngIf="!isLoadingMore">Scroll up for older messages</span>
+      </div>
+
+      <!-- Welcome message -->
+      <div *ngIf="messages.length === 0" class="welcome-message">
+        <h3>💬 Chat</h3>
+
+        <p *ngIf="selectedAgent">
+          You're connected to <strong>{{ selectedAgent.displayName }}</strong>.
+          Type a message below to start chatting.
+        </p>
+        <p *ngIf="!selectedAgent">
+          Select an agent from the settings to get started.
+        </p>
+
+        <div class="quick-tips">
+          <div class="tip">
+            <strong>Tip:</strong> Use Shift+Enter for multi-line messages
+          </div>
+          <div class="tip" *ngIf="ragEnabled">
+            <strong>RAG Enabled:</strong> Your prompts will be augmented with relevant document context
+          </div>
+          <div class="tip" *ngIf="graphRagEnabled">
+            <strong>Graph RAG Enabled:</strong> Knowledge graph entities and relationships will augment your prompts ({{ graphRagSearchType }})
+          </div>
+          <div class="tip" *ngIf="!ragEnabled && !graphRagEnabled">
+            <strong>Tip:</strong> Enable RAG or Graph RAG in settings to include context in your prompts
+          </div>
+        </div>
+
+        <div class="no-agents-warning" *ngIf="getAvailableAgentCount() === 0">
+          <span class="warning-icon">⚠</span>
+          <div>
+            <strong>No agents available</strong>
+            <p>Install a CLI agent (Claude Code, Codex, Gemini) or add an OpenAI-compatible API endpoint in settings.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div *ngFor="let message of messages; let i = index" class="message-wrapper"
+        [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'">
+
+        <div class="message-bubble" [class.user-message]="message.role === 'user'"
+          [class.bot-message]="message.role === 'assistant'" [class.error-message]="message.error"
+          [class.streaming]="message.isStreaming">
+
+          <div class="message-header">
+            <strong>
+              <span *ngIf="message.role === 'user'">You</span>
+              <span *ngIf="message.role === 'assistant'">
+                {{ message.agent?.displayName || 'Assistant' }}
+                <span class="agent-icon-small" *ngIf="message.agent">{{ getAgentIcon(message.agent.name) }}</span>
+              </span>
+            </strong>
+            <div class="message-header-actions">
+              <span *ngIf="message.isStreaming" class="streaming-indicator">typing...</span>
+              <!-- Message Actions (visible on hover, hidden during streaming) -->
+              <div class="message-actions" *ngIf="!message.isStreaming">
+                <!-- Copy button -->
+                <button class="action-btn" (click)="copyMessage(message.content, i, message.dbId)"
+                  [title]="copiedIndex === i ? 'Copied!' : 'Copy'" [class.copied]="copiedIndex === i">
+                  {{ copiedIndex === i ? '✓' : '📋' }}
+                </button>
+
+                <!-- Fork button (creates new conversation from this point) -->
+                <button class="action-btn" (click)="forkFromMessage(i)" title="Fork conversation from here">
+                  🍴
+                </button>
+
+                <!-- Export button -->
+                <button class="action-btn" (click)="exportMessage(message.content, message.dbId)"
+                  title="Download message">
+                  💾
+                </button>
+
+                <!-- Regenerate button (assistant messages only) -->
+                <button class="action-btn" *ngIf="message.role === 'assistant'" (click)="regenerateMessage(i)"
+                  title="Regenerate response" [disabled]="isStreaming || isLoading">
+                  🔄
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="message-content" [class.large-message]="isLargeMessage(message)">
+            <!-- Use inline source linking for assistant messages with sources -->
+            <pre *ngIf="message.role === 'assistant' && hasLinkableSourceRefs(message)"
+              [innerHTML]="getContentWithSourceLinks(message)"></pre>
+            <!-- Regular content for user messages or messages without source refs -->
+            <pre *ngIf="message.role !== 'assistant' || !hasLinkableSourceRefs(message)">{{ message.content }}</pre>
+            <span class="streaming-cursor" *ngIf="message.isStreaming">▌</span>
+          </div>
+
+          <!-- Performance Metrics -->
+          <div *ngIf="message.role === 'assistant' && showMetrics && (message.latencyMs || message.tokenMetrics) && !message.isStreaming"
+            class="metrics-bar">
+            <span class="metric" *ngIf="message.latencyMs">
+              <span class="metric-label">Latency:</span>
+              <span class="metric-value">{{ formatDuration(message.latencyMs) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.tokenMetrics?.tokensPerSecond">
+              <span class="metric-label">Speed:</span>
+              <span class="metric-value metric-highlight">{{ message.tokenMetrics?.tokensPerSecond?.toFixed(1) }} tok/s</span>
+            </span>
+            <span class="metric" *ngIf="message.tokenMetrics?.inputTokens">
+              <span class="metric-label">In:</span>
+              <span class="metric-value">{{ formatTokenCount(message.tokenMetrics!.inputTokens) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.tokenMetrics?.outputTokens">
+              <span class="metric-label">Out:</span>
+              <span class="metric-value">{{ formatTokenCount(message.tokenMetrics!.outputTokens) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.tokenMetrics?.totalGenerationMs">
+              <span class="metric-label">Gen:</span>
+              <span class="metric-value">{{ formatDuration(message.tokenMetrics!.totalGenerationMs) }}</span>
+            </span>
+            <span class="metric" *ngIf="message.tokenMetrics?.model">
+              <span class="metric-label">Model:</span>
+              <span class="metric-value metric-model">{{ message.tokenMetrics?.model }}</span>
+            </span>
+          </div>
+
+          <!-- Retrieved Documents (from RAG) - Source Attribution -->
+          <div *ngIf="message.role === 'assistant' && showDocuments && message.sources && message.sources.length > 0"
+            class="sources-section">
+            <div class="sources-header" (click)="toggleSources(message)">
+              <span class="sources-icon">📚</span>
+              <span class="sources-title">{{ message.sources.length }} source{{ message.sources.length > 1 ? 's' : '' }} referenced</span>
+
+              <!-- Inline source references preview -->
+              <div class="source-tags" *ngIf="!message._sourcesExpanded">
+                <span *ngFor="let source of message.sources.slice(0, 3); let k = index"
+                  class="source-tag"
+                  [title]="source.sourceName || 'Source ' + (k + 1)"
+                  (click)="scrollToSource(message, k); $event.stopPropagation()">
+                  [{{ k + 1 }}]
+                </span>
+                <span *ngIf="message.sources.length > 3" class="source-tag more">+{{ message.sources.length - 3 }}</span>
+              </div>
+
+              <span class="expand-icon">{{ message._sourcesExpanded ? '▼' : '▶' }}</span>
+            </div>
+
+            <div class="sources-list" *ngIf="message._sourcesExpanded">
+              <div *ngFor="let source of message.sources; let k = index"
+                class="source-item"
+                [class.highlighted]="source._highlighted"
+                [id]="'source-' + message.id + '-' + k">
+
+                <div class="source-header">
+                  <span class="source-index">[{{ k + 1 }}]</span>
+                  <span class="source-name clickable"
+                    (click)="navigateToSource(source)"
+                    [title]="'Open: ' + (source.sourceName || 'Source')">
+                    {{ source.sourceName || 'Source ' + (k + 1) }}
+                    <span class="link-icon">↗</span>
+                  </span>
+                  <span class="source-score" *ngIf="source.score">{{ (source.score * 100).toFixed(1) }}%</span>
+
+                  <!-- Source actions -->
+                  <div class="source-actions">
+                    <button class="source-action-btn"
+                      (click)="copySourceContent(source, $event)"
+                      [title]="source._copied ? 'Copied!' : 'Copy source'"
+                      [class.copied]="source._copied">
+                      {{ source._copied ? '✓' : '📋' }}
+                    </button>
+                    <button class="source-action-btn"
+                      *ngIf="source.documentId || source.nodeId"
+                      (click)="viewSourceInGraph(source); $event.stopPropagation()"
+                      title="View in knowledge graph">
+                      🔗
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Source metadata -->
+                <div class="source-metadata" *ngIf="source.documentId || source.chunkIndex !== undefined || source.sourceType">
+                  <span class="metadata-badge" *ngIf="source.sourceType">{{ source.sourceType }}</span>
+                  <span class="metadata-badge" *ngIf="source.chunkIndex !== undefined">Chunk #{{ source.chunkIndex + 1 }}</span>
+                  <span class="metadata-badge file-id" *ngIf="source.documentId" title="Document ID">
+                    📄 {{ source.documentId.substring(0, 8) }}...
+                  </span>
+                </div>
+
+                <!-- Source content snippet -->
+                <div class="source-content">
+                  <span class="content-snippet">{{ source.content || source.preview }}</span>
+                </div>
+
+                <!-- Source path/URL if available -->
+                <div class="source-path" *ngIf="source.sourceUrl || source.filePath">
+                  <span class="path-label">Path:</span>
+                  <span class="path-value" [title]="source.sourceUrl || source.filePath">
+                    {{ (source.sourceUrl || source.filePath) | slice:0:60 }}{{ (source.sourceUrl || source.filePath)?.length > 60 ? '...' : '' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sources footer with actions -->
+            <div class="sources-footer" *ngIf="message._sourcesExpanded && message.sources.length > 0">
+              <button class="sources-footer-btn" (click)="toggleSources(message)">
+                Collapse sources
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Loading indicator -->
+      <div *ngIf="isLoading && !isStreaming" class="loading-indicator">
+        <div class="loading-dots">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <span>Thinking...</span>
+      </div>
+
+    </div>
+
+    <!-- Input Area -->
+    <div class="input-area">
+      <!-- Streaming indicator with stop button -->
+      <div class="streaming-bar" *ngIf="isStreaming">
+        <div class="streaming-indicator-bar">
+          <span class="pulse-dot"></span>
+          <span>Agent is responding...</span>
+        </div>
+        <button class="stop-btn-inline" (click)="cancelStreaming()" title="Stop agent execution (Esc)">
+          <span class="stop-icon">⏹</span>
+          Stop
+        </button>
+      </div>
+
+      <div class="input-container">
+        <textarea [(ngModel)]="userInput" [ngModelOptions]="{standalone: true}"
+          placeholder="{{ !selectedAgent ? 'Select an agent to start chatting' : 'Type your message...' }}"
+          (keydown)="handleKeydown($event)" rows="2" [disabled]="isLoading || isStreaming || !selectedAgent">
+        </textarea>
+        <button class="send-btn" (click)="sendMessage()"
+          [disabled]="!userInput.trim() || isLoading || isStreaming || !selectedAgent" title="Send message"
+          *ngIf="!isStreaming">
+          <span class="send-icon">➤</span>
+        </button>
+        <button class="stop-btn-send" (click)="cancelStreaming()" title="Stop agent execution" *ngIf="isStreaming">
+          <span class="stop-icon">⏹</span>
+        </button>
+      </div>
+      <div class="input-hints">
+        <span class="hint" *ngIf="!isStreaming">Press Enter to send, Shift+Enter for new line</span>
+        <span class="hint" *ngIf="isStreaming">Press Escape or click Stop to interrupt</span>
+        <span class="hint" *ngIf="currentSession && messages.length > 0">
+          {{ messages.length }} messages
+        </span>
+      </div>
+    </div>
+
+  </main>
+
+</div>

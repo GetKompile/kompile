@@ -99,6 +99,8 @@ import { OpenClawPermissionManagerComponent } from './components/openclaw-permis
 import { PipelineHubComponent } from './components/pipeline-hub/pipeline-hub.component';
 import { BenchmarkRunnerComponent } from './components/benchmark-runner/benchmark-runner.component';
 import { KVCacheDashboardComponent } from './components/kvcache/kvcache-dashboard.component';
+import { VlmTestWorkflowComponent } from './components/vlm-test-workflow/vlm-test-workflow.component';
+import { ToolPermissionsComponent } from './components/tool-permissions/tool-permissions.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -179,7 +181,8 @@ import { MatNativeDateModule } from '@angular/material/core';
     OpenClawSessionViewerComponent,
     OpenClawHeartbeatManagerComponent,
     OpenClawPermissionManagerComponent,
-    PipelineHubComponent
+    PipelineHubComponent,
+    VlmTestWorkflowComponent
   ],
   imports: [
     BrowserModule,
@@ -256,7 +259,8 @@ import { MatNativeDateModule } from '@angular/material/core';
     ChunkingLoaderTestComponent,
     SdkHubComponent,
     BenchmarkRunnerComponent,
-    KVCacheDashboardComponent
+    KVCacheDashboardComponent,
+    ToolPermissionsComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

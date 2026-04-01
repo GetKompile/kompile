@@ -1,0 +1,162 @@
+<!-- Source Viewer Dialog -->
+<div class="source-viewer-dialog">
+  <!-- Header -->
+  <div mat-dialog-title class="dialog-header">
+    <div class="header-left">
+      <mat-icon class="file-type-icon">{{ getViewModeIcon(viewMode) }}</mat-icon>
+      <div class="header-info">
+        <h2 class="file-name" [title]="data.fileName">{{ data.fileName }}</h2>
+        <span class="file-meta" *ngIf="sourceInfo">
+          <span class="extension-badge">{{ getFileExtension() }}</span>
+          <span class="file-size">{{ formatFileSize(sourceInfo.sizeBytes) }}</span>
+          <span class="view-mode-label">{{ getViewModeLabel() }}</span>
+        </span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button
+              *ngIf="viewMode === 'TEXT' && textContent"
+              matTooltip="Copy to clipboard"
+              (click)="copyToClipboard()">
+        <mat-icon>content_copy</mat-icon>
+      </button>
+      <button mat-icon-button
+              *ngIf="rawContentUrl"
+              matTooltip="Open in new tab"
+              (click)="openInNewTab()">
+        <mat-icon>open_in_new</mat-icon>
+      </button>
+      <button mat-icon-button
+              matTooltip="Download file"
+              (click)="onDownload()">
+        <mat-icon>download</mat-icon>
+      </button>
+      <button mat-icon-button
+              matTooltip="Close"
+              (click)="onClose()">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <mat-dialog-content class="dialog-content">
+    <!-- Loading state -->
+    <div class="loading-container" *ngIf="isLoading">
+      <mat-spinner diameter="48"></mat-spinner>
+      <p>Loading content...</p>
+    </div>
+
+    <!-- Error state -->
+    <div class="error-container" *ngIf="error && !isLoading">
+      <mat-icon color="warn">error</mat-icon>
+      <p>{{ error }}</p>
+      <button mat-stroked-button color="primary" (click)="loadContent()">
+        <mat-icon>refresh</mat-icon>
+        Retry
+      </button>
+    </div>
+
+    <!-- Text content viewer -->
+    <div class="text-viewer" *ngIf="viewMode === 'TEXT' && textContent && !isLoading && !error">
+      <div class="text-info-bar" *ngIf="textTruncated || lineCount">
+        <span *ngIf="lineCount">{{ lineCount }} lines</span>
+        <span class="truncated-warning" *ngIf="textTruncated">
+          <mat-icon>warning</mat-icon>
+          Content truncated (file too large for full display)
+        </span>
+      </div>
+      <pre class="text-content" [attr.data-language]="syntaxLanguage"><code>{{ textContent }}</code></pre>
+    </div>
+
+    <!-- Image viewer -->
+    <div class="image-viewer" *ngIf="viewMode === 'IMAGE' && contentUrl && !isLoading && !error">
+      <img [src]="contentUrl"
+           [alt]="data.fileName"
+           class="image-content"
+           (error)="error = 'Failed to load image'">
+    </div>
+
+    <!-- PDF/Embedded viewer -->
+    <div class="embedded-viewer" *ngIf="viewMode === 'EMBEDDED' && contentUrl && !isLoading && !error">
+      <iframe [src]="contentUrl"
+              class="embedded-content"
+              [title]="data.fileName"
+              frameborder="0">
+      </iframe>
+    </div>
+
+    <!-- Download only / unsupported format -->
+    <div class="download-only-container" *ngIf="viewMode === 'DOWNLOAD_ONLY' && !isLoading && !error">
+      <mat-icon class="download-icon">insert_drive_file</mat-icon>
+      <h3>File Preview Not Available</h3>
+      <p>This file type ({{ getFileExtension() }}) cannot be previewed inline.</p>
+      <p *ngIf="sourceInfo">Size: {{ formatFileSize(sourceInfo.sizeBytes) }}</p>
+      <button mat-raised-button color="primary" (click)="onDownload()">
+        <mat-icon>download</mat-icon>
+        Download File
+      </button>
+    </div>
+
+    <!-- Source Info Panel -->
+    <mat-expansion-panel class="source-info-panel" *ngIf="sourceInfo && !isLoading">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>info</mat-icon>
+          Source Information
+        </mat-panel-title>
+      </mat-expansion-panel-header>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">File Name</span>
+          <span class="info-value">{{ sourceInfo.fileName }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Path</span>
+          <span class="info-value path-value">{{ sourceInfo.path }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Size</span>
+          <span class="info-value">{{ formatFileSize(sourceInfo.sizeBytes) }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">MIME Type</span>
+          <span class="info-value">{{ sourceInfo.mimeType }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Source Type</span>
+          <span class="info-value">
+            <span class="source-type-badge" [ngClass]="sourceInfo.sourceType.toLowerCase()">
+              {{ sourceInfo.sourceType }}
+            </span>
+          </span>
+        </div>
+        <div class="info-item" *ngIf="sourceInfo.sourceUrl">
+          <span class="info-label">Source URL</span>
+          <span class="info-value source-url-value">
+            <a [href]="sourceInfo.sourceUrl" target="_blank" rel="noopener noreferrer">
+              {{ sourceInfo.sourceUrl }}
+            </a>
+          </span>
+        </div>
+        <div class="info-item" *ngIf="sourceInfo.checksum">
+          <span class="info-label">Checksum (SHA-256)</span>
+          <span class="info-value checksum-value">{{ sourceInfo.checksum }}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Last Modified</span>
+          <span class="info-value">{{ sourceInfo.lastModified | date:'medium' }}</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+  </mat-dialog-content>
+
+  <!-- Footer Actions -->
+  <mat-dialog-actions align="end" class="dialog-actions">
+    <button mat-button (click)="onClose()">Close</button>
+    <button mat-raised-button color="primary" (click)="onDownload()">
+      <mat-icon>download</mat-icon>
+      Download
+    </button>
+  </mat-dialog-actions>
+</div>

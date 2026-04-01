@@ -1,0 +1,460 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.pipeline-settings-card {
+  margin-bottom: 16px;
+}
+
+.pipeline-settings-card mat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pipeline-settings-card mat-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  margin: 0;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.loading-container mat-progress-bar {
+  width: 100%;
+  max-width: 300px;
+}
+
+.error-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background-color: #ffebee;
+  border-radius: 4px;
+  color: #c62828;
+}
+
+/* Presets Section */
+.presets-section {
+  margin-bottom: 16px;
+}
+
+.presets-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.preset-description {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
+  font-style: italic;
+}
+
+/* System Summary */
+.system-summary {
+  display: flex;
+  gap: 24px;
+  padding: 12px;
+  background-color: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.resource-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.resource-item mat-icon {
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.resource-item mat-progress-bar {
+  flex: 1;
+  max-width: 120px;
+}
+
+.memory-ok {
+  color: #4caf50;
+}
+
+.memory-warning {
+  color: #ff9800;
+}
+
+.memory-critical {
+  color: #f44336;
+}
+
+/* Stage Sections */
+.stage-section {
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.stage-section:last-child {
+  border-bottom: none;
+}
+
+.stage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.stage-header mat-icon {
+  color: #1976d2;
+}
+
+.stage-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  flex: 1;
+}
+
+.thread-count {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.5);
+  background-color: #e3f2fd;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.stage-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.stage-options mat-form-field {
+  width: 180px;
+}
+
+.stage-options mat-slide-toggle {
+  margin: 8px 0;
+}
+
+.loader-types {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.5);
+  margin-left: 4px;
+}
+
+/* Stage Metrics */
+.stage-metrics {
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  margin-top: 16px;
+}
+
+.stage-metrics h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  padding: 12px;
+  border-radius: 8px;
+  background-color: #fafafa;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.metric-card.stage-active {
+  background-color: #e3f2fd;
+  border-color: #1976d2;
+}
+
+.metric-card.stage-error {
+  background-color: #ffebee;
+  border-color: #f44336;
+}
+
+.metric-card.stage-idle {
+  opacity: 0.7;
+}
+
+.metric-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.metric-header mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.metric-values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.metric-value {
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-value .label {
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.5);
+  text-transform: uppercase;
+}
+
+.metric-value .value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.metric-value .value.error {
+  color: #f44336;
+}
+
+/* Batch Info Tooltip */
+.batch-info-tooltip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: rgba(0, 0, 0, 0.6);
+  cursor: help;
+  font-size: 12px;
+  padding: 4px 8px;
+  background-color: #e8f4fd;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.batch-info-tooltip:hover {
+  background-color: #d0e8fa;
+}
+
+.batch-info-tooltip mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  color: #1976d2;
+}
+
+/* Graph Info Box */
+.graph-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #e8f5e9 100%);
+  border-radius: 8px;
+  border-left: 4px solid #1976d2;
+}
+
+.graph-info mat-icon {
+  color: #1976d2;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.graph-info span {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.7);
+  line-height: 1.5;
+}
+
+/* Batch Reference Card */
+.batch-reference-card {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #fff8e1 0%, #fffde7 100%);
+  border-radius: 8px;
+  border: 1px solid #ffd54f;
+}
+
+.reference-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #f57f17;
+}
+
+.reference-header mat-icon {
+  color: #ffc107;
+}
+
+.reference-content {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.reference-item {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 4px;
+}
+
+.reference-item strong {
+  color: #e65100;
+  font-size: 11px;
+}
+
+.reference-item span {
+  color: rgba(0, 0, 0, 0.6);
+  margin-left: 8px;
+}
+
+.reference-recommendations {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #ffcc80;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.rec-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.5);
+  font-weight: 500;
+}
+
+.rec-value {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 11px;
+  color: #1976d2;
+  background-color: rgba(25, 118, 210, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.reference-recommendations .ram-tier {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.5);
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.reference-recommendations .ram-tier.active {
+  color: #fff;
+  background-color: #4caf50;
+  font-weight: 600;
+  box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+}
+
+.reference-recommendations .ram-tier-divider {
+  color: rgba(0, 0, 0, 0.2);
+  font-size: 11px;
+}
+
+.reference-recommendations .current-ram {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+  color: #388e3c;
+  font-weight: 500;
+}
+
+.reference-recommendations .current-ram mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .system-summary {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .stage-options {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .stage-options mat-form-field {
+    width: 100%;
+  }
+
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-info-tooltip {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .reference-recommendations {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .rec-value {
+    font-size: 10px;
+    word-break: break-all;
+  }
+
+  .reference-recommendations .ram-tier-divider {
+    display: none;
+  }
+
+  .reference-recommendations .current-ram {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+    margin-top: 4px;
+  }
+}

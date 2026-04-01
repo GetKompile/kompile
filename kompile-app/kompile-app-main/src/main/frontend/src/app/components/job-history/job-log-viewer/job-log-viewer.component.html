@@ -1,0 +1,246 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="job-log-viewer">
+  <!-- Disabled State -->
+  <div *ngIf="!enabled" class="log-disabled">
+    <mat-icon>info</mat-icon>
+    <span>Job logging is disabled. Enable it in Settings to capture logs.</span>
+  </div>
+
+  <!-- Main Content -->
+  <ng-container *ngIf="enabled">
+    <!-- Toolbar -->
+    <div class="log-toolbar">
+      <!-- Level Filters -->
+      <div class="level-filters">
+        <span class="filter-label">Levels:</span>
+        <mat-chip-set aria-label="Log level filters">
+          <mat-chip
+            *ngFor="let level of allLevels"
+            [class]="getLevelClass(level)"
+            [class.selected]="isLevelSelected(level)"
+            (click)="toggleLevel(level)"
+            [matBadge]="getLevelCount(level)"
+            [matBadgeHidden]="getLevelCount(level) === 0"
+            matBadgeSize="small"
+            matBadgeColor="accent">
+            <mat-icon>{{ getLevelIcon(level) }}</mat-icon>
+            {{ level }}
+          </mat-chip>
+        </mat-chip-set>
+        <button mat-icon-button matTooltip="Select all levels" (click)="selectAllLevels()">
+          <mat-icon>select_all</mat-icon>
+        </button>
+        <button mat-icon-button matTooltip="Clear all levels" (click)="clearAllLevels()">
+          <mat-icon>deselect</mat-icon>
+        </button>
+      </div>
+
+      <!-- Search - uses native event listener (attached in ngAfterViewInit) to bypass Angular change detection -->
+      <div class="search-container">
+        <mat-form-field appearance="outline" class="search-field">
+          <mat-label>Search logs</mat-label>
+          <input matInput
+                 #searchInput
+                 [value]="searchText"
+                 placeholder="Filter by message content..."
+                 [disabled]="loading">
+          <button *ngIf="searchText && !searchLoading" matSuffix mat-icon-button (click)="clearSearch(); searchInput.value = ''">
+            <mat-icon>close</mat-icon>
+          </button>
+          <mat-spinner *ngIf="searchLoading" matSuffix diameter="20"></mat-spinner>
+          <mat-icon *ngIf="!searchLoading" matPrefix>search</mat-icon>
+        </mat-form-field>
+      </div>
+
+      <!-- Actions -->
+      <div class="toolbar-actions">
+        <mat-slide-toggle
+          [(ngModel)]="showTimestamps" [ngModelOptions]="{standalone: true}"
+          matTooltip="Show timestamps">
+          Timestamps
+        </mat-slide-toggle>
+
+        <mat-slide-toggle
+          [(ngModel)]="autoScroll" [ngModelOptions]="{standalone: true}"
+          matTooltip="Auto-scroll to bottom">
+          Auto-scroll
+        </mat-slide-toggle>
+
+        <!-- Tail Mode Toggle (real-time streaming) -->
+        <button mat-icon-button
+                [matTooltip]="tailMode ? 'Stop real-time streaming' : 'Start real-time streaming (tail -f style)'"
+                (click)="toggleTailMode()"
+                [class.streaming-active]="streamingActive">
+          <mat-icon>{{ tailMode ? 'stop_circle' : 'play_circle' }}</mat-icon>
+        </button>
+
+        <button mat-icon-button matTooltip="Fetch last logs" (click)="tailLogs()" *ngIf="!tailMode">
+          <mat-icon>vertical_align_bottom</mat-icon>
+        </button>
+
+        <button mat-icon-button matTooltip="Refresh logs" (click)="refreshLogs()">
+          <mat-icon>refresh</mat-icon>
+        </button>
+
+        <button mat-icon-button matTooltip="Download logs" (click)="downloadLogs()">
+          <mat-icon>download</mat-icon>
+        </button>
+
+        <!-- Streaming Status Indicator -->
+        <span class="streaming-indicator" *ngIf="tailMode && streamingActive">
+          <span class="streaming-dot"></span>
+          LIVE
+        </span>
+
+        <!-- Archive Indicator -->
+        <span class="archive-indicator" *ngIf="loadedFromArchive && !tailMode">
+          <mat-icon>archive</mat-icon>
+          FROM ARCHIVE
+        </span>
+      </div>
+    </div>
+
+    <!-- Log Container -->
+    <div class="log-container" #logContainer>
+      <!-- Loading Spinner -->
+      <div *ngIf="loading" class="loading-overlay">
+        <mat-spinner diameter="40"></mat-spinner>
+        <span>Loading logs...</span>
+      </div>
+
+      <!-- Error Message -->
+      <div *ngIf="error" class="error-message">
+        <mat-icon>error</mat-icon>
+        <span>{{ error }}</span>
+        <button mat-button color="primary" (click)="refreshLogs()">Retry</button>
+      </div>
+
+      <!-- Empty State -->
+      <div *ngIf="!loading && !error && logs.length === 0" class="empty-state">
+        <mat-icon>description</mat-icon>
+        <span>No logs found for this job</span>
+        <span class="hint" *ngIf="searchText || selectedLevels.size < allLevels.length">
+          Try adjusting your filters
+        </span>
+      </div>
+
+      <!-- Log Entries -->
+      <div class="log-entries" *ngIf="!loading && logs.length > 0">
+        <div *ngFor="let log of logs; trackBy: trackByLogId"
+             class="log-entry"
+             [class]="getLevelClass(log.level)">
+          <span class="log-timestamp" *ngIf="showTimestamps">
+            {{ formatTimestamp(log.timestamp) }}
+          </span>
+          <span class="log-level">
+            <mat-icon [matTooltip]="log.level">{{ getLevelIcon(log.level) }}</mat-icon>
+          </span>
+          <span class="log-message">{{ log.message }}</span>
+          <span class="log-source" *ngIf="log.source !== 'APPLICATION'" matTooltip="Source">
+            {{ log.source }}
+          </span>
+          <!-- Inline stack trace with truncation to prevent UI crashes from large traces -->
+          <div *ngIf="log.stackTrace" class="stack-trace">
+            <div class="stack-trace-header">
+              <mat-icon>bug_report</mat-icon>
+              <span>{{ log.exceptionClass || 'Exception' }}</span>
+            </div>
+            <pre class="stack-trace-content">{{ log.stackTrace.length > 5000 ? (log.stackTrace | slice:0:5000) + '\n... (truncated, ' + log.stackTrace.length + ' chars total)' : log.stackTrace }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer with Pagination / Tail Mode Info -->
+    <div class="log-footer" *ngIf="totalCount > 0 || tailMode">
+      <!-- Tail Mode Info -->
+      <ng-container *ngIf="tailMode">
+        <div class="tail-mode-info">
+          <mat-icon>history</mat-icon>
+          <span>Showing last {{ logs.length }} of max {{ maxTailLogs }} logs (circular buffer)</span>
+        </div>
+        <div class="tail-controls">
+          <button mat-icon-button
+                  matTooltip="Scroll to top"
+                  (click)="scrollToTop()">
+            <mat-icon>vertical_align_top</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Scroll to bottom"
+                  (click)="scrollToBottom()">
+            <mat-icon>vertical_align_bottom</mat-icon>
+          </button>
+        </div>
+      </ng-container>
+
+      <!-- Pagination (non-tail mode) -->
+      <ng-container *ngIf="!tailMode">
+        <div class="pagination-info">
+          {{ displayedRange }}
+        </div>
+        <div class="pagination-controls">
+          <button mat-icon-button
+                  matTooltip="Scroll to top"
+                  (click)="scrollToTop()">
+            <mat-icon>vertical_align_top</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="First page"
+                  [disabled]="!hasPrevPage"
+                  (click)="firstPage()">
+            <mat-icon>first_page</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Previous page"
+                  [disabled]="!hasPrevPage"
+                  (click)="prevPage()">
+            <mat-icon>chevron_left</mat-icon>
+          </button>
+          <div class="page-input-container">
+            <span class="page-label">Page</span>
+            <input type="number"
+                   class="page-input"
+                   [(ngModel)]="pageInput" [ngModelOptions]="{standalone: true}"
+                   [min]="1"
+                   [max]="totalPages"
+                   (keydown)="onPageInputKeydown($event)"
+                   (blur)="goToPage()">
+            <span class="page-label">of {{ totalPages }}</span>
+          </div>
+          <button mat-icon-button
+                  matTooltip="Next page"
+                  [disabled]="!hasNextPage"
+                  (click)="nextPage()">
+            <mat-icon>chevron_right</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Last page"
+                  [disabled]="!hasNextPage"
+                  (click)="lastPage()">
+            <mat-icon>last_page</mat-icon>
+          </button>
+          <button mat-icon-button
+                  matTooltip="Scroll to bottom"
+                  (click)="scrollToBottom()">
+            <mat-icon>vertical_align_bottom</mat-icon>
+          </button>
+        </div>
+      </ng-container>
+    </div>
+  </ng-container>
+</div>

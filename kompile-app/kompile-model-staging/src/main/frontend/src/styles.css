@@ -147,3 +147,9 @@ code, .monospace {
   margin: 8px 0;
   font-size: 1.1em;
 }
+
+/* Graph dialog - remove default dialog padding */
+.graph-dialog-panel .mat-mdc-dialog-container .mdc-dialog__surface {
+  padding: 0;
+  overflow: hidden;
+}

@@ -1,0 +1,1386 @@
+<!--
+    Copyright 2025 Kompile Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="dsp-compiler">
+  <!-- Header -->
+  <div class="compiler-header">
+    <h2>DSP Compiler</h2>
+    <p class="subtitle">SameDiff graph optimization, inspection, comparison, and Triton GPU compilation</p>
+  </div>
+
+  <!-- Tabs -->
+  <mat-tab-group [(selectedIndex)]="activeTab" class="compiler-tabs">
+
+    <!-- ==================== Tab 1: Graph Optimizer ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>bolt</mat-icon>
+        <span class="tab-label-text">Graph Optimizer</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="optimizer-layout">
+          <!-- Model Selector -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>hub</mat-icon>
+              <mat-card-title>Select Model</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Model</mat-label>
+                <mat-select [(value)]="optimizerModelId">
+                  <mat-option *ngFor="let model of models" [value]="model.model_id">
+                    {{ model.model_id }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Profile Selector -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>tune</mat-icon>
+              <mat-card-title>Optimization Profile</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="profile-buttons">
+                <button mat-stroked-button
+                        *ngFor="let profile of profiles"
+                        [class.selected]="selectedProfile === profile.profileName"
+                        (click)="selectProfile(profile.profileName)"
+                        [matTooltip]="profile.description">
+                  {{ profile.profileName }}
+                </button>
+              </div>
+
+              <!-- Pass Checkboxes by Category -->
+              <div class="passes-section">
+                <div class="section-actions">
+                  <button mat-button (click)="selectAllPasses()">Select All</button>
+                  <button mat-button (click)="clearAllPasses()">Clear All</button>
+                </div>
+
+                <mat-expansion-panel *ngFor="let category of getCategories()" [expanded]="true" class="pass-category-panel">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>
+                      <mat-icon>{{ getCategoryIcon(category) }}</mat-icon>
+                      {{ getCategoryLabel(category) }}
+                    </mat-panel-title>
+                    <mat-panel-description>
+                      {{ getPassesByCategory(category).length }} passes
+                    </mat-panel-description>
+                  </mat-expansion-panel-header>
+
+                  <div class="pass-list">
+                    <div class="pass-item" *ngFor="let pass of getPassesByCategory(category)">
+                      <mat-checkbox
+                        [checked]="isPassSelected(pass.id)"
+                        (change)="togglePass(pass.id)">
+                        <span class="pass-name">{{ pass.name }}</span>
+                        <span class="pass-default" *ngIf="pass.isDefault">(default)</span>
+                      </mat-checkbox>
+                      <p class="pass-description">{{ pass.description }}</p>
+                    </div>
+                  </div>
+                </mat-expansion-panel>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Options -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>settings</mat-icon>
+              <mat-card-title>Options</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <mat-form-field appearance="outline" class="iterations-field">
+                <mat-label>Max Iterations</mat-label>
+                <input matInput type="number" [(ngModel)]="maxIterations" min="1" max="100">
+              </mat-form-field>
+
+              <div class="option-toggles">
+                <mat-checkbox [(ngModel)]="dryRun">
+                  Dry run (preview only, no changes)
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="createBackup">
+                  Create backup before optimization
+                </mat-checkbox>
+                <mat-checkbox [(ngModel)]="optimizerSaveAsEnabled">
+                  Save as new model
+                </mat-checkbox>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width" *ngIf="optimizerSaveAsEnabled">
+                <mat-label>Output Model ID</mat-label>
+                <input matInput [(ngModel)]="optimizerOutputModelId" placeholder="e.g. my-model-optimized">
+                <mat-hint>The compiled graph will be saved as a separate model with this ID</mat-hint>
+              </mat-form-field>
+
+              <button mat-raised-button color="primary"
+                      [disabled]="!optimizerModelId || selectedPasses.size === 0 || isOptimizing"
+                      (click)="runOptimization()"
+                      class="optimize-button">
+                <mat-icon>{{ isOptimizing ? 'hourglass_empty' : 'bolt' }}</mat-icon>
+                {{ isOptimizing ? 'Optimizing...' : 'Optimize' }}
+              </button>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Optimization Progress -->
+          <div *ngIf="isOptimizing" class="progress-section">
+            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+            <p class="progress-text">Running optimization passes...</p>
+          </div>
+
+          <!-- Optimization Results -->
+          <mat-card class="section-card result-card" *ngIf="optimizeResult"
+                    [class.success]="optimizeResult?.success"
+                    [class.error]="!optimizeResult?.success">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.success-icon]="optimizeResult?.success" [class.error-icon]="!optimizeResult?.success">
+                {{ optimizeResult?.success ? 'check_circle' : 'error' }}
+              </mat-icon>
+              <mat-card-title>{{ optimizeResult?.success ? 'Optimization Complete' : 'Optimization Failed' }}</mat-card-title>
+              <mat-card-subtitle *ngIf="optimizeResult?.dryRun">Dry Run - No changes applied</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <p *ngIf="optimizeResult?.message">{{ optimizeResult?.message }}</p>
+              <p *ngIf="optimizeResult?.error" class="error-message">{{ optimizeResult?.error }}</p>
+
+              <div *ngIf="optimizeResult?.success" class="result-stats">
+                <div class="stat-item">
+                  <span class="stat-label">Ops Removed</span>
+                  <span class="stat-value">{{ optimizeResult?.opsRemoved }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Ops Fused</span>
+                  <span class="stat-value">{{ optimizeResult?.opsFused }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Operations</span>
+                  <span class="stat-value">{{ optimizeResult?.beforeOpsCount }} &rarr; {{ optimizeResult?.afterOpsCount }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Variables</span>
+                  <span class="stat-value">{{ optimizeResult?.beforeVarsCount }} &rarr; {{ optimizeResult?.afterVarsCount }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Size</span>
+                  <span class="stat-value">
+                    {{ formatBytes(optimizeResult?.sizeBeforeBytes) }} &rarr; {{ formatBytes(optimizeResult?.sizeAfterBytes) }}
+                  </span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Size Reduction</span>
+                  <span class="stat-value reduction">{{ optimizeResult?.reductionPercent?.toFixed(1) }}%</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Time</span>
+                  <span class="stat-value">{{ formatDuration(optimizeResult?.optimizationTimeMs) }}</span>
+                </div>
+              </div>
+
+              <div class="passes-applied" *ngIf="optimizeResult?.passesApplied?.length">
+                <h4>Passes Applied</h4>
+                <mat-chip-set>
+                  <mat-chip *ngFor="let pass of optimizeResult?.passesApplied">{{ pass }}</mat-chip>
+                </mat-chip-set>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Tab 2: Graph Inspector ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>search</mat-icon>
+        <span class="tab-label-text">Graph Inspector</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>hub</mat-icon>
+            <mat-card-title>Select Model to Inspect</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="inspector-controls">
+              <mat-form-field appearance="outline" class="model-select-field">
+                <mat-label>Model</mat-label>
+                <mat-select [(value)]="inspectorModelId">
+                  <mat-option *ngFor="let model of models" [value]="model.model_id">
+                    {{ model.model_id }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <button mat-raised-button color="primary"
+                      [disabled]="!inspectorModelId || loadingGraphInfo"
+                      (click)="inspectGraph()">
+                <mat-icon>{{ loadingGraphInfo ? 'hourglass_empty' : 'search' }}</mat-icon>
+                {{ loadingGraphInfo ? 'Loading...' : 'Inspect' }}
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Loading -->
+        <div *ngIf="loadingGraphInfo" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Loading graph information...</p>
+        </div>
+
+        <!-- Graph Info Results -->
+        <div *ngIf="graphInfo && !loadingGraphInfo" class="graph-info-section">
+          <!-- Summary Stats -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>analytics</mat-icon>
+              <mat-card-title>Graph Summary</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="result-stats">
+                <div class="stat-item">
+                  <span class="stat-label">Total Ops</span>
+                  <span class="stat-value">{{ graphInfo?.totalOps }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Total Variables</span>
+                  <span class="stat-value">{{ graphInfo?.totalVariables }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Model Size</span>
+                  <span class="stat-value">{{ formatBytes(graphInfo?.modelSizeBytes) }}</span>
+                </div>
+              </div>
+
+              <!-- Inputs / Outputs -->
+              <div class="io-section" *ngIf="graphInfo?.inputNames?.length">
+                <h4>Inputs</h4>
+                <mat-chip-set>
+                  <mat-chip *ngFor="let name of graphInfo?.inputNames">{{ name }}</mat-chip>
+                </mat-chip-set>
+              </div>
+              <div class="io-section" *ngIf="graphInfo?.outputNames?.length">
+                <h4>Outputs</h4>
+                <mat-chip-set>
+                  <mat-chip *ngFor="let name of graphInfo?.outputNames">{{ name }}</mat-chip>
+                </mat-chip-set>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Graph Analysis -->
+          <mat-card class="section-card" *ngIf="graphInfo?.analysis">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>insights</mat-icon>
+              <mat-card-title>Graph Analysis</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <!-- Summary Cards -->
+              <div class="result-stats">
+                <div class="stat-item">
+                  <span class="stat-label">Parameters</span>
+                  <span class="stat-value">{{ graphInfo.analysis?.parameterCount | number }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Graph Depth</span>
+                  <span class="stat-value">{{ graphInfo.analysis?.graphDepth }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Constants</span>
+                  <span class="stat-value">{{ graphInfo.analysis?.constantCount }}</span>
+                </div>
+                <div class="stat-item">
+                  <span class="stat-label">Memory Estimate</span>
+                  <span class="stat-value">{{ formatBytes(graphInfo.analysis?.memoryEstimateBytes) }}</span>
+                </div>
+                <div class="stat-item" *ngIf="(graphInfo.analysis?.attentionHeads ?? 0) > 0">
+                  <span class="stat-label">Attention Heads</span>
+                  <span class="stat-value">{{ graphInfo.analysis?.attentionHeads }}</span>
+                </div>
+                <div class="stat-item" *ngIf="(graphInfo.analysis?.fusedOpCount ?? 0) > 0">
+                  <span class="stat-label">Fused Ops</span>
+                  <span class="stat-value">{{ graphInfo.analysis?.fusedOpCount }}</span>
+                </div>
+              </div>
+
+              <!-- Fusion Status -->
+              <div class="fusion-indicators" *ngIf="graphInfo.analysis?.hasAttentionFusion || graphInfo.analysis?.hasLinearFusion">
+                <h4>Fusion Status</h4>
+                <div class="fusion-row">
+                  <mat-icon [class]="graphInfo.analysis?.hasAttentionFusion ? 'fusion-active' : 'fusion-inactive'">
+                    {{ graphInfo.analysis?.hasAttentionFusion ? 'check_circle' : 'cancel' }}
+                  </mat-icon>
+                  <span>Attention Fusion</span>
+                </div>
+                <div class="fusion-row">
+                  <mat-icon [class]="graphInfo.analysis?.hasLinearFusion ? 'fusion-active' : 'fusion-inactive'">
+                    {{ graphInfo.analysis?.hasLinearFusion ? 'check_circle' : 'cancel' }}
+                  </mat-icon>
+                  <span>Linear Fusion</span>
+                </div>
+              </div>
+
+              <!-- Data Type Breakdown -->
+              <div class="datatype-section" *ngIf="graphInfo.analysis?.parametersByDataType">
+                <h4>Parameters by Data Type</h4>
+                <table class="op-types-table">
+                  <thead>
+                    <tr>
+                      <th>Data Type</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr *ngFor="let entry of getDataTypeEntries()">
+                      <td>{{ entry.key }}</td>
+                      <td>{{ entry.value | number }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Layer Groups -->
+              <div class="layer-groups-section" *ngIf="graphInfo.analysis?.layerGroups?.length">
+                <h4>Detected Layer Groups</h4>
+                <mat-accordion>
+                  <mat-expansion-panel *ngFor="let group of graphInfo.analysis?.layerGroups">
+                    <mat-expansion-panel-header>
+                      <mat-panel-title>{{ group.name }}</mat-panel-title>
+                      <mat-panel-description>
+                        {{ group.count }} layers, {{ group.opsPerGroup }} ops each
+                      </mat-panel-description>
+                    </mat-expansion-panel-header>
+                    <mat-chip-set>
+                      <mat-chip *ngFor="let opType of group.opTypes">{{ opType }}</mat-chip>
+                    </mat-chip-set>
+                  </mat-expansion-panel>
+                </mat-accordion>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Op Types Breakdown -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>pie_chart</mat-icon>
+              <mat-card-title>Op Types Breakdown</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <table class="op-types-table">
+                <thead>
+                  <tr>
+                    <th>Op Type</th>
+                    <th>Count</th>
+                    <th>Percentage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr *ngFor="let entry of getOpTypeEntries()">
+                    <td>{{ entry.key }}</td>
+                    <td>{{ entry.value }}</td>
+                    <td>
+                      <div class="bar-container">
+                        <div class="bar-fill" [style.width.%]="(entry.value / (graphInfo?.totalOps || 1)) * 100"></div>
+                        <span class="bar-label">{{ ((entry.value / (graphInfo?.totalOps || 1)) * 100).toFixed(1) }}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Ops List -->
+          <mat-card class="section-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>list</mat-icon>
+              <mat-card-title>Operations ({{ graphInfo?.ops?.length || 0 }})</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="ops-table-container">
+                <table mat-table [dataSource]="graphInfo?.ops || []" class="ops-table">
+                  <ng-container matColumnDef="name">
+                    <th mat-header-cell *matHeaderCellDef>Name</th>
+                    <td mat-cell *matCellDef="let op">{{ op.name }}</td>
+                  </ng-container>
+                  <ng-container matColumnDef="opType">
+                    <th mat-header-cell *matHeaderCellDef>Op Type</th>
+                    <td mat-cell *matCellDef="let op">
+                      <mat-chip>{{ op.opType }}</mat-chip>
+                    </td>
+                  </ng-container>
+                  <ng-container matColumnDef="inputs">
+                    <th mat-header-cell *matHeaderCellDef>Inputs</th>
+                    <td mat-cell *matCellDef="let op">{{ op.inputs?.join(', ') || '-' }}</td>
+                  </ng-container>
+                  <ng-container matColumnDef="outputs">
+                    <th mat-header-cell *matHeaderCellDef>Outputs</th>
+                    <td mat-cell *matCellDef="let op">{{ op.outputs?.join(', ') || '-' }}</td>
+                  </ng-container>
+                  <tr mat-header-row *matHeaderRowDef="opsDisplayedColumns"></tr>
+                  <tr mat-row *matRowDef="let row; columns: opsDisplayedColumns;"></tr>
+                </table>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Tab 3: Model Comparison ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>compare_arrows</mat-icon>
+        <span class="tab-label-text">Model Comparison</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>compare</mat-icon>
+            <mat-card-title>Compare Two Models</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="compare-selectors">
+              <mat-form-field appearance="outline" class="compare-field">
+                <mat-label>Model 1</mat-label>
+                <mat-select [(value)]="compareModel1Id">
+                  <mat-option *ngFor="let model of models" [value]="model.model_id">
+                    {{ model.model_id }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-icon class="compare-icon">compare_arrows</mat-icon>
+
+              <mat-form-field appearance="outline" class="compare-field">
+                <mat-label>Model 2</mat-label>
+                <mat-select [(value)]="compareModel2Id">
+                  <mat-option *ngFor="let model of models" [value]="model.model_id">
+                    {{ model.model_id }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
+
+            <button mat-raised-button color="primary"
+                    [disabled]="!compareModel1Id || !compareModel2Id || isComparing"
+                    (click)="runComparison()"
+                    class="compare-button">
+              <mat-icon>{{ isComparing ? 'hourglass_empty' : 'compare_arrows' }}</mat-icon>
+              {{ isComparing ? 'Comparing...' : 'Compare' }}
+            </button>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Comparing Progress -->
+        <div *ngIf="isComparing" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Comparing models...</p>
+        </div>
+
+        <!-- Comparison Results -->
+        <div *ngIf="compareResult && !isComparing" class="comparison-results">
+          <!-- Error -->
+          <mat-card class="section-card result-card error" *ngIf="!compareResult?.success">
+            <mat-card-header>
+              <mat-icon mat-card-avatar class="error-icon">error</mat-icon>
+              <mat-card-title>Comparison Failed</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <p class="error-message">{{ compareResult?.error }}</p>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Success -->
+          <div *ngIf="compareResult?.success">
+            <!-- Outputs Match Banner -->
+            <div class="verdict-banner"
+                 [class.verdict-match]="compareResult?.outputsMatch"
+                 [class.verdict-differ]="!compareResult?.outputsMatch">
+              <mat-icon>{{ compareResult?.outputsMatch ? 'check_circle' : 'warning' }}</mat-icon>
+              <span *ngIf="compareResult?.outputsMatch">Outputs match</span>
+              <span *ngIf="!compareResult?.outputsMatch">Outputs differ</span>
+            </div>
+
+            <!-- Side-by-Side Model Info -->
+            <div class="compare-grid">
+              <mat-card class="section-card" *ngIf="compareResult?.model1Info">
+                <mat-card-header>
+                  <mat-card-title>{{ compareResult?.model1Info?.modelId }}</mat-card-title>
+                  <mat-card-subtitle>Model 1</mat-card-subtitle>
+                </mat-card-header>
+                <mat-card-content>
+                  <div class="model-stats">
+                    <p><strong>Ops:</strong> {{ compareResult?.model1Info?.opsCount }}</p>
+                    <p><strong>Variables:</strong> {{ compareResult?.model1Info?.varsCount }}</p>
+                    <p><strong>Size:</strong> {{ formatBytes(compareResult?.model1Info?.sizeBytes) }}</p>
+                  </div>
+                </mat-card-content>
+              </mat-card>
+
+              <mat-card class="section-card" *ngIf="compareResult?.model2Info">
+                <mat-card-header>
+                  <mat-card-title>{{ compareResult?.model2Info?.modelId }}</mat-card-title>
+                  <mat-card-subtitle>Model 2</mat-card-subtitle>
+                </mat-card-header>
+                <mat-card-content>
+                  <div class="model-stats">
+                    <p><strong>Ops:</strong> {{ compareResult?.model2Info?.opsCount }}</p>
+                    <p><strong>Variables:</strong> {{ compareResult?.model2Info?.varsCount }}</p>
+                    <p><strong>Size:</strong> {{ formatBytes(compareResult?.model2Info?.sizeBytes) }}</p>
+                  </div>
+                </mat-card-content>
+              </mat-card>
+            </div>
+
+            <!-- Diff Summary -->
+            <mat-card class="section-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>difference</mat-icon>
+                <mat-card-title>Diff Summary</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="result-stats">
+                  <div class="stat-item">
+                    <span class="stat-label">Ops Added</span>
+                    <span class="stat-value added">+{{ compareResult?.opsAdded }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Ops Removed</span>
+                    <span class="stat-value removed">-{{ compareResult?.opsRemoved }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Ops Changed</span>
+                    <span class="stat-value">{{ compareResult?.opsChanged }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Size Change</span>
+                    <span class="stat-value">{{ formatBytes(compareResult?.sizeChange) }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Speedup Factor</span>
+                    <span class="stat-value speedup">{{ compareResult?.speedupFactor?.toFixed(2) }}x</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Max Abs Diff</span>
+                    <span class="stat-value">{{ compareResult?.maxAbsoluteDifference?.toExponential(4) }}</span>
+                  </div>
+                  <div class="stat-item">
+                    <span class="stat-label">Mean Abs Diff</span>
+                    <span class="stat-value">{{ compareResult?.meanAbsoluteDifference?.toExponential(4) }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Tab 4: Triton Compiler ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>memory</mat-icon>
+        <span class="tab-label-text">Triton Compiler</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Current Triton Config -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>info</mat-icon>
+            <mat-card-title>Triton Configuration</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="loadingTritonConfig" class="loading-indicator">
+              <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+              <p>Loading Triton configuration...</p>
+            </div>
+
+            <div *ngIf="tritonConfig && !loadingTritonConfig" class="triton-config-grid">
+              <div class="config-item">
+                <span class="config-label">Build Threads</span>
+                <span class="config-value">{{ tritonConfig?.tritonBuildThreads }}</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Cache Enabled</span>
+                <span class="config-value">{{ tritonConfig?.tritonCacheEnabled ? 'Yes' : 'No' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Verbose</span>
+                <span class="config-value">{{ tritonConfig?.tritonVerbose ? 'Yes' : 'No' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Always Compile</span>
+                <span class="config-value">{{ tritonConfig?.tritonAlwaysCompile ? 'Yes' : 'No' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Cache Dir</span>
+                <span class="config-value">{{ tritonConfig?.tritonCacheDir || 'Default' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="config-label">Override Arch</span>
+                <span class="config-value">{{ tritonConfig?.tritonOverrideArch || 'Auto' }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Compile Settings -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>build</mat-icon>
+            <mat-card-title>Compile Model</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Model</mat-label>
+              <mat-select [(value)]="tritonModelId">
+                <mat-option *ngFor="let model of models" [value]="model.model_id">
+                  {{ model.model_id }}
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <div class="triton-params">
+              <mat-form-field appearance="outline">
+                <mat-label>Num Warps (0 = auto)</mat-label>
+                <input matInput type="number" [(ngModel)]="tritonNumWarps" min="0">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Num Stages (0 = auto)</mat-label>
+                <input matInput type="number" [(ngModel)]="tritonNumStages" min="0">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Num CTAs</mat-label>
+                <input matInput type="number" [(ngModel)]="tritonNumCTAs" min="1">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline">
+                <mat-label>Architecture Override</mat-label>
+                <input matInput [(ngModel)]="tritonArch" placeholder="e.g. sm_80, sm_90">
+              </mat-form-field>
+            </div>
+
+            <div class="option-toggles">
+              <mat-checkbox [(ngModel)]="tritonFpFusion">
+                Enable FP Fusion
+              </mat-checkbox>
+            </div>
+
+            <button mat-raised-button color="primary"
+                    [disabled]="!tritonModelId || isTritonCompiling"
+                    (click)="runTritonCompile()"
+                    class="compile-button">
+              <mat-icon>{{ isTritonCompiling ? 'hourglass_empty' : 'memory' }}</mat-icon>
+              {{ isTritonCompiling ? 'Compiling...' : 'Compile with Triton' }}
+            </button>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Triton Compile Progress -->
+        <div *ngIf="isTritonCompiling" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Running Triton compilation...</p>
+        </div>
+
+        <!-- Triton Results -->
+        <mat-card class="section-card result-card" *ngIf="tritonResult && !isTritonCompiling"
+                  [class.success]="tritonResult?.success"
+                  [class.error]="!tritonResult?.success">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class.success-icon]="tritonResult?.success" [class.error-icon]="!tritonResult?.success">
+              {{ tritonResult?.success ? 'check_circle' : 'error' }}
+            </mat-icon>
+            <mat-card-title>{{ tritonResult?.success ? 'Triton Compilation Complete' : 'Triton Compilation Failed' }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p *ngIf="tritonResult?.message">{{ tritonResult?.message }}</p>
+            <p *ngIf="tritonResult?.error" class="error-message">{{ tritonResult?.error }}</p>
+
+            <div *ngIf="tritonResult?.success" class="result-stats">
+              <div class="stat-item">
+                <span class="stat-label">Operations</span>
+                <span class="stat-value">{{ tritonResult?.beforeOpsCount }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Variables</span>
+                <span class="stat-value">{{ tritonResult?.beforeVarsCount }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Model Size</span>
+                <span class="stat-value">{{ formatBytes(tritonResult?.sizeBeforeBytes) }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Time</span>
+                <span class="stat-value">{{ formatDuration(tritonResult?.optimizationTimeMs) }}</span>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Tab 5: Cache Management ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>cached</mat-icon>
+        <span class="tab-label-text">Cache</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="cache-header-row">
+          <h3 class="section-heading">Execution Plan & DAG Cache</h3>
+          <button mat-icon-button (click)="loadCacheStatus()" [disabled]="loadingCacheStatus" matTooltip="Refresh">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+
+        <div *ngIf="loadingCacheStatus" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Loading cache status...</p>
+        </div>
+
+        <div *ngIf="cacheStatus && !loadingCacheStatus" class="cache-grid">
+          <!-- ExecutionPlan Cache Card -->
+          <mat-card class="section-card cache-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>memory</mat-icon>
+              <mat-card-title>ExecutionPlan Cache</mat-card-title>
+              <mat-card-subtitle>Compiled execution plans keyed by DAG topology + shape signature</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="cache-stats">
+                <div class="cache-stat">
+                  <span class="cache-stat-value">{{ cacheStatus?.executionPlanCacheSize }}</span>
+                  <span class="cache-stat-label">Cached Plans</span>
+                </div>
+                <div class="cache-stat">
+                  <mat-icon [style.color]="cacheStatus?.executionPlanCacheEnabled ? '#4caf50' : '#f44336'">
+                    {{ cacheStatus?.executionPlanCacheEnabled ? 'check_circle' : 'cancel' }}
+                  </mat-icon>
+                  <span class="cache-stat-label">{{ cacheStatus?.executionPlanCacheEnabled ? 'Enabled' : 'Disabled' }}</span>
+                </div>
+              </div>
+              <div class="cache-actions">
+                <button mat-stroked-button (click)="clearCache('executionPlan')"
+                        [disabled]="cacheStatus?.executionPlanCacheSize === 0">
+                  <mat-icon>delete_sweep</mat-icon> Clear
+                </button>
+                <button mat-stroked-button
+                        (click)="toggleCacheEnabled('executionPlan', !cacheStatus?.executionPlanCacheEnabled)">
+                  <mat-icon>{{ cacheStatus?.executionPlanCacheEnabled ? 'pause' : 'play_arrow' }}</mat-icon>
+                  {{ cacheStatus?.executionPlanCacheEnabled ? 'Disable' : 'Enable' }}
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- DAG Cache Card -->
+          <mat-card class="section-card cache-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>account_tree</mat-icon>
+              <mat-card-title>DAG Cache</mat-card-title>
+              <mat-card-subtitle>Forward execution DAGs keyed by requested output variables</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="cache-stats">
+                <div class="cache-stat">
+                  <span class="cache-stat-value">{{ cacheStatus?.dagCacheSize }}</span>
+                  <span class="cache-stat-label">Cached DAGs</span>
+                </div>
+                <div class="cache-stat">
+                  <mat-icon [style.color]="cacheStatus?.dagCacheEnabled ? '#4caf50' : '#f44336'">
+                    {{ cacheStatus?.dagCacheEnabled ? 'check_circle' : 'cancel' }}
+                  </mat-icon>
+                  <span class="cache-stat-label">{{ cacheStatus?.dagCacheEnabled ? 'Enabled' : 'Disabled' }}</span>
+                </div>
+              </div>
+              <div class="cache-actions">
+                <button mat-stroked-button (click)="clearCache('dag')"
+                        [disabled]="cacheStatus?.dagCacheSize === 0">
+                  <mat-icon>delete_sweep</mat-icon> Clear
+                </button>
+                <button mat-stroked-button
+                        (click)="toggleCacheEnabled('dag', !cacheStatus?.dagCacheEnabled)">
+                  <mat-icon>{{ cacheStatus?.dagCacheEnabled ? 'pause' : 'play_arrow' }}</mat-icon>
+                  {{ cacheStatus?.dagCacheEnabled ? 'Disable' : 'Enable' }}
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <!-- Global Cache Actions -->
+        <mat-card class="section-card" *ngIf="cacheStatus">
+          <mat-card-content>
+            <div class="global-cache-actions">
+              <button mat-raised-button color="warn" (click)="clearCache('all')"
+                      [disabled]="((cacheStatus?.executionPlanCacheSize ?? 0) + (cacheStatus?.dagCacheSize ?? 0)) === 0">
+                <mat-icon>delete_forever</mat-icon> Clear All Caches
+              </button>
+              <button mat-stroked-button (click)="toggleCacheEnabled('all', true)">
+                <mat-icon>play_arrow</mat-icon> Enable All
+              </button>
+              <button mat-stroked-button (click)="toggleCacheEnabled('all', false)">
+                <mat-icon>pause</mat-icon> Disable All
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- ==================== Per-Device Information ==================== -->
+        <div class="cache-header-row" style="margin-top: 32px;">
+          <h3 class="section-heading">Device Information & Native Caches</h3>
+          <button mat-icon-button (click)="loadDeviceCacheStatus()" [disabled]="loadingDeviceCacheStatus" matTooltip="Refresh">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+
+        <div *ngIf="loadingDeviceCacheStatus" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Loading device information...</p>
+        </div>
+
+        <div *ngIf="deviceCacheStatus && !loadingDeviceCacheStatus">
+          <!-- Devices Grid -->
+          <div class="devices-grid" *ngIf="deviceCacheStatus?.devices && deviceCacheStatus!.devices!.length > 0">
+            <mat-card class="section-card device-card" *ngFor="let device of deviceCacheStatus?.devices">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>developer_board</mat-icon>
+                <mat-card-title>{{ device.deviceName || 'Device ' + device.deviceId }}</mat-card-title>
+                <mat-card-subtitle>Device #{{ device.deviceId }} | Compute {{ device.computeCapability }}</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="device-memory-section">
+                  <div class="device-memory-header">
+                    <span class="device-memory-label">Memory Usage</span>
+                    <span class="device-memory-value">
+                      {{ formatBytes(device.usedMemoryBytes) }} / {{ formatBytes(device.totalMemoryBytes) }}
+                    </span>
+                  </div>
+                  <div class="device-memory-bar-bg">
+                    <div class="device-memory-bar-fill"
+                         [style.width.%]="getMemoryUsagePercent(device)"
+                         [style.backgroundColor]="getMemoryBarColor(getMemoryUsagePercent(device))">
+                    </div>
+                  </div>
+                  <div class="device-memory-details">
+                    <span>Free: {{ formatBytes(device.freeMemoryBytes) }}</span>
+                    <span>{{ device.memoryUtilizationPercent.toFixed(1) }}% used</span>
+                  </div>
+                </div>
+                <div class="device-compute-info">
+                  <div class="device-info-item">
+                    <span class="device-info-label">Compute Capability</span>
+                    <span class="device-info-value">sm_{{ device.computeMajor }}{{ device.computeMinor }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <div *ngIf="!deviceCacheStatus?.devices?.length" class="no-devices-info">
+            <mat-icon>info</mat-icon>
+            <span>No GPU devices detected (CPU mode). Native caches still apply.</span>
+          </div>
+
+          <!-- Native Caches Grid -->
+          <div class="native-caches-grid">
+            <!-- TAD Cache Card -->
+            <mat-card class="section-card native-cache-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>grid_on</mat-icon>
+                <mat-card-title>TAD Cache</mat-card-title>
+                <mat-card-subtitle>Tensor Along Dimension - precomputed TAD shapes and offsets</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="native-cache-stats">
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value">{{ deviceCacheStatus?.tadCache?.cachedEntries }}</span>
+                    <span class="native-cache-stat-label">Entries</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value">{{ formatBytes(deviceCacheStatus?.tadCache?.cachedBytes) }}</span>
+                    <span class="native-cache-stat-label">Size</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value peak">{{ deviceCacheStatus?.tadCache?.peakCachedEntries }}</span>
+                    <span class="native-cache-stat-label">Peak Entries</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value peak">{{ formatBytes(deviceCacheStatus?.tadCache?.peakCachedBytes) }}</span>
+                    <span class="native-cache-stat-label">Peak Size</span>
+                  </div>
+                </div>
+                <div class="native-cache-actions">
+                  <button mat-stroked-button (click)="clearNativeCache('tad')"
+                          [disabled]="deviceCacheStatus?.tadCache?.cachedEntries === 0">
+                    <mat-icon>delete_sweep</mat-icon> Clear TAD Cache
+                  </button>
+                </div>
+                <mat-expansion-panel class="cache-contents-panel" *ngIf="deviceCacheStatus?.tadCache?.cacheContents">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>Cache Contents</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <pre class="cache-contents-pre">{{ deviceCacheStatus?.tadCache?.cacheContents }}</pre>
+                </mat-expansion-panel>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- Shape Cache Card -->
+            <mat-card class="section-card native-cache-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>view_in_ar</mat-icon>
+                <mat-card-title>Shape Cache</mat-card-title>
+                <mat-card-subtitle>Cached shape descriptors for tensor operations</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="native-cache-stats">
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value">{{ deviceCacheStatus?.shapeCache?.cachedEntries }}</span>
+                    <span class="native-cache-stat-label">Entries</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value">{{ formatBytes(deviceCacheStatus?.shapeCache?.cachedBytes) }}</span>
+                    <span class="native-cache-stat-label">Size</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value peak">{{ deviceCacheStatus?.shapeCache?.peakCachedEntries }}</span>
+                    <span class="native-cache-stat-label">Peak Entries</span>
+                  </div>
+                  <div class="native-cache-stat">
+                    <span class="native-cache-stat-value peak">{{ formatBytes(deviceCacheStatus?.shapeCache?.peakCachedBytes) }}</span>
+                    <span class="native-cache-stat-label">Peak Size</span>
+                  </div>
+                </div>
+                <div class="native-cache-actions">
+                  <button mat-stroked-button (click)="clearNativeCache('shape')"
+                          [disabled]="deviceCacheStatus?.shapeCache?.cachedEntries === 0">
+                    <mat-icon>delete_sweep</mat-icon> Clear Shape Cache
+                  </button>
+                </div>
+                <mat-expansion-panel class="cache-contents-panel" *ngIf="deviceCacheStatus?.shapeCache?.cacheContents">
+                  <mat-expansion-panel-header>
+                    <mat-panel-title>Cache Contents</mat-panel-title>
+                  </mat-expansion-panel-header>
+                  <pre class="cache-contents-pre">{{ deviceCacheStatus?.shapeCache?.cacheContents }}</pre>
+                </mat-expansion-panel>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <!-- Native Cache Global Actions -->
+          <mat-card class="section-card">
+            <mat-card-content>
+              <div class="global-cache-actions">
+                <button mat-raised-button color="warn" (click)="clearNativeCache('all')"
+                        [disabled]="((deviceCacheStatus?.tadCache?.cachedEntries ?? 0) + (deviceCacheStatus?.shapeCache?.cachedEntries ?? 0)) === 0">
+                  <mat-icon>delete_forever</mat-icon> Clear All Native Caches
+                </button>
+                <button mat-stroked-button (click)="clearNativeCache('cleanup')">
+                  <mat-icon>auto_fix_high</mat-icon> Auto Cleanup
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ==================== Tab 6: Compile Jobs ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>engineering</mat-icon>
+        <span class="tab-label-text">Compile Jobs</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- New Compilation Job -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>rocket_launch</mat-icon>
+            <mat-card-title>New Compilation Job</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="compile-form-grid">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Model</mat-label>
+                <mat-select [(value)]="compileModelId">
+                  <mat-option *ngFor="let model of models" [value]="model.model_id">
+                    {{ model.model_id }}
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <div class="mode-selectors">
+                <mat-form-field appearance="outline" class="mode-field">
+                  <mat-label>DSP Compilation Mode</mat-label>
+                  <mat-select [(value)]="compileMode">
+                    <mat-option *ngFor="let mode of compilationModes" [value]="mode.value"
+                                [matTooltip]="mode.description">
+                      {{ mode.label }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="mode-field">
+                  <mat-label>Execution Mode</mat-label>
+                  <mat-select [(value)]="compileExecMode">
+                    <mat-option *ngFor="let mode of executionModes" [value]="mode.value"
+                                [matTooltip]="mode.description">
+                      {{ mode.label }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Output Model ID (optional)</mat-label>
+                <input matInput [(ngModel)]="compileOutputModelId" placeholder="Leave empty to overwrite source">
+                <mat-hint>Save compiled result as a separate model</mat-hint>
+              </mat-form-field>
+
+              <div class="compile-options">
+                <mat-checkbox [(ngModel)]="compileEnableCache">Enable execution plan cache</mat-checkbox>
+                <mat-checkbox [(ngModel)]="createBackup">Create backup</mat-checkbox>
+              </div>
+
+              <button mat-raised-button color="primary"
+                      [disabled]="!compileModelId"
+                      (click)="startCompilation()"
+                      class="start-compile-btn">
+                <mat-icon>play_arrow</mat-icon> Start Compilation
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Jobs List -->
+        <mat-card class="section-card" *ngIf="jobs.length > 0">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>list</mat-icon>
+            <mat-card-title>Compilation Jobs ({{ jobs.length }})</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="jobs-list">
+              <div class="job-item" *ngFor="let job of jobs"
+                   [class.active]="activeJobId === job.jobId"
+                   (click)="viewJobLogs(job.jobId)">
+                <div class="job-header">
+                  <div class="job-id-row">
+                    <mat-icon [style.color]="getJobStatusColor(job.status)">
+                      {{ getJobStatusIcon(job.status) }}
+                    </mat-icon>
+                    <span class="job-id">{{ job.jobId }}</span>
+                    <mat-chip class="job-status-chip" [style.backgroundColor]="getJobStatusColor(job.status) + '20'"
+                              [style.color]="getJobStatusColor(job.status)">
+                      {{ job.status }}
+                    </mat-chip>
+                  </div>
+                  <div class="job-meta">
+                    <span class="job-model">{{ job.modelId }}</span>
+                    <span class="job-mode" *ngIf="job.compilationMode">{{ job.compilationMode }}</span>
+                  </div>
+                </div>
+                <div class="job-progress" *ngIf="job.status === 'COMPILING'">
+                  <mat-progress-bar mode="determinate" [value]="job.progressPercent"></mat-progress-bar>
+                  <span class="job-phase">{{ job.currentPhase }} ({{ job.progressPercent }}%)</span>
+                </div>
+                <div class="job-actions" *ngIf="job.status === 'QUEUED' || job.status === 'COMPILING'">
+                  <button mat-icon-button color="warn" (click)="cancelJob(job.jobId); $event.stopPropagation()"
+                          matTooltip="Cancel">
+                    <mat-icon>stop</mat-icon>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Real-time Log Viewer -->
+        <mat-card class="section-card log-viewer-card" *ngIf="activeJobId">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>terminal</mat-icon>
+            <mat-card-title>Compilation Log: {{ activeJobId }}</mat-card-title>
+            <mat-card-subtitle *ngIf="getActiveJob()">
+              {{ getActiveJob()?.currentPhase }} - {{ getActiveJob()?.message }}
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Active job progress bar -->
+            <div class="active-job-progress" *ngIf="getActiveJob()?.status === 'COMPILING'">
+              <mat-progress-bar mode="determinate" [value]="getActiveJob()?.progressPercent || 0"></mat-progress-bar>
+              <span class="progress-label">{{ getActiveJob()?.progressPercent }}%</span>
+            </div>
+
+            <!-- Log controls -->
+            <div class="log-controls">
+              <mat-form-field appearance="outline" class="log-search-field">
+                <mat-label>Search logs</mat-label>
+                <input matInput [(ngModel)]="logSearchTerm" placeholder="Filter...">
+                <mat-icon matSuffix>search</mat-icon>
+              </mat-form-field>
+
+              <mat-button-toggle-group [(value)]="logLevelFilter" class="log-level-filter">
+                <mat-button-toggle value="ALL">All</mat-button-toggle>
+                <mat-button-toggle value="INFO">Info</mat-button-toggle>
+                <mat-button-toggle value="WARN">Warn</mat-button-toggle>
+                <mat-button-toggle value="ERROR">Error</mat-button-toggle>
+              </mat-button-toggle-group>
+
+              <mat-checkbox [(ngModel)]="logAutoScroll" class="autoscroll-toggle">Auto-scroll</mat-checkbox>
+            </div>
+
+            <!-- Log output -->
+            <div class="log-output" #logContainer>
+              <div class="log-entry" *ngFor="let entry of getFilteredLogs()">
+                <span class="log-timestamp">{{ entry.timestamp | date:'HH:mm:ss.SSS' }}</span>
+                <span class="log-level" [style.color]="getLogLevelColor(entry.level)">[{{ entry.level }}]</span>
+                <span class="log-phase">[{{ entry.phase }}]</span>
+                <span class="log-message">{{ entry.message }}</span>
+              </div>
+              <div class="log-empty" *ngIf="getFilteredLogs().length === 0">
+                <mat-icon>notes</mat-icon>
+                <span>No log entries{{ logLevelFilter !== 'ALL' ? ' matching filter' : '' }}</span>
+              </div>
+            </div>
+
+            <div class="log-footer">
+              <span class="log-count">{{ getFilteredLogs().length }} entries</span>
+              <button mat-icon-button (click)="jobLogs = []" matTooltip="Clear logs">
+                <mat-icon>delete_outline</mat-icon>
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Empty state -->
+        <div class="empty-jobs" *ngIf="jobs.length === 0 && !loadingJobs">
+          <mat-icon>engineering</mat-icon>
+          <p>No compilation jobs yet. Start a new compilation above.</p>
+        </div>
+      </div>
+    </mat-tab>
+    <!-- ==================== Tab 7: Compiled Graphs ==================== -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon>save_alt</mat-icon>
+        <span class="tab-label-text">Compiled Graphs</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Save Compiled Graph Form -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>save</mat-icon>
+            <mat-card-title>Save Compiled Graph</mat-card-title>
+            <mat-card-subtitle>Compile and save an optimized graph as a separate model</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="save-form-grid">
+              <div class="save-form-row">
+                <mat-form-field appearance="outline" class="save-form-field">
+                  <mat-label>Source Model</mat-label>
+                  <mat-select [(value)]="saveSourceModelId">
+                    <mat-option *ngFor="let model of models" [value]="model.model_id">
+                      {{ model.model_id }}
+                    </mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="save-form-field">
+                  <mat-label>Output Model ID</mat-label>
+                  <input matInput [(ngModel)]="saveOutputModelId" placeholder="e.g. my-model-compiled">
+                </mat-form-field>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Target Outputs (optional, comma-separated)</mat-label>
+                <input matInput [(ngModel)]="saveTargetOutputs" placeholder="e.g. output_0, logits">
+                <mat-hint>Extract subgraph for specific output variables</mat-hint>
+              </mat-form-field>
+
+              <!-- Profile selector -->
+              <div class="profile-buttons">
+                <button mat-stroked-button
+                        *ngFor="let profile of profiles"
+                        [class.selected]="saveProfile === profile.profileName"
+                        (click)="selectSaveProfile(profile.profileName)"
+                        [matTooltip]="profile.description">
+                  {{ profile.profileName }}
+                </button>
+              </div>
+
+              <!-- Pass selection (collapsible) -->
+              <mat-expansion-panel class="pass-category-panel">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    <mat-icon>tune</mat-icon>
+                    Individual Passes ({{ saveSelectedPasses.size }} selected)
+                  </mat-panel-title>
+                </mat-expansion-panel-header>
+                <div class="pass-list">
+                  <div class="pass-item" *ngFor="let pass of passes">
+                    <mat-checkbox
+                      [checked]="isSavePassSelected(pass.id)"
+                      (change)="toggleSavePass(pass.id)">
+                      <span class="pass-name">{{ pass.name }}</span>
+                    </mat-checkbox>
+                    <p class="pass-description">{{ pass.description }}</p>
+                  </div>
+                </div>
+              </mat-expansion-panel>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description (optional)</mat-label>
+                <textarea matInput [(ngModel)]="saveDescription" rows="2"
+                          placeholder="Notes about this compiled variant"></textarea>
+              </mat-form-field>
+
+              <button mat-raised-button color="primary"
+                      [disabled]="!saveSourceModelId || !saveOutputModelId || savingCompiledGraph"
+                      (click)="saveCompiledGraph()"
+                      class="save-compiled-btn">
+                <mat-icon>{{ savingCompiledGraph ? 'hourglass_empty' : 'save' }}</mat-icon>
+                {{ savingCompiledGraph ? 'Saving...' : 'Save Compiled Graph' }}
+              </button>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Save Progress -->
+        <div *ngIf="savingCompiledGraph" class="loading-indicator">
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          <p>Compiling and saving graph...</p>
+        </div>
+
+        <!-- Save Result -->
+        <mat-card class="section-card result-card" *ngIf="saveResult"
+                  [class.success]="saveResult?.success"
+                  [class.error]="!saveResult?.success">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class.success-icon]="saveResult?.success" [class.error-icon]="!saveResult?.success">
+              {{ saveResult?.success ? 'check_circle' : 'error' }}
+            </mat-icon>
+            <mat-card-title>{{ saveResult?.success ? 'Compiled Graph Saved' : 'Save Failed' }}</mat-card-title>
+            <mat-card-subtitle *ngIf="saveResult?.success">Saved as: {{ saveResult?.outputModelId }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <p *ngIf="saveResult?.error" class="error-message">{{ saveResult?.error }}</p>
+
+            <div *ngIf="saveResult?.success" class="result-stats">
+              <div class="stat-item">
+                <span class="stat-label">Operations</span>
+                <span class="stat-value">{{ saveResult?.beforeOpsCount }} &rarr; {{ saveResult?.afterOpsCount }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Variables</span>
+                <span class="stat-value">{{ saveResult?.beforeVarsCount }} &rarr; {{ saveResult?.afterVarsCount }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Size</span>
+                <span class="stat-value">
+                  {{ formatBytes(saveResult?.sizeBeforeBytes) }} &rarr; {{ formatBytes(saveResult?.sizeAfterBytes) }}
+                </span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Reduction</span>
+                <span class="stat-value reduction">{{ saveResult?.reductionPercent?.toFixed(1) }}%</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Time</span>
+                <span class="stat-value">{{ formatDuration(saveResult?.optimizationTimeMs) }}</span>
+              </div>
+            </div>
+
+            <div class="passes-applied" *ngIf="saveResult?.passesApplied?.length">
+              <h4>Passes Applied</h4>
+              <mat-chip-set>
+                <mat-chip *ngFor="let pass of saveResult?.passesApplied">{{ pass }}</mat-chip>
+              </mat-chip-set>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Compiled Models List -->
+        <mat-card class="section-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>folder</mat-icon>
+            <mat-card-title>Compiled Models ({{ compiledModels.length }})</mat-card-title>
+            <button mat-icon-button (click)="loadCompiledModels()" [disabled]="loadingCompiledModels" matTooltip="Refresh"
+                    style="margin-left: auto;">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="loadingCompiledModels" class="loading-indicator">
+              <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+              <p>Loading compiled models...</p>
+            </div>
+
+            <div *ngIf="!loadingCompiledModels && compiledModels.length === 0" class="empty-compiled-models">
+              <mat-icon>folder_open</mat-icon>
+              <p>No compiled models found. Save a compiled graph above to get started.</p>
+            </div>
+
+            <div *ngIf="!loadingCompiledModels && compiledModels.length > 0" class="compiled-models-grid">
+              <div class="compiled-model-card" *ngFor="let model of compiledModels">
+                <div class="compiled-model-header">
+                  <mat-icon>description</mat-icon>
+                  <span class="compiled-model-id">{{ model.modelId }}</span>
+                </div>
+                <div class="compiled-model-stats">
+                  <div class="compiled-model-stat">
+                    <span class="compiled-model-stat-label">Size</span>
+                    <span class="compiled-model-stat-value">{{ formatBytes(model.sizeBytes) }}</span>
+                  </div>
+                  <div class="compiled-model-stat">
+                    <span class="compiled-model-stat-label">Ops</span>
+                    <span class="compiled-model-stat-value">{{ model.totalOps }}</span>
+                  </div>
+                  <div class="compiled-model-stat">
+                    <span class="compiled-model-stat-label">Variables</span>
+                    <span class="compiled-model-stat-value">{{ model.totalVariables }}</span>
+                  </div>
+                  <div class="compiled-model-stat">
+                    <span class="compiled-model-stat-label">Modified</span>
+                    <span class="compiled-model-stat-value">{{ model.lastModified | date:'short' }}</span>
+                  </div>
+                </div>
+                <div class="compiled-model-actions">
+                  <button mat-stroked-button (click)="inspectCompiledModel(model.modelId)" matTooltip="Inspect graph">
+                    <mat-icon>search</mat-icon> Inspect
+                  </button>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

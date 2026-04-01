@@ -1,0 +1,250 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="diagnostics-container" [class.modal-mode]="isModal">
+  <!-- Header -->
+  <div class="diagnostics-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">health_and_safety</mat-icon>
+      <div>
+        <h2>System Diagnostics</h2>
+        <p class="subtitle">Comprehensive health check of all components</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="runDiagnostics()" [disabled]="loading" matTooltip="Run diagnostics again">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-icon-button (click)="exportReport()" [disabled]="!report" matTooltip="Export report">
+        <mat-icon>download</mat-icon>
+      </button>
+      <button mat-icon-button (click)="close()" *ngIf="isModal" matTooltip="Close">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="loading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Running diagnostics...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-container" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="runDiagnostics()">Retry</button>
+  </div>
+
+  <!-- Report Content -->
+  <div class="report-content" *ngIf="report && !loading">
+    <!-- Overall Status Banner -->
+    <div class="overall-status-banner" [ngClass]="getStatusClass(report.overallStatus)">
+      <div class="status-icon-large">
+        <mat-icon>{{ getStatusIcon(report.overallStatus) }}</mat-icon>
+      </div>
+      <div class="status-info">
+        <div class="status-title">{{ getOverallStatusMessage() }}</div>
+        <div class="status-summary">
+          <span class="summary-item pass">
+            <mat-icon>check_circle</mat-icon>
+            {{ report.passedChecks }} passed
+          </span>
+          <span class="summary-item warning" *ngIf="report.warningChecks > 0">
+            <mat-icon>warning</mat-icon>
+            {{ report.warningChecks }} warnings
+          </span>
+          <span class="summary-item fail" *ngIf="report.failedChecks > 0">
+            <mat-icon>error</mat-icon>
+            {{ report.failedChecks }} failed
+          </span>
+        </div>
+        <div class="status-timestamp">
+          Last run: {{ formatTimestamp(report.timestamp) }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Prerequisites Section -->
+    <div class="prerequisites-section">
+      <h3>
+        <mat-icon>checklist</mat-icon>
+        Feature Prerequisites
+      </h3>
+      <div class="prerequisites-grid">
+        <!-- Vector Search -->
+        <div class="prereq-card" [class.ready]="report.prerequisites.vectorSearch.ready">
+          <div class="prereq-header">
+            <mat-icon [class]="getPrerequisiteClass(report.prerequisites.vectorSearch.ready)">
+              {{ getPrerequisiteIcon(report.prerequisites.vectorSearch.ready) }}
+            </mat-icon>
+            <span class="prereq-title">Vector Search</span>
+          </div>
+          <div class="prereq-status" *ngIf="report.prerequisites.vectorSearch.ready">
+            Ready to use
+          </div>
+          <div class="prereq-missing" *ngIf="!report.prerequisites.vectorSearch.ready">
+            <span>Missing:</span>
+            <ul>
+              <li *ngFor="let item of report.prerequisites.vectorSearch.missing">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- RAG Query -->
+        <div class="prereq-card" [class.ready]="report.prerequisites.ragQuery.ready">
+          <div class="prereq-header">
+            <mat-icon [class]="getPrerequisiteClass(report.prerequisites.ragQuery.ready)">
+              {{ getPrerequisiteIcon(report.prerequisites.ragQuery.ready) }}
+            </mat-icon>
+            <span class="prereq-title">RAG Chat</span>
+          </div>
+          <div class="prereq-status" *ngIf="report.prerequisites.ragQuery.ready">
+            Ready to use
+          </div>
+          <div class="prereq-missing" *ngIf="!report.prerequisites.ragQuery.ready">
+            <span>Missing:</span>
+            <ul>
+              <li *ngFor="let item of report.prerequisites.ragQuery.missing">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Document Ingestion -->
+        <div class="prereq-card" [class.ready]="report.prerequisites.documentIngestion.ready">
+          <div class="prereq-header">
+            <mat-icon [class]="getPrerequisiteClass(report.prerequisites.documentIngestion.ready)">
+              {{ getPrerequisiteIcon(report.prerequisites.documentIngestion.ready) }}
+            </mat-icon>
+            <span class="prereq-title">Document Ingestion</span>
+          </div>
+          <div class="prereq-status" *ngIf="report.prerequisites.documentIngestion.ready">
+            Ready to use
+          </div>
+          <div class="prereq-missing" *ngIf="!report.prerequisites.documentIngestion.ready">
+            <span>Missing:</span>
+            <ul>
+              <li *ngFor="let item of report.prerequisites.documentIngestion.missing">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Reranking -->
+        <div class="prereq-card" [class.ready]="report.prerequisites.reranking.ready">
+          <div class="prereq-header">
+            <mat-icon [class]="getPrerequisiteClass(report.prerequisites.reranking.ready)">
+              {{ getPrerequisiteIcon(report.prerequisites.reranking.ready) }}
+            </mat-icon>
+            <span class="prereq-title">Reranking</span>
+          </div>
+          <div class="prereq-status" *ngIf="report.prerequisites.reranking.ready">
+            Ready to use
+          </div>
+          <div class="prereq-missing" *ngIf="!report.prerequisites.reranking.ready">
+            <span>Missing:</span>
+            <ul>
+              <li *ngFor="let item of report.prerequisites.reranking.missing">{{ item }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <mat-divider></mat-divider>
+
+    <!-- Detailed Checks by Category -->
+    <div class="categories-section">
+      <h3>
+        <mat-icon>assignment</mat-icon>
+        Detailed Checks
+      </h3>
+
+      <mat-accordion multi>
+        <mat-expansion-panel *ngFor="let category of report.categories"
+                             [expanded]="category.overallStatus !== 'pass'">
+          <mat-expansion-panel-header>
+            <mat-panel-title>
+              <mat-icon class="category-icon">{{ category.icon }}</mat-icon>
+              <span class="category-name">{{ category.name }}</span>
+              <div class="category-status-chips">
+                <span class="status-chip pass" *ngIf="category.passCount > 0">
+                  {{ category.passCount }} passed
+                </span>
+                <span class="status-chip warning" *ngIf="category.warningCount > 0">
+                  {{ category.warningCount }} warnings
+                </span>
+                <span class="status-chip fail" *ngIf="category.failCount > 0">
+                  {{ category.failCount }} failed
+                </span>
+              </div>
+            </mat-panel-title>
+            <mat-panel-description>
+              <mat-icon [class]="getStatusClass(category.overallStatus)">
+                {{ getStatusIcon(category.overallStatus) }}
+              </mat-icon>
+            </mat-panel-description>
+          </mat-expansion-panel-header>
+
+          <div class="checks-list">
+            <div class="check-item" *ngFor="let check of category.checks"
+                 [ngClass]="getStatusClass(check.status)">
+              <div class="check-icon">
+                <mat-icon>{{ getStatusIcon(check.status) }}</mat-icon>
+              </div>
+              <div class="check-content">
+                <div class="check-header">
+                  <span class="check-name">{{ check.name }}</span>
+                  <span class="check-message" *ngIf="!isEditing(check.id)">{{ check.message }}</span>
+                  <!-- Edit button for editable checks -->
+                  <button mat-icon-button
+                          *ngIf="check.editable && !isEditing(check.id)"
+                          (click)="startEditing(check)"
+                          matTooltip="Edit this setting"
+                          class="edit-button">
+                    <mat-icon>edit</mat-icon>
+                  </button>
+                </div>
+                <div class="check-details" *ngIf="check.details && !isEditing(check.id)">
+                  {{ check.details }}
+                </div>
+                <div class="check-recommendation" *ngIf="check.recommendation && !isEditing(check.id)">
+                  <mat-icon>lightbulb</mat-icon>
+                  {{ check.recommendation }}
+                </div>
+
+                <!-- Inline Edit Form -->
+                <div class="inline-edit-form" *ngIf="check.editable && isEditing(check.id)">
+                  <mat-form-field appearance="outline" class="edit-field">
+                    <mat-label>{{ check.editable.label }}</mat-label>
+                    <input matInput
+                           [(ngModel)]="editValues[check.id]" [ngModelOptions]="{standalone: true}"
+                           [placeholder]="check.editable.placeholder || ''"
+                           (keydown)="onEditKeydown($event, check)"
+                           [disabled]="isSaving(check.id)">
+                  </mat-form-field>
+                  <div class="edit-actions">
+                    <button mat-flat-button
+                            color="primary"
+                            (click)="saveEdit(check)"
+                            [disabled]="isSaving(check.id)">
+                      <mat-icon *ngIf="!isSaving(check.id)">save</mat-icon>
+                      <mat-spinner diameter="18" *ngIf="isSaving(check.id)"></mat-spinner>
+                      {{ isSaving(check.id) ? 'Saving...' : 'Save' }}
+                    </button>
+                    <button mat-button
+                            (click)="cancelEditing()"
+                            [disabled]="isSaving(check.id)">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </mat-expansion-panel>
+      </mat-accordion>
+    </div>
+  </div>
+</div>

@@ -18,6 +18,7 @@ package ai.kompile.vectorstore.anserini;
 
 import ai.kompile.core.embeddings.ScoredDocument;
 import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.core.freshness.DocumentFreshnessScorer;
 import ai.kompile.core.reranking.RerankerConfig;
 import ai.kompile.core.reranking.RerankerService;
 import ai.kompile.core.reranking.RerankerType;
@@ -44,6 +45,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.util.Bits;
+import ai.kompile.vectorstore.anserini.util.NativeCompatibleDirectoryFactory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockObtainFailedException;
@@ -134,6 +136,12 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
     // which would result in meaningless similarity scores.
     private volatile String encoderModelId;
     private volatile String rerankerModelId;
+
+    /**
+     * Optional freshness scorer for adjusting similarity scores based on document age.
+     * When set, search results are re-scored: adjusted = (1-w)*raw + w*freshness
+     */
+    private volatile DocumentFreshnessScorer freshnessScorer;
 
     public AnseriniVectorStoreImpl(AnseriniVectorStoreProperties properties, EmbeddingModel embeddingModel) {
         this(properties, embeddingModel, null);
@@ -256,7 +264,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                     } catch (Exception ignored) {
                     }
                 }
-                this.directory = FSDirectory.open(path, NoLockFactory.INSTANCE);
+                this.directory = NativeCompatibleDirectoryFactory.open(path, NoLockFactory.INSTANCE);
                 initializeIndexWriter();
                 log.info("Successfully opened index on attempt {}", attempt);
                 return; // Success!
@@ -321,7 +329,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
             Files.createDirectories(fallbackPathObj);
 
             this.indexPath = fallbackPath;
-            this.directory = FSDirectory.open(fallbackPathObj, NoLockFactory.INSTANCE);
+            this.directory = NativeCompatibleDirectoryFactory.open(fallbackPathObj, NoLockFactory.INSTANCE);
             this.usingFallbackIndex = true;
             initializeIndexWriter();
             log.info("Successfully initialized fallback index at: {}", fallbackPath);
@@ -1417,7 +1425,7 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
 
             // Check if a valid Lucene index exists by looking for segments file
             // Use a fresh directory check to ensure we see recent commits
-            try (FSDirectory freshDir = FSDirectory.open(path, NoLockFactory.INSTANCE)) {
+            try (FSDirectory freshDir = NativeCompatibleDirectoryFactory.openFSDirectory(path, NoLockFactory.INSTANCE)) {
                 boolean exists = DirectoryReader.indexExists(freshDir);
                 if (!exists) {
                     log.debug("Index directory exists at {} but no segments found (no committed documents)", indexPath);
@@ -1953,10 +1961,27 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
                 return Collections.emptyList();
             }
 
-            return Arrays.stream(hits)
+            List<ScoredDocument> results = Arrays.stream(hits)
                     .filter(hit -> hit.score >= threshold)
                     .map(hit -> new ScoredDocument(convertToSpringAiDocument(hit), hit.score))
                     .collect(Collectors.toList());
+
+            // Apply freshness weighting if scorer is available
+            DocumentFreshnessScorer scorer = this.freshnessScorer;
+            if (scorer != null && !results.isEmpty()) {
+                double w = scorer.getWeight();
+                results = results.stream()
+                        .map(sd -> {
+                            String docId = sd.getId();
+                            double freshness = scorer.score(docId != null ? docId : "");
+                            double adjusted = (1.0 - w) * sd.score() + w * freshness;
+                            return new ScoredDocument(sd.document(), adjusted);
+                        })
+                        .sorted((a, b) -> Double.compare(b.score(), a.score()))
+                        .collect(Collectors.toList());
+            }
+
+            return results;
         } catch (Exception e) {
             log.error("Error during similarity search with scores (vector)", e);
             return Collections.emptyList();
@@ -2148,6 +2173,15 @@ public class AnseriniVectorStoreImpl implements VectorStore, DisposableBean {
      */
     public String getEncoderModelId() {
         return this.encoderModelId;
+    }
+
+    /**
+     * Set an optional freshness scorer for adjusting search results by document age.
+     */
+    public void setFreshnessScorer(DocumentFreshnessScorer scorer) {
+        this.freshnessScorer = scorer;
+        log.info("Freshness scorer {} for vector store",
+                scorer != null ? "enabled" : "disabled");
     }
 
     /**

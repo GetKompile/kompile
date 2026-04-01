@@ -1,0 +1,979 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="staging-config-container">
+  <!-- Header -->
+  <div class="page-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">hub</mat-icon>
+      <div>
+        <h1>Kompile Staging Manager</h1>
+        <p class="subtitle">Central management for models, connected applications, and staging services</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connected Applications Section -->
+  <div class="connected-apps-section">
+    <div class="section-header">
+      <div class="section-title">
+        <mat-icon>devices</mat-icon>
+        <span>Connected Applications</span>
+      </div>
+      <button mat-icon-button (click)="refreshConnectedApps()" [disabled]="loadingConnectedApps" matTooltip="Refresh connections">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </div>
+
+    <div class="connected-apps-grid">
+      <!-- This Application (Always shown) -->
+      <div class="connected-app-card current-app">
+        <div class="app-icon">
+          <mat-icon>home</mat-icon>
+        </div>
+        <div class="app-info">
+          <div class="app-name">This Application</div>
+          <div class="app-details">
+            <span class="app-status connected">
+              <mat-icon>check_circle</mat-icon>
+              Connected
+            </span>
+          </div>
+          <div class="app-usage" *ngIf="activeFactSheet">
+            <span class="usage-item">
+              <mat-icon>folder</mat-icon>
+              {{ activeFactSheet.name }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Remote Staging Services -->
+      <div class="connected-app-card" *ngFor="let config of configs"
+           [ngClass]="{'active': config.active, 'inactive': !config.active}">
+        <div class="app-icon remote">
+          <mat-icon>cloud</mat-icon>
+        </div>
+        <div class="app-info">
+          <div class="app-name">{{ config.name }}</div>
+          <div class="app-details">
+            <span class="app-status" [ngClass]="{'connected': config.active, 'disconnected': !config.active}">
+              <mat-icon>{{ config.active ? 'link' : 'link_off' }}</mat-icon>
+              {{ config.active ? 'Active' : 'Inactive' }}
+            </span>
+            <span class="app-endpoint">{{ config.endpointUrl }}</span>
+          </div>
+          <div class="app-actions">
+            <button mat-icon-button matTooltip="Test connection" (click)="testConnection(config)" [disabled]="testingId === config.id">
+              <mat-icon>{{ testingId === config.id ? 'hourglass_empty' : 'network_check' }}</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Configure" (click)="showEditForm(config)">
+              <mat-icon>settings</mat-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Add New Connection -->
+      <div class="connected-app-card add-new" (click)="showAddForm()">
+        <div class="add-icon">
+          <mat-icon>add_circle_outline</mat-icon>
+        </div>
+        <div class="add-text">Add Remote Service</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Source Selection Banner -->
+  <div class="source-banner">
+    <div class="source-info">
+      <mat-icon>hub</mat-icon>
+      <span>Select a model source to manage and load embedding models</span>
+    </div>
+
+    <div class="source-toggle">
+      <div class="toggle-buttons">
+        <button mat-stroked-button
+                [class.active]="activeTabIndex === 0"
+                (click)="switchToSource('archive')"
+                matTooltip="Load models from .karch archives">
+          <mat-icon>archive</mat-icon>
+          Archives
+          <span class="badge" *ngIf="archives.length">{{ archives.length }}</span>
+        </button>
+        <button mat-stroked-button
+                [class.active]="activeTabIndex === 1"
+                (click)="switchToSource('staging')"
+                matTooltip="Download from remote staging service">
+          <mat-icon>cloud_sync</mat-icon>
+          Remote Staging
+          <span class="badge" *ngIf="configs.length">{{ configs.length }}</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="source-actions">
+      <button mat-raised-button color="primary" class="force-reload-btn"
+              (click)="forceReloadModels()"
+              [disabled]="forceReloading || archiveLoading"
+              matTooltip="Force reconnect to staging and reload models">
+        <mat-spinner *ngIf="forceReloading" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!forceReloading">refresh</mat-icon>
+        {{ forceReloading ? 'Reloading...' : 'Force Reload Models' }}
+      </button>
+      <button mat-icon-button class="refresh-btn" (click)="refreshAll()" [disabled]="archiveLoading" matTooltip="Refresh status">
+        <mat-icon>sync</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Graph Optimization Card -->
+  <mat-card class="optimization-card" *ngIf="graphOptimizationStatus.embeddingModelLoaded">
+    <mat-card-header>
+      <mat-icon mat-card-avatar class="optimization-icon">bolt</mat-icon>
+      <mat-card-title>Graph Optimization</mat-card-title>
+      <mat-card-subtitle>
+        Current model: {{ graphOptimizationStatus.currentModel || 'Unknown' }}
+      </mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <p class="optimization-description">
+        Optimize the SameDiff computation graph for faster inference. This applies optimizations like
+        operation fusion, constant folding, and dead code elimination. The optimized model replaces
+        the original in-place, with a backup created for restoration if needed.
+      </p>
+
+      <!-- Optimization Result -->
+      <div class="optimization-result" *ngIf="lastOptimizationResult">
+        <mat-divider></mat-divider>
+        <div class="result-content" [class.success]="lastOptimizationResult.success" [class.error]="!lastOptimizationResult.success">
+          <mat-icon>{{ lastOptimizationResult.success ? 'check_circle' : 'error' }}</mat-icon>
+          <div class="result-details">
+            <span class="result-message" *ngIf="lastOptimizationResult.success">
+              Model optimized in-place. Backup saved as: <code>{{ lastOptimizationResult.backupFile }}</code>
+            </span>
+            <span class="result-message" *ngIf="!lastOptimizationResult.success">
+              {{ lastOptimizationResult.error || lastOptimizationResult.message }}
+            </span>
+            <span class="result-time" *ngIf="lastOptimizationResult.optimizationTimeMs">
+              Completed in {{ (lastOptimizationResult.optimizationTimeMs / 1000).toFixed(1) }}s
+            </span>
+          </div>
+        </div>
+      </div>
+    </mat-card-content>
+    <mat-card-actions>
+      <!-- Optimize button (hidden if already optimized with backup) -->
+      <button mat-raised-button color="primary"
+              (click)="optimizeAndSaveModel()"
+              [disabled]="isOptimizing || lastOptimizationResult?.canRestore"
+              *ngIf="!lastOptimizationResult?.canRestore"
+              matTooltip="Optimize model in-place (creates backup)">
+        <mat-spinner *ngIf="isOptimizing" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!isOptimizing">bolt</mat-icon>
+        {{ isOptimizing ? 'Optimizing...' : 'Optimize Model' }}
+      </button>
+      <!-- Restore button (shown if optimized with backup) -->
+      <button mat-raised-button color="warn"
+              (click)="restoreUnoptimizedModel(graphOptimizationStatus.currentModel || '')"
+              [disabled]="isOptimizing || !graphOptimizationStatus.currentModel"
+              *ngIf="lastOptimizationResult?.canRestore"
+              matTooltip="Restore original unoptimized model from backup">
+        <mat-spinner *ngIf="isOptimizing" diameter="18"></mat-spinner>
+        <mat-icon *ngIf="!isOptimizing">restore</mat-icon>
+        {{ isOptimizing ? 'Restoring...' : 'Restore Unoptimized' }}
+      </button>
+      <button mat-button (click)="loadGraphOptimizationStatus()" [disabled]="isOptimizing">
+        <mat-icon>refresh</mat-icon>
+        Refresh Status
+      </button>
+    </mat-card-actions>
+  </mat-card>
+
+  <!-- Tabs -->
+  <mat-tab-group [(selectedIndex)]="activeTabIndex" (selectedIndexChange)="onTabChange($event)" animationDuration="200ms">
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 1: ARCHIVES -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">inventory_2</mat-icon>
+        Archives
+        <span class="tab-badge" *ngIf="archives.length">{{ archives.length }}</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Currently Loaded Archive -->
+        <mat-card class="status-card" *ngIf="archiveStatus?.loaded">
+          <mat-card-header>
+            <mat-icon mat-card-avatar class="status-icon active">folder_open</mat-icon>
+            <mat-card-title>{{ archiveStatus?.archiveId || 'Loaded Archive' }}</mat-card-title>
+            <mat-card-subtitle>{{ archiveStatus?.description || archiveStatus?.archivePath }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="model-info-grid">
+              <div class="info-item">
+                <span class="info-label">Version</span>
+                <span class="info-value">{{ archiveStatus?.contentVersion || 'Unknown' }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Models</span>
+                <span class="info-value">{{ archiveStatus?.modelCount }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Encoders</span>
+                <span class="info-value">{{ archiveStatus?.encoderCount }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Cross-Encoders</span>
+                <span class="info-value">{{ archiveStatus?.crossEncoderCount }}</span>
+              </div>
+            </div>
+
+            <!-- Models in Archive -->
+            <div class="archive-models" *ngIf="archiveModels.length > 0">
+              <mat-divider></mat-divider>
+              <h4>Models in Archive</h4>
+              <div class="model-list compact">
+                <div class="model-item" *ngFor="let model of archiveModels">
+                  <div class="model-item-info">
+                    <span class="model-name">{{ model.modelId }}</span>
+                    <span class="model-meta">
+                      <mat-chip class="type-chip">{{ getModelTypeLabel(model.type) }}</mat-chip>
+                      <span *ngIf="model.embeddingDim">{{ model.embeddingDim }}d</span>
+                    </span>
+                  </div>
+                  <div class="model-item-actions">
+                    <button mat-stroked-button color="primary"
+                            (click)="extractModel(model)"
+                            [disabled]="extractingModel === model.modelId">
+                      <mat-spinner *ngIf="extractingModel === model.modelId" diameter="16"></mat-spinner>
+                      <span *ngIf="extractingModel !== model.modelId">Extract to Registry</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button color="primary"
+                    (click)="extractAllModels()"
+                    [disabled]="archiveLoading || !archiveModels.length">
+              <mat-icon>download</mat-icon>
+              Extract All to Registry
+            </button>
+            <button mat-button color="warn" (click)="unloadArchive()">
+              <mat-icon>eject</mat-icon>
+              Unload Archive
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- Available Archives -->
+        <div class="section-header">
+          <h3>Available Archives</h3>
+          <div class="section-actions">
+            <button mat-icon-button (click)="loadArchiveData()" matTooltip="Refresh" [disabled]="archiveLoading">
+              <mat-icon>refresh</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading State -->
+        <div class="loading-container" *ngIf="archiveLoading && !archiveStatus?.loaded">
+          <mat-spinner diameter="40"></mat-spinner>
+          <span>Loading archives...</span>
+        </div>
+
+        <!-- Archive List -->
+        <div class="archive-list" *ngIf="archives.length > 0">
+          <mat-card *ngFor="let archive of archives"
+                    class="archive-card"
+                    [class.active]="archive.loaded">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class.active]="archive.loaded">
+                {{ archive.loaded ? 'folder_open' : 'inventory_2' }}
+              </mat-icon>
+              <mat-card-title>
+                {{ archive.name }}
+                <mat-chip *ngIf="archive.loaded" color="primary" selected>Loaded</mat-chip>
+              </mat-card-title>
+              <mat-card-subtitle>{{ archive.archiveId || archive.path }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="archive-details">
+                <div class="detail-row" *ngIf="archive.description">
+                  <span class="detail-label">Description:</span>
+                  <span>{{ archive.description }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Version:</span>
+                  <span>{{ archive.version || 'Unknown' }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Models:</span>
+                  <span>{{ archive.modelCount }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Size:</span>
+                  <span>{{ formatBytes(archive.sizeBytes) }}</span>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">Modified:</span>
+                  <span>{{ formatDate(archive.lastModified) }}</span>
+                </div>
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-raised-button color="primary"
+                      *ngIf="!archive.loaded"
+                      (click)="loadArchive(archive)"
+                      [disabled]="loadingArchive === archive.path">
+                <mat-spinner *ngIf="loadingArchive === archive.path" diameter="18"></mat-spinner>
+                <mat-icon *ngIf="loadingArchive !== archive.path">folder_open</mat-icon>
+                {{ loadingArchive === archive.path ? 'Loading...' : 'Load Archive' }}
+              </button>
+              <button mat-button *ngIf="archive.loaded" (click)="unloadArchive()">
+                <mat-icon>eject</mat-icon>
+                Unload
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+
+        <!-- Empty State -->
+        <mat-card class="empty-state" *ngIf="!archiveLoading && archives.length === 0">
+          <mat-icon class="empty-icon">inventory_2</mat-icon>
+          <h3>No Archives Found</h3>
+          <p>Place .karch files in <code>~/.kompile/archives/</code> to make them available here.</p>
+        </mat-card>
+
+        <!-- Info Card -->
+        <mat-card class="info-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>info</mat-icon>
+            <mat-card-title>About Kompile Archives</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p>
+              Kompile Archives (.karch) are portable model bundles that contain pre-converted
+              SameDiff models ready for use. Use the Archive Assembly tab to create custom archives,
+              or download pre-built archives from the Kompile model hub.
+            </p>
+            <h4>Archive Workflow:</h4>
+            <ul>
+              <li><strong>Load</strong> an archive to inspect its contents</li>
+              <li><strong>Extract</strong> models to the local registry</li>
+              <li><strong>Load</strong> extracted models for use in RAG operations</li>
+            </ul>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 2: REMOTE STAGING -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">cloud_sync</mat-icon>
+        Remote Staging
+        <span class="tab-badge" *ngIf="configs.length">{{ configs.length }}</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Collapsible Header for Remote Staging -->
+        <div class="collapsible-header" (click)="toggleRemoteStagingCollapse()">
+          <div class="collapse-title">
+            <mat-icon class="collapse-icon" [class.collapsed]="remoteStagingCollapsed">
+              {{ remoteStagingCollapsed ? 'expand_more' : 'expand_less' }}
+            </mat-icon>
+            <mat-icon class="section-icon">cloud</mat-icon>
+            <span>Remote Staging Configuration</span>
+            <span class="connection-status" *ngIf="activeConfig">
+              <span class="status-dot" [class.connected]="!showConnectionRetryBanner" [class.disconnected]="showConnectionRetryBanner"></span>
+              {{ showConnectionRetryBanner ? 'Disconnected' : 'Connected' }}
+            </span>
+          </div>
+          <div class="collapse-actions" (click)="$event.stopPropagation()">
+            <button mat-icon-button matTooltip="Force reload models"
+                    (click)="forceReloadModels()"
+                    [disabled]="forceReloading">
+              <mat-spinner *ngIf="forceReloading" diameter="18"></mat-spinner>
+              <mat-icon *ngIf="!forceReloading">refresh</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="{{ remoteStagingCollapsed ? 'Expand' : 'Minimize' }}"
+                    (click)="toggleRemoteStagingCollapse()">
+              <mat-icon>{{ remoteStagingCollapsed ? 'unfold_more' : 'unfold_less' }}</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- Collapsible Content -->
+        <div class="collapsible-content" [class.collapsed]="remoteStagingCollapsed">
+        <!-- Connection Retry Banner -->
+        <mat-card class="connection-retry-banner" *ngIf="showConnectionRetryBanner && activeConfig">
+          <mat-card-content>
+            <div class="retry-banner-content">
+              <div class="retry-info">
+                <mat-icon class="error-icon">cloud_off</mat-icon>
+                <div class="retry-message">
+                  <h4>Connection Failed</h4>
+                  <p *ngIf="connectionStatus?.lastError">
+                    {{ connectionStatus?.lastError }}
+                  </p>
+                  <p *ngIf="!connectionStatus?.lastError">
+                    Unable to connect to {{ activeConfig.endpointUrl }}
+                  </p>
+                  <span class="retry-details" *ngIf="connectionStatus">
+                    <span *ngIf="(connectionStatus.consecutiveFailures || 0) > 1">
+                      Failed {{ connectionStatus.consecutiveFailures }} times.
+                    </span>
+                    <span>Last attempt: {{ getTimeSinceLastAttempt() }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="retry-actions">
+                <button mat-raised-button color="primary"
+                        (click)="retryDiscover()"
+                        [disabled]="retryingConnection">
+                  <mat-spinner *ngIf="retryingConnection" diameter="18"></mat-spinner>
+                  <mat-icon *ngIf="!retryingConnection">refresh</mat-icon>
+                  {{ retryingConnection ? 'Retrying...' : 'Retry Connection' }}
+                </button>
+                <button mat-stroked-button
+                        (click)="showEditForm(activeConfig)"
+                        [disabled]="retryingConnection">
+                  <mat-icon>settings</mat-icon>
+                  Configure
+                </button>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Header Actions -->
+        <div class="section-header">
+          <h3>Staging Service Connections</h3>
+          <div class="section-actions">
+            <button mat-icon-button (click)="refresh()" matTooltip="Refresh" [disabled]="loading">
+              <mat-icon>refresh</mat-icon>
+            </button>
+            <button mat-raised-button color="primary" (click)="showAddForm()" *ngIf="!showForm">
+              <mat-icon>add</mat-icon>
+              Add Connection
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading spinner -->
+        <div class="loading-container" *ngIf="loading && configs.length === 0">
+          <mat-spinner diameter="40"></mat-spinner>
+          <span>Loading configurations...</span>
+        </div>
+
+        <!-- Add/Edit Form -->
+        <mat-card class="config-form-card" *ngIf="showForm">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>{{ editingConfig ? 'edit' : 'add_circle' }}</mat-icon>
+            <mat-card-title>{{ editingConfig ? 'Edit Connection' : 'Add New Connection' }}</mat-card-title>
+            <mat-card-subtitle>Configure the staging service endpoint</mat-card-subtitle>
+          </mat-card-header>
+
+          <mat-card-content>
+            <form [formGroup]="configForm" class="config-form">
+              <div class="form-row">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Name</mat-label>
+                  <input matInput formControlName="name" placeholder="My Staging Server">
+                  <mat-hint>A friendly name for this connection</mat-hint>
+                  <mat-error *ngIf="configForm.get('name')?.hasError('required')">Name is required</mat-error>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Endpoint URL</mat-label>
+                  <input matInput formControlName="endpointUrl" placeholder="http://localhost:8090">
+                  <mat-hint>The base URL of the staging service</mat-hint>
+                  <mat-error *ngIf="configForm.get('endpointUrl')?.hasError('required')">URL is required</mat-error>
+                  <mat-error *ngIf="configForm.get('endpointUrl')?.hasError('pattern')">Must be a valid HTTP/HTTPS URL</mat-error>
+                </mat-form-field>
+              </div>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>API Key (optional)</mat-label>
+                  <input matInput formControlName="apiKey" type="password" placeholder="Optional API key">
+                  <mat-hint>Authentication key if required</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Description (optional)</mat-label>
+                  <input matInput formControlName="description" placeholder="Description or notes">
+                </mat-form-field>
+              </div>
+
+              <mat-expansion-panel class="advanced-panel">
+                <mat-expansion-panel-header>
+                  <mat-panel-title>
+                    <mat-icon>settings</mat-icon>
+                    Advanced Settings
+                  </mat-panel-title>
+                </mat-expansion-panel-header>
+
+                <div class="form-row">
+                  <mat-form-field appearance="outline" class="form-field-small">
+                    <mat-label>Connection Timeout (ms)</mat-label>
+                    <input matInput type="number" formControlName="connectionTimeoutMs">
+                    <mat-hint>Time to wait for connection</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline" class="form-field-small">
+                    <mat-label>Read Timeout (ms)</mat-label>
+                    <input matInput type="number" formControlName="readTimeoutMs">
+                    <mat-hint>Time to wait for response</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <div class="form-row sync-settings">
+                  <mat-slide-toggle formControlName="autoSync" color="primary">
+                    Enable auto-sync
+                  </mat-slide-toggle>
+
+                  <mat-form-field appearance="outline" class="form-field-small" *ngIf="configForm.get('autoSync')?.value">
+                    <mat-label>Sync Interval (minutes)</mat-label>
+                    <input matInput type="number" formControlName="syncIntervalMinutes">
+                  </mat-form-field>
+                </div>
+              </mat-expansion-panel>
+
+              <div class="form-row activate-row">
+                <mat-slide-toggle formControlName="active" color="primary">
+                  Set as active connection
+                </mat-slide-toggle>
+              </div>
+            </form>
+          </mat-card-content>
+
+          <mat-card-actions>
+            <button mat-button (click)="cancelForm()">Cancel</button>
+            <button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="configForm.invalid">
+              <mat-icon>{{ editingConfig ? 'save' : 'add' }}</mat-icon>
+              {{ editingConfig ? 'Save Changes' : 'Add Connection' }}
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- Empty state -->
+        <mat-card class="empty-state" *ngIf="!loading && configs.length === 0 && !showForm">
+          <mat-icon class="empty-icon">cloud_off</mat-icon>
+          <h3>No Staging Services Configured</h3>
+          <p>Add a connection to a Model Staging Service to download and manage ML models.</p>
+          <button mat-raised-button color="primary" (click)="showAddForm()">
+            <mat-icon>add</mat-icon>
+            Add Your First Connection
+          </button>
+        </mat-card>
+
+        <!-- Staged Models (Ready to Promote) -->
+        <mat-card class="staged-models-card" *ngIf="activeConfig && getStagedModels().length > 0">
+          <mat-card-header>
+            <mat-icon mat-card-avatar class="staged-icon">pending_actions</mat-icon>
+            <mat-card-title>Staged Models</mat-card-title>
+            <mat-card-subtitle>{{ getStagedModels().length }} model(s) ready to promote</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="model-list">
+              <div class="model-item staged" *ngFor="let model of getStagedModels()">
+                <div class="model-item-info">
+                  <span class="model-name">{{ model.modelId }}</span>
+                  <span class="model-meta">
+                    <mat-chip class="status-chip staged">STAGED</mat-chip>
+                    <span *ngIf="model.type">{{ getModelTypeLabel(model.type) }}</span>
+                    <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata.embeddingDim }}d</span>
+                  </span>
+                </div>
+                <div class="model-item-actions">
+                  <button mat-raised-button color="primary"
+                          (click)="promoteModel(model.modelId)"
+                          [disabled]="promotingModel === model.modelId">
+                    <mat-spinner *ngIf="promotingModel === model.modelId" diameter="16"></mat-spinner>
+                    <mat-icon *ngIf="promotingModel !== model.modelId">publish</mat-icon>
+                    {{ promotingModel === model.modelId ? 'Promoting...' : 'Promote to Active' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Remote Registry Summary -->
+        <mat-card class="registry-summary-card" *ngIf="activeConfig && remoteRegistry">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>inventory</mat-icon>
+            <mat-card-title>Remote Registry</mat-card-title>
+            <mat-card-subtitle>
+              {{ getActiveRemoteModels().length }} active, {{ getStagedModels().length }} staged
+            </mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="registry-stats">
+              <div class="stat-item">
+                <mat-icon class="active-icon">check_circle</mat-icon>
+                <span class="stat-value">{{ getActiveRemoteModels().length }}</span>
+                <span class="stat-label">Active Models</span>
+              </div>
+              <div class="stat-item">
+                <mat-icon class="staged-icon">pending</mat-icon>
+                <span class="stat-value">{{ getStagedModels().length }}</span>
+                <span class="stat-label">Staged Models</span>
+              </div>
+            </div>
+
+            <!-- Active Models List with Download & Load -->
+            <div class="remote-models-list" *ngIf="getActiveRemoteModels().length > 0">
+              <mat-divider></mat-divider>
+              <h4>Active Models Available for Download</h4>
+              <div class="model-list compact">
+                <div class="model-item" *ngFor="let model of getActiveRemoteModels()">
+                  <div class="model-item-info">
+                    <span class="model-name">{{ model.modelId }}</span>
+                    <span class="model-meta">
+                      <mat-chip class="type-chip">{{ getModelTypeLabel(model.type) }}</mat-chip>
+                      <span *ngIf="model.metadata?.embeddingDim">{{ model.metadata.embeddingDim }}d</span>
+                    </span>
+                  </div>
+                  <div class="model-item-actions">
+                    <!-- Show downloaded indicator for ANY model type that is downloaded locally -->
+                    <mat-icon *ngIf="isModelDownloaded(model.modelId) && downloadingModel !== model.modelId"
+                              color="primary"
+                              matTooltip="Downloaded locally">
+                      check_circle
+                    </mat-icon>
+
+                    <!-- Download progress bar and status -->
+                    <div class="download-progress" *ngIf="downloadingModel === model.modelId">
+                      <div class="download-status">
+                        <mat-spinner diameter="16"></mat-spinner>
+                        <span class="status-text">{{ downloadStatus }}</span>
+                      </div>
+                      <mat-progress-bar mode="indeterminate" color="primary"></mat-progress-bar>
+                      <button mat-icon-button color="warn" (click)="cancelDownload()" matTooltip="Cancel download">
+                        <mat-icon>cancel</mat-icon>
+                      </button>
+                    </div>
+
+                    <!-- Download button - show for all models not currently downloading -->
+                    <button mat-raised-button color="primary"
+                            *ngIf="downloadingModel !== model.modelId"
+                            [disabled]="downloadingModel !== null"
+                            (click)="downloadAndLoadModel(model.modelId)">
+                      Download
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button color="primary" (click)="loadRemoteRegistry()" [disabled]="remoteRegistryLoading">
+              <mat-icon>refresh</mat-icon>
+              Refresh Registry
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- Active Models Summary Card -->
+        <mat-card class="active-models-card" *ngIf="activeConfig">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>check_circle</mat-icon>
+            <mat-card-title>Active Models by Type</mat-card-title>
+            <mat-card-subtitle>Only one model per type can be active</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Current Loaded Model Status -->
+            <div class="current-model-status" *ngIf="embeddingModelStatus?.available">
+              <div class="status-header">
+                <mat-icon color="primary">memory</mat-icon>
+                <span class="status-label">Currently Loaded:</span>
+                <mat-chip color="accent" selected>{{ currentEmbeddingModel || 'Unknown' }}</mat-chip>
+                <span class="dimensions-badge" *ngIf="embeddingModelStatus?.dimensions">
+                  {{ embeddingModelStatus.dimensions }}d
+                </span>
+              </div>
+            </div>
+
+            <div class="active-models-grid">
+              <div class="active-model-item" *ngFor="let type of ['dense_encoder', 'sparse_encoder', 'cross_encoder']">
+                <div class="type-header">
+                  <mat-icon>{{ getTypeIcon(type) }}</mat-icon>
+                  <span class="type-label">{{ getTypeLabel(type) }}</span>
+                </div>
+                <div class="active-model-value" *ngIf="getActiveModelForType(type)">
+                  <mat-chip color="primary" selected>{{ getActiveModelForType(type) }}</mat-chip>
+
+                  <!-- Downloaded indicator for ANY model type -->
+                  <mat-icon *ngIf="isModelDownloaded(getActiveModelForType(type)!) && downloadingModel !== getActiveModelForType(type)"
+                            color="primary"
+                            matTooltip="Downloaded locally">
+                    check_circle
+                  </mat-icon>
+
+                  <!-- Download progress inline for this type -->
+                  <div class="download-progress-inline" *ngIf="downloadingModel === getActiveModelForType(type)">
+                    <mat-spinner diameter="18"></mat-spinner>
+                    <span class="status-text">{{ downloadStatus }}</span>
+                    <button mat-icon-button color="warn" (click)="cancelDownload()" matTooltip="Cancel">
+                      <mat-icon>cancel</mat-icon>
+                    </button>
+                  </div>
+
+                  <!-- Download button for any model type -->
+                  <button mat-icon-button
+                          *ngIf="getActiveModelForType(type) && downloadingModel !== getActiveModelForType(type)"
+                          [disabled]="downloadingModel !== null"
+                          (click)="downloadAndLoadModel(getActiveModelForType(type)!)">
+                    <mat-icon>cloud_download</mat-icon>
+                  </button>
+                </div>
+                <div class="active-model-value none" *ngIf="!getActiveModelForType(type)">
+                  <span class="no-active">No active model</span>
+                </div>
+              </div>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button color="primary" (click)="loadActiveModels()">
+              <mat-icon>refresh</mat-icon>
+              Refresh
+            </button>
+            <button mat-button color="accent"
+                    [disabled]="loadingModel !== null"
+                    (click)="refreshAndReloadModel()">
+              <mat-icon *ngIf="loadingModel !== 'refreshing'">sync</mat-icon>
+              <mat-spinner *ngIf="loadingModel === 'refreshing'" diameter="18"></mat-spinner>
+              Reload Model
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- Local Model Registry Catalog -->
+        <mat-card class="local-registry-card" *ngIf="localRegistry && localRegistry.models.length > 0">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>inventory_2</mat-icon>
+            <mat-card-title>Local Model Catalog</mat-card-title>
+            <mat-card-subtitle>{{ localRegistry.models.length }} model(s) installed locally</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="local-models-table">
+              <table mat-table [dataSource]="localRegistry.models" class="mat-elevation-z0">
+                <!-- Model ID Column -->
+                <ng-container matColumnDef="modelId">
+                  <th mat-header-cell *matHeaderCellDef>Model ID</th>
+                  <td mat-cell *matCellDef="let model">
+                    <div class="model-id-cell">
+                      <span class="model-name">{{ model.modelId }}</span>
+                      <mat-chip *ngIf="model.status === 'ACTIVE'" color="primary" selected class="status-chip-small">Active</mat-chip>
+                    </div>
+                  </td>
+                </ng-container>
+
+                <!-- Type Column -->
+                <ng-container matColumnDef="type">
+                  <th mat-header-cell *matHeaderCellDef>Type</th>
+                  <td mat-cell *matCellDef="let model">
+                    <mat-chip class="type-chip-small">{{ getModelTypeLabel(model.type) }}</mat-chip>
+                  </td>
+                </ng-container>
+
+                <!-- Dimensions Column -->
+                <ng-container matColumnDef="dimensions">
+                  <th mat-header-cell *matHeaderCellDef>Dim</th>
+                  <td mat-cell *matCellDef="let model">
+                    {{ model.metadata?.embeddingDim || '-' }}
+                  </td>
+                </ng-container>
+
+                <!-- Optimization Status Column -->
+                <ng-container matColumnDef="optimization">
+                  <th mat-header-cell *matHeaderCellDef>Optimization</th>
+                  <td mat-cell *matCellDef="let model">
+                    <div class="optimization-status-cell">
+                      <mat-icon *ngIf="isModelOptimized(model)" color="primary" matTooltip="Graph optimized">bolt</mat-icon>
+                      <mat-icon *ngIf="!isModelOptimized(model)" class="not-optimized" matTooltip="Not optimized">bolt</mat-icon>
+                      <span class="optimization-label">{{ getOptimizationInfo(model) }}</span>
+                    </div>
+                  </td>
+                </ng-container>
+
+                <!-- Actions Column -->
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let model">
+                    <div class="action-buttons">
+                      <!-- Optimize button (if not already optimized) -->
+                      <button mat-icon-button color="primary"
+                              *ngIf="!isModelOptimized(model)"
+                              (click)="optimizeModelFromCatalog(model.modelId)"
+                              [disabled]="optimizingModelId !== null"
+                              matTooltip="Optimize model graph">
+                        <mat-spinner *ngIf="optimizingModelId === model.modelId" diameter="18"></mat-spinner>
+                        <mat-icon *ngIf="optimizingModelId !== model.modelId">bolt</mat-icon>
+                      </button>
+                      <!-- Restore button (if optimized with backup) -->
+                      <button mat-icon-button color="warn"
+                              *ngIf="hasUnoptimizedBackup(model)"
+                              (click)="restoreUnoptimizedModel(model.modelId)"
+                              [disabled]="optimizingModelId !== null"
+                              matTooltip="Restore unoptimized version">
+                        <mat-spinner *ngIf="optimizingModelId === model.modelId" diameter="18"></mat-spinner>
+                        <mat-icon *ngIf="optimizingModelId !== model.modelId">restore</mat-icon>
+                      </button>
+                    </div>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="['modelId', 'type', 'dimensions', 'optimization', 'actions']"></tr>
+                <tr mat-row *matRowDef="let row; columns: ['modelId', 'type', 'dimensions', 'optimization', 'actions'];"></tr>
+              </table>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button color="primary" (click)="loadLocalRegistry()" [disabled]="localRegistryLoading">
+              <mat-icon *ngIf="!localRegistryLoading">refresh</mat-icon>
+              <mat-spinner *ngIf="localRegistryLoading" diameter="18"></mat-spinner>
+              Refresh Registry
+            </button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- Connection Cards -->
+        <div class="configs-list" *ngIf="configs.length > 0">
+          <mat-card *ngFor="let config of configs"
+                    class="config-card"
+                    [class.active-card]="config.active"
+                    [class.verified-card]="config.verified"
+                    [class.error-card]="config.lastError">
+
+            <mat-card-header>
+              <mat-icon mat-card-avatar [class]="getStatusColor(config)">
+                {{ getStatusIcon(config) }}
+              </mat-icon>
+              <mat-card-title>
+                {{ config.name }}
+                <mat-chip *ngIf="config.active" color="primary" selected>Active</mat-chip>
+              </mat-card-title>
+              <mat-card-subtitle>{{ config.endpointUrl }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <div class="config-details">
+                <div class="detail-row">
+                  <span class="detail-label">Status:</span>
+                  <span [class]="getStatusColor(config)">
+                    <mat-icon class="inline-icon">{{ getStatusIcon(config) }}</mat-icon>
+                    {{ config.verified ? 'Verified' : (config.lastVerifiedAt ? 'Failed' : 'Not tested') }}
+                  </span>
+                </div>
+
+                <div class="detail-row" *ngIf="config.lastVerifiedAt">
+                  <span class="detail-label">Last Checked:</span>
+                  <span>{{ formatDate(config.lastVerifiedAt) }}</span>
+                </div>
+
+                <div class="detail-row error-message" *ngIf="config.lastError">
+                  <span class="detail-label">Error:</span>
+                  <span class="error-text">{{ config.lastError }}</span>
+                </div>
+
+                <div class="detail-row" *ngIf="config.description">
+                  <span class="detail-label">Description:</span>
+                  <span>{{ config.description }}</span>
+                </div>
+
+                <div class="detail-row">
+                  <span class="detail-label">Timeouts:</span>
+                  <span>Connect: {{ config.connectionTimeoutMs }}ms, Read: {{ config.readTimeoutMs }}ms</span>
+                </div>
+
+                <div class="detail-row" *ngIf="config.autoSync">
+                  <span class="detail-label">Auto-sync:</span>
+                  <span>Every {{ config.syncIntervalMinutes }} minutes</span>
+                </div>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button color="primary"
+                      (click)="testConnection(config)"
+                      [disabled]="testingId === config.id">
+                <mat-icon *ngIf="testingId !== config.id">wifi_tethering</mat-icon>
+                <mat-spinner *ngIf="testingId === config.id" diameter="18"></mat-spinner>
+                {{ testingId === config.id ? 'Testing...' : 'Test Connection' }}
+              </button>
+
+              <button mat-button
+                      *ngIf="!config.active"
+                      (click)="activateConfig(config)">
+                <mat-icon>check_circle</mat-icon>
+                Set Active
+              </button>
+
+              <button mat-button (click)="showEditForm(config)">
+                <mat-icon>edit</mat-icon>
+                Edit
+              </button>
+
+              <button mat-button color="warn" (click)="deleteConfig(config)">
+                <mat-icon>delete</mat-icon>
+                Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+
+        <!-- Info Card -->
+        <mat-card class="info-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>info</mat-icon>
+            <mat-card-title>About Model Staging Services</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p>
+              A Model Staging Service handles the heavy lifting of downloading, converting, and validating
+              ML models. By running this as a separate service, the main Kompile app stays lightweight
+              and GraalVM-compatible.
+            </p>
+            <h4>Features:</h4>
+            <ul>
+              <li><strong>Model Downloads:</strong> Download models from HuggingFace, GitHub, or custom sources</li>
+              <li><strong>Format Conversion:</strong> Convert ONNX/TensorFlow to SameDiff format</li>
+              <li><strong>Registry Management:</strong> Browse and manage your model registry</li>
+              <li><strong>Export/Import:</strong> Transfer models between air-gapped environments</li>
+            </ul>
+            <p>
+              <strong>Tip:</strong> Run the staging service with:
+              <code>java -jar kompile-model-staging.jar</code> (default port: 8090)
+            </p>
+          </mat-card-content>
+        </mat-card>
+        </div><!-- End collapsible-content -->
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <!-- TAB 3: SDX SDK -->
+    <!-- ═══════════════════════════════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">developer_board</mat-icon>
+        SDX SDK
+      </ng-template>
+
+      <div class="tab-content">
+        <app-sdk-hub></app-sdk-hub>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

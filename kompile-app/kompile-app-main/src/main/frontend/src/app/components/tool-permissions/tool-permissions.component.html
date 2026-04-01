@@ -1,0 +1,127 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="tool-permissions-container">
+  <div class="permissions-header">
+    <h3>
+      <mat-icon>security</mat-icon>
+      Tool Permissions
+    </h3>
+    <p class="subtitle">Control which MCP tools agents can access. Tool rules override category rules, which override the default.</p>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="32"></mat-spinner>
+    <span>Loading permissions...</span>
+  </div>
+
+  <!-- Error -->
+  <div *ngIf="error" class="error-banner">
+    <mat-icon>error</mat-icon>
+    {{ error }}
+    <button mat-button (click)="loadPermissions()">Retry</button>
+  </div>
+
+  <div *ngIf="!loading && !error" class="permissions-content">
+    <!-- Default Permission -->
+    <div class="default-permission-section">
+      <div class="default-toggle">
+        <span class="toggle-label">Default Permission</span>
+        <mat-slide-toggle
+          [checked]="defaultPermission === 'ALLOW'"
+          (change)="onDefaultPermissionToggle()"
+          color="primary">
+          {{ defaultPermission }}
+        </mat-slide-toggle>
+      </div>
+      <p class="hint">Applied when no category or tool rule matches.</p>
+    </div>
+
+    <!-- Bulk Actions -->
+    <div class="bulk-actions">
+      <button mat-stroked-button color="primary" (click)="allowAllCategories()" matTooltip="Set all categories to ALLOW">
+        <mat-icon>check_circle</mat-icon>
+        Allow All
+      </button>
+      <button mat-stroked-button color="warn" (click)="denyWriteCategories()" matTooltip="Deny filesystem, indexing, config, backup, ingestion">
+        <mat-icon>block</mat-icon>
+        Deny Write Categories
+      </button>
+      <button mat-stroked-button (click)="loadPermissions()" matTooltip="Refresh from server">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+    </div>
+
+    <!-- Category Accordion -->
+    <mat-accordion multi>
+      <mat-expansion-panel *ngFor="let cat of categories" class="category-panel">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon class="category-icon">{{ getCategoryIcon(cat.key) }}</mat-icon>
+            <span class="category-name">{{ cat.displayName }}</span>
+            <span class="tool-count">({{ cat.toolCount }} tools)</span>
+          </mat-panel-title>
+          <mat-panel-description>
+            <mat-slide-toggle
+              [checked]="isCategoryAllowed(cat)"
+              (change)="onCategoryToggle(cat)"
+              (click)="$event.stopPropagation()"
+              color="primary">
+            </mat-slide-toggle>
+            <span class="permission-badge" [class.allowed]="isCategoryAllowed(cat)" [class.denied]="!isCategoryAllowed(cat)">
+              {{ isCategoryAllowed(cat) ? 'ALLOW' : 'DENY' }}
+            </span>
+            <span *ngIf="cat.permission == null" class="inherited-badge" matTooltip="Using default permission">(default)</span>
+            <button *ngIf="cat.permission != null" mat-icon-button (click)="resetCategoryRule(cat); $event.stopPropagation()" matTooltip="Reset to default" class="reset-btn">
+              <mat-icon>restart_alt</mat-icon>
+            </button>
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <!-- Tool List -->
+        <div class="tool-list">
+          <div *ngFor="let tool of cat.tools" class="tool-row">
+            <div class="tool-info">
+              <span class="tool-name">{{ tool.name }}</span>
+              <span class="tool-description">{{ tool.description }}</span>
+            </div>
+            <div class="tool-actions">
+              <mat-chip-listbox *ngIf="tool.hasOverride" class="override-chip">
+                <mat-chip color="accent" selected (removed)="removeToolOverride(tool)">
+                  Override
+                  <mat-icon matChipRemove>cancel</mat-icon>
+                </mat-chip>
+              </mat-chip-listbox>
+              <mat-slide-toggle
+                [checked]="isToolAllowed(tool)"
+                (change)="onToolToggle(tool)"
+                color="primary">
+              </mat-slide-toggle>
+              <span class="tool-permission-badge" [class.allowed]="isToolAllowed(tool)" [class.denied]="!isToolAllowed(tool)">
+                {{ tool.resolvedPermission }}
+              </span>
+            </div>
+          </div>
+          <div *ngIf="cat.tools.length === 0" class="no-tools">
+            No tools in this category.
+          </div>
+        </div>
+      </mat-expansion-panel>
+    </mat-accordion>
+  </div>
+</div>

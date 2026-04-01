@@ -1,0 +1,301 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="vlm-test-container">
+  <!-- Upload Section -->
+  <mat-card class="upload-card">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>upload_file</mat-icon>
+      <mat-card-title>VLM Test</mat-card-title>
+      <mat-card-subtitle>Run VLM processing in a subprocess (no indexing)</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="upload-form">
+        <div class="form-row">
+          <div class="file-input">
+            <button mat-stroked-button (click)="fileInput.click()" [disabled]="isRunning">
+              <mat-icon>attach_file</mat-icon>
+              {{ selectedFile ? selectedFile.name : 'Select File' }}
+            </button>
+            <input #fileInput type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+                   (change)="onFileSelected($event)" hidden>
+          </div>
+
+          <mat-form-field appearance="outline" class="model-select">
+            <mat-label>VLM Model</mat-label>
+            <mat-select [(ngModel)]="modelId" [ngModelOptions]="{standalone: true}">
+              <mat-option *ngIf="loadingModels" disabled>Loading models...</mat-option>
+              <mat-option *ngIf="!loadingModels && availableModels.length === 0" disabled>No VLM models in registry</mat-option>
+              <mat-option *ngFor="let model of availableModels" [value]="model.id">
+                {{ model.name }}
+                <span *ngIf="model.status" style="color: #888; font-size: 0.85em;"> ({{ model.status }})</span>
+              </mat-option>
+            </mat-select>
+            <mat-hint *ngIf="!loadingModels && availableModels.length === 0">
+              Stage a VLM model first via Model Staging
+            </mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="format-select">
+            <mat-label>Output Format</mat-label>
+            <mat-select [(ngModel)]="outputFormat" [ngModelOptions]="{standalone: true}">
+              <mat-option *ngFor="let fmt of outputFormats" [value]="fmt">{{ fmt }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <mat-expansion-panel class="advanced-panel">
+          <mat-expansion-panel-header>
+            <mat-panel-title>Advanced Options</mat-panel-title>
+          </mat-expansion-panel-header>
+          <div class="advanced-options">
+            <mat-form-field appearance="outline">
+              <mat-label>Max New Tokens</mat-label>
+              <input matInput type="number" [(ngModel)]="maxNewTokens" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Temperature</mat-label>
+              <input matInput type="number" step="0.1" [(ngModel)]="temperature" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Top-P</mat-label>
+              <input matInput type="number" step="0.1" [(ngModel)]="topP" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>PDF Render DPI</mat-label>
+              <input matInput type="number" [(ngModel)]="pdfRenderDpi" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Page Batch Size</mat-label>
+              <mat-select [(ngModel)]="pageBatchSize" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let size of pageBatchSizeOptions" [value]="size">{{ size }}</mat-option>
+              </mat-select>
+              <mat-hint>Pages per GPU batch (1 = safest)</mat-hint>
+            </mat-form-field>
+          </div>
+        </mat-expansion-panel>
+
+        <!-- Subprocess Memory Config (always visible) -->
+        <div class="memory-config-section" *ngIf="subprocessConfig">
+          <div class="memory-config-header">
+            <mat-icon>memory</mat-icon>
+            <span>Subprocess Memory</span>
+            <span class="memory-summary">Heap {{ editableConfig.heapSize }} &middot; Off-heap ~{{ getEffectiveOffHeapMb() }}</span>
+          </div>
+          <div class="memory-config-row">
+            <mat-form-field appearance="outline" class="config-field">
+              <mat-label>Heap Size</mat-label>
+              <mat-select [(ngModel)]="editableConfig.heapSize" [ngModelOptions]="{standalone: true}" (selectionChange)="onConfigChange()">
+                <mat-option *ngFor="let size of heapSizeOptions" [value]="size">{{ size }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="config-field">
+              <mat-label>Off-Heap Multiplier</mat-label>
+              <mat-select [(ngModel)]="editableConfig.offHeapMultiplier" [ngModelOptions]="{standalone: true}" (selectionChange)="onConfigChange()">
+                <mat-option *ngFor="let m of offHeapMultiplierOptions" [value]="m">{{ m }}x &rarr; ~{{ getEffectiveOffHeapMb() }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="config-field">
+              <mat-label>Timeout (min)</mat-label>
+              <input matInput type="number" [(ngModel)]="editableConfig.timeoutMinutes" [ngModelOptions]="{standalone: true}" (ngModelChange)="onConfigChange()" min="1" max="1440">
+            </mat-form-field>
+
+            <button mat-stroked-button color="accent" (click)="applyConfig()" *ngIf="hasConfigChanged" [disabled]="isApplyingConfig" class="apply-config-btn">
+              <mat-icon>save</mat-icon>
+              {{ isApplyingConfig ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </div>
+        <div *ngIf="!subprocessConfig" class="config-loading">
+          <mat-spinner diameter="20"></mat-spinner>
+          <span>Loading memory config...</span>
+        </div>
+
+        <div class="action-buttons">
+          <button mat-raised-button color="primary" (click)="runTest()"
+                  [disabled]="isRunning || !selectedFile || !modelId">
+            <mat-icon>play_arrow</mat-icon>
+            Run Test
+          </button>
+          <button mat-stroked-button color="warn" (click)="cancelTest()"
+                  *ngIf="isRunning">
+            <mat-icon>stop</mat-icon>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Persistent Error Message -->
+  <mat-card class="error-card persistent-error" *ngIf="lastErrorMessage && !isRunning">
+    <mat-icon color="warn">error</mat-icon>
+    <div class="error-content">
+      <strong>VLM Test Failed</strong>
+      <span>{{ lastErrorMessage }}</span>
+    </div>
+  </mat-card>
+
+  <!-- Progress Section -->
+  <mat-card class="progress-card" *ngIf="isRunning">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>hourglass_top</mat-icon>
+      <mat-card-title>Processing</mat-card-title>
+      <mat-card-subtitle>{{ currentPhase }} &mdash; {{ elapsedTime }}s elapsed</mat-card-subtitle>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-progress-bar mode="determinate" [value]="progressPercent"></mat-progress-bar>
+      <div class="progress-info">
+        <span>{{ progressPercent }}%</span>
+        <span>{{ currentMessage }}</span>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Subprocess Logs -->
+  <mat-card class="logs-card" *ngIf="taskId">
+    <mat-card-header>
+      <mat-icon mat-card-avatar>receipt_long</mat-icon>
+      <mat-card-title>Subprocess Logs</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <app-subprocess-logs #subprocessLogs
+        [taskId]="taskId"
+        logSource="vlm-test"
+        height="300px"
+        [maxLogs]="1000">
+      </app-subprocess-logs>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Results Section -->
+  <div class="results-section" *ngIf="hasResults && result">
+    <!-- Performance Summary -->
+    <div class="performance-cards">
+      <mat-card class="stat-card" *ngIf="performance">
+        <div class="stat-label">Total Time</div>
+        <div class="stat-value">{{ formatTime(performance.totalProcessingTimeMs || result.totalTimeMs) }}</div>
+      </mat-card>
+      <mat-card class="stat-card" *ngIf="performance?.totalGeneratedTokens">
+        <div class="stat-label">Tokens Generated</div>
+        <div class="stat-value">{{ performance.totalGeneratedTokens }}</div>
+      </mat-card>
+      <mat-card class="stat-card" *ngIf="performance?.avgTokensPerSecond">
+        <div class="stat-label">Avg Tokens/sec</div>
+        <div class="stat-value">{{ performance.avgTokensPerSecond | number:'1.1-1' }}</div>
+      </mat-card>
+      <mat-card class="stat-card" *ngIf="pages.length">
+        <div class="stat-label">Pages Processed</div>
+        <div class="stat-value">{{ pages.length }}</div>
+      </mat-card>
+      <mat-card class="stat-card" *ngIf="performance?.modelLoadTimeMs">
+        <div class="stat-label">Model Load</div>
+        <div class="stat-value">{{ formatTime(performance.modelLoadTimeMs) }}</div>
+      </mat-card>
+      <mat-card class="stat-card" *ngIf="performance?.startHeapUsedBytes && performance?.endHeapUsedBytes">
+        <div class="stat-label">Memory Delta</div>
+        <div class="stat-value">{{ formatBytes(performance.endHeapUsedBytes - performance.startHeapUsedBytes) }}</div>
+      </mat-card>
+    </div>
+
+    <!-- Error Message -->
+    <mat-card class="error-card" *ngIf="result.errorMessage">
+      <mat-icon color="warn">error</mat-icon>
+      <span>{{ result.errorMessage }}</span>
+    </mat-card>
+
+    <!-- Per-Page Results -->
+    <mat-card class="pages-card" *ngIf="pages.length > 0">
+      <mat-card-header>
+        <mat-card-title>Page Results</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <!-- Page selector chips -->
+        <mat-chip-listbox class="page-chips">
+          <mat-chip-option *ngFor="let page of pages; let i = index"
+                   [selected]="selectedPageIndex === i"
+                   (click)="selectPage(i)"
+                   [class.error-chip]="!page.success">
+            Page {{ page.pageNumber }}
+          </mat-chip-option>
+        </mat-chip-listbox>
+
+        <!-- Selected page details -->
+        <div class="page-detail" *ngIf="selectedPage">
+          <div class="page-metrics">
+            <span *ngIf="selectedPage.processingTimeMs" class="metric">
+              <mat-icon>timer</mat-icon> {{ formatTime(selectedPage.processingTimeMs) }}
+            </span>
+            <span *ngIf="selectedPage.generatedTokens" class="metric">
+              <mat-icon>token</mat-icon> {{ selectedPage.generatedTokens }} tokens
+            </span>
+            <span *ngIf="selectedPage.tokensPerSecond" class="metric">
+              <mat-icon>speed</mat-icon> {{ selectedPage.tokensPerSecond | number:'1.1-1' }} tok/s
+            </span>
+            <span *ngIf="!selectedPage.success" class="metric error">
+              <mat-icon>error</mat-icon> {{ selectedPage.error }}
+            </span>
+          </div>
+
+          <div class="page-text-container" *ngIf="selectedPage.text">
+            <div class="text-header">
+              <span>VLM Output</span>
+              <button mat-icon-button matTooltip="Copy to clipboard" (click)="copyText(selectedPage.text)">
+                <mat-icon>content_copy</mat-icon>
+              </button>
+            </div>
+            <pre class="page-text">{{ selectedPage.text }}</pre>
+          </div>
+
+          <div class="page-text-container" *ngIf="selectedPage.rawDocTags">
+            <div class="text-header">
+              <span>Raw DocTags</span>
+              <button mat-icon-button matTooltip="Copy to clipboard" (click)="copyText(selectedPage.rawDocTags)">
+                <mat-icon>content_copy</mat-icon>
+              </button>
+            </div>
+            <pre class="page-text raw-tags">{{ selectedPage.rawDocTags }}</pre>
+          </div>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Phase Timing Breakdown -->
+    <mat-card class="timing-card" *ngIf="performance?.phaseDurations">
+      <mat-card-header>
+        <mat-card-title>Phase Timing</mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <table class="timing-table">
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let entry of performance.phaseDurations | keyvalue">
+              <td>{{ entry.key }}</td>
+              <td>{{ formatTime($any(entry.value)) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

@@ -1,0 +1,586 @@
+<!--
+  Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="knowledge-graph-builder">
+  <!-- Header -->
+  <div class="builder-header">
+    <h2>
+      <span class="material-icons">hub</span>
+      Knowledge Graph Builder
+    </h2>
+    <div class="header-actions">
+      <button class="btn-icon" (click)="toggleAutoRefresh()" [class.active]="autoRefresh" title="Auto-refresh">
+        <span class="material-icons">{{ autoRefresh ? 'sync' : 'sync_disabled' }}</span>
+      </button>
+      <button class="btn-icon" (click)="loadJobs()" title="Refresh">
+        <span class="material-icons">refresh</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- View Tabs -->
+  <div class="view-tabs">
+    <button [class.active]="viewMode === 'overview'" (click)="setViewMode('overview')">
+      <span class="material-icons">dashboard</span> Overview
+    </button>
+    <button [class.active]="viewMode === 'jobs'" (click)="setViewMode('jobs')">
+      <span class="material-icons">work</span> Jobs
+      <span class="badge" *ngIf="getRunningJobsCount() > 0">{{ getRunningJobsCount() }}</span>
+    </button>
+    <button [class.active]="viewMode === 'proposals'" (click)="setViewMode('proposals')">
+      <span class="material-icons">pending_actions</span> Proposals
+    </button>
+    <button [class.active]="viewMode === 'logs'" (click)="setViewMode('logs')" *ngIf="selectedJob">
+      <span class="material-icons">visibility</span> LLM Logs
+    </button>
+    <button [class.active]="viewMode === 'config'" (click)="setViewMode('config')">
+      <span class="material-icons">settings</span> Config
+    </button>
+  </div>
+
+  <!-- Error Message -->
+  <div class="error-banner" *ngIf="error">
+    <span class="material-icons">error</span>
+    {{ error }}
+    <button (click)="error = null">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <!-- Overview View -->
+  <div class="view-content" *ngIf="viewMode === 'overview'">
+    <div class="overview-grid">
+      <!-- Builder Selection Card -->
+      <div class="card builder-card">
+        <h3><span class="material-icons">extension</span> Select Builder</h3>
+        <div class="builder-list">
+          <div class="builder-item" *ngFor="let builder of builders"
+               [class.selected]="selectedBuilderId === builder.id"
+               (click)="selectBuilder(builder.id)">
+            <span class="material-icons builder-icon">{{ getBuilderIcon(builder.type) }}</span>
+            <div class="builder-info">
+              <span class="builder-name">{{ builder.displayName }}</span>
+              <span class="builder-type">{{ builder.type }}</span>
+            </div>
+            <span class="material-icons check-icon" *ngIf="selectedBuilderId === builder.id">check_circle</span>
+          </div>
+        </div>
+        <p class="builder-description" *ngIf="selectedBuilder">
+          {{ selectedBuilder.description }}
+        </p>
+      </div>
+
+      <!-- Quick Stats Card -->
+      <div class="card stats-card">
+        <h3><span class="material-icons">analytics</span> Quick Stats</h3>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-value">{{ jobs.length }}</span>
+            <span class="stat-label">Total Jobs</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value">{{ getRunningJobsCount() }}</span>
+            <span class="stat-label">Running</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value">{{ proposals.length }}</span>
+            <span class="stat-label">Proposals</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value">{{ getPendingProposalsCount() }}</span>
+            <span class="stat-label">Pending Review</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Start Job Card -->
+      <div class="card action-card">
+        <h3><span class="material-icons">play_circle</span> Start Extraction</h3>
+        <p *ngIf="!selectedBuilder">Select a builder to start extracting entities and relationships.</p>
+        <div *ngIf="selectedBuilder">
+          <p>Extract entities using <strong>{{ selectedBuilder.displayName }}</strong></p>
+          <div class="action-buttons">
+            <button class="btn btn-primary" (click)="startJob()" [disabled]="loading">
+              <span class="material-icons">play_arrow</span>
+              Start Extraction Job
+            </button>
+            <button class="btn btn-secondary" (click)="openConfigDialog()">
+              <span class="material-icons">tune</span>
+              Configure
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manual Entry Card -->
+      <div class="card action-card">
+        <h3><span class="material-icons">edit</span> Manual Entry</h3>
+        <p>Create triples manually without LLM extraction.</p>
+        <button class="btn btn-secondary" (click)="openManualProposalForm()">
+          <span class="material-icons">add</span>
+          Add Triple
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jobs View -->
+  <div class="view-content" *ngIf="viewMode === 'jobs'">
+    <div class="jobs-list">
+      <div class="job-card" *ngFor="let job of jobs; trackBy: trackByJobId"
+           [class.selected]="selectedJob?.jobId === job.jobId"
+           (click)="selectJob(job)">
+        <div class="job-header">
+          <span class="job-id">{{ job.jobId | slice:0:8 }}...</span>
+          <span class="job-status" [style.background-color]="getJobStatusColor(job.status)">
+            {{ job.status }}
+          </span>
+        </div>
+        <div class="job-meta">
+          <span class="builder-type">{{ job.builderType }}</span>
+          <span class="job-time">{{ formatTimestamp(job.createdAt) }}</span>
+        </div>
+        <div class="job-progress" *ngIf="job.status === 'RUNNING'">
+          <div class="progress-bar">
+            <div class="progress-fill" [style.width.%]="job.progressPercent || 0"></div>
+          </div>
+          <span class="progress-text">{{ job.progressPercent || 0 }}% ({{ job.processedChunks || 0 }}/{{ job.totalChunks || 0 }})</span>
+        </div>
+        <div class="job-stats">
+          <span><span class="material-icons">check_circle</span> {{ job.proposalsCreated || 0 }} created</span>
+          <span><span class="material-icons">thumb_up</span> {{ job.proposalsAccepted || 0 }} accepted</span>
+          <span><span class="material-icons">thumb_down</span> {{ job.proposalsRejected || 0 }} rejected</span>
+        </div>
+        <div class="job-actions" *ngIf="job.status === 'RUNNING'">
+          <button class="btn btn-small btn-danger" (click)="cancelJob(job); $event.stopPropagation()">
+            <span class="material-icons">stop</span> Cancel
+          </button>
+        </div>
+      </div>
+      <div class="empty-state" *ngIf="jobs.length === 0">
+        <span class="material-icons">work_off</span>
+        <p>No extraction jobs yet</p>
+        <button class="btn btn-primary" (click)="setViewMode('overview')">Start a Job</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Proposals View -->
+  <div class="view-content" *ngIf="viewMode === 'proposals'">
+    <!-- Filters -->
+    <div class="proposals-toolbar">
+      <div class="filter-group">
+        <select [(ngModel)]="proposalStatusFilter" [ngModelOptions]="{standalone: true}" (change)="onProposalFilterChange()">
+          <option value="ALL">All Statuses</option>
+          <option value="PENDING">Pending</option>
+          <option value="ACCEPTED">Accepted</option>
+          <option value="REJECTED">Rejected</option>
+        </select>
+        <input type="text" [(ngModel)]="proposalSearchQuery" [ngModelOptions]="{standalone: true}"
+               placeholder="Search proposals..."
+               (keyup.enter)="onProposalSearch()">
+        <button class="btn btn-small" (click)="onProposalSearch()">
+          <span class="material-icons">search</span>
+        </button>
+      </div>
+      <div class="bulk-actions" *ngIf="selectedProposals.size > 0">
+        <span class="selection-count">{{ selectedProposals.size }} selected</span>
+        <button class="btn btn-small btn-success" (click)="openBulkActionDialog('accept')">
+          <span class="material-icons">check</span> Accept All
+        </button>
+        <button class="btn btn-small btn-danger" (click)="openBulkActionDialog('reject')">
+          <span class="material-icons">close</span> Reject All
+        </button>
+        <button class="btn btn-small" (click)="deselectAllProposals()">Clear</button>
+      </div>
+    </div>
+
+    <!-- Proposals Table -->
+    <div class="proposals-table-container">
+      <table class="proposals-table">
+        <thead>
+          <tr>
+            <th class="checkbox-col">
+              <input type="checkbox"
+                     [checked]="selectedProposals.size === proposals.length && proposals.length > 0"
+                     (change)="selectedProposals.size === proposals.length ? deselectAllProposals() : selectAllProposals()">
+            </th>
+            <th>Subject</th>
+            <th>Predicate</th>
+            <th>Object</th>
+            <th>Confidence</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let proposal of proposals; trackBy: trackByProposalId"
+              [class.selected]="selectedProposals.has(proposal.proposalId)">
+            <td class="checkbox-col">
+              <input type="checkbox"
+                     [checked]="selectedProposals.has(proposal.proposalId)"
+                     (change)="toggleProposalSelection(proposal.proposalId)">
+            </td>
+            <td>
+              <span class="entity-type">{{ proposal.subjectType }}</span>
+              <span class="entity-name">{{ proposal.subjectName }}</span>
+            </td>
+            <td class="predicate-cell">{{ proposal.predicateName }}</td>
+            <td>
+              <span class="entity-type">{{ proposal.objectType }}</span>
+              <span class="entity-name">{{ proposal.objectName }}</span>
+            </td>
+            <td>
+              <span class="confidence-bar"
+                    [style.width.%]="proposal.confidence * 100"
+                    [class.high]="proposal.confidence >= 0.8"
+                    [class.medium]="proposal.confidence >= 0.5 && proposal.confidence < 0.8"
+                    [class.low]="proposal.confidence < 0.5">
+              </span>
+              {{ formatConfidence(proposal.confidence) }}
+            </td>
+            <td>
+              <span class="status-badge" [style.background-color]="getProposalStatusColor(proposal.status)">
+                {{ proposal.status }}
+              </span>
+            </td>
+            <td class="source-cell">
+              <span class="source-doc" *ngIf="proposal.sourceDocumentId" title="{{ proposal.sourceContext }}">
+                {{ proposal.sourceDocumentId | slice:0:15 }}...
+              </span>
+            </td>
+            <td class="actions-cell">
+              <button class="btn-icon success" *ngIf="proposal.status === 'PENDING'"
+                      (click)="acceptProposal(proposal)" title="Accept">
+                <span class="material-icons">check</span>
+              </button>
+              <button class="btn-icon danger" *ngIf="proposal.status === 'PENDING'"
+                      (click)="rejectProposal(proposal)" title="Reject">
+                <span class="material-icons">close</span>
+              </button>
+              <span class="material-icons node-link" *ngIf="proposal.status === 'ACCEPTED'" title="View in graph">
+                link
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="empty-state" *ngIf="proposals.length === 0">
+        <span class="material-icons">pending_actions</span>
+        <p>No proposals found</p>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination" *ngIf="proposalsTotalPages > 1">
+      <button (click)="proposalsPrevPage()" [disabled]="proposalsPage === 0">
+        <span class="material-icons">chevron_left</span>
+      </button>
+      <span>Page {{ proposalsPage + 1 }} of {{ proposalsTotalPages }}</span>
+      <button (click)="proposalsNextPage()" [disabled]="proposalsPage >= proposalsTotalPages - 1">
+        <span class="material-icons">chevron_right</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- LLM Logs View (Full Transparency) -->
+  <div class="view-content" *ngIf="viewMode === 'logs'">
+    <div class="logs-header">
+      <h3>Extraction Logs - Full LLM Visibility</h3>
+      <p class="logs-description">View complete prompts and responses for transparency and debugging.</p>
+    </div>
+
+    <div class="logs-list">
+      <div class="log-card" *ngFor="let log of extractionLogs; trackBy: trackByLogId"
+           [class.success]="log.success" [class.failed]="!log.success"
+           (click)="selectLog(log)">
+        <div class="log-header">
+          <span class="chunk-id">
+            <span class="material-icons">article</span>
+            {{ log.chunkId | slice:0:12 }}...
+          </span>
+          <span class="log-status" [class.success]="log.success" [class.failed]="!log.success">
+            {{ log.success ? 'Success' : 'Failed' }}
+          </span>
+        </div>
+        <div class="log-meta">
+          <span><span class="material-icons">psychology</span> {{ log.modelName || 'Unknown' }}</span>
+          <span><span class="material-icons">timer</span> {{ log.latencyMs || 0 }}ms</span>
+          <span><span class="material-icons">token</span> {{ (log.promptTokens || 0) + (log.responseTokens || 0) }} tokens</span>
+          <span><span class="material-icons">hub</span> {{ log.entitiesCount || 0 }} entities, {{ log.relationshipsCount || 0 }} relations</span>
+        </div>
+        <div class="log-error" *ngIf="!log.success && log.errorMessage">
+          <span class="material-icons">error</span>
+          {{ log.errorMessage }}
+        </div>
+      </div>
+      <div class="empty-state" *ngIf="extractionLogs.length === 0">
+        <span class="material-icons">visibility_off</span>
+        <p>No extraction logs available</p>
+      </div>
+    </div>
+
+    <!-- Pagination -->
+    <div class="pagination" *ngIf="logsTotalPages > 1">
+      <button (click)="logsPrevPage()" [disabled]="logsPage === 0">
+        <span class="material-icons">chevron_left</span>
+      </button>
+      <span>Page {{ logsPage + 1 }} of {{ logsTotalPages }}</span>
+      <button (click)="logsNextPage()" [disabled]="logsPage >= logsTotalPages - 1">
+        <span class="material-icons">chevron_right</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Configuration View -->
+  <div class="view-content" *ngIf="viewMode === 'config'">
+    <div class="config-section">
+      <h3>Builder Configuration</h3>
+      <div class="config-form">
+        <div class="form-group">
+          <label>Entity Types</label>
+          <div class="entity-types-list">
+            <span class="entity-type-chip" *ngFor="let type of builderConfig.entityTypes">
+              {{ type }}
+              <button (click)="removeEntityType(type)">
+                <span class="material-icons">close</span>
+              </button>
+            </span>
+          </div>
+          <div class="add-entity-type">
+            <input type="text" #newEntityType placeholder="Add entity type...">
+            <button class="btn btn-small" (click)="addEntityType(newEntityType.value); newEntityType.value = ''">
+              <span class="material-icons">add</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Temperature</label>
+          <input type="range" min="0" max="1" step="0.1" [(ngModel)]="builderConfig.temperature" [ngModelOptions]="{standalone: true}">
+          <span class="range-value">{{ builderConfig.temperature }}</span>
+        </div>
+
+        <div class="form-group">
+          <label>Minimum Confidence</label>
+          <input type="range" min="0" max="1" step="0.1" [(ngModel)]="builderConfig.minConfidence" [ngModelOptions]="{standalone: true}">
+          <span class="range-value">{{ builderConfig.minConfidence }}</span>
+        </div>
+
+        <div class="form-group">
+          <label>Auto-Accept Threshold</label>
+          <input type="range" min="0" max="1" step="0.05" [(ngModel)]="builderConfig.autoAcceptThreshold" [ngModelOptions]="{standalone: true}">
+          <span class="range-value">{{ builderConfig.autoAcceptThreshold || 'Disabled' }}</span>
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label>
+            <input type="checkbox" [(ngModel)]="builderConfig.autoAccept" [ngModelOptions]="{standalone: true}">
+            Auto-accept high confidence proposals
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Log Detail Modal -->
+<div class="modal-overlay" *ngIf="selectedLog" (click)="closeLogDetail()">
+  <div class="modal log-detail-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h3>
+        <span class="material-icons">visibility</span>
+        Extraction Log Details
+      </h3>
+      <button class="close-btn" (click)="closeLogDetail()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="log-detail-section">
+        <h4>Chunk Information</h4>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <span class="label">Chunk ID:</span>
+            <span class="value">{{ selectedLog.chunkId }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Document ID:</span>
+            <span class="value">{{ selectedLog.documentId || '-' }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Model:</span>
+            <span class="value">{{ selectedLog.modelProvider }} / {{ selectedLog.modelName }}</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Latency:</span>
+            <span class="value">{{ selectedLog.latencyMs }}ms</span>
+          </div>
+          <div class="detail-item">
+            <span class="label">Tokens:</span>
+            <span class="value">{{ selectedLog.promptTokens }} prompt + {{ selectedLog.responseTokens }} response</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-detail-section">
+        <h4><span class="material-icons">input</span> Input Text</h4>
+        <pre class="code-block input-text">{{ selectedLog.inputText }}</pre>
+      </div>
+
+      <div class="log-detail-section">
+        <h4><span class="material-icons">send</span> Full Prompt</h4>
+        <pre class="code-block prompt-text">{{ selectedLog.promptText }}</pre>
+      </div>
+
+      <div class="log-detail-section">
+        <h4><span class="material-icons">reply</span> Full Response</h4>
+        <pre class="code-block response-text">{{ selectedLog.responseText }}</pre>
+      </div>
+
+      <div class="log-detail-section" *ngIf="selectedLog.parsedEntitiesJson">
+        <h4><span class="material-icons">category</span> Parsed Entities</h4>
+        <div class="entities-list">
+          <div class="parsed-entity" *ngFor="let entity of parseEntities(selectedLog.parsedEntitiesJson)">
+            <span class="entity-id">{{ entity.id }}</span>
+            <span class="entity-label">{{ entity.label }}</span>
+            <span class="entity-title">{{ entity.title }}</span>
+            <span class="entity-description" *ngIf="entity.description">{{ entity.description }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-detail-section" *ngIf="selectedLog.parsedRelationshipsJson">
+        <h4><span class="material-icons">link</span> Parsed Relationships</h4>
+        <div class="relationships-list">
+          <div class="parsed-relationship" *ngFor="let rel of parseRelationships(selectedLog.parsedRelationshipsJson)">
+            <span class="rel-source">{{ rel.source }}</span>
+            <span class="rel-arrow">--[{{ rel.type }}]--></span>
+            <span class="rel-target">{{ rel.target }}</span>
+            <span class="rel-confidence" *ngIf="rel.confidence">{{ formatConfidence(rel.confidence) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="log-detail-section error-section" *ngIf="!selectedLog.success">
+        <h4><span class="material-icons">error</span> Error</h4>
+        <pre class="code-block error-text">{{ selectedLog.errorMessage }}</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk Action Dialog -->
+<div class="modal-overlay" *ngIf="showBulkActionDialog" (click)="closeBulkActionDialog()">
+  <div class="modal bulk-action-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h3>{{ bulkActionType === 'accept' ? 'Accept' : 'Reject' }} {{ selectedProposals.size }} Proposals</h3>
+      <button class="close-btn" (click)="closeBulkActionDialog()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p *ngIf="bulkActionType === 'accept'">
+        This will accept {{ selectedProposals.size }} proposals and create the corresponding nodes and edges in the knowledge graph.
+      </p>
+      <div *ngIf="bulkActionType === 'reject'">
+        <p>This will reject {{ selectedProposals.size }} proposals.</p>
+        <div class="form-group">
+          <label>Rejection Reason (optional)</label>
+          <textarea [(ngModel)]="bulkRejectReason" [ngModelOptions]="{standalone: true}" placeholder="Enter reason..."></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" (click)="closeBulkActionDialog()">Cancel</button>
+      <button class="btn" [class.btn-success]="bulkActionType === 'accept'"
+              [class.btn-danger]="bulkActionType === 'reject'"
+              (click)="performBulkAction()">
+        {{ bulkActionType === 'accept' ? 'Accept All' : 'Reject All' }}
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Manual Proposal Form -->
+<div class="modal-overlay" *ngIf="showManualProposalForm" (click)="closeManualProposalForm()">
+  <div class="modal manual-proposal-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h3><span class="material-icons">edit</span> Create Manual Triple</h3>
+      <button class="close-btn" (click)="closeManualProposalForm()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="triple-form">
+        <div class="triple-node subject">
+          <h4>Subject</h4>
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" [(ngModel)]="manualProposal.subjectName" [ngModelOptions]="{standalone: true}" placeholder="Entity name...">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select [(ngModel)]="manualProposal.subjectType" [ngModelOptions]="{standalone: true}">
+              <option *ngFor="let type of builderConfig.entityTypes" [value]="type">{{ type }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="triple-predicate">
+          <div class="form-group">
+            <label>Predicate (Relationship)</label>
+            <input type="text" [(ngModel)]="manualProposal.predicateName" [ngModelOptions]="{standalone: true}" placeholder="e.g., WORKS_AT, LOCATED_IN...">
+          </div>
+        </div>
+
+        <div class="triple-node object">
+          <h4>Object</h4>
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" [(ngModel)]="manualProposal.objectName" [ngModelOptions]="{standalone: true}" placeholder="Entity name...">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select [(ngModel)]="manualProposal.objectType" [ngModelOptions]="{standalone: true}">
+              <option *ngFor="let type of builderConfig.entityTypes" [value]="type">{{ type }}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Description (optional)</label>
+        <textarea [(ngModel)]="manualProposal.description" [ngModelOptions]="{standalone: true}" placeholder="Describe this relationship..."></textarea>
+      </div>
+
+      <div class="form-group checkbox-group">
+        <label>
+          <input type="checkbox" [(ngModel)]="manualProposal.autoAccept" [ngModelOptions]="{standalone: true}">
+          Automatically accept this proposal
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" (click)="closeManualProposalForm()">Cancel</button>
+      <button class="btn btn-primary" (click)="submitManualProposal()"
+              [disabled]="!manualProposal.subjectName || !manualProposal.predicateName || !manualProposal.objectName">
+        <span class="material-icons">add</span> Create Triple
+      </button>
+    </div>
+  </div>
+</div>

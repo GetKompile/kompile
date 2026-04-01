@@ -1,0 +1,100 @@
+.permission-manager {
+  padding: 16px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.header-row h3 {
+  margin: 0;
+}
+
+.add-command-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.command-input {
+  flex: 1;
+}
+
+.permissions-tabs {
+  margin-top: 16px;
+}
+
+.commands-list {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.command-card {
+  margin-bottom: 8px;
+}
+
+.command-card.pending mat-card-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.command-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.command-text {
+  font-family: monospace;
+  background: var(--mat-app-surface-container-high);
+  padding: 4px 8px;
+  border-radius: 4px;
+  flex: 1;
+}
+
+.risk-chip {
+  font-size: 11px;
+  height: 24px;
+}
+
+.command-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.allowed-chip, .denied-chip {
+  cursor: pointer;
+}
+
+.allowed-chip {
+  background: var(--mat-app-primary-container);
+  color: var(--mat-app-on-primary-container);
+}
+
+.denied-chip {
+  background: var(--mat-app-error-container);
+  color: var(--mat-app-on-error-container);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px;
+  color: var(--mat-app-on-surface-variant);
+}
+
+.empty-state mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+}

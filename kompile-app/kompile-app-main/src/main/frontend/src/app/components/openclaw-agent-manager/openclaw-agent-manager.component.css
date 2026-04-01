@@ -1,0 +1,65 @@
+.agent-manager {
+  padding: 16px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.header-row h3 {
+  margin: 0;
+}
+
+.list-card, .editor-card {
+  margin-bottom: 16px;
+}
+
+.agent-table {
+  width: 100%;
+}
+
+.agent-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.default-chip {
+  font-size: 10px;
+  height: 20px;
+}
+
+.tool-chip {
+  font-size: 11px;
+  height: 24px;
+  margin: 2px;
+}
+
+.agent-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.form-row.half {
+  align-items: center;
+}
+
+.full-width {
+  flex: 1;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}

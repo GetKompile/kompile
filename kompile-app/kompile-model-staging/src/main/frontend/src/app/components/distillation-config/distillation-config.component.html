@@ -1,0 +1,87 @@
+<div class="distillation-config">
+  <h2>Knowledge Distillation</h2>
+
+  <!-- Model Selection -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Model Selection</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="model-select-grid">
+        <div class="model-select-col">
+          <h3><mat-icon>school</mat-icon> Teacher Model</h3>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Teacher (larger model)</mat-label>
+            <mat-select [(ngModel)]="teacherModelId">
+              <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }} ({{ m.type }})</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+        <div class="arrow-col">
+          <mat-icon class="arrow-icon">arrow_forward</mat-icon>
+        </div>
+        <div class="model-select-col">
+          <h3><mat-icon>child_care</mat-icon> Student Model</h3>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Student (smaller model)</mat-label>
+            <mat-select [(ngModel)]="studentModelId">
+              <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }} ({{ m.type }})</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Distillation Type -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Distillation Method</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="type-grid">
+        <mat-card *ngFor="let t of distillationTypeCards"
+                  [class.selected]="distillationType === t.id"
+                  (click)="selectDistillationType(t.id)" class="type-card">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>{{ t.icon }}</mat-icon>
+            <mat-card-title>{{ t.name }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content><p>{{ t.description }}</p></mat-card-content>
+        </mat-card>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Parameters -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Parameters</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="params-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Temperature</mat-label>
+          <input matInput type="number" [(ngModel)]="temperature" step="0.5" min="1" max="20">
+          <mat-hint>Higher = softer probability distribution</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Alpha (KD weight)</mat-label>
+          <input matInput type="number" [(ngModel)]="alpha" step="0.1" min="0" max="1">
+          <mat-hint>0 = only hard labels, 1 = only soft labels</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Dataset</mat-label>
+          <mat-select [(ngModel)]="datasetId">
+            <mat-option *ngFor="let d of datasets" [value]="d.id">{{ d.name }} ({{ d.totalSamples }} samples)</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+      <div class="peft-toggle">
+        <mat-slide-toggle [(ngModel)]="enableStudentPeft">Apply LoRA to Student Model</mat-slide-toggle>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <div class="actions">
+    <button mat-raised-button color="primary" (click)="startDistillation()"
+            [disabled]="submitting || !teacherModelId || !studentModelId || !datasetId">
+      <mat-icon>school</mat-icon>
+      {{ submitting ? 'Starting...' : 'Start Distillation' }}
+    </button>
+  </div>
+</div>

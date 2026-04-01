@@ -1,0 +1,88 @@
+<div class="alignment-config">
+  <h2>RL Alignment</h2>
+
+  <!-- Algorithm Selection -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Algorithm</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="alg-grid">
+        <mat-card *ngFor="let a of algorithmCards"
+                  [class.selected]="selectedAlgorithm === a.id"
+                  (click)="selectAlgorithm(a.id)" class="alg-card">
+          <mat-card-header>
+            <mat-card-title>{{ a.name }}</mat-card-title>
+            <mat-card-subtitle>{{ a.id }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <p>{{ a.description }}</p>
+            <mat-chip *ngIf="a.needsReward" class="reward-chip">Requires Reward Model</mat-chip>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Model & Dataset -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Model & Dataset</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="config-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Base Model</mat-label>
+          <mat-select [(ngModel)]="baseModelId">
+            <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline" *ngIf="needsRewardModel()">
+          <mat-label>Reward Model</mat-label>
+          <mat-select [(ngModel)]="rewardModelId">
+            <mat-option *ngFor="let m of models" [value]="m.model_id">{{ m.model_id }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Preference Dataset</mat-label>
+          <mat-select [(ngModel)]="datasetId">
+            <mat-option *ngFor="let d of datasets" [value]="d.id">{{ d.name }} ({{ d.totalSamples }} samples)</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Parameters -->
+  <mat-card class="section-card">
+    <mat-card-header><mat-card-title>Parameters</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <div class="config-grid">
+        <mat-form-field appearance="outline">
+          <mat-label>Beta (KL penalty)</mat-label>
+          <input matInput type="number" [(ngModel)]="beta" step="0.01">
+          <mat-hint>Regularization strength</mat-hint>
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Label Smoothness</mat-label>
+          <input matInput type="number" [(ngModel)]="labelSmoothness" step="0.01" min="0" max="0.5">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Max Prompt Length</mat-label>
+          <input matInput type="number" [(ngModel)]="maxPromptLength">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Max Completion Length</mat-label>
+          <input matInput type="number" [(ngModel)]="maxCompletionLength">
+        </mat-form-field>
+      </div>
+      <div class="peft-toggle">
+        <mat-slide-toggle [(ngModel)]="enablePeft">Enable LoRA (Recommended)</mat-slide-toggle>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <div class="actions">
+    <button mat-raised-button color="primary" (click)="startAlignment()"
+            [disabled]="submitting || !baseModelId || !datasetId">
+      <mat-icon>psychology</mat-icon>
+      {{ submitting ? 'Starting...' : 'Start Alignment' }}
+    </button>
+  </div>
+</div>

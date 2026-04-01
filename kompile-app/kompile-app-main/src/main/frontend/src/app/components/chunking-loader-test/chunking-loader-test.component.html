@@ -1,0 +1,951 @@
+<!--
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+
+<div class="chunking-loader-test-container">
+  <!-- Header -->
+  <div class="test-header">
+    <div class="header-content">
+      <div class="header-icon">
+        <mat-icon>science</mat-icon>
+      </div>
+      <div class="header-text">
+        <h2>Chunking & Loading Test Lab</h2>
+        <p class="header-description">
+          Test document loading and chunking configurations without indexing.
+          Simulate the full document ingestion pipeline and preview results.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- OCR Status Banner -->
+  <div class="ocr-status-banner" [class.ocr-available]="isOcrAvailable()" [class.ocr-unavailable]="!isOcrAvailable() && !isLoadingOcrStatus">
+    <div class="ocr-status-header" (click)="toggleOcrStatusDetails()">
+      <div class="ocr-status-info">
+        <mat-icon [color]="getOcrStatusColor()">{{ getOcrStatusIcon() }}</mat-icon>
+        <span class="ocr-status-text">{{ getOcrStatusText() }}</span>
+        <span *ngIf="ocrModels.length > 0" class="ocr-model-count">
+          ({{ getLoadedOcrModelCount() }}/{{ ocrModels.length }} models loaded)
+        </span>
+      </div>
+      <div class="ocr-status-actions">
+        <button mat-icon-button
+                matTooltip="Refresh OCR status"
+                (click)="refreshOcrStatus(); $event.stopPropagation()"
+                [disabled]="isLoadingOcrStatus">
+          <mat-icon [class.spinning]="isLoadingOcrStatus">refresh</mat-icon>
+        </button>
+        <mat-icon class="expand-indicator">{{ showOcrStatusDetails ? 'expand_less' : 'expand_more' }}</mat-icon>
+      </div>
+    </div>
+
+    <!-- OCR Status Details (Expandable) -->
+    <div *ngIf="showOcrStatusDetails" class="ocr-status-details" @expandCollapse>
+      <mat-divider></mat-divider>
+      <div class="ocr-details-grid">
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.ocrEnabled">{{ ocrStatus?.ocrEnabled ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>OCR Enabled</span>
+        </div>
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.pipelineReady">{{ ocrStatus?.pipelineReady ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>Pipeline Ready</span>
+        </div>
+        <div class="ocr-detail-item">
+          <mat-icon [class.active]="ocrStatus?.postProcessorAvailable">{{ ocrStatus?.postProcessorAvailable ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>Post-Processor</span>
+        </div>
+        <div class="ocr-detail-item" *ngIf="ocrConfig?.useVlm !== undefined">
+          <mat-icon [class.active]="ocrConfig?.useVlm">{{ ocrConfig?.useVlm ? 'check_circle' : 'cancel' }}</mat-icon>
+          <span>VLM Mode</span>
+        </div>
+      </div>
+
+      <!-- Model List -->
+      <div *ngIf="ocrModels.length > 0" class="ocr-models-section">
+        <h4>Available Models</h4>
+        <div class="ocr-models-list">
+          <div *ngFor="let model of ocrModels" class="ocr-model-item" [class.loaded]="model.isLoaded">
+            <mat-icon [color]="model.isLoaded ? 'primary' : 'warn'">
+              {{ model.isLoaded ? 'check_circle' : 'radio_button_unchecked' }}
+            </mat-icon>
+            <span class="model-name">{{ model.name }}</span>
+            <mat-chip class="model-type-chip">{{ model.type }}</mat-chip>
+          </div>
+        </div>
+      </div>
+
+      <p *ngIf="ocrStatusError" class="ocr-error-detail">
+        <mat-icon color="warn">error</mat-icon>
+        {{ ocrStatusError }}
+      </p>
+    </div>
+  </div>
+
+  <div class="test-layout">
+    <!-- Left Panel: Configuration -->
+    <div class="config-panel">
+      <!-- Source Selection Section -->
+      <mat-card class="config-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>source</mat-icon>
+          <mat-card-title>1. Select Source</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <!-- Source Type Tabs -->
+          <div class="source-type-tabs">
+            <button mat-stroked-button
+                    [class.active]="sourceType === 'file'"
+                    (click)="selectSourceType('file')"
+                    [disabled]="isUploading || isAnalyzing">
+              <mat-icon>upload_file</mat-icon>
+              <span>File Upload</span>
+            </button>
+            <button mat-stroked-button
+                    [class.active]="sourceType === 'text'"
+                    (click)="selectSourceType('text')"
+                    [disabled]="isUploading || isAnalyzing">
+              <mat-icon>article</mat-icon>
+              <span>Text/Clipboard</span>
+            </button>
+            <button mat-stroked-button
+                    [class.active]="sourceType === 'path'"
+                    (click)="selectSourceType('path')"
+                    [disabled]="isUploading || isAnalyzing">
+              <mat-icon>folder</mat-icon>
+              <span>Server Path</span>
+            </button>
+          </div>
+
+          <!-- File Upload Section -->
+          <div *ngIf="sourceType === 'file'" class="source-content" @fadeIn>
+            <div class="file-drop-zone"
+                 [class.drag-over]="isDragOver"
+                 [class.has-files]="selectedFiles.length > 0"
+                 (dragover)="onDragOver($event)"
+                 (dragleave)="onDragLeave($event)"
+                 (drop)="onDrop($event)"
+                 (click)="triggerFileInput()">
+              <input type="file"
+                     id="testFileInput"
+                     #fileInput
+                     style="display: none;"
+                     (change)="onFileSelectedChange($event)"
+                     multiple />
+
+              <div *ngIf="selectedFiles.length === 0" class="drop-zone-content">
+                <mat-icon class="upload-icon">cloud_upload</mat-icon>
+                <p class="drop-text">Drag & drop files here</p>
+                <p class="drop-subtext">or click to browse</p>
+              </div>
+
+              <div *ngIf="selectedFiles.length > 0" class="selected-files-list" (click)="$event.stopPropagation()">
+                <div *ngFor="let file of selectedFiles; let i = index" class="file-item">
+                  <mat-icon class="file-icon">{{ getFileIcon(file.name) }}</mat-icon>
+                  <div class="file-info">
+                    <span class="file-name">{{ file.name }}</span>
+                    <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                  </div>
+                  <button mat-icon-button
+                          color="warn"
+                          (click)="removeFile(i); $event.stopPropagation()"
+                          [disabled]="isUploading || isAnalyzing">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div *ngIf="selectedFiles.length > 0" class="files-summary">
+              <span>{{ selectedFiles.length }} file(s) selected</span>
+              <span class="total-size">Total: {{ getTotalFileSize() }}</span>
+            </div>
+
+            <div *ngIf="fileErrorMessage" class="error-message">
+              <mat-icon>error</mat-icon>
+              <span>{{ fileErrorMessage }}</span>
+            </div>
+
+            <!-- OCR Warning for selected files -->
+            <div *ngIf="shouldShowOcrWarning()" class="ocr-warning-message" @fadeIn>
+              <mat-icon color="warn">warning</mat-icon>
+              <div class="ocr-warning-content">
+                <strong>OCR Required</strong>
+                <p>{{ getOcrWarningMessage() }}</p>
+                <p class="ocr-warning-hint">
+                  <mat-icon>info</mat-icon>
+                  Processing may fail or return empty content without OCR. Visit the
+                  <a href="/ocr-debug" target="_blank">OCR Debug</a> page to configure OCR models.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Text/Clipboard Section -->
+          <div *ngIf="sourceType === 'text'" class="source-content" @fadeIn>
+            <div class="text-input-header">
+              <mat-form-field appearance="outline" class="source-name-field">
+                <mat-label>Source Name (optional)</mat-label>
+                <input matInput [(ngModel)]="textSourceName" placeholder="e.g., meeting_notes">
+                <mat-hint>Used for document metadata</mat-hint>
+              </mat-form-field>
+
+              <button mat-stroked-button
+                      class="paste-button"
+                      (click)="pasteFromClipboard()"
+                      [disabled]="isUploading || isAnalyzing || isPasting">
+                <mat-icon>content_paste</mat-icon>
+                <span>Paste from Clipboard</span>
+              </button>
+            </div>
+
+            <mat-form-field appearance="outline" class="text-content-field">
+              <mat-label>Text Content</mat-label>
+              <textarea matInput
+                        [(ngModel)]="textInput"
+                        placeholder="Paste or type your text content here..."
+                        rows="10"
+                        cdkTextareaAutosize
+                        cdkAutosizeMinRows="6"
+                        cdkAutosizeMaxRows="15"
+                        [disabled]="isUploading || isAnalyzing"></textarea>
+              <mat-hint>{{ getTextCharacterCount() }} characters | {{ getTextWordCount() }} words</mat-hint>
+            </mat-form-field>
+
+            <div *ngIf="clipboardError" class="error-message">
+              <mat-icon>error</mat-icon>
+              <span>{{ clipboardError }}</span>
+            </div>
+
+            <div *ngIf="textInput" class="clear-text-action">
+              <button mat-button color="warn" (click)="clearTextInput()">
+                <mat-icon>clear</mat-icon>
+                Clear Text
+              </button>
+            </div>
+          </div>
+
+          <!-- Server Path Section -->
+          <div *ngIf="sourceType === 'path'" class="source-content" @fadeIn>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Server File Path</mat-label>
+              <input matInput
+                     [(ngModel)]="pathInput"
+                     placeholder="/path/to/document.pdf"
+                     [disabled]="isUploading || isAnalyzing">
+              <mat-icon matPrefix>folder_open</mat-icon>
+              <mat-hint>Full path to an existing file on the server</mat-hint>
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Loader Selection -->
+      <mat-card class="config-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>input</mat-icon>
+          <mat-card-title>2. Document Loader</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Select Loader</mat-label>
+            <mat-select [(ngModel)]="selectedLoader" [disabled]="isUploading || isAnalyzing">
+              <mat-option value="">Auto-detect (Recommended)</mat-option>
+              <mat-option *ngFor="let loader of availableLoaders" [value]="loader.name">
+                {{ loader.name }}
+                <span class="loader-class-hint">{{ loader.className.split('.').pop() }}</span>
+              </mat-option>
+            </mat-select>
+            <mat-hint>Loader determines how files are parsed into documents</mat-hint>
+          </mat-form-field>
+
+          <!-- Composite PDF Loader Option -->
+          <div *ngIf="hasSelectedPdfFiles() && !selectedLoader" class="composite-loader-option" @expandCollapse>
+            <mat-divider class="section-divider"></mat-divider>
+            <div class="composite-loader-toggle">
+              <mat-slide-toggle
+                [(ngModel)]="useCompositePdfLoader"
+                [disabled]="isUploading || isAnalyzing"
+                color="primary">
+                <div class="toggle-label">
+                  <mat-icon>compare_arrows</mat-icon>
+                  <span>Try Multiple PDF Loaders (Auto-Select Best)</span>
+                </div>
+              </mat-slide-toggle>
+              <p class="composite-loader-hint">
+                <mat-icon>info</mat-icon>
+                When enabled, multiple PDF loaders will be tested and the one extracting the most content will be used.
+                This is useful for PDFs that may be scanned images or have complex layouts.
+              </p>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Chunking Configuration -->
+      <mat-card class="config-card">
+        <mat-card-header (click)="toggleChunkingSection()" class="clickable-header">
+          <mat-icon mat-card-avatar>content_cut</mat-icon>
+          <mat-card-title>
+            3. Chunking Configuration
+            <span class="preset-badge">{{ getActivePresetName() }}</span>
+          </mat-card-title>
+          <mat-icon class="toggle-icon">{{ showChunkingOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </mat-card-header>
+        <mat-card-content *ngIf="showChunkingOptions" @expandCollapse>
+          <!-- Presets -->
+          <div class="presets-section">
+            <label class="section-label">Quick Presets</label>
+            <div class="preset-chips">
+              <mat-chip *ngFor="let preset of chunkingPresets"
+                        [class.selected]="selectedPreset === preset.id"
+                        (click)="applyPreset(preset.id)"
+                        [matTooltip]="preset.description"
+                        [disabled]="isUploading || isAnalyzing">
+                {{ preset.name }}
+              </mat-chip>
+            </div>
+          </div>
+
+          <mat-divider class="section-divider"></mat-divider>
+
+          <!-- Strategy Selection -->
+          <div class="strategies-section">
+            <label class="section-label">Chunking Strategy</label>
+            <div class="strategy-grid">
+              <div *ngFor="let strategy of chunkerStrategies"
+                   class="strategy-option"
+                   [class.selected]="chunkingConfig.strategy === strategy.id"
+                   (click)="selectStrategy(strategy.id)"
+                   [matTooltip]="strategy.description">
+                <mat-icon>{{ strategy.icon }}</mat-icon>
+                <span class="strategy-name">{{ strategy.name }}</span>
+                <span class="strategy-for">{{ strategy.bestFor }}</span>
+              </div>
+            </div>
+          </div>
+
+          <mat-divider class="section-divider"></mat-divider>
+
+          <!-- Chunk Size and Overlap -->
+          <div class="size-controls">
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Chunk Size (tokens)</mat-label>
+              <input matInput
+                     type="number"
+                     [(ngModel)]="chunkingConfig.options.chunkSize"
+                     (ngModelChange)="onChunkingOptionChange()"
+                     min="100"
+                     max="8192"
+                     [disabled]="isUploading || isAnalyzing">
+              <mat-hint>Target size for each chunk</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Overlap (tokens)</mat-label>
+              <input matInput
+                     type="number"
+                     [(ngModel)]="chunkingConfig.options.overlap"
+                     (ngModelChange)="onChunkingOptionChange()"
+                     min="0"
+                     max="1024"
+                     [disabled]="isUploading || isAnalyzing">
+              <mat-hint>Overlap between chunks</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <!-- Advanced Options Toggle -->
+          <button mat-button
+                  class="advanced-toggle"
+                  (click)="toggleAdvancedOptions()"
+                  [disabled]="isUploading || isAnalyzing">
+            <mat-icon>{{ showAdvancedOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+            {{ showAdvancedOptions ? 'Hide' : 'Show' }} Advanced Options
+          </button>
+
+          <!-- Advanced Options -->
+          <div *ngIf="showAdvancedOptions" class="advanced-options" @expandCollapse>
+            <mat-slide-toggle [(ngModel)]="chunkingConfig.options.preserveParagraphs"
+                              [disabled]="isUploading || isAnalyzing">
+              Preserve Paragraph Boundaries
+            </mat-slide-toggle>
+
+            <mat-slide-toggle [(ngModel)]="chunkingConfig.options.splitOnHeadings"
+                              [disabled]="isUploading || isAnalyzing">
+              Split on Headings (Markdown)
+            </mat-slide-toggle>
+
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Min Chunk Size</mat-label>
+              <input matInput
+                     type="number"
+                     [(ngModel)]="chunkingConfig.options.minChunkSize"
+                     min="10"
+                     max="1000"
+                     [disabled]="isUploading || isAnalyzing">
+              <mat-hint>Minimum chunk size</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="half-width">
+              <mat-label>Max Chunk Size</mat-label>
+              <input matInput
+                     type="number"
+                     [(ngModel)]="chunkingConfig.options.maxChunkSize"
+                     min="100"
+                     max="16384"
+                     [disabled]="isUploading || isAnalyzing">
+              <mat-hint>Maximum chunk size limit</mat-hint>
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Tokenizer Configuration (collapsed by default) -->
+      <mat-card class="config-card">
+        <mat-card-header (click)="toggleTokenizerSection()" class="clickable-header">
+          <mat-icon mat-card-avatar>tag</mat-icon>
+          <mat-card-title>
+            4. Tokenizer Settings
+            <span class="preset-badge">{{ getSelectedTokenizerName() }}</span>
+          </mat-card-title>
+          <mat-icon class="toggle-icon">{{ showTokenizerOptions ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </mat-card-header>
+        <mat-card-content *ngIf="showTokenizerOptions" @expandCollapse>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tokenizer</mat-label>
+            <mat-select [(ngModel)]="selectedTokenizer"
+                        (ngModelChange)="onTokenizerChange($event)"
+                        [disabled]="isUploading || isAnalyzing">
+              <mat-option *ngFor="let tokenizer of availableTokenizers" [value]="tokenizer.id">
+                {{ tokenizer.name }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-slide-toggle [(ngModel)]="enablePreTokenization"
+                            [disabled]="isUploading || isAnalyzing">
+            Enable Pre-tokenization
+          </mat-slide-toggle>
+
+          <mat-form-field appearance="outline" class="full-width" *ngIf="enablePreTokenization">
+            <mat-label>Max Token Length</mat-label>
+            <input matInput
+                   type="number"
+                   [(ngModel)]="maxTokenLength"
+                   min="64"
+                   max="8192"
+                   [disabled]="isUploading || isAnalyzing">
+          </mat-form-field>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Run Test Button -->
+      <div class="run-test-section">
+        <button mat-raised-button
+                color="primary"
+                class="run-test-button"
+                (click)="runTest()"
+                [disabled]="!canRunTest()">
+          <mat-icon>play_arrow</mat-icon>
+          <span>Run Test</span>
+        </button>
+
+        <div *ngIf="isUploading || isAnalyzing" class="progress-section">
+          <mat-progress-bar mode="determinate"
+                            [value]="isUploading ? uploadProgress : analysisProgress">
+          </mat-progress-bar>
+          <span class="progress-label">
+            {{ isUploading ? 'Uploading...' : 'Analyzing...' }}
+            {{ isUploading ? uploadProgress : analysisProgress }}%
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Results -->
+    <div class="results-panel">
+      <mat-card class="results-card" [class.has-results]="analysisResult">
+        <!-- Empty State -->
+        <div *ngIf="!analysisResult && !isAnalyzing" class="empty-results">
+          <mat-icon>analytics</mat-icon>
+          <h3>No Analysis Results</h3>
+          <p>Configure your source and chunking options, then click "Run Test" to see results.</p>
+        </div>
+
+        <!-- Loading State -->
+        <div *ngIf="isAnalyzing" class="loading-results">
+          <mat-spinner diameter="48"></mat-spinner>
+          <p>Analyzing document...</p>
+        </div>
+
+        <!-- Results Display -->
+        <div *ngIf="analysisResult && !isAnalyzing" class="results-content" @fadeIn>
+          <!-- Results Header -->
+          <div class="results-header">
+            <div class="results-title">
+              <mat-icon>check_circle</mat-icon>
+              <h3>Analysis Results</h3>
+            </div>
+            <div class="results-actions">
+              <button mat-icon-button
+                      matTooltip="Download Results as JSON"
+                      (click)="downloadResults()">
+                <mat-icon>download</mat-icon>
+              </button>
+              <button mat-icon-button
+                      matTooltip="Clear Results"
+                      (click)="clearResults()">
+                <mat-icon>clear</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <!-- Error Message -->
+          <div *ngIf="analysisResult.errorMessage" class="results-error">
+            <mat-icon>error</mat-icon>
+            <span>{{ analysisResult.errorMessage }}</span>
+          </div>
+
+          <!-- Summary Stats -->
+          <div class="results-summary">
+            <div class="stat-item">
+              <span class="stat-value">{{ analysisResult.fileName }}</span>
+              <span class="stat-label">File Name</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ formatFileSize(analysisResult.fileSize) }}</span>
+              <span class="stat-label">File Size</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ analysisResult.loadedDocuments?.length || 0 }}</span>
+              <span class="stat-label">Documents</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ analysisResult.chunks?.length || 0 }}</span>
+              <span class="stat-label">Chunks</span>
+            </div>
+            <div class="stat-item" *ngIf="analysisResult.processingStats?.['avgChunkSize']">
+              <span class="stat-value">{{ analysisResult.processingStats['avgChunkSize'] | number:'1.0-0' }}</span>
+              <span class="stat-label">Avg Chunk Size</span>
+            </div>
+          </div>
+
+          <!-- Composite Loader Comparison Results -->
+          <div *ngIf="hasCompositeLoaderComparison()" class="composite-loader-results" @expandCollapse>
+            <div class="composite-results-header" (click)="toggleCompositeLoaderComparison()">
+              <div class="header-info">
+                <mat-icon color="primary">compare_arrows</mat-icon>
+                <h4>PDF Loader Comparison</h4>
+                <span class="loaders-compared">{{ analysisResult.compositeLoaderComparison!.loadersCompared }} loaders tested</span>
+              </div>
+              <mat-icon class="expand-icon">{{ showCompositeLoaderComparison ? 'expand_less' : 'expand_more' }}</mat-icon>
+            </div>
+
+            <div *ngIf="showCompositeLoaderComparison" class="composite-results-content">
+              <div class="selection-reason">
+                <mat-icon>check_circle</mat-icon>
+                <span>{{ analysisResult.compositeLoaderComparison!.selectionReason }}</span>
+              </div>
+
+              <div class="loader-comparison-grid">
+                <div *ngFor="let loaderName of getComparedLoaders()"
+                     class="loader-comparison-card"
+                     [class.selected]="isSelectedLoader(loaderName)"
+                     [class.error]="getLoaderStats(loaderName)?.hadError">
+                  <div class="loader-card-header">
+                    <span class="loader-name">{{ loaderName }}</span>
+                    <mat-icon *ngIf="isSelectedLoader(loaderName)" color="primary" class="selected-badge">
+                      check_circle
+                    </mat-icon>
+                    <mat-icon *ngIf="getLoaderStats(loaderName)?.hadError" color="warn" class="error-badge">
+                      error
+                    </mat-icon>
+                  </div>
+                  <div class="loader-card-stats" *ngIf="getLoaderStats(loaderName) as stats">
+                    <div class="stat-row" *ngIf="!stats.hadError">
+                      <span class="stat-name">Characters:</span>
+                      <span class="stat-value">{{ stats.totalCharacters | number }}</span>
+                    </div>
+                    <div class="stat-row" *ngIf="!stats.hadError">
+                      <span class="stat-name">Words:</span>
+                      <span class="stat-value">{{ stats.totalWords | number }}</span>
+                    </div>
+                    <div class="stat-row" *ngIf="!stats.hadError">
+                      <span class="stat-name">Documents:</span>
+                      <span class="stat-value">{{ stats.documentCount }}</span>
+                    </div>
+                    <div class="stat-row">
+                      <span class="stat-name">Time:</span>
+                      <span class="stat-value">{{ stats.processingTimeMs }}ms</span>
+                    </div>
+                    <div class="stat-row error-row" *ngIf="stats.hadError">
+                      <span class="stat-name">Error:</span>
+                      <span class="stat-value error-text">{{ stats.errorMessage }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prominent Chunks Display Section -->
+          <div class="chunks-display-section" *ngIf="analysisResult.chunks?.length">
+            <div class="chunks-section-header">
+              <div class="section-title">
+                <mat-icon>view_list</mat-icon>
+                <h4>Generated Chunks ({{ analysisResult.chunks.length }})</h4>
+              </div>
+              <div class="section-actions">
+                <mat-form-field appearance="outline" class="page-size-select">
+                  <mat-label>Show</mat-label>
+                  <mat-select [(ngModel)]="chunkPageSize" (ngModelChange)="updateDisplayedChunks()">
+                    <mat-option [value]="5">5</mat-option>
+                    <mat-option [value]="10">10</mat-option>
+                    <mat-option [value]="25">25</mat-option>
+                    <mat-option [value]="50">50</mat-option>
+                    <mat-option [value]="100">100</mat-option>
+                  </mat-select>
+                </mat-form-field>
+                <button mat-icon-button matTooltip="Toggle view" (click)="toggleChunkViewMode()">
+                  <mat-icon>{{ chunkViewMode === 'cards' ? 'view_list' : 'grid_view' }}</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <!-- Chunks Grid/List View -->
+            <div class="chunks-grid" [class.list-view]="chunkViewMode === 'list'">
+              <div *ngFor="let chunk of displayedChunks; let i = index"
+                   class="chunk-card"
+                   [class.expanded]="expandedChunkIndex === (chunkPageIndex * chunkPageSize + i)"
+                   (click)="toggleChunkExpanded(chunkPageIndex * chunkPageSize + i)">
+                <div class="chunk-card-header">
+                  <div class="chunk-number">
+                    <mat-icon>article</mat-icon>
+                    <span>Chunk {{ chunk.chunkIndex + 1 }}</span>
+                  </div>
+                  <div class="chunk-stats">
+                    <span class="chunk-chars">{{ chunk.contentLength }} chars</span>
+                    <mat-icon class="expand-icon">
+                      {{ expandedChunkIndex === (chunkPageIndex * chunkPageSize + i) ? 'expand_less' : 'expand_more' }}
+                    </mat-icon>
+                  </div>
+                </div>
+                <div class="chunk-card-content">
+                  <div class="chunk-text-preview"
+                       [class.expanded]="expandedChunkIndex === (chunkPageIndex * chunkPageSize + i)">
+                    {{ expandedChunkIndex === (chunkPageIndex * chunkPageSize + i) ? chunk.text : getChunkPreview(chunk) }}
+                  </div>
+                </div>
+                <div class="chunk-card-footer"
+                     *ngIf="expandedChunkIndex === (chunkPageIndex * chunkPageSize + i)">
+                  <button mat-button color="primary" (click)="copyToClipboard(chunk.text); $event.stopPropagation()">
+                    <mat-icon>content_copy</mat-icon>
+                    Copy
+                  </button>
+                  <span class="chunk-id">ID: {{ chunk.id }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pagination -->
+            <div class="chunks-pagination" *ngIf="analysisResult.chunks.length > chunkPageSize">
+              <button mat-icon-button
+                      [disabled]="chunkPageIndex === 0"
+                      (click)="chunkPageIndex = 0; updateDisplayedChunks()">
+                <mat-icon>first_page</mat-icon>
+              </button>
+              <button mat-icon-button
+                      [disabled]="chunkPageIndex === 0"
+                      (click)="chunkPageIndex = chunkPageIndex - 1; updateDisplayedChunks()">
+                <mat-icon>chevron_left</mat-icon>
+              </button>
+              <span class="page-info">
+                Page {{ chunkPageIndex + 1 }} of {{ Math.ceil(analysisResult.chunks.length / chunkPageSize) }}
+              </span>
+              <button mat-icon-button
+                      [disabled]="(chunkPageIndex + 1) * chunkPageSize >= analysisResult.chunks.length"
+                      (click)="chunkPageIndex = chunkPageIndex + 1; updateDisplayedChunks()">
+                <mat-icon>chevron_right</mat-icon>
+              </button>
+              <button mat-icon-button
+                      [disabled]="(chunkPageIndex + 1) * chunkPageSize >= analysisResult.chunks.length"
+                      (click)="chunkPageIndex = Math.ceil(analysisResult.chunks.length / chunkPageSize) - 1; updateDisplayedChunks()">
+                <mat-icon>last_page</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <!-- No Chunks Warning -->
+          <div class="no-chunks-warning" *ngIf="analysisResult.loadedDocuments?.length && !analysisResult.chunks?.length">
+            <mat-icon color="warn">warning</mat-icon>
+            <span>No chunks were generated. The chunker may not have processed the document correctly.</span>
+          </div>
+
+          <!-- Tabs for detailed analysis -->
+          <mat-tab-group class="results-tabs">
+            <!-- Loaders Tab -->
+            <mat-tab>
+              <ng-template mat-tab-label>
+                <mat-icon>input</mat-icon>
+                <span>Loaders ({{ analysisResult.availableLoaders?.length || 0 }})</span>
+              </ng-template>
+              <div class="tab-content">
+                <div class="selected-item-banner" *ngIf="analysisResult.selectedLoader">
+                  <mat-icon>check</mat-icon>
+                  <strong>Selected:</strong> {{ analysisResult.selectedLoader.name }}
+                  <span class="class-name">({{ analysisResult.selectedLoader.className.split('.').pop() }})</span>
+                </div>
+
+                <div class="loaders-list">
+                  <div *ngFor="let loader of analysisResult.availableLoaders"
+                       class="loader-item"
+                       [class]="getLoaderClass(loader)">
+                    <div class="item-header">
+                      <mat-icon *ngIf="loader.supportsFile && !loader.isNoOp">check_circle</mat-icon>
+                      <mat-icon *ngIf="!loader.supportsFile && !loader.isNoOp">cancel</mat-icon>
+                      <mat-icon *ngIf="loader.isNoOp" class="noop-icon">block</mat-icon>
+                      <span class="loader-name">{{ loader.name }}</span>
+                      <span *ngIf="loader.isNoOp" class="noop-badge">No-op</span>
+                    </div>
+                    <div class="item-details">
+                      <span class="class-name">{{ loader.className }}</span>
+                      <span class="support-reason">{{ loader.supportReason }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Documents Tab -->
+            <mat-tab>
+              <ng-template mat-tab-label>
+                <mat-icon>description</mat-icon>
+                <span>Documents ({{ analysisResult.loadedDocuments?.length || 0 }})</span>
+              </ng-template>
+              <div class="tab-content">
+                <div *ngIf="!analysisResult.loadedDocuments?.length" class="no-items">
+                  <mat-icon>warning</mat-icon>
+                  <p>No documents were loaded. Check if the correct loader is available.</p>
+                </div>
+
+                <div *ngIf="analysisResult.loadedDocuments?.length" class="documents-view">
+                  <!-- Document Selector -->
+                  <div *ngIf="analysisResult.loadedDocuments.length > 1" class="document-selector">
+                    <mat-form-field appearance="outline" class="full-width">
+                      <mat-label>Select Document</mat-label>
+                      <mat-select [(ngModel)]="selectedDocumentIndex">
+                        <mat-option *ngFor="let doc of analysisResult.loadedDocuments; let i = index" [value]="i">
+                          Document {{ i + 1 }} ({{ doc.contentLength }} chars)
+                        </mat-option>
+                      </mat-select>
+                    </mat-form-field>
+                  </div>
+
+                  <!-- Selected Document Details -->
+                  <div *ngIf="getSelectedDocument() as doc" class="document-details">
+                    <div class="doc-stats">
+                      <div class="doc-stat">
+                        <mat-icon>text_fields</mat-icon>
+                        <span>{{ doc.contentLength | number }} characters</span>
+                      </div>
+                      <div class="doc-stat">
+                        <mat-icon>format_align_left</mat-icon>
+                        <span>{{ doc.contentStats?.lineCount || 0 | number }} lines</span>
+                      </div>
+                      <div class="doc-stat">
+                        <mat-icon>short_text</mat-icon>
+                        <span>{{ doc.contentStats?.wordCount || 0 | number }} words</span>
+                      </div>
+                      <div class="doc-stat" *ngIf="doc.contentStats?.hasEncodingIssues">
+                        <mat-icon color="warn">warning</mat-icon>
+                        <span>Encoding Issues Detected</span>
+                      </div>
+                    </div>
+
+                    <!-- Metadata -->
+                    <mat-expansion-panel class="metadata-panel">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>
+                          <mat-icon>info</mat-icon>
+                          Metadata ({{ getMetadataKeys(doc.metadata).length }} keys)
+                        </mat-panel-title>
+                      </mat-expansion-panel-header>
+                      <div class="metadata-list">
+                        <div *ngFor="let key of getMetadataKeys(doc.metadata)" class="metadata-item">
+                          <span class="meta-key">{{ key }}:</span>
+                          <span class="meta-value">{{ formatMetadataValue(doc.metadata[key]) }}</span>
+                        </div>
+                      </div>
+                    </mat-expansion-panel>
+
+                    <!-- Content Preview -->
+                    <div class="content-preview-section">
+                      <div class="preview-header">
+                        <span>Content Preview</span>
+                        <button mat-icon-button
+                                matTooltip="Copy Full Content"
+                                (click)="copyToClipboard(doc.text)">
+                          <mat-icon>content_copy</mat-icon>
+                        </button>
+                      </div>
+                      <pre class="content-preview">{{ getDocumentPreview(doc) }}</pre>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Chunkers Tab -->
+            <mat-tab>
+              <ng-template mat-tab-label>
+                <mat-icon>content_cut</mat-icon>
+                <span>Chunkers ({{ analysisResult.availableChunkers?.length || 0 }})</span>
+              </ng-template>
+              <div class="tab-content">
+                <div class="selected-item-banner" *ngIf="analysisResult.selectedChunker">
+                  <mat-icon>check</mat-icon>
+                  <strong>Selected:</strong> {{ analysisResult.selectedChunker.name }}
+                  <span class="class-name">({{ analysisResult.selectedChunker.className.split('.').pop() }})</span>
+                </div>
+
+                <div class="chunkers-list">
+                  <div *ngFor="let chunker of analysisResult.availableChunkers"
+                       class="chunker-item"
+                       [class]="getChunkerClass(chunker)">
+                    <div class="item-header">
+                      <mat-icon *ngIf="!chunker.isNoOp">check_circle</mat-icon>
+                      <mat-icon *ngIf="chunker.isNoOp" class="noop-icon">block</mat-icon>
+                      <span class="chunker-name">{{ chunker.name }}</span>
+                      <span *ngIf="chunker.isNoOp" class="noop-badge">No-op</span>
+                    </div>
+                    <div class="item-details">
+                      <span class="class-name">{{ chunker.className }}</span>
+                      <span class="reason">{{ chunker.reason }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Chunks Tab -->
+            <mat-tab>
+              <ng-template mat-tab-label>
+                <mat-icon>view_list</mat-icon>
+                <span>Chunks ({{ analysisResult.chunks?.length || 0 }})</span>
+              </ng-template>
+              <div class="tab-content">
+                <div *ngIf="!analysisResult.chunks?.length" class="no-items">
+                  <mat-icon>warning</mat-icon>
+                  <p>No chunks were created. Check chunker configuration.</p>
+                </div>
+
+                <div *ngIf="analysisResult.chunks?.length" class="chunks-view">
+                  <!-- Chunks List -->
+                  <div class="chunks-list">
+                    <div *ngFor="let chunk of displayedChunks; let i = index"
+                         class="chunk-item"
+                         [class.selected]="selectedChunkIndex === (chunkPageIndex * chunkPageSize + i)"
+                         (click)="selectChunk(chunkPageIndex * chunkPageSize + i)">
+                      <div class="chunk-header">
+                        <span class="chunk-index">Chunk {{ chunk.chunkIndex + 1 }}</span>
+                        <span class="chunk-length">{{ chunk.contentLength }} chars</span>
+                      </div>
+                      <div class="chunk-preview">{{ getChunkPreview(chunk) }}</div>
+                    </div>
+                  </div>
+
+                  <!-- Pagination -->
+                  <mat-paginator *ngIf="analysisResult.chunks.length > chunkPageSize"
+                                 [length]="analysisResult.chunks.length"
+                                 [pageSize]="chunkPageSize"
+                                 [pageSizeOptions]="[5, 10, 25, 50]"
+                                 [pageIndex]="chunkPageIndex"
+                                 (page)="onChunkPageChange($event)">
+                  </mat-paginator>
+
+                  <!-- Selected Chunk Details -->
+                  <div *ngIf="selectedChunkIndex !== null && analysisResult.chunks[selectedChunkIndex]"
+                       class="selected-chunk-details">
+                    <h4>
+                      <mat-icon>visibility</mat-icon>
+                      Chunk {{ selectedChunkIndex + 1 }} Details
+                    </h4>
+
+                    <div class="chunk-full-content">
+                      <div class="content-header">
+                        <span>Full Content</span>
+                        <button mat-icon-button
+                                matTooltip="Copy Chunk Content"
+                                (click)="copyToClipboard(analysisResult.chunks[selectedChunkIndex].text)">
+                          <mat-icon>content_copy</mat-icon>
+                        </button>
+                      </div>
+                      <pre class="chunk-content">{{ analysisResult.chunks[selectedChunkIndex].text }}</pre>
+                    </div>
+
+                    <mat-expansion-panel class="metadata-panel">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>
+                          <mat-icon>info</mat-icon>
+                          Chunk Metadata
+                        </mat-panel-title>
+                      </mat-expansion-panel-header>
+                      <div class="metadata-list">
+                        <div class="metadata-item">
+                          <span class="meta-key">ID:</span>
+                          <span class="meta-value">{{ analysisResult.chunks[selectedChunkIndex].id }}</span>
+                        </div>
+                        <div class="metadata-item">
+                          <span class="meta-key">Index:</span>
+                          <span class="meta-value">{{ analysisResult.chunks[selectedChunkIndex].chunkIndex }}</span>
+                        </div>
+                        <div class="metadata-item">
+                          <span class="meta-key">Length:</span>
+                          <span class="meta-value">{{ analysisResult.chunks[selectedChunkIndex].contentLength }} characters</span>
+                        </div>
+                        <div *ngFor="let key of getMetadataKeys(analysisResult.chunks[selectedChunkIndex].metadata)"
+                             class="metadata-item">
+                          <span class="meta-key">{{ key }}:</span>
+                          <span class="meta-value">{{ formatMetadataValue(analysisResult.chunks[selectedChunkIndex].metadata[key]) }}</span>
+                        </div>
+                      </div>
+                    </mat-expansion-panel>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Processing Stats Tab -->
+            <mat-tab>
+              <ng-template mat-tab-label>
+                <mat-icon>analytics</mat-icon>
+                <span>Stats</span>
+              </ng-template>
+              <div class="tab-content">
+                <div class="stats-grid" *ngIf="analysisResult.processingStats">
+                  <div *ngFor="let key of getMetadataKeys(analysisResult.processingStats)" class="stat-card">
+                    <span class="stat-value">{{ formatMetadataValue(analysisResult.processingStats[key]) }}</span>
+                    <span class="stat-label">{{ key }}</span>
+                  </div>
+                </div>
+              </div>
+            </mat-tab>
+          </mat-tab-group>
+        </div>
+      </mat-card>
+    </div>
+  </div>
+</div>

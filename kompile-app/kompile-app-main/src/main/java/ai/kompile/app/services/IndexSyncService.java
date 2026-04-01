@@ -19,8 +19,13 @@ package ai.kompile.app.services;
 import ai.kompile.app.ingest.domain.IndexedDocument;
 import ai.kompile.app.ingest.domain.IndexedPassage;
 import ai.kompile.app.services.CrossIndexTrackingService.CrossIndexResolutionResult;
-import lombok.RequiredArgsConstructor;
+import ai.kompile.core.embeddings.EmbeddingModel;
+import ai.kompile.core.embeddings.VectorStore;
+import ai.kompile.knowledgegraph.service.KnowledgeGraphService;
 import lombok.extern.slf4j.Slf4j;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -37,12 +42,27 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Supports auto-sync on query and manual sync triggers.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class IndexSyncService {
 
     private final CrossIndexTrackingService trackingService;
     private final ApplicationEventPublisher eventPublisher;
+    private final EmbeddingModel embeddingModel;
+    private final VectorStore vectorStore;
+    private final KnowledgeGraphService knowledgeGraphService;
+
+    @Autowired
+    public IndexSyncService(CrossIndexTrackingService trackingService,
+                            ApplicationEventPublisher eventPublisher,
+                            @Autowired(required = false) EmbeddingModel embeddingModel,
+                            @Autowired(required = false) VectorStore vectorStore,
+                            @Autowired(required = false) KnowledgeGraphService knowledgeGraphService) {
+        this.trackingService = trackingService;
+        this.eventPublisher = eventPublisher;
+        this.embeddingModel = embeddingModel;
+        this.vectorStore = vectorStore;
+        this.knowledgeGraphService = knowledgeGraphService;
+    }
 
     // Active sync jobs
     private final ConcurrentMap<String, SyncJob> activeJobs = new ConcurrentHashMap<>();
@@ -205,8 +225,13 @@ public class IndexSyncService {
                     }
 
                     if (doc.needsVectorIndexing()) {
-                        // TODO: Integrate with actual indexing pipeline
-                        // For now, just mark as processed
+                        try {
+                            indexDocumentPassagesToVector(doc, job);
+                        } catch (Exception e) {
+                            log.warn("Failed to vector-index document {}: {}", doc.getId(), e.getMessage());
+                            job.getErrorCount().incrementAndGet();
+                            job.getErrors().add("Doc " + doc.getId() + ": " + e.getMessage());
+                        }
                         job.getDocumentsProcessed().incrementAndGet();
                     }
                 }
@@ -258,7 +283,13 @@ public class IndexSyncService {
                         break;
                     }
 
-                    // TODO: Integrate with graph construction service
+                    try {
+                        indexPassageToGraph(passage);
+                    } catch (Exception e) {
+                        log.warn("Failed to graph-index passage {}: {}", passage.getChunkId(), e.getMessage());
+                        job.getErrorCount().incrementAndGet();
+                        job.getErrors().add("Passage " + passage.getChunkId() + ": " + e.getMessage());
+                    }
                     job.getPassagesProcessed().incrementAndGet();
                 }
 
@@ -309,14 +340,17 @@ public class IndexSyncService {
                     }
 
                     // Sync to each index as needed
-                    if (doc.needsKeywordIndexing()) {
-                        // TODO: Trigger keyword indexing
-                    }
-                    if (doc.needsVectorIndexing()) {
-                        // TODO: Trigger vector indexing
-                    }
-                    if (doc.needsGraphIndexing()) {
-                        // TODO: Trigger graph indexing
+                    try {
+                        if (doc.needsVectorIndexing()) {
+                            indexDocumentPassagesToVector(doc, job);
+                        }
+                        if (doc.needsGraphIndexing()) {
+                            indexDocumentPassagesToGraph(doc, job);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to sync document {}: {}", doc.getId(), e.getMessage());
+                        job.getErrorCount().incrementAndGet();
+                        job.getErrors().add("Doc " + doc.getId() + ": " + e.getMessage());
                     }
 
                     job.getDocumentsProcessed().incrementAndGet();
@@ -370,14 +404,17 @@ public class IndexSyncService {
                     }
 
                     trackingService.findDocument(docId).ifPresent(doc -> {
-                        if (targetSet.contains(SyncTarget.KEYWORD_INDEX) && doc.needsKeywordIndexing()) {
-                            // TODO: Trigger keyword indexing
-                        }
-                        if (targetSet.contains(SyncTarget.VECTOR_STORE) && doc.needsVectorIndexing()) {
-                            // TODO: Trigger vector indexing
-                        }
-                        if (targetSet.contains(SyncTarget.KNOWLEDGE_GRAPH) && doc.needsGraphIndexing()) {
-                            // TODO: Trigger graph indexing
+                        try {
+                            if (targetSet.contains(SyncTarget.VECTOR_STORE) && doc.needsVectorIndexing()) {
+                                indexDocumentPassagesToVector(doc, job);
+                            }
+                            if (targetSet.contains(SyncTarget.KNOWLEDGE_GRAPH) && doc.needsGraphIndexing()) {
+                                indexDocumentPassagesToGraph(doc, job);
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to sync document {}: {}", docId, e.getMessage());
+                            job.getErrorCount().incrementAndGet();
+                            job.getErrors().add("Doc " + docId + ": " + e.getMessage());
                         }
                         job.getDocumentsProcessed().incrementAndGet();
                     });
@@ -431,14 +468,17 @@ public class IndexSyncService {
                     }
 
                     trackingService.findPassage(chunkId).ifPresent(passage -> {
-                        if (targetSet.contains(SyncTarget.KEYWORD_INDEX) && passage.needsKeywordIndexing()) {
-                            // TODO: Trigger keyword indexing
-                        }
-                        if (targetSet.contains(SyncTarget.VECTOR_STORE) && passage.needsVectorIndexing()) {
-                            // TODO: Trigger vector indexing
-                        }
-                        if (targetSet.contains(SyncTarget.KNOWLEDGE_GRAPH) && passage.needsGraphIndexing()) {
-                            // TODO: Trigger graph indexing
+                        try {
+                            if (targetSet.contains(SyncTarget.VECTOR_STORE) && passage.needsVectorIndexing()) {
+                                indexPassageToVector(passage);
+                            }
+                            if (targetSet.contains(SyncTarget.KNOWLEDGE_GRAPH) && passage.needsGraphIndexing()) {
+                                indexPassageToGraph(passage);
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to sync passage {}: {}", chunkId, e.getMessage());
+                            job.getErrorCount().incrementAndGet();
+                            job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
                         }
                         job.getPassagesProcessed().incrementAndGet();
                     });
@@ -586,8 +626,20 @@ public class IndexSyncService {
                 break;
             }
 
-            // TODO: Actually trigger vector indexing for this passage
-            // This requires integration with the embedding model and vector store
+            try {
+                trackingService.findPassage(chunkId).ifPresent(passage -> {
+                    try {
+                        indexPassageToVector(passage);
+                    } catch (Exception e) {
+                        log.warn("Failed to vector-index passage {}: {}", chunkId, e.getMessage());
+                        job.getErrorCount().incrementAndGet();
+                        job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("Failed to find passage {}: {}", chunkId, e.getMessage());
+                job.getErrorCount().incrementAndGet();
+            }
 
             job.getPassagesProcessed().incrementAndGet();
         }
@@ -607,10 +659,128 @@ public class IndexSyncService {
                 break;
             }
 
-            // TODO: Actually trigger graph indexing for this passage
-            // This requires integration with the knowledge graph service
+            try {
+                trackingService.findPassage(chunkId).ifPresent(passage -> {
+                    try {
+                        indexPassageToGraph(passage);
+                    } catch (Exception e) {
+                        log.warn("Failed to graph-index passage {}: {}", chunkId, e.getMessage());
+                        job.getErrorCount().incrementAndGet();
+                        job.getErrors().add("Passage " + chunkId + ": " + e.getMessage());
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("Failed to find passage {}: {}", chunkId, e.getMessage());
+                job.getErrorCount().incrementAndGet();
+            }
 
             job.getPassagesProcessed().incrementAndGet();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INDEXING INTEGRATION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private void indexPassageToVector(IndexedPassage passage) {
+        if (embeddingModel == null || vectorStore == null) {
+            log.debug("Vector indexing unavailable: embeddingModel={}, vectorStore={}",
+                    embeddingModel != null, vectorStore != null);
+            return;
+        }
+
+        String content = passage.getFullContent();
+        if (content == null || content.isBlank()) {
+            content = passage.getContentPreview();
+        }
+        if (content == null || content.isBlank()) {
+            log.debug("Skipping passage {} with no content", passage.getChunkId());
+            return;
+        }
+
+        INDArray embedding = embeddingModel.embed(content);
+        Document doc = new Document(passage.getChunkId(), content,
+                Map.of("chunkId", passage.getChunkId(),
+                        "chunkIndex", passage.getChunkIndex() != null ? passage.getChunkIndex() : 0));
+        vectorStore.addWithEmbeddings(List.of(doc), embedding);
+        trackingService.markPassageVectorIndexed(passage.getChunkId(), passage.getChunkId());
+    }
+
+    private void indexPassageToGraph(IndexedPassage passage) {
+        if (knowledgeGraphService == null) {
+            log.debug("Graph indexing unavailable: knowledgeGraphService is null");
+            return;
+        }
+
+        String content = passage.getFullContent();
+        if (content == null || content.isBlank()) {
+            content = passage.getContentPreview();
+        }
+        if (content == null || content.isBlank()) {
+            log.debug("Skipping passage {} with no content for graph indexing", passage.getChunkId());
+            return;
+        }
+
+        var graphNode = knowledgeGraphService.createSnippetNode(
+                null, // parent document node - let service resolve
+                passage.getChunkId(),
+                content,
+                passage.getChunkIndex() != null ? passage.getChunkIndex() : 0
+        );
+        if (graphNode != null) {
+            trackingService.markPassageGraphIndexed(passage.getChunkId(), String.valueOf(graphNode.getId()));
+        }
+    }
+
+    private void indexDocumentPassagesToVector(IndexedDocument doc, SyncJob job) {
+        if (embeddingModel == null || vectorStore == null) {
+            log.debug("Vector indexing unavailable for document {}", doc.getId());
+            return;
+        }
+
+        List<IndexedPassage> passages = doc.getPassages();
+        if (passages == null || passages.isEmpty()) {
+            return;
+        }
+
+        for (IndexedPassage passage : passages) {
+            if (job.isCancelled()) break;
+            if (!passage.needsVectorIndexing()) continue;
+
+            try {
+                indexPassageToVector(passage);
+                job.getPassagesProcessed().incrementAndGet();
+            } catch (Exception e) {
+                log.warn("Failed to vector-index passage {} of doc {}: {}",
+                        passage.getChunkId(), doc.getId(), e.getMessage());
+                job.getErrorCount().incrementAndGet();
+            }
+        }
+    }
+
+    private void indexDocumentPassagesToGraph(IndexedDocument doc, SyncJob job) {
+        if (knowledgeGraphService == null) {
+            log.debug("Graph indexing unavailable for document {}", doc.getId());
+            return;
+        }
+
+        List<IndexedPassage> passages = doc.getPassages();
+        if (passages == null || passages.isEmpty()) {
+            return;
+        }
+
+        for (IndexedPassage passage : passages) {
+            if (job.isCancelled()) break;
+            if (!passage.needsGraphIndexing()) continue;
+
+            try {
+                indexPassageToGraph(passage);
+                job.getPassagesProcessed().incrementAndGet();
+            } catch (Exception e) {
+                log.warn("Failed to graph-index passage {} of doc {}: {}",
+                        passage.getChunkId(), doc.getId(), e.getMessage());
+                job.getErrorCount().incrementAndGet();
+            }
         }
     }
 

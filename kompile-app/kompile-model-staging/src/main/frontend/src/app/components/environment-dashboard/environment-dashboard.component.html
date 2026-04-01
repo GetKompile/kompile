@@ -1,0 +1,1121 @@
+<!--
+    Copyright 2025 Kompile Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="environment-dashboard">
+  <!-- Header -->
+  <div class="dashboard-header">
+    <h2>ND4J Environment Dashboard</h2>
+    <p class="subtitle">Monitor and configure the ND4J runtime environment</p>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="isLoading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading environment settings...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-container" *ngIf="error && !isLoading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-stroked-button (click)="loadEnvironment()">
+      <mat-icon>refresh</mat-icon> Retry
+    </button>
+  </div>
+
+  <!-- Main Content -->
+  <div *ngIf="!isLoading && !error && environment">
+    <mat-tab-group [(selectedIndex)]="selectedTabIndex" class="env-tabs" animationDuration="200ms">
+
+      <!-- Tab 1: Overview -->
+      <mat-tab label="Overview">
+        <div class="tab-content">
+          <div class="overview-grid">
+            <!-- Backend Card -->
+            <mat-card class="overview-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon backend-icon">memory</mat-icon>
+                <mat-card-title>Backend</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value">{{ getBackendLabel() }}</div>
+                <div class="overview-detail">
+                  <span class="detail-label">Type:</span>
+                  <span>{{ environment?.cpu ? 'CPU Compute' : 'GPU Accelerated' }}</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- BLAS Card -->
+            <mat-card class="overview-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon blas-icon">functions</mat-icon>
+                <mat-card-title>BLAS</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value">{{ getBlasVersion() }}</div>
+                <div class="overview-detail">
+                  <span class="detail-label">Enabled:</span>
+                  <span [class.status-enabled]="environment?.enableBlas"
+                        [class.status-disabled]="!environment?.enableBlas">
+                    {{ environment?.enableBlas ? 'Yes' : 'No' }}
+                  </span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- Memory Overview Card -->
+            <mat-card class="overview-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon memory-icon">sd_card</mat-icon>
+                <mat-card-title>Memory</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value">{{ formatBytes(environment?.maxPrimaryMemory ?? 0) }}</div>
+                <div class="overview-detail">
+                  <span class="detail-label">Primary:</span>
+                  <span>{{ formatBytes(environment?.maxPrimaryMemory ?? 0) }}</span>
+                </div>
+                <div class="overview-detail">
+                  <span class="detail-label">Special:</span>
+                  <span>{{ formatBytes(environment?.maxSpecialMemory ?? 0) }}</span>
+                </div>
+                <div class="overview-detail">
+                  <span class="detail-label">Device:</span>
+                  <span>{{ formatBytes(environment?.maxDeviceMemory ?? 0) }}</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- GPU Availability Card -->
+            <mat-card class="overview-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon gpu-icon">developer_board</mat-icon>
+                <mat-card-title>GPU</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value" [class.status-enabled]="environment?.gpuAvailable"
+                     [class.status-disabled]="!environment?.gpuAvailable">
+                  {{ environment?.gpuAvailable ? 'Available' : 'Not Available' }}
+                </div>
+                <div class="overview-detail" *ngIf="environment?.cuda">
+                  <span class="detail-label">Devices:</span>
+                  <span>{{ environment?.cuda?.deviceCount }}</span>
+                </div>
+                <div class="overview-detail" *ngIf="environment?.cuda">
+                  <span class="detail-label">Tensor Cores:</span>
+                  <span>{{ environment?.cuda?.tensorCoreEnabled ? 'Enabled' : 'Disabled' }}</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- Threading Card -->
+            <mat-card class="overview-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon threads-icon">device_hub</mat-icon>
+                <mat-card-title>Threading</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value">{{ environment?.maxThreads }} threads</div>
+                <div class="overview-detail">
+                  <span class="detail-label">Master Threads:</span>
+                  <span>{{ environment?.maxMasterThreads }}</span>
+                </div>
+                <div class="overview-detail">
+                  <span class="detail-label">TAD Threshold:</span>
+                  <span>{{ environment?.tadThreshold }}</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- JVM Memory Card -->
+            <mat-card class="overview-card" *ngIf="memorySettings">
+              <mat-card-header>
+                <mat-icon mat-card-avatar class="card-icon jvm-icon">storage</mat-icon>
+                <mat-card-title>JVM Memory</mat-card-title>
+              </mat-card-header>
+              <mat-card-content>
+                <div class="overview-value">{{ formatBytes(memorySettings?.jvmMaxMemory ?? 0) }}</div>
+                <div class="overview-detail">
+                  <span class="detail-label">Total:</span>
+                  <span>{{ formatBytes(memorySettings?.jvmTotalMemory ?? 0) }}</span>
+                </div>
+                <div class="overview-detail">
+                  <span class="detail-label">Free:</span>
+                  <span>{{ formatBytes(memorySettings?.jvmFreeMemory ?? 0) }}</span>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 2: Memory -->
+      <mat-tab label="Memory">
+        <div class="tab-content">
+          <h3 class="section-title">
+            <mat-icon>sd_card</mat-icon>
+            ND4J Memory Configuration
+          </h3>
+
+          <div class="settings-form">
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Primary Memory (bytes)</mat-label>
+              <input matInput type="number" [(ngModel)]="editMemory.maxPrimaryMemory">
+              <mat-hint>Maximum off-heap memory for primary data buffers</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Special Memory (bytes)</mat-label>
+              <input matInput type="number" [(ngModel)]="editMemory.maxSpecialMemory">
+              <mat-hint>Maximum memory for special operations (GPU pinned memory)</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Device Memory (bytes)</mat-label>
+              <input matInput type="number" [(ngModel)]="editMemory.maxDeviceMemory">
+              <mat-hint>Maximum GPU device memory allocation</mat-hint>
+            </mat-form-field>
+
+            <div class="toggle-row">
+              <mat-slide-toggle [(ngModel)]="editMemory.enableBlas">
+                Enable BLAS
+              </mat-slide-toggle>
+              <span class="toggle-hint">Enable native BLAS acceleration for linear algebra operations</span>
+            </div>
+          </div>
+
+          <!-- JVM Memory Info (read-only) -->
+          <div class="info-section" *ngIf="memorySettings">
+            <h4 class="subsection-title">JVM Memory (Read-Only)</h4>
+            <div class="info-grid">
+              <div class="info-item">
+                <span class="info-label">Max Memory</span>
+                <span class="info-value">{{ formatBytes(memorySettings?.jvmMaxMemory ?? 0) }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Total Memory</span>
+                <span class="info-value">{{ formatBytes(memorySettings?.jvmTotalMemory ?? 0) }}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Free Memory</span>
+                <span class="info-value">{{ formatBytes(memorySettings?.jvmFreeMemory ?? 0) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button mat-raised-button color="primary"
+                    [disabled]="saving['memory']"
+                    (click)="saveMemorySettings()">
+              <mat-spinner diameter="18" *ngIf="saving['memory']"></mat-spinner>
+              <mat-icon *ngIf="!saving['memory']">save</mat-icon>
+              {{ saving['memory'] ? 'Saving...' : 'Save Memory Settings' }}
+            </button>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 3: Performance -->
+      <mat-tab label="Performance">
+        <div class="tab-content">
+          <h3 class="section-title">
+            <mat-icon>speed</mat-icon>
+            Performance Tuning
+          </h3>
+
+          <div class="settings-form">
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>TAD Threshold</mat-label>
+              <input matInput type="number" [(ngModel)]="editPerformance.tadThreshold">
+              <mat-hint>Threshold for TAD (Tensor Along Dimension) parallelization</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Elementwise Threshold</mat-label>
+              <input matInput type="number" [(ngModel)]="editPerformance.elementwiseThreshold">
+              <mat-hint>Threshold for elementwise operation parallelization</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Threads</mat-label>
+              <input matInput type="number" [(ngModel)]="editPerformance.maxThreads">
+              <mat-hint>Maximum number of threads for parallel operations</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Master Threads</mat-label>
+              <input matInput type="number" [(ngModel)]="editPerformance.maxMasterThreads">
+              <mat-hint>Maximum number of master threads for task coordination</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <div class="form-actions">
+            <button mat-raised-button color="primary"
+                    [disabled]="saving['performance']"
+                    (click)="savePerformanceSettings()">
+              <mat-spinner diameter="18" *ngIf="saving['performance']"></mat-spinner>
+              <mat-icon *ngIf="!saving['performance']">save</mat-icon>
+              {{ saving['performance'] ? 'Saving...' : 'Save Performance Settings' }}
+            </button>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 4: Debug -->
+      <mat-tab label="Debug">
+        <div class="tab-content">
+          <h3 class="section-title">
+            <mat-icon>bug_report</mat-icon>
+            Debug Configuration
+          </h3>
+
+          <div class="toggle-grid">
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.verbose">Verbose</mat-slide-toggle>
+              <span class="toggle-description">Enable verbose logging for ND4J operations</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.debug">Debug</mat-slide-toggle>
+              <span class="toggle-description">Enable debug mode with additional validation</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.profiling">Profiling</mat-slide-toggle>
+              <span class="toggle-description">Enable operation profiling and timing</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.detectingLeaks">Detect Leaks</mat-slide-toggle>
+              <span class="toggle-description">Enable memory leak detection</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.helpersAllowed">Helpers Allowed</mat-slide-toggle>
+              <span class="toggle-description">Allow MKL-DNN and cuDNN helper functions</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.logNativeNDArrayCreation">Log Native Creation</mat-slide-toggle>
+              <span class="toggle-description">Log native NDArray creation events</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.checkOutputChange">Check Output Change</mat-slide-toggle>
+              <span class="toggle-description">Verify that operations actually modify output arrays</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editDebug.checkInputChange">Check Input Change</mat-slide-toggle>
+              <span class="toggle-description">Verify that input arrays are not modified by operations</span>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button mat-raised-button color="primary"
+                    [disabled]="saving['debug']"
+                    (click)="saveDebugSettings()">
+              <mat-spinner diameter="18" *ngIf="saving['debug']"></mat-spinner>
+              <mat-icon *ngIf="!saving['debug']">save</mat-icon>
+              {{ saving['debug'] ? 'Saving...' : 'Save Debug Settings' }}
+            </button>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 5: Lifecycle -->
+      <mat-tab label="Lifecycle">
+        <div class="tab-content">
+          <h3 class="section-title">
+            <mat-icon>autorenew</mat-icon>
+            Lifecycle Tracking
+          </h3>
+
+          <div class="toggle-grid">
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editLifecycle.lifecycleTracking">Lifecycle Tracking</mat-slide-toggle>
+              <span class="toggle-description">Enable lifecycle event tracking for NDArrays</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editLifecycle.trackViews">Track Views</mat-slide-toggle>
+              <span class="toggle-description">Track NDArray view creation events</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editLifecycle.trackDeletions">Track Deletions</mat-slide-toggle>
+              <span class="toggle-description">Track NDArray deletion events</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editLifecycle.ndArrayTracking">NDArray Tracking</mat-slide-toggle>
+              <span class="toggle-description">Enable individual NDArray object tracking</span>
+            </div>
+
+            <div class="toggle-card">
+              <mat-slide-toggle [(ngModel)]="editLifecycle.dataBufferTracking">Data Buffer Tracking</mat-slide-toggle>
+              <span class="toggle-description">Track data buffer allocations and deallocations</span>
+            </div>
+          </div>
+
+          <div class="settings-form lifecycle-numbers">
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Stack Depth</mat-label>
+              <input matInput type="number" [(ngModel)]="editLifecycle.stackDepth">
+              <mat-hint>Stack trace depth to capture for tracking events</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Report Interval</mat-label>
+              <input matInput type="number" [(ngModel)]="editLifecycle.reportInterval">
+              <mat-hint>Interval (in seconds) between lifecycle reports</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="form-field">
+              <mat-label>Max Deletion History</mat-label>
+              <input matInput type="number" [(ngModel)]="editLifecycle.maxDeletionHistory">
+              <mat-hint>Maximum number of deletion events to retain in history</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <div class="form-actions">
+            <button mat-raised-button color="primary"
+                    [disabled]="saving['lifecycle']"
+                    (click)="saveLifecycleSettings()">
+              <mat-spinner diameter="18" *ngIf="saving['lifecycle']"></mat-spinner>
+              <mat-icon *ngIf="!saving['lifecycle']">save</mat-icon>
+              {{ saving['lifecycle'] ? 'Saving...' : 'Save Lifecycle Settings' }}
+            </button>
+          </div>
+        </div>
+      </mat-tab>
+
+      <!-- Tab 6: GPU -->
+      <mat-tab label="GPU">
+        <div class="tab-content">
+
+          <!-- LLM Config Presets (shown for all backends) -->
+          <div class="gpu-section">
+            <h3 class="section-title">
+              <mat-icon>auto_awesome</mat-icon>
+              LLM Config Presets
+            </h3>
+            <p class="section-description">One-click configuration presets for LLM workloads. These apply optimal Triton, DSP, and cuBLAS settings.</p>
+
+            <div class="preset-grid" *ngIf="llmPresets.length > 0">
+              <mat-card class="preset-card" *ngFor="let preset of llmPresets"
+                        [class.preset-applying]="applyingLlmPreset === preset.id">
+                <mat-card-header>
+                  <mat-icon mat-card-avatar class="card-icon"
+                            [ngClass]="{'preset-optimal': preset.id === 'optimal', 'preset-basic': preset.id === 'basic', 'preset-debug': preset.id === 'debug'}">
+                    {{ preset.id === 'optimal' ? 'rocket_launch' : preset.id === 'debug' ? 'bug_report' : 'tune' }}
+                  </mat-icon>
+                  <mat-card-title>{{ preset.name }}</mat-card-title>
+                </mat-card-header>
+                <mat-card-content>
+                  <p class="preset-description">{{ preset.description }}</p>
+                </mat-card-content>
+                <mat-card-actions>
+                  <button mat-raised-button
+                          [color]="preset.id === 'optimal' ? 'primary' : 'accent'"
+                          [disabled]="applyingLlmPreset !== null"
+                          (click)="applyLlmConfig(preset.id)">
+                    <mat-spinner diameter="18" *ngIf="applyingLlmPreset === preset.id"></mat-spinner>
+                    <mat-icon *ngIf="applyingLlmPreset !== preset.id">play_arrow</mat-icon>
+                    {{ applyingLlmPreset === preset.id ? 'Applying...' : 'Apply' }}
+                  </button>
+                </mat-card-actions>
+              </mat-card>
+            </div>
+
+            <div *ngIf="llmPresets.length === 0" class="no-presets-msg">
+              <mat-icon>info_outline</mat-icon>
+              <span>No LLM config presets available. The backend may not support this feature.</span>
+            </div>
+          </div>
+
+          <mat-divider class="gpu-divider"></mat-divider>
+
+          <!-- GPU Not Available message -->
+          <div class="gpu-unavailable" *ngIf="!environment?.gpuAvailable">
+            <mat-icon>developer_board_off</mat-icon>
+            <h3>GPU Not Available</h3>
+            <p>No GPU devices were detected. CUDA/Triton settings require a CUDA-enabled backend.
+               Device info and native caches are shown below.</p>
+          </div>
+
+          <!-- GPU Available -->
+          <div *ngIf="environment?.gpuAvailable">
+
+            <!-- CUDA Settings -->
+            <div class="gpu-section">
+              <h3 class="section-title">
+                <mat-icon>developer_board</mat-icon>
+                CUDA Settings
+              </h3>
+
+              <div class="settings-form">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Current Device</mat-label>
+                  <input matInput type="number" [(ngModel)]="editCuda.currentDevice">
+                  <mat-hint>Active CUDA device index</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Memory Pool Size (bytes)</mat-label>
+                  <input matInput type="number" [(ngModel)]="editCuda.memoryPoolSize">
+                  <mat-hint>Size of the CUDA memory pool</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Max Blocks</mat-label>
+                  <input matInput type="number" [(ngModel)]="editCuda.maxBlocks">
+                  <mat-hint>Maximum number of CUDA blocks per kernel launch</mat-hint>
+                </mat-form-field>
+
+                <div class="toggle-grid">
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editCuda.memoryPinned">Pinned Memory</mat-slide-toggle>
+                    <span class="toggle-description">Use pinned (page-locked) host memory for faster transfers</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editCuda.useManagedMemory">Managed Memory</mat-slide-toggle>
+                    <span class="toggle-description">Use CUDA Unified Memory (managed memory)</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editCuda.asyncExecution">Async Execution</mat-slide-toggle>
+                    <span class="toggle-description">Enable asynchronous kernel execution</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editCuda.tensorCoreEnabled">Tensor Cores</mat-slide-toggle>
+                    <span class="toggle-description">Enable Tensor Core acceleration for supported operations</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editCuda.graphOptimization">Graph Optimization</mat-slide-toggle>
+                    <span class="toggle-description">Enable CUDA graph capture and replay optimization</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="cuda-info" *ngIf="environment?.cuda">
+                <div class="info-item">
+                  <span class="info-label">Device Count</span>
+                  <span class="info-value">{{ environment?.cuda?.deviceCount }}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">CUDA Available</span>
+                  <span class="info-value" [class.status-enabled]="environment?.cuda?.available"
+                        [class.status-disabled]="!environment?.cuda?.available">
+                    {{ environment?.cuda?.available ? 'Yes' : 'No' }}
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button mat-raised-button color="primary"
+                        [disabled]="saving['cuda']"
+                        (click)="saveCudaSettings()">
+                  <mat-spinner diameter="18" *ngIf="saving['cuda']"></mat-spinner>
+                  <mat-icon *ngIf="!saving['cuda']">save</mat-icon>
+                  {{ saving['cuda'] ? 'Saving...' : 'Save CUDA Settings' }}
+                </button>
+              </div>
+            </div>
+
+            <mat-divider class="gpu-divider"></mat-divider>
+
+            <!-- Triton Settings -->
+            <div class="gpu-section">
+              <h3 class="section-title">
+                <mat-icon>bolt</mat-icon>
+                Triton Compiler Settings
+              </h3>
+
+              <!-- Compiler Parameters -->
+              <h4 class="subsection-title">Compiler Parameters</h4>
+              <div class="settings-form">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Build Threads</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.buildThreads">
+                  <mat-hint>Number of threads for Triton kernel compilation</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Num Warps</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.numWarps">
+                  <mat-hint>Number of warps per Triton kernel block</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Num Stages</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.numStages">
+                  <mat-hint>Number of pipeline stages for software pipelining</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Num CTAs</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.numCTAs">
+                  <mat-hint>Number of Cooperative Thread Arrays</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Max NReg</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.maxNreg">
+                  <mat-hint>Maximum number of registers per thread</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Attention Block N</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.attentionBlockN">
+                  <mat-hint>Block size for attention kernel N dimension</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Cache Directory</mat-label>
+                  <input matInput type="text" [(ngModel)]="editTriton.cacheDir">
+                  <mat-hint>Directory for compiled kernel cache</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Dump Directory</mat-label>
+                  <input matInput type="text" [(ngModel)]="editTriton.dumpDir">
+                  <mat-hint>Directory for dumping intermediate IR and PTX</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Override Architecture</mat-label>
+                  <input matInput type="text" [(ngModel)]="editTriton.overrideArch">
+                  <mat-hint>Override target GPU architecture (e.g., sm_80)</mat-hint>
+                </mat-form-field>
+
+                <div class="toggle-grid">
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.cacheEnabled">Cache Enabled</mat-slide-toggle>
+                    <span class="toggle-description">Enable caching of compiled Triton kernels</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.verbose">Verbose</mat-slide-toggle>
+                    <span class="toggle-description">Enable verbose Triton compilation output</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.alwaysCompile">Always Compile</mat-slide-toggle>
+                    <span class="toggle-description">Force recompilation of kernels on every run</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.enableFpFusion">FP Fusion</mat-slide-toggle>
+                    <span class="toggle-description">Enable floating-point operation fusion</span>
+                  </div>
+
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.disableLineInfo">Disable Line Info</mat-slide-toggle>
+                    <span class="toggle-description">Disable line info in compiled kernels (smaller binaries)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Compilation Mode -->
+              <h4 class="subsection-title">Compilation Mode</h4>
+              <div class="settings-form">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Include Types</mat-label>
+                  <input matInput type="text" [(ngModel)]="editTriton.includeTypes">
+                  <mat-hint>Comma-separated op types to compile (e.g., CONST_GEN,GATHER,NORMALIZATION,ATTENTION)</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Exclude Ops</mat-label>
+                  <input matInput type="text" [(ngModel)]="editTriton.excludeOps">
+                  <mat-hint>Comma-separated op names to exclude from compilation</mat-hint>
+                </mat-form-field>
+
+                <div class="toggle-grid">
+                  <div class="toggle-card">
+                    <mat-slide-toggle [(ngModel)]="editTriton.compileAll">Compile All</mat-slide-toggle>
+                    <span class="toggle-description">Compile all supported operations</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section Fusion -->
+              <h4 class="subsection-title">Section Fusion</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.sectionFusion">Section Fusion</mat-slide-toggle>
+                  <span class="toggle-description">Enable section-level kernel fusion</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fusionScoring">Fusion Scoring</mat-slide-toggle>
+                  <span class="toggle-description">Enable scoring-based fusion decisions</span>
+                </div>
+              </div>
+              <div class="settings-form" style="margin-top: 12px;">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Fusion Min Score</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.fusionMinScore">
+                  <mat-hint>Minimum score threshold for fusion candidates</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <!-- Graph Capture -->
+              <h4 class="subsection-title">Graph Capture</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.graphCapture">Graph Capture</mat-slide-toggle>
+                  <span class="toggle-description">Enable CUDA graph capture for kernel replay</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.allowFallbackCapture">Allow Fallback Capture</mat-slide-toggle>
+                  <span class="toggle-description">Allow fallback to non-graph execution on capture failure</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.forceRecapture">Force Recapture</mat-slide-toggle>
+                  <span class="toggle-description">Force re-capture of CUDA graphs</span>
+                </div>
+              </div>
+              <div class="settings-form" style="margin-top: 12px;">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Capture Min Executions</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.captureMinExec">
+                  <mat-hint>Minimum executions before graph capture triggers</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <!-- Arg Table -->
+              <h4 class="subsection-title">Argument Table</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.consolidatedArgTable">Consolidated Arg Table</mat-slide-toggle>
+                  <span class="toggle-description">Use consolidated argument table for kernel launches</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.argDirtyTracking">Arg Dirty Tracking</mat-slide-toggle>
+                  <span class="toggle-description">Track dirty args to minimize re-uploads</span>
+                </div>
+              </div>
+
+              <!-- Cooperative Launch -->
+              <h4 class="subsection-title">Cooperative Launch</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.cooperativeLaunch">Cooperative Launch</mat-slide-toggle>
+                  <span class="toggle-description">Enable cooperative kernel launch</span>
+                </div>
+              </div>
+              <div class="settings-form" style="margin-top: 12px;">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Coop Target Blocks</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.coopTargetBlocks">
+                  <mat-hint>Target block count for cooperative launches</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <!-- Debug / Verification -->
+              <h4 class="subsection-title">Debug / Verification</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.skipKernels">Skip Kernels</mat-slide-toggle>
+                  <span class="toggle-description">Skip kernel execution (for debugging)</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.verifyKernels">Verify Kernels</mat-slide-toggle>
+                  <span class="toggle-description">Verify kernel outputs against reference implementation</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.verifyFullSnapshot">Verify Full Snapshot</mat-slide-toggle>
+                  <span class="toggle-description">Full snapshot verification (slower, more thorough)</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.dumpSections">Dump Sections</mat-slide-toggle>
+                  <span class="toggle-description">Dump section boundaries to dump directory</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.dumpArgs">Dump Args</mat-slide-toggle>
+                  <span class="toggle-description">Dump kernel arguments for debugging</span>
+                </div>
+              </div>
+
+              <!-- Subsegment Limits -->
+              <h4 class="subsection-title">Subsegment Limits</h4>
+              <div class="settings-form">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Max Subsegment Ops</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.maxSubsegmentOps">
+                  <mat-hint>Maximum ops per subsegment</mat-hint>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Max Subsegment Sections</mat-label>
+                  <input matInput type="number" [(ngModel)]="editTriton.maxSubsegmentSections">
+                  <mat-hint>Maximum sections per subsegment</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <!-- Segment Fusion Optimization Flags -->
+              <h4 class="subsection-title">Segment Fusion Optimizations</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fuseIdentityShapes">Fuse Identity Shapes</mat-slide-toggle>
+                  <span class="toggle-description">Fuse identity shape operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fuseCastChains">Fuse Cast Chains</mat-slide-toggle>
+                  <span class="toggle-description">Fuse chains of type cast operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fuseTrivialGather">Fuse Trivial Gather</mat-slide-toggle>
+                  <span class="toggle-description">Fuse trivial gather operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.specializePermuteSeq1">Specialize Permute Seq1</mat-slide-toggle>
+                  <span class="toggle-description">Specialize permute for sequence length 1</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.eliminateConcatSplitPairs">Eliminate Concat/Split Pairs</mat-slide-toggle>
+                  <span class="toggle-description">Eliminate redundant concat-split pairs</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fusedMatmul">Fused Matmul</mat-slide-toggle>
+                  <span class="toggle-description">Enable fused matrix multiplication kernels</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editTriton.fuseAttentionNeighborhoods">Fuse Attention Neighborhoods</mat-slide-toggle>
+                  <span class="toggle-description">Fuse attention neighborhood operations</span>
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button mat-raised-button color="primary"
+                        [disabled]="saving['triton']"
+                        (click)="saveTritonSettings()">
+                  <mat-spinner diameter="18" *ngIf="saving['triton']"></mat-spinner>
+                  <mat-icon *ngIf="!saving['triton']">save</mat-icon>
+                  {{ saving['triton'] ? 'Saving...' : 'Save Triton Settings' }}
+                </button>
+              </div>
+            </div>
+
+            <mat-divider class="gpu-divider"></mat-divider>
+
+            <!-- DSP Settings -->
+            <div class="gpu-section">
+              <h3 class="section-title">
+                <mat-icon>tune</mat-icon>
+                DSP Settings
+              </h3>
+
+              <!-- GEMM / Matmul -->
+              <h4 class="subsection-title">GEMM / Matmul Optimization</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.batchedGemm">Batched GEMM</mat-slide-toggle>
+                  <span class="toggle-description">Enable batched GEMM operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.cublasTf32">cuBLAS TF32</mat-slide-toggle>
+                  <span class="toggle-description">Enable TF32 precision for cuBLAS matmul (Ampere+)</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.cublasCaptureWorkspace">cuBLAS Capture Workspace</mat-slide-toggle>
+                  <span class="toggle-description">Enable cuBLAS workspace capture for graph replay</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.fp16Compute">FP16 Compute</mat-slide-toggle>
+                  <span class="toggle-description">Use FP16 for internal compute operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.matmulSegmentation">Matmul Segmentation</mat-slide-toggle>
+                  <span class="toggle-description">Enable matmul segmentation for large matrices</span>
+                </div>
+              </div>
+
+              <!-- Cast Optimization -->
+              <h4 class="subsection-title">Cast Optimization</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.castElimination">Cast Elimination</mat-slide-toggle>
+                  <span class="toggle-description">Eliminate redundant type cast operations</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.castSinkMatmul">Cast Sink Matmul</mat-slide-toggle>
+                  <span class="toggle-description">Sink casts below matmul operations</span>
+                </div>
+              </div>
+
+              <!-- Batch Zero -->
+              <h4 class="subsection-title">Batch-Zero Optimization</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.batchZero">Batch Zero</mat-slide-toggle>
+                  <span class="toggle-description">Enable batch-zero optimization</span>
+                </div>
+
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.batchZeroKernel">Batch Zero Kernel</mat-slide-toggle>
+                  <span class="toggle-description">Use specialized kernel for batch-zero operations</span>
+                </div>
+              </div>
+
+              <!-- Symbolic Shapes -->
+              <h4 class="subsection-title">Symbolic Shapes</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.symbolicShapes">Symbolic Shapes</mat-slide-toggle>
+                  <span class="toggle-description">Enable symbolic shape inference</span>
+                </div>
+              </div>
+              <div class="settings-form" style="margin-top: 12px;">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Symbolic Shape Warmup</mat-label>
+                  <input matInput type="number" [(ngModel)]="editDsp.symbolicShapeWarmup">
+                  <mat-hint>Number of warmup iterations for symbolic shape compilation</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <!-- Capture Pool -->
+              <h4 class="subsection-title">Capture Pool</h4>
+              <div class="toggle-grid">
+                <div class="toggle-card">
+                  <mat-slide-toggle [(ngModel)]="editDsp.capturePoolEnabled">Capture Pool Enabled</mat-slide-toggle>
+                  <span class="toggle-description">Enable capture pool for graph replay</span>
+                </div>
+              </div>
+              <div class="settings-form" style="margin-top: 12px;">
+                <mat-form-field appearance="outline" class="form-field">
+                  <mat-label>Capture Pool Max Bytes</mat-label>
+                  <input matInput type="number" [(ngModel)]="editDsp.capturePoolMaxBytes">
+                  <mat-hint>Maximum bytes for the capture pool</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <div class="form-actions">
+                <button mat-raised-button color="primary"
+                        [disabled]="saving['dsp']"
+                        (click)="saveDspSettings()">
+                  <mat-spinner diameter="18" *ngIf="saving['dsp']"></mat-spinner>
+                  <mat-icon *ngIf="!saving['dsp']">save</mat-icon>
+                  {{ saving['dsp'] ? 'Saving...' : 'Save DSP Settings' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <mat-divider class="gpu-divider"></mat-divider>
+
+          <!-- Per-Device Information (shown for both CPU and GPU backends) -->
+          <div class="gpu-section">
+            <h3 class="section-title">
+              <mat-icon>dns</mat-icon>
+              Per-Device Information
+            </h3>
+
+            <div class="loading-container" *ngIf="loadingDeviceCacheStatus" style="min-height: 100px;">
+              <mat-spinner diameter="32"></mat-spinner>
+              <span>Loading device info...</span>
+            </div>
+
+            <div *ngIf="deviceCacheStatus && !loadingDeviceCacheStatus">
+              <div class="devices-info-bar">
+                <span class="devices-count">{{ deviceCacheStatus?.availableDevices }} device(s) detected</span>
+                <button mat-stroked-button (click)="loadDeviceCacheStatus()" class="refresh-btn">
+                  <mat-icon>refresh</mat-icon> Refresh
+                </button>
+              </div>
+
+              <div class="devices-grid">
+                <mat-card class="device-card" *ngFor="let device of deviceCacheStatus?.devices">
+                  <mat-card-header>
+                    <mat-icon mat-card-avatar class="card-icon device-icon">developer_board</mat-icon>
+                    <mat-card-title>Device {{ device.deviceId }}</mat-card-title>
+                    <mat-card-subtitle>{{ device.deviceName }}</mat-card-subtitle>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="device-detail">
+                      <span class="detail-label">Compute Capability:</span>
+                      <span class="detail-value">{{ device.computeCapability }}</span>
+                    </div>
+                    <div class="device-detail">
+                      <span class="detail-label">Total Memory:</span>
+                      <span class="detail-value">{{ formatBytes(device.totalMemoryBytes) }}</span>
+                    </div>
+                    <div class="device-detail">
+                      <span class="detail-label">Used Memory:</span>
+                      <span class="detail-value">{{ formatBytes(device.usedMemoryBytes) }}</span>
+                    </div>
+                    <div class="device-detail">
+                      <span class="detail-label">Free Memory:</span>
+                      <span class="detail-value">{{ formatBytes(device.freeMemoryBytes) }}</span>
+                    </div>
+                    <div class="device-memory-bar-container">
+                      <div class="device-memory-bar">
+                        <div class="device-memory-fill"
+                             [style.width.%]="getMemoryUsagePercent(device)"
+                             [style.background]="getMemoryBarColor(getMemoryUsagePercent(device))">
+                        </div>
+                      </div>
+                      <span class="device-memory-percent">{{ getMemoryUsagePercent(device) }}%</span>
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+              </div>
+            </div>
+          </div>
+
+          <mat-divider class="gpu-divider"></mat-divider>
+
+          <!-- Native Cache Management (shown for both CPU and GPU backends) -->
+          <div class="gpu-section">
+            <h3 class="section-title">
+              <mat-icon>cached</mat-icon>
+              Native Cache Management
+            </h3>
+
+            <div *ngIf="deviceCacheStatus && !loadingDeviceCacheStatus">
+              <div class="native-caches-grid">
+                <!-- TAD Cache -->
+                <mat-card class="native-cache-card">
+                  <mat-card-header>
+                    <mat-icon mat-card-avatar class="card-icon tad-icon">view_in_ar</mat-icon>
+                    <mat-card-title>TAD Cache</mat-card-title>
+                    <mat-card-subtitle>Tensor Along Dimension</mat-card-subtitle>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="native-cache-stats">
+                      <div class="cache-stat">
+                        <span class="stat-label">Entries</span>
+                        <span class="stat-value">{{ deviceCacheStatus?.tadCache?.cachedEntries }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Size</span>
+                        <span class="stat-value">{{ formatBytes(deviceCacheStatus?.tadCache?.cachedBytes ?? 0) }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Peak Entries</span>
+                        <span class="stat-value">{{ deviceCacheStatus?.tadCache?.peakCachedEntries }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Peak Size</span>
+                        <span class="stat-value">{{ formatBytes(deviceCacheStatus?.tadCache?.peakCachedBytes ?? 0) }}</span>
+                      </div>
+                    </div>
+                    <mat-expansion-panel class="cache-contents-panel" *ngIf="deviceCacheStatus?.tadCache?.cacheContents">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>Cache Contents</mat-panel-title>
+                      </mat-expansion-panel-header>
+                      <pre class="cache-contents-pre">{{ deviceCacheStatus?.tadCache?.cacheContents }}</pre>
+                    </mat-expansion-panel>
+                  </mat-card-content>
+                  <mat-card-actions>
+                    <button mat-stroked-button color="warn"
+                            [disabled]="saving['nativeCache']"
+                            (click)="clearNativeCache('tad')">
+                      <mat-icon>delete_sweep</mat-icon> Clear TAD Cache
+                    </button>
+                  </mat-card-actions>
+                </mat-card>
+
+                <!-- Shape Cache -->
+                <mat-card class="native-cache-card">
+                  <mat-card-header>
+                    <mat-icon mat-card-avatar class="card-icon shape-icon">crop_square</mat-icon>
+                    <mat-card-title>Shape Cache</mat-card-title>
+                    <mat-card-subtitle>Tensor Shape Descriptors</mat-card-subtitle>
+                  </mat-card-header>
+                  <mat-card-content>
+                    <div class="native-cache-stats">
+                      <div class="cache-stat">
+                        <span class="stat-label">Entries</span>
+                        <span class="stat-value">{{ deviceCacheStatus?.shapeCache?.cachedEntries }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Size</span>
+                        <span class="stat-value">{{ formatBytes(deviceCacheStatus?.shapeCache?.cachedBytes ?? 0) }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Peak Entries</span>
+                        <span class="stat-value">{{ deviceCacheStatus?.shapeCache?.peakCachedEntries }}</span>
+                      </div>
+                      <div class="cache-stat">
+                        <span class="stat-label">Peak Size</span>
+                        <span class="stat-value">{{ formatBytes(deviceCacheStatus?.shapeCache?.peakCachedBytes ?? 0) }}</span>
+                      </div>
+                    </div>
+                    <mat-expansion-panel class="cache-contents-panel" *ngIf="deviceCacheStatus?.shapeCache?.cacheContents">
+                      <mat-expansion-panel-header>
+                        <mat-panel-title>Cache Contents</mat-panel-title>
+                      </mat-expansion-panel-header>
+                      <pre class="cache-contents-pre">{{ deviceCacheStatus?.shapeCache?.cacheContents }}</pre>
+                    </mat-expansion-panel>
+                  </mat-card-content>
+                  <mat-card-actions>
+                    <button mat-stroked-button color="warn"
+                            [disabled]="saving['nativeCache']"
+                            (click)="clearNativeCache('shape')">
+                      <mat-icon>delete_sweep</mat-icon> Clear Shape Cache
+                    </button>
+                  </mat-card-actions>
+                </mat-card>
+              </div>
+
+              <!-- Global Native Cache Actions -->
+              <div class="native-cache-actions">
+                <button mat-raised-button color="warn"
+                        [disabled]="saving['nativeCache']"
+                        (click)="clearNativeCache('all')">
+                  <mat-spinner diameter="18" *ngIf="saving['nativeCache']"></mat-spinner>
+                  <mat-icon *ngIf="!saving['nativeCache']">delete_forever</mat-icon>
+                  {{ saving['nativeCache'] ? 'Clearing...' : 'Clear All Native Caches' }}
+                </button>
+                <button mat-stroked-button
+                        [disabled]="saving['nativeCache']"
+                        (click)="clearNativeCache('cleanup')">
+                  <mat-icon>auto_fix_high</mat-icon> Auto Cleanup
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </mat-tab>
+
+    </mat-tab-group>
+  </div>
+</div>

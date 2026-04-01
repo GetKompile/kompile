@@ -1,0 +1,395 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="sdk-hub-container">
+
+  <!-- Status Summary Card -->
+  <mat-card class="status-card" *ngIf="status">
+    <mat-card-content>
+      <div class="status-row">
+        <div class="status-item">
+          <mat-icon>inventory_2</mat-icon>
+          <div>
+            <span class="status-value">{{ status.cachedSdkPlatforms }}</span>
+            <span class="status-label">/ {{ status.totalSdkPlatforms }} SDK Platforms Cached</span>
+          </div>
+        </div>
+        <div class="status-item">
+          <mat-icon>model_training</mat-icon>
+          <div>
+            <span class="status-value">{{ status.cachedModels }}</span>
+            <span class="status-label">/ {{ status.totalModels }} Model Bundles Cached</span>
+          </div>
+        </div>
+        <div class="status-item">
+          <mat-icon>folder</mat-icon>
+          <div>
+            <span class="status-label cache-path">{{ status.cacheDirectory }}</span>
+          </div>
+        </div>
+        <button mat-icon-button (click)="loadData()" matTooltip="Refresh">
+          <mat-icon>refresh</mat-icon>
+        </button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <mat-tab-group>
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- SDK Artifacts Tab -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">memory</mat-icon>
+        SDK Artifacts
+      </ng-template>
+
+      <div class="tab-content">
+        <!-- Filters -->
+        <div class="filter-row">
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Filter by Platform</mat-label>
+            <input matInput [(ngModel)]="platformFilter" placeholder="e.g., arm64, linux">
+            <mat-icon matSuffix>search</mat-icon>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="filter-field">
+            <mat-label>Category</mat-label>
+            <mat-select [(ngModel)]="platformCategoryFilter">
+              <mat-option value="all">All Platforms</mat-option>
+              <mat-option value="ios">iOS</mat-option>
+              <mat-option value="android">Android</mat-option>
+              <mat-option value="desktop">Desktop</mat-option>
+              <mat-option value="mobile">Mobile (All)</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <!-- SDK cards -->
+        <div *ngFor="let sdk of sdks">
+          <h3 class="sdk-title">
+            <mat-icon>developer_board</mat-icon>
+            {{ sdk.sdkId }}
+            <span class="version-chip">v{{ sdk.version }}</span>
+          </h3>
+
+          <div class="artifacts-grid">
+            <mat-card *ngFor="let artifact of getFilteredArtifacts(sdk)" class="artifact-card"
+                      [class.cached]="artifact.cached">
+              <mat-card-content>
+                <div class="artifact-header">
+                  <mat-icon [style.color]="getPackagingColor(artifact.packaging)">
+                    {{ getPackagingIcon(artifact.packaging) }}
+                  </mat-icon>
+                  <div class="artifact-info">
+                    <span class="artifact-platform">{{ artifact.platform }}</span>
+                    <span class="artifact-category">{{ getPlatformCategory(artifact.platform) }}</span>
+                  </div>
+                  <mat-chip-set>
+                    <mat-chip [class.cached-chip]="artifact.cached">
+                      {{ artifact.packaging }}
+                    </mat-chip>
+                  </mat-chip-set>
+                </div>
+                <div class="artifact-file">{{ artifact.artifactFileName }}</div>
+                <div class="artifact-actions">
+                  <span class="cache-status" *ngIf="artifact.cached">
+                    <mat-icon>check_circle</mat-icon> Cached
+                  </span>
+                  <button mat-stroked-button color="primary"
+                          (click)="downloadSdkArtifact(artifact.platform)"
+                          [disabled]="downloadingSdk === artifact.platform">
+                    <mat-icon *ngIf="downloadingSdk !== artifact.platform">download</mat-icon>
+                    <mat-spinner *ngIf="downloadingSdk === artifact.platform"
+                                 diameter="18"></mat-spinner>
+                    {{ artifact.cached ? 'Re-download' : 'Download' }}
+                  </button>
+                </div>
+              </mat-card-content>
+            </mat-card>
+          </div>
+
+          <p class="no-results" *ngIf="getFilteredArtifacts(sdk).length === 0">
+            No artifacts match the current filter.
+          </p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Model Bundles Tab -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">model_training</mat-icon>
+        Model Bundles
+      </ng-template>
+
+      <div class="tab-content">
+        <div class="models-grid">
+          <mat-card *ngFor="let model of models" class="model-card" [class.cached]="model.cached">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>psychology</mat-icon>
+              <mat-card-title>{{ model.modelId }}</mat-card-title>
+              <mat-card-subtitle>v{{ model.version }}</mat-card-subtitle>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="model-metadata">
+                <div class="meta-item" *ngIf="model.metadata?.['model_type']">
+                  <span class="meta-label">Type:</span>
+                  <span class="meta-value">{{ model.metadata['model_type'] }}</span>
+                </div>
+                <div class="meta-item" *ngIf="model.metadata?.['context_length']">
+                  <span class="meta-label">Context:</span>
+                  <span class="meta-value">{{ model.metadata['context_length'] }} tokens</span>
+                </div>
+              </div>
+              <div class="model-status" *ngIf="model.cached">
+                <mat-icon>check_circle</mat-icon> Cached locally
+              </div>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-raised-button color="primary"
+                      (click)="downloadModelBundle(model.modelId)"
+                      [disabled]="downloadingModel === model.modelId">
+                <mat-icon *ngIf="downloadingModel !== model.modelId">download</mat-icon>
+                <mat-spinner *ngIf="downloadingModel === model.modelId"
+                             diameter="18"></mat-spinner>
+                {{ model.cached ? 'Re-download' : 'Download' }}
+              </button>
+            </mat-card-actions>
+          </mat-card>
+        </div>
+
+        <p class="no-results" *ngIf="models.length === 0">
+          No model bundles available. Add bundles via registry.json or CLI.
+        </p>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Scaffold Tab -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">phone_android</mat-icon>
+        Scaffold Mobile App
+      </ng-template>
+
+      <div class="tab-content scaffold-content">
+        <div class="scaffold-layout">
+          <!-- Configuration Panel -->
+          <mat-card class="scaffold-config-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>build</mat-icon>
+              <mat-card-title>Project Configuration</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Target Platform</mat-label>
+                <mat-select [(ngModel)]="scaffoldPlatform" (selectionChange)="onScaffoldPlatformChange()">
+                  <mat-option value="ios">
+                    <mat-icon>phone_iphone</mat-icon> iOS (SwiftUI)
+                  </mat-option>
+                  <mat-option value="android">
+                    <mat-icon>android</mat-icon> Android (Jetpack Compose)
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Project Name</mat-label>
+                <input matInput [(ngModel)]="scaffoldProjectName" placeholder="KompileChat">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Package Name</mat-label>
+                <input matInput [(ngModel)]="scaffoldPackageName" placeholder="ai.kompile.chat">
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Model</mat-label>
+                <mat-select [(ngModel)]="scaffoldModel">
+                  <mat-option *ngFor="let m of scaffoldInfo?.availableModels || []" [value]="m.modelId">
+                    {{ m.modelId }} (v{{ m.version }})
+                  </mat-option>
+                  <mat-option value="smollm-135m" *ngIf="!scaffoldInfo?.availableModels?.length">
+                    smollm-135m (default)
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Inference Mode</mat-label>
+                <mat-select [(ngModel)]="scaffoldMode">
+                  <mat-option value="local">Local (on-device only)</mat-option>
+                  <mat-option value="hybrid">Hybrid (local embeddings + remote LLM)</mat-option>
+                  <mat-option value="remote">Remote (API-based)</mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <div class="scaffold-options">
+                <mat-slide-toggle [(ngModel)]="scaffoldIncludeModel" color="primary">
+                  Include model bundle (.sdz)
+                </mat-slide-toggle>
+                <mat-slide-toggle [(ngModel)]="scaffoldIncludeSdk" color="primary">
+                  Include SDK binary
+                </mat-slide-toggle>
+              </div>
+
+              <div class="scaffold-generate">
+                <button mat-raised-button color="primary"
+                        (click)="generateAndDownload()"
+                        [disabled]="scaffoldGenerating"
+                        class="generate-btn">
+                  <mat-icon *ngIf="!scaffoldGenerating">archive</mat-icon>
+                  <mat-spinner *ngIf="scaffoldGenerating" diameter="20"></mat-spinner>
+                  {{ scaffoldGenerating ? 'Generating...' : 'Generate & Download Project' }}
+                </button>
+                <div class="scaffold-error" *ngIf="scaffoldError">
+                  <mat-icon>error</mat-icon>
+                  {{ scaffoldError }}
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Info Panel -->
+          <div class="scaffold-info-panel">
+            <!-- Platform Info -->
+            <mat-card class="info-card" *ngIf="scaffoldInfo">
+              <mat-card-header>
+                <mat-icon mat-card-avatar [style.color]="scaffoldPlatform === 'ios' ? '#007AFF' : '#3DDC84'">
+                  {{ scaffoldPlatform === 'ios' ? 'phone_iphone' : 'android' }}
+                </mat-icon>
+                <mat-card-title>{{ scaffoldInfo.templateType }}</mat-card-title>
+                <mat-card-subtitle>{{ scaffoldInfo.language }}</mat-card-subtitle>
+              </mat-card-header>
+              <mat-card-content>
+                <h4>Features</h4>
+                <ul class="feature-list">
+                  <li *ngFor="let feature of scaffoldInfo.features">
+                    <mat-icon>check</mat-icon>
+                    {{ feature }}
+                  </li>
+                </ul>
+
+                <mat-divider></mat-divider>
+
+                <h4>Requirements</h4>
+                <div class="requirements">
+                  <div class="req-item" *ngFor="let req of scaffoldInfo.requirements | keyvalue">
+                    <span class="req-label">{{ req.key }}:</span>
+                    <span class="req-value">{{ req.value }}</span>
+                  </div>
+                </div>
+              </mat-card-content>
+            </mat-card>
+
+            <!-- CLI Command (collapsible) -->
+            <mat-expansion-panel class="cli-command-panel">
+              <mat-expansion-panel-header>
+                <mat-panel-title>
+                  <mat-icon>terminal</mat-icon>
+                  Alternative: CLI Command
+                </mat-panel-title>
+              </mat-expansion-panel-header>
+              <pre class="command-block">{{ getScaffoldCommand() }}</pre>
+              <div class="cli-actions">
+                <button mat-stroked-button color="primary" (click)="copyScaffoldCommand()">
+                  <mat-icon>content_copy</mat-icon>
+                  Copy Command
+                </button>
+              </div>
+            </mat-expansion-panel>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- Platforms Reference Tab -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <mat-tab>
+      <ng-template mat-tab-label>
+        <mat-icon class="tab-icon">devices</mat-icon>
+        Platform Reference
+      </ng-template>
+
+      <div class="tab-content" *ngIf="platforms">
+        <mat-accordion>
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>phone_iphone</mat-icon>
+                iOS Platforms ({{ platforms.iosPlatforms.length }})
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of platforms.iosPlatforms">{{ p }}</mat-chip>
+            </mat-chip-set>
+          </mat-expansion-panel>
+
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>android</mat-icon>
+                Android Platforms ({{ platforms.androidPlatforms.length }})
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of platforms.androidPlatforms">{{ p }}</mat-chip>
+            </mat-chip-set>
+            <div class="extended-section" *ngFor="let p of platforms.androidPlatforms">
+              <div *ngIf="platforms.extendedClassifiers[p]?.length">
+                <strong>{{ p }}</strong> extensions:
+                <mat-chip-set>
+                  <mat-chip *ngFor="let ext of platforms.extendedClassifiers[p]"
+                            color="accent" highlighted>
+                    {{ p }}-{{ ext }}
+                  </mat-chip>
+                </mat-chip-set>
+              </div>
+            </div>
+          </mat-expansion-panel>
+
+          <mat-expansion-panel>
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>computer</mat-icon>
+                Desktop Platforms ({{ platforms.desktopPlatforms.length }})
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+            <mat-chip-set>
+              <mat-chip *ngFor="let p of platforms.desktopPlatforms">{{ p }}</mat-chip>
+            </mat-chip-set>
+            <div class="extended-section" *ngFor="let p of platforms.desktopPlatforms">
+              <div *ngIf="platforms.extendedClassifiers[p]?.length">
+                <strong>{{ p }}</strong> extensions:
+                <mat-chip-set>
+                  <mat-chip *ngFor="let ext of platforms.extendedClassifiers[p]"
+                            color="accent" highlighted>
+                    {{ p }}-{{ ext }}
+                  </mat-chip>
+                </mat-chip-set>
+              </div>
+            </div>
+          </mat-expansion-panel>
+        </mat-accordion>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

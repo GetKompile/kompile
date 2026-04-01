@@ -17,6 +17,7 @@
 package ai.kompile.embedding.anserini.config;
 
 import lombok.Data;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -31,7 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * Configuration for Anserini-based embedding models.
  */
 @Configuration
-@ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true")
+@ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
+@ConditionalOnProperty(name = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
 public class AnseriniEmbeddingConfiguration {
 
 

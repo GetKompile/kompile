@@ -21,6 +21,7 @@ import ai.kompile.pipelines.framework.api.Configuration;
 import ai.kompile.pipelines.framework.api.data.ValueType;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.Singular;
@@ -32,6 +33,7 @@ import java.util.Objects;
 
 @Getter
 @Builder
+@JsonTypeInfo(use = JsonTypeInfo.Id.NONE)
 public class ParameterSchema implements Configuration {
     private static final long serialVersionUID = 1L;
 

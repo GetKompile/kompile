@@ -1,0 +1,43 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="experiment-comparison">
+  <div class="header">
+    <button mat-icon-button (click)="goBack()"><mat-icon>arrow_back</mat-icon></button>
+    <h2>Model Comparison</h2>
+  </div>
+
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="comparison && !loading">
+    <div class="summary" *ngIf="comparison.bestModelId">
+      <mat-icon color="primary">emoji_events</mat-icon>
+      <span>Best model: <strong>{{ comparison.bestModelId }}</strong>
+        (score: {{ comparison.bestAverageScore?.toFixed(3) }})</span>
+    </div>
+
+    <table mat-table [dataSource]="getMetricRows()" class="comparison-table">
+      <ng-container matColumnDef="metric">
+        <th mat-header-cell *matHeaderCellDef>Metric</th>
+        <td mat-cell *matCellDef="let row" class="metric-cell"><strong>{{ row.metric }}</strong></td>
+      </ng-container>
+
+      <ng-container *ngFor="let col of displayedColumns.slice(1)" [matColumnDef]="col">
+        <th mat-header-cell *matHeaderCellDef>{{ col }}</th>
+        <td mat-cell *matCellDef="let row" [class.best-value]="isBestValue(row.metric, col)">
+          {{ row.values[col] }}
+        </td>
+      </ng-container>
+
+      <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+      <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+    </table>
+  </div>
+
+  <div *ngIf="!loading && comparison && comparison.runCount < 2" class="empty-state">
+    <p>Need at least 2 completed runs to compare. Add more model runs first.</p>
+  </div>
+</div>

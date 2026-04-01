@@ -1,0 +1,354 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0
+-->
+<div class="state-machine-editor">
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <button mat-raised-button color="primary" (click)="newState()">
+      <mat-icon>add</mat-icon> Add State
+    </button>
+
+    <button mat-stroked-button (click)="createDefaultStates()"
+            [disabled]="saving || (config?.states?.length ?? 0) > 0">
+      <mat-icon>auto_fix_high</mat-icon> Create Defaults
+    </button>
+
+    <div class="spacer"></div>
+
+    <button mat-icon-button (click)="loadStateMachine()" matTooltip="Refresh">
+      <mat-icon>refresh</mat-icon>
+    </button>
+
+    <button mat-icon-button (click)="exportConfig()" matTooltip="Export">
+      <mat-icon>download</mat-icon>
+    </button>
+  </div>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="clearError()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <div class="main-content">
+    <!-- Canvas Area -->
+    <div class="canvas-container">
+      <div class="loading-overlay" *ngIf="loading">
+        <mat-spinner diameter="40"></mat-spinner>
+      </div>
+
+      <svg #svgCanvas class="canvas"
+           [attr.viewBox]="viewBox.x + ' ' + viewBox.y + ' ' + viewBox.width + ' ' + viewBox.height"
+           (mousemove)="onMouseMove($event)"
+           (mouseup)="onMouseUp($event)"
+           (click)="deselectAll()">
+
+        <!-- Grid Pattern -->
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e0e0e0" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- Edges (drawn first, so nodes appear on top) -->
+        <g class="edges">
+          <g *ngFor="let edge of edges" class="edge-group" [class.selected]="edge.selected"
+             (click)="selectEdge(edge, $event)">
+            <path class="edge-path"
+                  [attr.d]="getEdgePath(edge)"
+                  [attr.stroke]="getConditionColor(edge.transition.conditionType)"
+                  fill="none"
+                  stroke-width="2"/>
+            <path class="edge-arrow"
+                  [attr.d]="getArrowPath(edge)"
+                  [attr.fill]="getConditionColor(edge.transition.conditionType)"/>
+            <!-- Edge label -->
+            <text *ngIf="edge.transition.label || edge.transition.name"
+                  class="edge-label"
+                  [attr.x]="(getNodeCenter(edge.fromNode).x + getNodeCenter(edge.toNode).x) / 2"
+                  [attr.y]="(getNodeCenter(edge.fromNode).y + getNodeCenter(edge.toNode).y) / 2 - 10"
+                  text-anchor="middle">
+              {{ edge.transition.label || edge.transition.name }}
+            </text>
+          </g>
+        </g>
+
+        <!-- Temporary connection line -->
+        <line *ngIf="connectingFrom" class="temp-connection"
+              [attr.x1]="getNodeCenter(connectingFrom).x"
+              [attr.y1]="getNodeCenter(connectingFrom).y"
+              [attr.x2]="tempConnectionEnd.x"
+              [attr.y2]="tempConnectionEnd.y"
+              stroke="#1976d2"
+              stroke-width="2"
+              stroke-dasharray="5,5"/>
+
+        <!-- Nodes -->
+        <g class="nodes">
+          <g *ngFor="let node of nodes" class="node-group"
+             [class.selected]="node.selected"
+             [class.dragging]="node.dragging"
+             [attr.transform]="'translate(' + node.x + ',' + node.y + ')'"
+             (mousedown)="startDrag(node, $event)"
+             (click)="selectNode(node, $event)">
+
+            <!-- Node rectangle -->
+            <rect class="node-rect"
+                  [attr.width]="node.width"
+                  [attr.height]="node.height"
+                  rx="8" ry="8"
+                  [attr.stroke]="getCategoryColor(node.state.category)"
+                  stroke-width="2"
+                  fill="white"/>
+
+            <!-- Category indicator -->
+            <rect class="category-bar"
+                  [attr.width]="node.width"
+                  height="6"
+                  rx="8" ry="8"
+                  [attr.fill]="getCategoryColor(node.state.category)"/>
+
+            <!-- State name -->
+            <text class="node-name"
+                  [attr.x]="node.width / 2"
+                  [attr.y]="node.height / 2 + 4"
+                  text-anchor="middle">
+              {{ node.state.name }}
+            </text>
+
+            <!-- Category label -->
+            <text class="node-category"
+                  [attr.x]="node.width / 2"
+                  [attr.y]="node.height - 8"
+                  text-anchor="middle">
+              {{ node.state.category }}
+            </text>
+
+            <!-- Connection handle -->
+            <circle class="connect-handle"
+                    [attr.cx]="node.width"
+                    [attr.cy]="node.height / 2"
+                    r="8"
+                    fill="#1976d2"
+                    (mousedown)="startConnection(node, $event)"/>
+            <text class="connect-icon"
+                  [attr.x]="node.width"
+                  [attr.y]="node.height / 2 + 4"
+                  text-anchor="middle"
+                  fill="white"
+                  font-size="12">+</text>
+          </g>
+        </g>
+      </svg>
+
+      <!-- Empty state overlay -->
+      <div class="empty-overlay" *ngIf="!loading && nodes.length === 0">
+        <mat-icon>account_tree</mat-icon>
+        <p>No states defined</p>
+        <button mat-raised-button color="primary" (click)="createDefaultStates()">
+          Create Default States
+        </button>
+        <span class="or">or</span>
+        <button mat-stroked-button (click)="newState()">
+          Add State Manually
+        </button>
+      </div>
+    </div>
+
+    <!-- Properties Panel -->
+    <div class="properties-panel" *ngIf="selectedNode || selectedEdge || editingState || editingTransition">
+      <!-- State Editor -->
+      <div class="panel-content" *ngIf="editingState">
+        <h3>{{ selectedNode ? 'Edit State' : 'New State' }}</h3>
+        <form [formGroup]="stateForm">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>State ID</mat-label>
+            <input matInput formControlName="stateId" [readonly]="!!selectedNode">
+            <mat-error>State ID is required</mat-error>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput formControlName="name">
+            <mat-error>Name is required</mat-error>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput formControlName="description" rows="2"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Category</mat-label>
+            <mat-select formControlName="category">
+              <mat-option *ngFor="let cat of stateCategories" [value]="cat">
+                {{ cat }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Timeout (seconds)</mat-label>
+            <input matInput type="number" formControlName="timeoutSeconds">
+          </mat-form-field>
+
+          <mat-checkbox formControlName="autoAdvance">Auto Advance</mat-checkbox>
+          <mat-checkbox formControlName="polling">Enable Polling</mat-checkbox>
+
+          <mat-form-field appearance="outline" *ngIf="stateForm.get('polling')?.value">
+            <mat-label>Polling Interval (ms)</mat-label>
+            <input matInput type="number" formControlName="pollingIntervalMs">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>On Enter Task ID</mat-label>
+            <input matInput formControlName="onEnterTaskId">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>On Exit Task ID</mat-label>
+            <input matInput formControlName="onExitTaskId">
+          </mat-form-field>
+
+          <div class="panel-actions">
+            <button mat-button (click)="cancelEditState()">Cancel</button>
+            <button mat-raised-button color="primary" [disabled]="stateForm.invalid || saving"
+                    (click)="saveState()">
+              {{ saving ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Transition Editor -->
+      <div class="panel-content" *ngIf="editingTransition && selectedEdge">
+        <h3>Edit Transition</h3>
+        <p class="transition-info">
+          {{ selectedEdge.fromNode.state.name }} → {{ selectedEdge.toNode.state.name }}
+        </p>
+
+        <form [formGroup]="transitionForm">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput formControlName="name">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Label (shown on diagram)</mat-label>
+            <input matInput formControlName="label">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Condition Type</mat-label>
+            <mat-select formControlName="conditionType">
+              <mat-option *ngFor="let type of conditionTypes" [value]="type">
+                {{ type }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="transitionForm.get('conditionType')?.value === 'EXPRESSION' || transitionForm.get('conditionType')?.value === 'PATTERN_MATCH'">
+            <mat-label>Condition Expression</mat-label>
+            <textarea matInput formControlName="conditionExpression" rows="2"></textarea>
+          </mat-form-field>
+
+          <mat-checkbox formControlName="autoTrigger">Auto Trigger</mat-checkbox>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Priority</mat-label>
+            <input matInput type="number" formControlName="priority">
+            <mat-hint>Higher priority transitions are evaluated first</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>On Transition Task ID</mat-label>
+            <input matInput formControlName="onTransitionTaskId">
+          </mat-form-field>
+
+          <div class="panel-actions">
+            <button mat-button (click)="cancelEditTransition()">Cancel</button>
+            <button mat-raised-button color="primary" [disabled]="transitionForm.invalid || saving"
+                    (click)="saveTransition()">
+              {{ saving ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Selected Node Info (not editing) -->
+      <div class="panel-content" *ngIf="selectedNode && !editingState">
+        <h3>{{ selectedNode.state.name }}</h3>
+        <p class="description" *ngIf="selectedNode.state.description">{{ selectedNode.state.description }}</p>
+
+        <div class="info-row">
+          <span class="label">State ID:</span>
+          <span class="value">{{ selectedNode.state.stateId }}</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Category:</span>
+          <span class="value category-badge" [style.background]="getCategoryColor(selectedNode.state.category)">
+            {{ selectedNode.state.category }}
+          </span>
+        </div>
+        <div class="info-row" *ngIf="selectedNode.state.timeoutSeconds">
+          <span class="label">Timeout:</span>
+          <span class="value">{{ selectedNode.state.timeoutSeconds }}s</span>
+        </div>
+
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="editState()">
+            <mat-icon>edit</mat-icon> Edit
+          </button>
+          <button mat-stroked-button color="warn" (click)="deleteState()">
+            <mat-icon>delete</mat-icon> Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- Selected Edge Info (not editing) -->
+      <div class="panel-content" *ngIf="selectedEdge && !editingTransition">
+        <h3>Transition</h3>
+        <p class="transition-info">
+          {{ selectedEdge.fromNode.state.name }} → {{ selectedEdge.toNode.state.name }}
+        </p>
+
+        <div class="info-row">
+          <span class="label">Condition:</span>
+          <span class="value">{{ selectedEdge.transition.conditionType }}</span>
+        </div>
+        <div class="info-row" *ngIf="selectedEdge.transition.conditionExpression">
+          <span class="label">Expression:</span>
+          <span class="value code">{{ selectedEdge.transition.conditionExpression }}</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Auto Trigger:</span>
+          <span class="value">{{ selectedEdge.transition.autoTrigger ? 'Yes' : 'No' }}</span>
+        </div>
+
+        <div class="panel-actions">
+          <button mat-stroked-button (click)="editTransition()">
+            <mat-icon>edit</mat-icon> Edit
+          </button>
+          <button mat-stroked-button color="warn" (click)="deleteTransition()">
+            <mat-icon>delete</mat-icon> Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <span class="legend-title">Categories:</span>
+    <span class="legend-item" *ngFor="let cat of stateCategories">
+      <span class="legend-color" [style.background]="getCategoryColor(cat)"></span>
+      {{ cat }}
+    </span>
+  </div>
+</div>

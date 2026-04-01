@@ -87,6 +87,9 @@ public class McpSseServerConfiguration {
     @Autowired(required = false)
     private ModelManagementTool modelManagementTool;
 
+    @Autowired(required = false)
+    private AgentDelegationTool agentDelegationTool;
+
     /**
      * Creates a ToolCallbackProvider that exposes all discovered tool beans
      * to the MCP server. Spring AI will automatically register these tools
@@ -109,6 +112,7 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, documentManagementTool, "Document Management");
         addToolIfAvailable(toolObjects, systemDiagnosticsTool, "System Diagnostics");
         addToolIfAvailable(toolObjects, modelManagementTool, "Model Management");
+        addToolIfAvailable(toolObjects, agentDelegationTool, "Agent Delegation");
 
         logger.info("Created MCP SSE tool callback provider with {} tool objects", toolObjects.size());
 

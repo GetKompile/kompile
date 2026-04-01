@@ -1,0 +1,445 @@
+<div class="pipeline-hub">
+  <div class="hub-header">
+    <h3>Pipeline Hub</h3>
+    <p class="subtitle">Create, manage, execute, and serve ML pipelines</p>
+  </div>
+
+  <!-- Sub-tabs -->
+  <div class="sub-tabs">
+    <button class="sub-tab" [class.active]="activeTab === 'list'" (click)="onTabChange('list')">
+      <mat-icon class="tab-icon">list</mat-icon>
+      <span class="tab-label">Pipelines</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeTab === 'builder'" (click)="onTabChange('builder')">
+      <mat-icon class="tab-icon">build</mat-icon>
+      <span class="tab-label">Builder</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeTab === 'runner'" (click)="onTabChange('runner')">
+      <mat-icon class="tab-icon">play_arrow</mat-icon>
+      <span class="tab-label">Runner</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeTab === 'stepBrowser'" (click)="onTabChange('stepBrowser')">
+      <mat-icon class="tab-icon">extension</mat-icon>
+      <span class="tab-label">Step Browser</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeTab === 'serving'" (click)="onTabChange('serving')">
+      <mat-icon class="tab-icon">cloud</mat-icon>
+      <span class="tab-label">Serving</span>
+    </button>
+    <button class="sub-tab" [class.active]="activeTab === 'sdx'" (click)="onTabChange('sdx')">
+      <mat-icon class="tab-icon">memory</mat-icon>
+      <span class="tab-label">SDX Models</span>
+    </button>
+  </div>
+
+  <!-- List Tab -->
+  <div *ngIf="activeTab === 'list'" class="tab-content">
+    <div class="toolbar">
+      <button mat-raised-button color="primary" (click)="loadPipelines()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+      <button mat-raised-button (click)="clearBuilder(); activeTab = 'builder'">
+        <mat-icon>add</mat-icon> New Pipeline
+      </button>
+    </div>
+
+    <div *ngIf="loading" class="loading-indicator">
+      <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+    </div>
+
+    <div *ngIf="!loading && pipelines.length === 0" class="empty-state">
+      <mat-icon>linear_scale</mat-icon>
+      <p>No pipelines created yet. Use the Builder tab to create one.</p>
+    </div>
+
+    <table *ngIf="pipelines.length > 0" class="pipeline-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Steps</th>
+          <th>Serving</th>
+          <th>Updated</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let p of pipelines">
+          <td>{{ p.pipelineId }}</td>
+          <td>{{ p.pipelineType }}</td>
+          <td>{{ p.stepCount }}</td>
+          <td>
+            <mat-icon [class.serving]="p.serving">{{ p.serving ? 'cloud_done' : 'cloud_off' }}</mat-icon>
+          </td>
+          <td>{{ p.updatedAt | date:'short' }}</td>
+          <td>
+            <button mat-icon-button matTooltip="Edit" (click)="editPipeline(p)">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Run" (click)="selectedPipelineId = p.pipelineId; activeTab = 'runner'">
+              <mat-icon>play_arrow</mat-icon>
+            </button>
+            <button mat-icon-button matTooltip="Delete" color="warn" (click)="deletePipeline(p.pipelineId)">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Builder Tab -->
+  <div *ngIf="activeTab === 'builder'" class="tab-content">
+    <div class="builder-form">
+      <div class="form-row">
+        <mat-form-field appearance="outline" class="field-wide">
+          <mat-label>Pipeline ID</mat-label>
+          <input matInput [(ngModel)]="newPipelineId" placeholder="my-pipeline">
+        </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>Type</mat-label>
+          <mat-select [(ngModel)]="newPipelineType">
+            <mat-option value="sequence">Sequence</mat-option>
+            <mat-option value="graph">Graph</mat-option>
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <h4>Add Step</h4>
+      <div class="form-row">
+        <mat-form-field appearance="outline" class="field-wide">
+          <mat-label>Step Type</mat-label>
+          <mat-select [(ngModel)]="selectedStepType">
+            <mat-option *ngFor="let step of availableSteps" [value]="step.runnerClassName">
+              {{ step.name }} - {{ step.description || step.runnerClassName }}
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+        <button mat-raised-button color="primary" (click)="addStep()" [disabled]="!selectedStepType">
+          <mat-icon>add</mat-icon> Add
+        </button>
+      </div>
+
+      <!-- Dynamic parameters for selected step -->
+      <div *ngIf="getSelectedStepSchema()?.parameters?.length" class="step-params">
+        <h5>Parameters</h5>
+        <div *ngFor="let param of getSelectedStepSchema()?.parameters" class="param-row">
+          <mat-form-field appearance="outline" class="field-wide">
+            <mat-label>{{ param.name }} <span *ngIf="param.required" class="required">*</span></mat-label>
+            <input matInput [(ngModel)]="stepParameters[param.name]"
+                   [placeholder]="param.description || param.type || ''">
+            <mat-hint *ngIf="param.description">{{ param.description }}</mat-hint>
+          </mat-form-field>
+        </div>
+      </div>
+
+      <h4>Pipeline Steps ({{ builderSteps.length }})</h4>
+      <div *ngIf="builderSteps.length === 0" class="empty-state small">
+        <p>No steps added. Select a step type above and click Add.</p>
+      </div>
+      <div class="step-list">
+        <div *ngFor="let step of builderSteps; let i = index" class="step-card">
+          <div class="step-header">
+            <span class="step-index">{{ i + 1 }}</span>
+            <span class="step-name">{{ getStepName(step.runnerClassName) }}</span>
+            <span class="step-class">{{ step.runnerClassName }}</span>
+            <div class="step-actions">
+              <button mat-icon-button matTooltip="Move Up" (click)="moveStep(i, -1)" [disabled]="i === 0">
+                <mat-icon>arrow_upward</mat-icon>
+              </button>
+              <button mat-icon-button matTooltip="Move Down" (click)="moveStep(i, 1)" [disabled]="i === builderSteps.length - 1">
+                <mat-icon>arrow_downward</mat-icon>
+              </button>
+              <button mat-icon-button matTooltip="Remove" color="warn" (click)="removeStep(i)">
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+          </div>
+          <div *ngIf="step.parameters && (step.parameters | keyvalue).length > 0" class="step-params-display">
+            <span *ngFor="let p of step.parameters | keyvalue" class="param-chip">
+              {{ p.key }}: {{ p.value }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="builder-actions">
+        <button mat-raised-button (click)="validatePipeline()" [disabled]="builderSteps.length === 0">
+          <mat-icon>check_circle</mat-icon> Validate
+        </button>
+        <button mat-raised-button color="primary" (click)="savePipeline()"
+                [disabled]="!newPipelineId || builderSteps.length === 0">
+          <mat-icon>save</mat-icon> Save
+        </button>
+        <button mat-raised-button (click)="clearBuilder()">
+          <mat-icon>clear</mat-icon> Clear
+        </button>
+      </div>
+
+      <div *ngIf="validationResult" class="validation-result" [class.valid]="validationResult.valid" [class.invalid]="!validationResult.valid">
+        <mat-icon>{{ validationResult.valid ? 'check_circle' : 'error' }}</mat-icon>
+        <span>{{ validationResult.valid ? 'Valid' : 'Invalid' }}</span>
+        <div *ngFor="let err of validationResult.errors" class="validation-error">{{ err }}</div>
+        <div *ngFor="let warn of validationResult.warnings" class="validation-warning">{{ warn }}</div>
+      </div>
+
+      <div *ngIf="builderMessage" class="builder-message">{{ builderMessage }}</div>
+    </div>
+  </div>
+
+  <!-- Runner Tab -->
+  <div *ngIf="activeTab === 'runner'" class="tab-content">
+    <div class="form-row">
+      <mat-form-field appearance="outline" class="field-wide">
+        <mat-label>Pipeline</mat-label>
+        <mat-select [(ngModel)]="selectedPipelineId">
+          <mat-option *ngFor="let p of pipelines" [value]="p.pipelineId">
+            {{ p.pipelineId }} ({{ p.stepCount }} steps)
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="field-full">
+      <mat-label>Input Data (JSON)</mat-label>
+      <textarea matInput [(ngModel)]="runnerInput" rows="6" class="mono-text"></textarea>
+    </mat-form-field>
+
+    <div class="runner-actions">
+      <button mat-raised-button color="primary" (click)="executePipeline()"
+              [disabled]="!selectedPipelineId || executing">
+        <mat-icon>{{ executing ? 'hourglass_empty' : 'play_arrow' }}</mat-icon>
+        {{ executing ? 'Executing...' : 'Execute' }}
+      </button>
+    </div>
+
+    <div *ngIf="executionResult" class="execution-result" [class.success]="executionResult.status === 'COMPLETED'" [class.error]="executionResult.status === 'ERROR'">
+      <div class="result-header">
+        <mat-icon>{{ executionResult.status === 'COMPLETED' ? 'check_circle' : 'error' }}</mat-icon>
+        <span>{{ executionResult.status }}</span>
+        <span *ngIf="executionResult.durationMs" class="duration">{{ executionResult.durationMs }}ms</span>
+      </div>
+      <div *ngIf="executionResult.errorMessage" class="error-message">{{ executionResult.errorMessage }}</div>
+      <pre *ngIf="executionResult.outputData" class="output-data">{{ formatJson(executionResult.outputData) }}</pre>
+    </div>
+  </div>
+
+  <!-- Step Browser Tab -->
+  <div *ngIf="activeTab === 'stepBrowser'" class="tab-content">
+    <div *ngIf="availableSteps.length === 0" class="empty-state">
+      <mat-icon>extension</mat-icon>
+      <p>No step types found on classpath.</p>
+    </div>
+
+    <div *ngFor="let step of availableSteps" class="step-browser-card" (click)="toggleStep(step.runnerClassName)">
+      <div class="step-browser-header">
+        <mat-icon>{{ expandedStep === step.runnerClassName ? 'expand_less' : 'expand_more' }}</mat-icon>
+        <span class="step-name">{{ step.name }}</span>
+        <span class="step-class">{{ step.runnerClassName }}</span>
+      </div>
+      <div *ngIf="step.description" class="step-description">{{ step.description }}</div>
+
+      <div *ngIf="expandedStep === step.runnerClassName" class="step-details">
+        <div *ngIf="step.parameters?.length" class="detail-section">
+          <h5>Parameters</h5>
+          <div *ngFor="let param of step.parameters" class="detail-item">
+            <span class="detail-name">{{ param.name }}</span>
+            <span class="detail-type">({{ param.type }})</span>
+            <span *ngIf="param.required" class="required">required</span>
+            <div *ngIf="param.description" class="detail-desc">{{ param.description }}</div>
+          </div>
+        </div>
+        <div *ngIf="step.inputs?.length" class="detail-section">
+          <h5>Inputs</h5>
+          <div *ngFor="let inp of step.inputs" class="detail-item">
+            <span class="detail-name">{{ inp.name }}</span>
+            <span class="detail-type">({{ inp.type }})</span>
+            <div *ngIf="inp.description" class="detail-desc">{{ inp.description }}</div>
+          </div>
+        </div>
+        <div *ngIf="step.outputs?.length" class="detail-section">
+          <h5>Outputs</h5>
+          <div *ngFor="let out of step.outputs" class="detail-item">
+            <span class="detail-name">{{ out.name }}</span>
+            <span class="detail-type">({{ out.type }})</span>
+            <div *ngIf="out.description" class="detail-desc">{{ out.description }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Serving Tab -->
+  <div *ngIf="activeTab === 'serving'" class="tab-content">
+    <div class="toolbar">
+      <button mat-raised-button (click)="loadServingStatus()">
+        <mat-icon>refresh</mat-icon> Refresh Status
+      </button>
+    </div>
+
+    <h4>Pipeline Serving Status</h4>
+    <div *ngIf="pipelines.length === 0" class="empty-state">
+      <p>No pipelines available to serve.</p>
+    </div>
+
+    <div *ngFor="let p of pipelines" class="serving-card">
+      <div class="serving-info">
+        <span class="pipeline-id">{{ p.pipelineId }}</span>
+        <span class="step-count">{{ p.stepCount }} steps</span>
+      </div>
+      <mat-slide-toggle
+        [checked]="p.serving"
+        (change)="toggleServe(p.pipelineId, p.serving)">
+        {{ p.serving ? 'Serving' : 'Not Serving' }}
+      </mat-slide-toggle>
+    </div>
+
+    <h4>Test Invocation</h4>
+    <div class="form-row">
+      <mat-form-field appearance="outline" class="field-wide">
+        <mat-label>Serving Pipeline</mat-label>
+        <mat-select [(ngModel)]="selectedServingPipeline">
+          <mat-option *ngFor="let p of pipelines" [value]="p.pipelineId" [disabled]="!p.serving">
+            {{ p.pipelineId }} {{ p.serving ? '(serving)' : '(not serving)' }}
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+    </div>
+
+    <mat-form-field appearance="outline" class="field-full">
+      <mat-label>Input (JSON)</mat-label>
+      <textarea matInput [(ngModel)]="serveInput" rows="4" class="mono-text"></textarea>
+    </mat-form-field>
+
+    <button mat-raised-button color="primary" (click)="invokeServed()" [disabled]="!selectedServingPipeline">
+      <mat-icon>send</mat-icon> Invoke
+    </button>
+
+    <div *ngIf="serveResult" class="execution-result" [class.success]="serveResult.status === 'COMPLETED'" [class.error]="serveResult.status === 'ERROR'">
+      <div class="result-header">
+        <mat-icon>{{ serveResult.status === 'COMPLETED' ? 'check_circle' : 'error' }}</mat-icon>
+        <span>{{ serveResult.status }}</span>
+        <span *ngIf="serveResult.durationMs" class="duration">{{ serveResult.durationMs }}ms</span>
+      </div>
+      <div *ngIf="serveResult.errorMessage" class="error-message">{{ serveResult.errorMessage }}</div>
+      <pre *ngIf="serveResult.outputData" class="output-data">{{ formatJson(serveResult.outputData) }}</pre>
+    </div>
+  </div>
+
+  <!-- SDX Models Tab -->
+  <div *ngIf="activeTab === 'sdx'" class="tab-content">
+    <div class="toolbar">
+      <button mat-raised-button (click)="loadSdxModels()">
+        <mat-icon>refresh</mat-icon> Refresh
+      </button>
+    </div>
+
+    <div class="sdx-layout">
+      <!-- Model List -->
+      <div class="sdx-model-list">
+        <h4>Available Models</h4>
+        <div *ngIf="sdxModels.length === 0" class="empty-state small">
+          <mat-icon>memory</mat-icon>
+          <p>No model files found in ~/.kompile/models/</p>
+        </div>
+
+        <div *ngFor="let model of sdxModels" class="sdx-model-card" [class.loaded]="model.loaded"
+             [class.selected]="sdxSelectedModel === model.modelId">
+          <div class="sdx-model-header">
+            <span class="model-name">{{ model.modelId }}</span>
+            <span class="model-format">.{{ model.format }}</span>
+          </div>
+          <div class="sdx-model-meta">
+            <span class="model-size">{{ formatModelSize(model.sizeBytes) }}</span>
+            <span *ngIf="model.loaded" class="model-loaded-badge">Loaded</span>
+          </div>
+          <div class="sdx-model-actions">
+            <button *ngIf="!model.loaded" mat-raised-button color="primary" (click)="loadSdxModel(model.modelId)"
+                    [disabled]="sdxLoadingModel">
+              <mat-icon>{{ sdxLoadingModel ? 'hourglass_empty' : 'download' }}</mat-icon> Load
+            </button>
+            <button *ngIf="model.loaded" mat-raised-button (click)="selectSdxModel(model.modelId)">
+              <mat-icon>visibility</mat-icon> Select
+            </button>
+            <button *ngIf="model.loaded" mat-raised-button color="warn" (click)="unloadSdxModel(model.modelId)">
+              <mat-icon>eject</mat-icon> Unload
+            </button>
+            <button *ngIf="model.loaded" mat-icon-button matTooltip="Use as Pipeline Step"
+                    (click)="addSdxModelAsPipelineStep(model.modelId)">
+              <mat-icon>add_circle</mat-icon>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inference Panel -->
+      <div class="sdx-inference-panel" *ngIf="sdxSelectedModel">
+        <h4>Inference: {{ sdxSelectedModel }}</h4>
+
+        <!-- Schema -->
+        <div *ngIf="sdxModelSchema" class="sdx-schema-section">
+          <div *ngIf="sdxModelSchema.description" class="schema-desc">{{ sdxModelSchema.description }}</div>
+
+          <div *ngIf="sdxModelSchema.inputs?.length" class="detail-section">
+            <h5>Inputs</h5>
+            <div *ngFor="let inp of sdxModelSchema.inputs" class="detail-item">
+              <span class="detail-name">{{ inp.name }}</span>
+              <span class="detail-type">({{ inp.type }})</span>
+              <span *ngIf="inp.required" class="required">required</span>
+              <div *ngIf="inp.description" class="detail-desc">{{ inp.description }}</div>
+            </div>
+          </div>
+
+          <div *ngIf="sdxModelSchema.outputs?.length" class="detail-section">
+            <h5>Outputs</h5>
+            <div *ngFor="let out of sdxModelSchema.outputs" class="detail-item">
+              <span class="detail-name">{{ out.name }}</span>
+              <span class="detail-type">({{ out.type }})</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="sdx-input-section">
+          <div class="input-header">
+            <h5>Input Data (JSON)</h5>
+            <button mat-button (click)="loadSdxInputTemplate()">
+              <mat-icon>content_paste</mat-icon> Load Template
+            </button>
+          </div>
+          <mat-form-field appearance="outline" class="field-full">
+            <textarea matInput [(ngModel)]="sdxInferenceInput" rows="8" class="mono-text"></textarea>
+          </mat-form-field>
+        </div>
+
+        <!-- Run -->
+        <div class="runner-actions">
+          <button mat-raised-button color="primary" (click)="runSdxInference()" [disabled]="sdxInferring">
+            <mat-icon>{{ sdxInferring ? 'hourglass_empty' : 'play_arrow' }}</mat-icon>
+            {{ sdxInferring ? 'Running...' : 'Run Inference' }}
+          </button>
+        </div>
+
+        <!-- Result -->
+        <div *ngIf="sdxInferenceResult" class="execution-result"
+             [class.success]="sdxInferenceResult.status === 'success'"
+             [class.error]="sdxInferenceResult.status === 'error'">
+          <div class="result-header">
+            <mat-icon>{{ sdxInferenceResult.status === 'success' ? 'check_circle' : 'error' }}</mat-icon>
+            <span>{{ sdxInferenceResult.status }}</span>
+            <span *ngIf="sdxInferenceResult.durationMs" class="duration">{{ sdxInferenceResult.durationMs }}ms</span>
+          </div>
+          <div *ngIf="sdxInferenceResult.errorMessage" class="error-message">{{ sdxInferenceResult.errorMessage }}</div>
+          <pre *ngIf="sdxInferenceResult.outputData" class="output-data">{{ formatJson(sdxInferenceResult.outputData) }}</pre>
+        </div>
+      </div>
+
+      <div class="sdx-inference-panel" *ngIf="!sdxSelectedModel">
+        <div class="empty-state">
+          <mat-icon>touch_app</mat-icon>
+          <p>Load and select a model to run inference.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

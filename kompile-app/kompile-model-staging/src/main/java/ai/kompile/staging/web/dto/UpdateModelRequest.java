@@ -16,6 +16,7 @@
 
 package ai.kompile.staging.web.dto;
 
+import ai.kompile.modelmanager.registry.ImagePreprocessorConfig;
 import ai.kompile.modelmanager.registry.ModelMetadata;
 import ai.kompile.modelmanager.registry.ModelStatus;
 import ai.kompile.modelmanager.registry.ModelType;
@@ -55,6 +56,11 @@ public class UpdateModelRequest {
     private TokenizerUpdate tokenizer;
 
     /**
+     * Image preprocessor configuration updates (for VLM models).
+     */
+    private PreprocessorUpdate preprocessor;
+
+    /**
      * Metadata update fields.
      */
     @Data
@@ -72,6 +78,30 @@ public class UpdateModelRequest {
         private String sourceOrigin;
         private String sourceRepository;
         private Integer vocabSize;
+        // Pipeline identity fields
+        private String encoderType;
+        private String ragRole;
+        private String version;
+        // OCR-specific fields
+        private Integer inputHeight;
+        private Integer inputWidth;
+        private java.util.List<String> supportedLanguages;
+        private Boolean supportsBatch;
+        private Integer maxBatchSize;
+        private Boolean supportsHandwriting;
+        private Double averageAccuracy;
+        private Integer ocrVocabSize;
+        private Boolean usesCtc;
+        // VLM-specific fields
+        private Integer visionFrames;
+        private Integer imageSize;
+        private Integer tileSize;
+        private java.util.List<String> components;
+        // Vision encoder IO config
+        private String visionEncoderPixelValuesName;
+        private String visionEncoderPixelAttentionMaskName;
+        private String visionEncoderPrimaryOutputName;
+        private java.util.List<String> visionEncoderOutputNames;
     }
 
     /**
@@ -88,6 +118,69 @@ public class UpdateModelRequest {
         private Integer maxLength;
         private String padding;
         private Boolean truncation;
+    }
+
+    /**
+     * Image preprocessor configuration update fields (for VLM models).
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PreprocessorUpdate {
+        private String imageProcessorType;
+        private Boolean doResize;
+        private Integer sizeHeight;
+        private Integer sizeWidth;
+        private Integer sizeShortestEdge;
+        private Integer sizeLongestEdge;
+        private Integer resample;
+        private Boolean doRescale;
+        private Double rescaleFactor;
+        private Boolean doNormalize;
+        private double[] imageMean;
+        private double[] imageStd;
+        private Boolean doConvertRgb;
+        private Boolean doCenterCrop;
+        private Integer cropSizeHeight;
+        private Integer cropSizeWidth;
+        private Boolean doPad;
+        private Integer padSizeHeight;
+        private Integer padSizeWidth;
+        private Integer patchSize;
+        private Integer numChannels;
+    }
+
+    /**
+     * Convert to ImagePreprocessorConfig.
+     */
+    public ImagePreprocessorConfig toImagePreprocessorConfig() {
+        if (preprocessor == null) {
+            return null;
+        }
+        return ImagePreprocessorConfig.builder()
+                .imageProcessorType(preprocessor.imageProcessorType)
+                .doResize(preprocessor.doResize != null ? preprocessor.doResize : true)
+                .sizeHeight(preprocessor.sizeHeight)
+                .sizeWidth(preprocessor.sizeWidth)
+                .sizeShortestEdge(preprocessor.sizeShortestEdge)
+                .sizeLongestEdge(preprocessor.sizeLongestEdge)
+                .resample(preprocessor.resample)
+                .doRescale(preprocessor.doRescale != null ? preprocessor.doRescale : true)
+                .rescaleFactor(preprocessor.rescaleFactor != null ? preprocessor.rescaleFactor : 1.0 / 255.0)
+                .doNormalize(preprocessor.doNormalize != null ? preprocessor.doNormalize : true)
+                .imageMean(preprocessor.imageMean)
+                .imageStd(preprocessor.imageStd)
+                .doConvertRgb(preprocessor.doConvertRgb != null ? preprocessor.doConvertRgb : true)
+                .doCenterCrop(preprocessor.doCenterCrop != null ? preprocessor.doCenterCrop : false)
+                .cropSizeHeight(preprocessor.cropSizeHeight)
+                .cropSizeWidth(preprocessor.cropSizeWidth)
+                .doPad(preprocessor.doPad != null ? preprocessor.doPad : false)
+                .padSizeHeight(preprocessor.padSizeHeight)
+                .padSizeWidth(preprocessor.padSizeWidth)
+                .patchSize(preprocessor.patchSize)
+                .numChannels(preprocessor.numChannels != null ? preprocessor.numChannels : 3)
+                .build();
     }
 
     /**
@@ -108,6 +201,30 @@ public class UpdateModelRequest {
                 .sourceOrigin(metadata.sourceOrigin)
                 .sourceRepository(metadata.sourceRepository)
                 .vocabSize(metadata.vocabSize)
+                // Pipeline identity
+                .encoderType(metadata.encoderType)
+                .ragRole(metadata.ragRole)
+                .version(metadata.version)
+                // OCR fields
+                .inputHeight(metadata.inputHeight)
+                .inputWidth(metadata.inputWidth)
+                .supportedLanguages(metadata.supportedLanguages)
+                .supportsBatch(metadata.supportsBatch)
+                .maxBatchSize(metadata.maxBatchSize)
+                .supportsHandwriting(metadata.supportsHandwriting)
+                .averageAccuracy(metadata.averageAccuracy)
+                .ocrVocabSize(metadata.ocrVocabSize)
+                .usesCtc(metadata.usesCtc)
+                // VLM fields
+                .visionFrames(metadata.visionFrames)
+                .imageSize(metadata.imageSize)
+                .tileSize(metadata.tileSize)
+                .components(metadata.components)
+                // Vision encoder IO
+                .visionEncoderPixelValuesName(metadata.visionEncoderPixelValuesName)
+                .visionEncoderPixelAttentionMaskName(metadata.visionEncoderPixelAttentionMaskName)
+                .visionEncoderPrimaryOutputName(metadata.visionEncoderPrimaryOutputName)
+                .visionEncoderOutputNames(metadata.visionEncoderOutputNames)
                 .build();
     }
 

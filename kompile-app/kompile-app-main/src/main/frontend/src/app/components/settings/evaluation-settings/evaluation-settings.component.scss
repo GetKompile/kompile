@@ -1,0 +1,185 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *  Licensed under the Apache License, Version 2.0
+ */
+
+.evaluation-settings {
+  padding: 16px;
+  max-width: 900px;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+
+  .header-info {
+    h3 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px 0;
+      font-size: 1.25rem;
+    }
+
+    p {
+      margin: 0;
+      color: rgba(0, 0, 0, 0.6);
+    }
+  }
+}
+
+.not-available,
+.loading-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
+
+  mat-icon {
+    color: #666;
+  }
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #ffebee;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  color: #c62828;
+
+  mat-icon {
+    color: #c62828;
+  }
+}
+
+.success-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #e8f5e9;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  color: #2e7d32;
+
+  mat-icon {
+    color: #2e7d32;
+  }
+}
+
+.master-toggle-card {
+  margin-bottom: 24px;
+}
+
+mat-expansion-panel {
+  margin-bottom: 16px;
+
+  mat-panel-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+.evaluator-card {
+  margin: 16px 0;
+
+  mat-card-header {
+    mat-card-title {
+      font-size: 1rem;
+    }
+  }
+}
+
+.config-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+
+  &.toggle-row {
+    padding: 8px 0;
+  }
+
+  .config-info {
+    flex: 1;
+    margin-right: 16px;
+
+    .config-label {
+      display: block;
+      font-weight: 500;
+    }
+
+    .config-description {
+      display: block;
+      font-size: 0.85rem;
+      color: rgba(0, 0, 0, 0.6);
+      margin-top: 4px;
+    }
+  }
+
+  .config-input {
+    width: 120px;
+  }
+}
+
+.weights-section {
+  padding: 16px 0;
+
+  h4 {
+    margin: 0 0 12px 0;
+    font-size: 0.9rem;
+    color: rgba(0, 0, 0, 0.6);
+  }
+}
+
+mat-slider {
+  width: 200px;
+}
+
+.info-card {
+  margin-top: 24px;
+
+  .no-evaluators {
+    color: rgba(0, 0, 0, 0.6);
+    font-style: italic;
+  }
+
+  .evaluator-list {
+    .evaluator-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+
+      mat-icon {
+        color: #4caf50;
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+      }
+
+      .eval-type {
+        color: rgba(0, 0, 0, 0.5);
+        font-size: 0.85rem;
+      }
+    }
+  }
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}

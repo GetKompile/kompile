@@ -378,6 +378,39 @@ mat-dialog-content {
   min-height: 60px;
 }
 
+/* Conditional Sections (OCR, VLM) */
+.conditional-section {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.conditional-section h5 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.vision-io-section {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.vision-io-section h5 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+}
+
 /* Empty Metadata */
 .empty-metadata {
   text-align: center;
@@ -453,4 +486,244 @@ mat-dialog-content {
   font-size: 18px;
   width: 18px;
   height: 18px;
+}
+
+.preset-selector-section {
+  margin-bottom: 8px;
+}
+
+.preset-divider {
+  margin: 12px 0 16px;
+}
+
+/* ==================== DSP Execution Plan ==================== */
+
+.plan-load-prompt {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.plan-load-prompt .plan-hint {
+  margin-top: 12px;
+  color: #888;
+  font-size: 13px;
+}
+
+.plan-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px 20px;
+  color: #666;
+}
+
+.plan-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #fff8f8;
+  border: 1px solid #ffcdd2;
+  border-radius: 8px;
+  color: #c62828;
+}
+
+.plan-error button {
+  margin-left: auto;
+}
+
+/* Summary Bar */
+.plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.plan-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.plan-summary-item mat-icon {
+  color: #1a237e;
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.plan-summary-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-summary-label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.plan-summary-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+
+/* Plan Flow */
+.plan-flow {
+  margin-bottom: 24px;
+}
+
+.plan-stage-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.plan-stage {
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-left: 4px solid #9e9e9e;
+  border-radius: 8px;
+  padding: 14px 16px;
+  transition: box-shadow 0.2s;
+}
+
+.plan-stage:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.plan-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.plan-stage-header mat-icon {
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+.plan-stage-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+}
+
+.plan-stage-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: white;
+  padding: 3px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.plan-stage-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+
+.plan-stage-details mat-chip {
+  font-size: 12px;
+}
+
+.detail-chip-variable {
+  background-color: #e3f2fd !important;
+  color: #1565c0 !important;
+}
+
+.detail-chip-op {
+  background-color: #f3e5f5 !important;
+  color: #6a1b9a !important;
+}
+
+.detail-chip-optimization {
+  background-color: #fff3e0 !important;
+  color: #e65100 !important;
+}
+
+/* Connector Arrow */
+.plan-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 36px;
+  position: relative;
+}
+
+.plan-connector-line {
+  width: 2px;
+  flex: 1;
+  background: #bdbdbd;
+}
+
+.plan-connector-arrow {
+  color: #bdbdbd;
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  margin-top: -2px;
+}
+
+/* Op Distribution */
+.op-distribution {
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.op-dist-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.op-dist-row:last-child {
+  border-bottom: none;
+}
+
+.op-dist-name {
+  font-size: 13px;
+  font-family: monospace;
+  color: #555;
+  min-width: 160px;
+  flex-shrink: 0;
+}
+
+.op-dist-bar-wrapper {
+  flex: 1;
+  height: 14px;
+  background: #eee;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.op-dist-bar {
+  height: 100%;
+  border-radius: 7px;
+  min-width: 2px;
+  transition: width 0.3s ease;
+}
+
+.op-dist-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  min-width: 40px;
+  text-align: right;
 }

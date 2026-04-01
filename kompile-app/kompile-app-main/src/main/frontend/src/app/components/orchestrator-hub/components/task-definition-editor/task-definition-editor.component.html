@@ -1,0 +1,578 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0
+-->
+<div class="task-definition-editor">
+  <div class="editor-header">
+    <h2>{{ taskDefinition ? 'Edit Task Definition' : 'New Task Definition' }}</h2>
+    <div class="header-actions">
+      <button mat-button (click)="cancel()">Cancel</button>
+      <button mat-raised-button color="primary" [disabled]="saving || taskForm.invalid" (click)="save()">
+        <mat-icon *ngIf="saving">hourglass_empty</mat-icon>
+        {{ saving ? 'Saving...' : 'Save' }}
+      </button>
+    </div>
+  </div>
+
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="clearError()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <div class="editor-content">
+    <!-- Navigation Tabs -->
+    <div class="panel-tabs">
+      <button mat-button [class.active]="activePanel === 'basic'" (click)="setActivePanel('basic')">
+        <mat-icon>info</mat-icon> Basic
+      </button>
+      <button mat-button [class.active]="activePanel === 'agent'" (click)="setActivePanel('agent')">
+        <mat-icon>smart_toy</mat-icon> Agent/LLM
+      </button>
+      <button mat-button [class.active]="activePanel === 'rag'" (click)="setActivePanel('rag')">
+        <mat-icon>search</mat-icon> RAG
+      </button>
+      <button mat-button [class.active]="activePanel === 'tools'" (click)="setActivePanel('tools')">
+        <mat-icon>build</mat-icon> Tools
+      </button>
+      <button mat-button [class.active]="activePanel === 'patterns'" (click)="setActivePanel('patterns')">
+        <mat-icon>pattern</mat-icon> Patterns
+      </button>
+      <button mat-button [class.active]="activePanel === 'actions'" (click)="setActivePanel('actions')">
+        <mat-icon>call_split</mat-icon> Actions
+      </button>
+      <button mat-button *ngIf="taskForm.get('taskType')?.value === 'HTTP'"
+              [class.active]="activePanel === 'http'" (click)="setActivePanel('http')">
+        <mat-icon>http</mat-icon> HTTP
+      </button>
+      <button mat-button [class.active]="activePanel === 'variables'" (click)="setActivePanel('variables')">
+        <mat-icon>code</mat-icon> Variables
+      </button>
+      <button mat-button [class.active]="activePanel === 'retry'" (click)="setActivePanel('retry')">
+        <mat-icon>refresh</mat-icon> Retry
+      </button>
+    </div>
+
+    <form [formGroup]="taskForm" class="form-content">
+      <!-- Basic Panel -->
+      <div class="panel" *ngIf="activePanel === 'basic'">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Task ID</mat-label>
+          <input matInput formControlName="taskId" placeholder="unique_task_id" [readonly]="!!taskDefinition">
+          <mat-hint>Unique identifier (letters, numbers, underscores, hyphens only)</mat-hint>
+          <mat-error *ngIf="taskForm.get('taskId')?.hasError('required')">Task ID is required</mat-error>
+          <mat-error *ngIf="taskForm.get('taskId')?.hasError('pattern')">Invalid characters in Task ID</mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Name</mat-label>
+          <input matInput formControlName="name" placeholder="Task Display Name">
+          <mat-error *ngIf="taskForm.get('name')?.hasError('required')">Name is required</mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Description</mat-label>
+          <textarea matInput formControlName="description" rows="2" placeholder="Describe what this task does"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Task Type</mat-label>
+          <mat-select formControlName="taskType">
+            <mat-option *ngFor="let type of taskTypes" [value]="type">{{ type }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width"
+                        *ngIf="taskForm.get('taskType')?.value === 'SHELL' || taskForm.get('taskType')?.value === 'CODE'">
+          <mat-label>Command / Code</mat-label>
+          <textarea matInput formControlName="command" rows="4"
+                    placeholder="Enter shell command or code to execute. Use $&#123;variableName&#125; for variable substitution."></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Working Directory</mat-label>
+          <input matInput formControlName="workingDirectory" placeholder="/path/to/working/dir">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Timeout (seconds)</mat-label>
+          <input matInput type="number" formControlName="timeoutSeconds">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" *ngIf="taskForm.get('taskType')?.value === 'CUSTOM'">
+          <mat-label>Executor Class Name</mat-label>
+          <input matInput formControlName="executorClassName"
+                 placeholder="com.example.CustomTaskExecutor">
+        </mat-form-field>
+      </div>
+
+      <!-- Agent/LLM Panel -->
+      <div class="panel" *ngIf="activePanel === 'agent'">
+        <h3>LLM / Agent Configuration</h3>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Agent</mat-label>
+          <mat-select formControlName="agentName">
+            <mat-option [value]="''">-- No Agent --</mat-option>
+            <mat-option *ngFor="let agent of agents" [value]="agent.name">
+              {{ agent.displayName || agent.name }}
+              <span class="agent-capabilities" *ngIf="agent.supportsRag || agent.supportsTools">
+                ({{ agent.supportsRag ? 'RAG' : '' }}{{ agent.supportsRag && agent.supportsTools ? ', ' : '' }}{{ agent.supportsTools ? 'Tools' : '' }})
+              </span>
+            </mat-option>
+          </mat-select>
+          <mat-hint *ngIf="getSelectedAgent()?.description">{{ getSelectedAgent()?.description }}</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>System Prompt</mat-label>
+          <textarea matInput formControlName="systemPrompt" rows="4"
+                    placeholder="Optional system prompt to prepend to LLM requests"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Prompt Template</mat-label>
+          <textarea matInput formControlName="promptTemplate" rows="6"
+                    placeholder="Main prompt template. Use $&#123;variableName&#125; for substitution, $&#123;output&#125; for previous task output."></textarea>
+          <mat-hint>Template for LLM invocation. Variables: $&#123;output&#125;, $&#123;error&#125;, $&#123;context&#125;</mat-hint>
+        </mat-form-field>
+
+        <mat-divider></mat-divider>
+
+        <h4>Error Recovery</h4>
+
+        <mat-checkbox formControlName="autoInvokeLlmOnError">
+          Automatically invoke LLM on task error
+        </mat-checkbox>
+
+        <mat-form-field appearance="outline" class="full-width" *ngIf="taskForm.get('autoInvokeLlmOnError')?.value">
+          <mat-label>Error Recovery Prompt Template</mat-label>
+          <textarea matInput formControlName="llmErrorPromptTemplate" rows="4"
+                    placeholder="Prompt to use when task fails. Use $&#123;error&#125;, $&#123;output&#125;, $&#123;command&#125;"></textarea>
+        </mat-form-field>
+      </div>
+
+      <!-- RAG Panel -->
+      <div class="panel" *ngIf="activePanel === 'rag'">
+        <h3>RAG Configuration</h3>
+
+        <mat-checkbox formControlName="enableRag">
+          Enable RAG Context Injection
+        </mat-checkbox>
+
+        <div class="rag-options" *ngIf="taskForm.get('enableRag')?.value">
+          <mat-form-field appearance="outline">
+            <mat-label>RAG Folder Filter</mat-label>
+            <mat-select formControlName="ragFolderId">
+              <mat-option [value]="''">-- All Documents --</mat-option>
+              <mat-option *ngFor="let folder of ragFolders" [value]="folder">{{ folder }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Max Results</mat-label>
+            <input matInput type="number" formControlName="ragMaxResults" min="1" max="100">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Similarity Threshold</mat-label>
+            <input matInput type="number" formControlName="ragSimilarityThreshold" min="0" max="1" step="0.05">
+            <mat-hint>0.0 - 1.0 (higher = more relevant)</mat-hint>
+          </mat-form-field>
+
+          <div class="search-options">
+            <mat-checkbox formControlName="ragIncludeKeywordSearch">
+              Include Keyword Search
+            </mat-checkbox>
+            <mat-checkbox formControlName="ragIncludeSemanticSearch">
+              Include Semantic Search
+            </mat-checkbox>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tools Panel -->
+      <div class="panel" *ngIf="activePanel === 'tools'">
+        <h3>Tool Configuration</h3>
+
+        <mat-checkbox formControlName="enableTools">
+          Enable Tool Usage
+        </mat-checkbox>
+
+        <div class="tool-options" *ngIf="taskForm.get('enableTools')?.value">
+          <mat-checkbox formControlName="skipPermissions">
+            Skip Tool Permissions (use with caution)
+          </mat-checkbox>
+
+          <div class="available-tools" *ngIf="availableTools.length > 0">
+            <h4>Available Tools</h4>
+            <div class="tool-chips">
+              <mat-chip-option *ngFor="let tool of availableTools"
+                               [selected]="isToolSelected(tool)"
+                               (click)="toggleTool(tool)">
+                {{ tool }}
+              </mat-chip-option>
+            </div>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Allowed Tools (comma-separated)</mat-label>
+            <input matInput formControlName="allowedTools"
+                   placeholder="tool1, tool2, tool3 (leave empty for all tools)">
+            <mat-hint>Leave empty to allow all tools. Specify tool names to restrict.</mat-hint>
+          </mat-form-field>
+        </div>
+      </div>
+
+      <!-- Patterns Panel -->
+      <div class="panel" *ngIf="activePanel === 'patterns'">
+        <h3>Output Patterns & Classification</h3>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Success Pattern (Regex)</mat-label>
+          <input matInput formControlName="successPattern" placeholder="^BUILD SUCCESS|^0 errors">
+          <mat-hint>Pattern to detect successful completion</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Failure Pattern (Regex)</mat-label>
+          <input matInput formControlName="failurePattern" placeholder="error:|failed:|exception">
+          <mat-hint>Pattern to detect failures</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Output Classifier</mat-label>
+          <mat-select formControlName="outputClassifierId">
+            <mat-option [value]="null">-- No Classifier --</mat-option>
+            <mat-option *ngFor="let classifier of classifiers" [value]="classifier.id">
+              {{ classifier.name }}
+            </mat-option>
+          </mat-select>
+          <mat-hint>Use a predefined classifier for detailed output parsing</mat-hint>
+        </mat-form-field>
+
+        <mat-divider></mat-divider>
+
+        <h4>Test Pattern</h4>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Test Input</mat-label>
+          <textarea matInput [(ngModel)]="testPatternInput" [ngModelOptions]="{standalone: true}"
+                    rows="4" placeholder="Paste output to test patterns against"></textarea>
+        </mat-form-field>
+
+        <div class="pattern-test-actions">
+          <button mat-stroked-button (click)="testSuccessPattern()"
+                  [disabled]="!taskForm.get('successPattern')?.value || !testPatternInput">
+            Test Success Pattern
+          </button>
+          <button mat-stroked-button (click)="testFailurePattern()"
+                  [disabled]="!taskForm.get('failurePattern')?.value || !testPatternInput">
+            Test Failure Pattern
+          </button>
+        </div>
+
+        <div class="pattern-test-result" *ngIf="testPatternResult">
+          <div class="result-header" [class.valid]="testPatternResult.valid" [class.invalid]="!testPatternResult.valid">
+            <mat-icon>{{ testPatternResult.valid ? 'check_circle' : 'error' }}</mat-icon>
+            {{ testPatternResult.valid ? 'Pattern is valid' : 'Pattern error' }}
+          </div>
+          <div *ngIf="testPatternResult.error" class="result-error">{{ testPatternResult.error }}</div>
+          <div *ngIf="testPatternResult.matchCount !== undefined" class="result-matches">
+            Matches: {{ testPatternResult.matchCount }}
+          </div>
+          <div *ngIf="testPatternResult.matches && testPatternResult.matches.length > 0" class="matches-list">
+            <div *ngFor="let match of testPatternResult.matches" class="match-item">
+              <code>{{ match.text }}</code>
+              <span class="match-position">({{ match.start }}-{{ match.end }})</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions Panel - Pass/Fail Triggers -->
+      <div class="panel" *ngIf="activePanel === 'actions'">
+        <h3>Pass/Fail Triggers & Actions</h3>
+        <p class="panel-description">
+          Define what actions to take based on task outcome. Actions are triggered when success/failure patterns match.
+        </p>
+
+        <!-- On Success Actions -->
+        <div class="action-section success-section">
+          <div class="section-header">
+            <mat-icon class="section-icon success">check_circle</mat-icon>
+            <h4>On Success (Pass Trigger)</h4>
+          </div>
+          <p class="section-hint">Action to take when success pattern matches or task completes successfully</p>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Success Action</mat-label>
+            <mat-select formControlName="onSuccessAction">
+              <mat-option [value]="''">-- No Action (Continue) --</mat-option>
+              <mat-optgroup label="Flow Control">
+                <mat-option value="CONTINUE">Continue to Next Step</mat-option>
+                <mat-option value="SKIP">Skip to Next Step</mat-option>
+                <mat-option value="TRANSITION_STATE">Transition to State</mat-option>
+              </mat-optgroup>
+              <mat-optgroup label="Execute">
+                <mat-option value="EXECUTE_TASK">Execute Another Task</mat-option>
+                <mat-option value="INVOKE_LLM">Send to LLM for Analysis</mat-option>
+                <mat-option value="SEND_TO_AGENT">Send to Agent</mat-option>
+              </mat-optgroup>
+              <mat-optgroup label="Logging & Notification">
+                <mat-option value="LOG">Log Result</mat-option>
+                <mat-option value="NOTIFY">Send Notification</mat-option>
+                <mat-option value="PARSE_LOG">Parse Log Output</mat-option>
+              </mat-optgroup>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Conditional fields based on action type -->
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onSuccessAction')?.value === 'TRANSITION_STATE'">
+            <mat-label>Target State</mat-label>
+            <mat-select formControlName="onSuccessStateId">
+              <mat-option *ngFor="let state of availableStates" [value]="state.stateId">
+                {{ state.name }} ({{ state.stateId }})
+              </mat-option>
+            </mat-select>
+            <mat-hint>State to transition to on success</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onSuccessAction')?.value === 'EXECUTE_TASK'">
+            <mat-label>Task to Execute</mat-label>
+            <mat-select formControlName="onSuccessTaskId">
+              <mat-option *ngFor="let task of availableTasks" [value]="task.taskId">
+                {{ task.name }} ({{ task.taskId }})
+              </mat-option>
+            </mat-select>
+            <mat-hint>Task to execute on success</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onSuccessAction')?.value === 'INVOKE_LLM' ||
+                                 taskForm.get('onSuccessAction')?.value === 'SEND_TO_AGENT'">
+            <mat-label>LLM Prompt Template</mat-label>
+            <textarea matInput formControlName="onSuccessLlmPrompt" rows="4"
+                      placeholder="Analyze the following successful output and summarize: $&#123;output&#125;"></textarea>
+            <mat-hint>Prompt to send to LLM. Use $&#123;output&#125;, $&#123;exitCode&#125;</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <mat-divider class="action-divider"></mat-divider>
+
+        <!-- On Failure Actions -->
+        <div class="action-section failure-section">
+          <div class="section-header">
+            <mat-icon class="section-icon error">error</mat-icon>
+            <h4>On Failure (Fail Trigger)</h4>
+          </div>
+          <p class="section-hint">Action to take when failure pattern matches or task fails</p>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Failure Action</mat-label>
+            <mat-select formControlName="onFailureAction">
+              <mat-option [value]="''">-- No Action (Report Error) --</mat-option>
+              <mat-optgroup label="Recovery">
+                <mat-option value="RETRY">Retry Task</mat-option>
+                <mat-option value="RETRY_WITH_BACKOFF">Retry with Backoff</mat-option>
+                <mat-option value="INVOKE_LLM_FOR_FIX">Invoke LLM to Fix</mat-option>
+                <mat-option value="SEND_TO_AGENT">Send to Agent for Help</mat-option>
+              </mat-optgroup>
+              <mat-optgroup label="Flow Control">
+                <mat-option value="SKIP">Skip (Continue Anyway)</mat-option>
+                <mat-option value="ABORT">Abort Workflow</mat-option>
+                <mat-option value="TRANSITION_STATE">Transition to Error State</mat-option>
+                <mat-option value="AWAIT_APPROVAL">Await Manual Approval</mat-option>
+              </mat-optgroup>
+              <mat-optgroup label="Execute">
+                <mat-option value="EXECUTE_TASK">Execute Recovery Task</mat-option>
+                <mat-option value="INVOKE_LLM">Send to LLM for Analysis</mat-option>
+              </mat-optgroup>
+              <mat-optgroup label="Logging & Notification">
+                <mat-option value="LOG">Log Error</mat-option>
+                <mat-option value="NOTIFY">Send Alert</mat-option>
+                <mat-option value="ESCALATE">Escalate to Human</mat-option>
+                <mat-option value="PARSE_LOG">Parse Error Log</mat-option>
+              </mat-optgroup>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Conditional fields based on action type -->
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onFailureAction')?.value === 'TRANSITION_STATE'">
+            <mat-label>Target State</mat-label>
+            <mat-select formControlName="onFailureStateId">
+              <mat-option *ngFor="let state of availableStates" [value]="state.stateId">
+                {{ state.name }} ({{ state.stateId }})
+              </mat-option>
+            </mat-select>
+            <mat-hint>State to transition to on failure (e.g., ERROR state)</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onFailureAction')?.value === 'EXECUTE_TASK'">
+            <mat-label>Recovery Task to Execute</mat-label>
+            <mat-select formControlName="onFailureTaskId">
+              <mat-option *ngFor="let task of availableTasks" [value]="task.taskId">
+                {{ task.name }} ({{ task.taskId }})
+              </mat-option>
+            </mat-select>
+            <mat-hint>Recovery task to execute on failure</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="taskForm.get('onFailureAction')?.value === 'INVOKE_LLM' ||
+                                 taskForm.get('onFailureAction')?.value === 'INVOKE_LLM_FOR_FIX' ||
+                                 taskForm.get('onFailureAction')?.value === 'SEND_TO_AGENT'">
+            <mat-label>LLM Prompt Template</mat-label>
+            <textarea matInput formControlName="onFailureLlmPrompt" rows="6"
+                      placeholder="The following task failed with error:
+
+Command: $&#123;command&#125;
+Exit Code: $&#123;exitCode&#125;
+Error Output:
+$&#123;error&#125;
+
+Please analyze the error and suggest a fix."></textarea>
+            <mat-hint>Prompt for LLM error analysis. Use $&#123;output&#125;, $&#123;error&#125;, $&#123;command&#125;, $&#123;exitCode&#125;</mat-hint>
+          </mat-form-field>
+        </div>
+
+        <mat-divider class="action-divider"></mat-divider>
+
+        <!-- Action Quick Reference -->
+        <div class="action-reference">
+          <h4>Action Types Reference</h4>
+          <div class="reference-grid">
+            <div class="reference-item">
+              <strong>RETRY</strong>
+              <span>Retry the task up to the configured retry count</span>
+            </div>
+            <div class="reference-item">
+              <strong>INVOKE_LLM</strong>
+              <span>Send output to LLM for analysis with context</span>
+            </div>
+            <div class="reference-item">
+              <strong>INVOKE_LLM_FOR_FIX</strong>
+              <span>Send error to LLM to generate a fix command</span>
+            </div>
+            <div class="reference-item">
+              <strong>TRANSITION_STATE</strong>
+              <span>Transition to a specific state in the state machine</span>
+            </div>
+            <div class="reference-item">
+              <strong>EXECUTE_TASK</strong>
+              <span>Execute another task (e.g., cleanup, recovery)</span>
+            </div>
+            <div class="reference-item">
+              <strong>PARSE_LOG</strong>
+              <span>Parse output using the output classifier patterns</span>
+            </div>
+            <div class="reference-item">
+              <strong>SEND_TO_AGENT</strong>
+              <span>Send to configured agent for interactive help</span>
+            </div>
+            <div class="reference-item">
+              <strong>AWAIT_APPROVAL</strong>
+              <span>Pause and wait for manual approval to continue</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- HTTP Panel -->
+      <div class="panel" *ngIf="activePanel === 'http'">
+        <h3>HTTP Request Configuration</h3>
+
+        <mat-form-field appearance="outline">
+          <mat-label>HTTP Method</mat-label>
+          <mat-select formControlName="httpMethod">
+            <mat-option *ngFor="let method of httpMethods" [value]="method">{{ method }}</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>URL</mat-label>
+          <input matInput formControlName="httpUrl" placeholder="https://api.example.com/endpoint">
+          <mat-hint>Supports variable substitution: $&#123;baseUrl&#125;/path</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Headers (JSON)</mat-label>
+          <textarea matInput formControlName="httpHeadersJson" rows="4"
+                    placeholder='&#123;"Content-Type": "application/json", "Authorization": "Bearer $&#123;token&#125;"&#125;'></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width"
+                        *ngIf="taskForm.get('httpMethod')?.value !== 'GET'">
+          <mat-label>Body Template</mat-label>
+          <textarea matInput formControlName="httpBodyTemplate" rows="6"
+                    placeholder='&#123;"key": "$&#123;value&#125;", "data": $&#123;jsonData&#125;&#125;'></textarea>
+        </mat-form-field>
+      </div>
+
+      <!-- Variables Panel -->
+      <div class="panel" *ngIf="activePanel === 'variables'">
+        <h3>Variables</h3>
+
+        <div class="required-variables">
+          <div class="section-header">
+            <h4>Required Variables</h4>
+            <button mat-icon-button (click)="addRequiredVariable()" matTooltip="Add Variable">
+              <mat-icon>add</mat-icon>
+            </button>
+          </div>
+
+          <div class="variable-chips" *ngIf="requiredVariables.length > 0">
+            <mat-chip-row *ngFor="let variable of requiredVariables.controls; let i = index"
+                          (removed)="removeRequiredVariable(i)">
+              {{ variable.value }}
+              <button matChipRemove>
+                <mat-icon>cancel</mat-icon>
+              </button>
+            </mat-chip-row>
+          </div>
+
+          <p class="hint" *ngIf="requiredVariables.length === 0">
+            No required variables defined. Add variables that must be provided when executing this task.
+          </p>
+        </div>
+
+        <mat-divider></mat-divider>
+
+        <div class="variable-reference">
+          <h4>Variable Reference</h4>
+          <p class="hint">Use these placeholders in command, prompt, or HTTP body templates:</p>
+          <ul>
+            <li><code>$&#123;variableName&#125;</code> - Custom variable</li>
+            <li><code>$&#123;output&#125;</code> - Previous task output</li>
+            <li><code>$&#123;error&#125;</code> - Previous error message</li>
+            <li><code>$&#123;exitCode&#125;</code> - Previous exit code</li>
+            <li><code>$&#123;context.key&#125;</code> - Orchestrator context value</li>
+            <li><code>$&#123;env.VAR&#125;</code> - Environment variable</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Retry Panel -->
+      <div class="panel" *ngIf="activePanel === 'retry'">
+        <h3>Retry Configuration</h3>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Retry Count</mat-label>
+          <input matInput type="number" formControlName="retryCount" min="0" max="10">
+          <mat-hint>Number of retry attempts on failure (0 = no retries)</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Retry Delay (seconds)</mat-label>
+          <input matInput type="number" formControlName="retryDelaySeconds" min="1" max="3600">
+          <mat-hint>Wait time between retry attempts</mat-hint>
+        </mat-form-field>
+      </div>
+    </form>
+  </div>
+</div>

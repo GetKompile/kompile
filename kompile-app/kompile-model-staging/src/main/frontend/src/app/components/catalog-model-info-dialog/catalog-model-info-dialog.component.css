@@ -1,0 +1,275 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ */
+
+.dialog-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 20px;
+  margin: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e0e0e0;
+  flex-wrap: wrap;
+}
+
+.title-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: #1976d2;
+}
+
+.type-badge {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 12px;
+  background: #e3f2fd;
+  color: #1565c0;
+  border-radius: 16px;
+  white-space: nowrap;
+}
+
+.installed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 16px;
+}
+
+.installed-chip mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+}
+
+mat-dialog-content {
+  min-width: 600px;
+  max-height: 70vh;
+}
+
+.tab-content {
+  padding: 16px 0;
+}
+
+.info-section {
+  margin-bottom: 24px;
+}
+
+.info-section:last-child {
+  margin-bottom: 0;
+}
+
+.info-section h4 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-header h4 {
+  margin: 0;
+}
+
+/* Description */
+.description {
+  margin: 0;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  line-height: 1.5;
+  color: #333;
+}
+
+/* Metadata Grid */
+.metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.metadata-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.metadata-item mat-icon {
+  color: #1a237e;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.metadata-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metadata-label {
+  font-size: 12px;
+  color: #666;
+}
+
+.metadata-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  word-break: break-word;
+}
+
+/* File List */
+.file-list {
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  padding: 4px 16px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.file-item:last-child {
+  border-bottom: none;
+}
+
+.file-item mat-icon {
+  color: #666;
+  flex-shrink: 0;
+}
+
+.file-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.file-label {
+  font-size: 12px;
+  color: #666;
+}
+
+.file-value {
+  font-size: 13px;
+  font-weight: 500;
+  font-family: monospace;
+  color: #333;
+  word-break: break-all;
+}
+
+/* JSON View */
+.json-view {
+  background: #263238;
+  color: #aed581;
+  padding: 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: monospace;
+  overflow: auto;
+  max-height: 400px;
+  margin: 0;
+}
+
+/* Tab styling */
+::ng-deep .mat-mdc-tab .mdc-tab__text-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+::ng-deep .mat-mdc-tab mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+/* Pass detail list */
+.pass-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pass-detail-item {
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  border-left: 4px solid #ccc;
+}
+
+.pass-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pass-detail-header mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.pass-detail-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+}
+
+.pass-detail-category {
+  font-size: 10px;
+  font-weight: 600;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pass-detail-desc {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Responsive */
+@media (max-width: 700px) {
+  mat-dialog-content {
+    min-width: auto;
+  }
+
+  .metadata-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog-title {
+    font-size: 16px;
+  }
+}

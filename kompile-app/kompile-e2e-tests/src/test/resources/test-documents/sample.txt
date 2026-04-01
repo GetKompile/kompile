@@ -1,0 +1,24 @@
+Kompile Platform Overview
+
+Kompile is a comprehensive AI/ML platform that combines CLI tools for model conversion,
+pipeline building, and RAG application generation. The platform includes a Spring Boot
+RAG framework with pluggable embeddings, vector stores, and LLMs.
+
+Key Features:
+- Model conversion between TensorFlow, ONNX, Keras, and SameDiff formats
+- Pluggable embedding models including OpenAI, SameDiff, and sentence transformers
+- Multiple vector store backends: Lucene HNSW, PostgreSQL pgvector, Chroma, Vespa
+- Document loaders for PDF, Office, email, and web content
+- Chunking strategies: recursive character, sentence, token, markdown, table-aware
+- Graph RAG with Neo4j knowledge graphs
+- ReAct agent for multi-step reasoning
+- Query transformation and guardrails
+
+Architecture:
+The platform uses a modular architecture with Spring Boot conditional beans. Each
+component (embedding model, vector store, chunker) is pluggable through interface-based
+design. The RAG pipeline flows: Documents -> Loaders -> Chunks -> Embeddings -> Vector
+Index -> Query -> Retrieval -> LLM Response.
+
+This document is used for end-to-end testing of the kompile platform's document
+processing and retrieval pipeline.

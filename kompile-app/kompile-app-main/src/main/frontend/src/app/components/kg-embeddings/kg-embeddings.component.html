@@ -1,0 +1,729 @@
+<div class="kg-embeddings-container">
+  <div class="header">
+    <h2>Knowledge Graph Embeddings</h2>
+    <div class="header-actions">
+      <button mat-button (click)="loadStats(); loadEmbeddings(); loadJobs()">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Stats Overview -->
+  <div class="stats-overview" *ngIf="stats">
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.nodesWithEmbeddings }}/{{ stats.totalNodes }}</div>
+      <div class="stat-label">Entities with Embeddings</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ stats.edgesWithEmbeddings }}/{{ stats.totalEdges }}</div>
+      <div class="stat-label">Relations with Embeddings</div>
+    </div>
+    <div class="stat-card" *ngIf="stats.latestVersion">
+      <div class="stat-value">v{{ stats.latestVersion }}</div>
+      <div class="stat-label">Latest Version</div>
+    </div>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="activeTab">
+    <!-- Training Tab -->
+    <mat-tab label="Training">
+      <div class="tab-content">
+        <div class="training-section">
+          <h3>Train New Embeddings</h3>
+
+          <div class="config-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Algorithm</mat-label>
+              <mat-select [(ngModel)]="selectedAlgorithm" [ngModelOptions]="{standalone: true}" (selectionChange)="onAlgorithmChange()">
+                <mat-option *ngFor="let algo of algorithms" [value]="algo.id">
+                  {{ algo.displayName }}
+                </mat-option>
+              </mat-select>
+              <mat-hint *ngIf="algorithms.length > 0">
+                {{ getSelectedAlgorithmDescription() }}
+              </mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Embedding Dimension</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.embeddingDim" [ngModelOptions]="{standalone: true}" min="10" max="1000">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Epochs</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.epochs" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Learning Rate</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.learningRate" [ngModelOptions]="{standalone: true}" step="0.001" min="0.0001" max="1">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Batch Size</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.batchSize" [ngModelOptions]="{standalone: true}" min="16" max="8192">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Margin</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.margin" [ngModelOptions]="{standalone: true}" step="0.1" min="0.1" max="20">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Negative Samples</mat-label>
+              <input matInput type="number" [(ngModel)]="trainConfig.negativeSamples" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+            </mat-form-field>
+          </div>
+
+          <div class="training-actions">
+            <button mat-raised-button color="primary"
+                    (click)="startTraining()"
+                    [disabled]="isTraining">
+              <mat-icon>play_arrow</mat-icon>
+              Start Training
+            </button>
+            <button mat-raised-button color="warn"
+                    (click)="cancelTraining()"
+                    [disabled]="!isTraining">
+              <mat-icon>stop</mat-icon>
+              Cancel
+            </button>
+          </div>
+
+          <!-- Progress -->
+          <div class="training-progress" *ngIf="currentJob && isTraining">
+            <mat-progress-bar mode="determinate" [value]="getProgressPercent()"></mat-progress-bar>
+            <div class="progress-info">
+              <span>Epoch {{ currentJob.currentEpoch }}/{{ currentJob.epochs }}</span>
+              <span *ngIf="currentJob.currentLoss">Loss: {{ currentJob.currentLoss | number:'1.4-4' }}</span>
+              <span>{{ getProgressPercent() | number:'1.0-0' }}%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Job History -->
+        <div class="job-history">
+          <h3>Training History</h3>
+          <table class="jobs-table" *ngIf="jobs.length > 0">
+            <thead>
+              <tr>
+                <th>Job ID</th>
+                <th>Algorithm</th>
+                <th>Status</th>
+                <th>Entities</th>
+                <th>Relations</th>
+                <th>Created</th>
+                <th>Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let job of jobs">
+                <td class="job-id">{{ job.jobId.substring(0, 8) }}...</td>
+                <td>{{ job.algorithm }}</td>
+                <td>
+                  <span class="status-badge" [style.background-color]="getJobStatusColor(job.status)">
+                    {{ job.status }}
+                  </span>
+                </td>
+                <td>{{ job.entitiesEmbedded || '-' }}</td>
+                <td>{{ job.relationsEmbedded || '-' }}</td>
+                <td>{{ job.createdAt | date:'short' }}</td>
+                <td>{{ calculateJobDuration(job) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p *ngIf="jobs.length === 0" class="no-data">No training jobs yet.</p>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Embeddings Tab -->
+    <mat-tab label="Embeddings">
+      <div class="tab-content">
+        <div class="embeddings-header">
+          <mat-form-field appearance="outline" class="search-field">
+            <mat-label>Search entities</mat-label>
+            <input matInput [(ngModel)]="embeddingsSearch" [ngModelOptions]="{standalone: true}" (keyup.enter)="onEmbeddingsSearchChange()">
+            <button mat-icon-button matSuffix (click)="onEmbeddingsSearchChange()">
+              <mat-icon>search</mat-icon>
+            </button>
+          </mat-form-field>
+
+          <button mat-stroked-button color="warn" (click)="clearEmbeddings()" [disabled]="!stats?.nodesWithEmbeddings">
+            <mat-icon>delete</mat-icon>
+            Clear All
+          </button>
+        </div>
+
+        <div class="embeddings-table-container" *ngIf="!isLoading">
+          <table class="embeddings-table" *ngIf="embeddings.length > 0">
+            <thead>
+              <tr>
+                <th>Entity Name</th>
+                <th>Type</th>
+                <th>Algorithm</th>
+                <th>Version</th>
+                <th>Embedding Preview</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let emb of embeddings">
+                <td class="entity-name">{{ emb.entityName }}</td>
+                <td>{{ emb.entityType || '-' }}</td>
+                <td>{{ emb.algorithm || '-' }}</td>
+                <td>{{ emb.version || '-' }}</td>
+                <td class="embedding-preview">{{ formatEmbeddingPreview(emb.embedding) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p *ngIf="embeddings.length === 0" class="no-data">No embeddings found.</p>
+
+          <div class="pagination">
+            <button mat-icon-button (click)="prevEmbeddingsPage()" [disabled]="embeddingsPage === 0">
+              <mat-icon>chevron_left</mat-icon>
+            </button>
+            <span>Page {{ embeddingsPage + 1 }}</span>
+            <button mat-icon-button (click)="nextEmbeddingsPage()" [disabled]="embeddings.length < embeddingsPageSize">
+              <mat-icon>chevron_right</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <mat-spinner *ngIf="isLoading" diameter="40"></mat-spinner>
+      </div>
+    </mat-tab>
+
+    <!-- Link Prediction Tab -->
+    <mat-tab label="Link Prediction">
+      <div class="tab-content">
+        <div class="prediction-section">
+          <h3>Predict Missing Links</h3>
+
+          <div class="prediction-mode">
+            <mat-button-toggle-group [(ngModel)]="predictionMode" [ngModelOptions]="{standalone: true}">
+              <mat-button-toggle value="tails">Predict Tails</mat-button-toggle>
+              <mat-button-toggle value="heads">Predict Heads</mat-button-toggle>
+              <mat-button-toggle value="relations">Predict Relations</mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+
+          <div class="prediction-inputs">
+            <mat-form-field appearance="outline" *ngIf="predictionMode !== 'heads'">
+              <mat-label>Head Entity</mat-label>
+              <input matInput [(ngModel)]="predictionHead" [ngModelOptions]="{standalone: true}" placeholder="e.g., Albert Einstein">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" *ngIf="predictionMode !== 'relations'">
+              <mat-label>Relation</mat-label>
+              <input matInput [(ngModel)]="predictionRelation" [ngModelOptions]="{standalone: true}" placeholder="e.g., BORN_IN">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" *ngIf="predictionMode !== 'tails'">
+              <mat-label>Tail Entity</mat-label>
+              <input matInput [(ngModel)]="predictionTail" [ngModelOptions]="{standalone: true}" placeholder="e.g., Germany">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Top K</mat-label>
+              <input matInput type="number" [(ngModel)]="predictionTopK" [ngModelOptions]="{standalone: true}" min="1" max="100">
+            </mat-form-field>
+          </div>
+
+          <button mat-raised-button color="primary"
+                  (click)="runPrediction()"
+                  [disabled]="isPredicting">
+            <mat-icon>psychology</mat-icon>
+            Predict
+          </button>
+
+          <!-- Prediction Results -->
+          <div class="prediction-results" *ngIf="predictionResults.length > 0">
+            <h4>Predictions</h4>
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Entity/Relation</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let result of predictionResults">
+                  <td>{{ result.rank }}</td>
+                  <td>{{ result.entity }}</td>
+                  <td>{{ result.score | number:'1.4-4' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="similar-section">
+          <h3>Find Similar Entities</h3>
+          <div class="similar-inputs">
+            <mat-form-field appearance="outline">
+              <mat-label>Entity Name</mat-label>
+              <input matInput [(ngModel)]="similarEntityName" [ngModelOptions]="{standalone: true}" placeholder="e.g., Albert Einstein">
+            </mat-form-field>
+
+            <button mat-raised-button color="accent"
+                    (click)="findSimilarEntities()"
+                    [disabled]="!similarEntityName || isFindingSimilar">
+              <mat-icon>people</mat-icon>
+              Find Similar
+            </button>
+          </div>
+
+          <!-- Similar Results -->
+          <div class="similar-results" *ngIf="similarResults.length > 0">
+            <h4>Similar Entities</h4>
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Entity</th>
+                  <th>Similarity</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let result of similarResults">
+                  <td>{{ result.rank }}</td>
+                  <td>{{ result.entity }}</td>
+                  <td>{{ result.score | number:'1.4-4' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Settings Tab -->
+    <mat-tab label="Settings">
+      <div class="tab-content">
+        <div class="settings-section">
+          <div class="settings-header">
+            <h3>KG Embedding Settings</h3>
+            <button mat-stroked-button color="warn" (click)="resetSettings()" [disabled]="isSavingSettings">
+              <mat-icon>restore</mat-icon>
+              Reset to Defaults
+            </button>
+          </div>
+
+          <mat-tab-group [(selectedIndex)]="settingsTabIndex">
+            <!-- TransE Settings -->
+            <mat-tab label="TransE">
+              <div class="settings-form">
+                <p class="settings-description">
+                  TransE embeds entities and relations in the same space where relations act as translations:
+                  <strong>head + relation = tail</strong>
+                </p>
+
+                <div class="config-grid">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Embedding Dimension</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.embeddingDim" [ngModelOptions]="{standalone: true}" min="10" max="1000">
+                    <mat-hint>Size of embedding vectors (default: 100)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Epochs</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.epochs" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+                    <mat-hint>Training iterations (default: 100)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Learning Rate</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.learningRate" [ngModelOptions]="{standalone: true}" step="0.001" min="0.0001" max="1">
+                    <mat-hint>Gradient step size (default: 0.01)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Batch Size</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.batchSize" [ngModelOptions]="{standalone: true}" min="16" max="8192">
+                    <mat-hint>Triples per batch (default: 1024)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Margin</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.margin" [ngModelOptions]="{standalone: true}" step="0.1" min="0.1" max="20">
+                    <mat-hint>Margin for ranking loss (default: 1.0)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Negative Samples</mat-label>
+                    <input matInput type="number" [(ngModel)]="transeConfig.negativeSamples" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+                    <mat-hint>Corrupted triples per positive (default: 10)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <div class="settings-actions">
+                  <button mat-raised-button color="primary" (click)="saveTransEConfig()" [disabled]="isSavingSettings">
+                    <mat-icon>save</mat-icon>
+                    Save TransE Settings
+                  </button>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- RotatE Settings -->
+            <mat-tab label="RotatE">
+              <div class="settings-form">
+                <p class="settings-description">
+                  RotatE models relations as rotations in complex vector space:
+                  <strong>head * relation = tail</strong>
+                </p>
+
+                <div class="config-grid">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Embedding Dimension</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.embeddingDim" [ngModelOptions]="{standalone: true}" min="10" max="1000">
+                    <mat-hint>Size of embedding vectors (default: 100)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Epochs</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.epochs" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+                    <mat-hint>Training iterations (default: 100)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Learning Rate</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.learningRate" [ngModelOptions]="{standalone: true}" step="0.0001" min="0.0001" max="1">
+                    <mat-hint>Gradient step size (default: 0.001)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Batch Size</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.batchSize" [ngModelOptions]="{standalone: true}" min="16" max="8192">
+                    <mat-hint>Triples per batch (default: 512)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Margin</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.margin" [ngModelOptions]="{standalone: true}" step="0.1" min="0.1" max="30">
+                    <mat-hint>Margin for ranking loss (default: 6.0)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Negative Samples</mat-label>
+                    <input matInput type="number" [(ngModel)]="rotateConfig.negativeSamples" [ngModelOptions]="{standalone: true}" min="1" max="1000">
+                    <mat-hint>Corrupted triples per positive (default: 256)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <div class="settings-actions">
+                  <button mat-raised-button color="primary" (click)="saveRotatEConfig()" [disabled]="isSavingSettings">
+                    <mat-icon>save</mat-icon>
+                    Save RotatE Settings
+                  </button>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- GraphRAG Settings -->
+            <mat-tab label="GraphRAG">
+              <div class="settings-form">
+                <p class="settings-description">
+                  GraphRAG enhances retrieval by combining knowledge graph embeddings with text search.
+                </p>
+
+                <div class="toggle-section">
+                  <mat-slide-toggle [(ngModel)]="graphragConfig.enabled" [ngModelOptions]="{standalone: true}" color="primary">
+                    Enable GraphRAG
+                  </mat-slide-toggle>
+                  <p class="toggle-hint">When enabled, RAG queries will use knowledge graph embeddings to expand and enrich retrieved context.</p>
+                </div>
+
+                <div class="config-grid" [class.disabled]="!graphragConfig.enabled">
+                  <mat-form-field appearance="outline">
+                    <mat-label>KG Weight</mat-label>
+                    <input matInput type="number" [(ngModel)]="graphragConfig.kgWeight" [ngModelOptions]="{standalone: true}" step="0.1" min="0" max="1"
+                           [disabled]="!graphragConfig.enabled">
+                    <mat-hint>Weight for KG results (default: 0.3)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Text Weight</mat-label>
+                    <input matInput type="number" [(ngModel)]="graphragConfig.textWeight" [ngModelOptions]="{standalone: true}" step="0.1" min="0" max="1"
+                           [disabled]="!graphragConfig.enabled">
+                    <mat-hint>Weight for text results (default: 0.7)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Expansion Hops</mat-label>
+                    <input matInput type="number" [(ngModel)]="graphragConfig.expansionHops" [ngModelOptions]="{standalone: true}" min="0" max="5"
+                           [disabled]="!graphragConfig.enabled">
+                    <mat-hint>Graph traversal depth (default: 1)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Top K Entities</mat-label>
+                    <input matInput type="number" [(ngModel)]="graphragConfig.topKEntities" [ngModelOptions]="{standalone: true}" min="1" max="50"
+                           [disabled]="!graphragConfig.enabled">
+                    <mat-hint>Max entities to retrieve (default: 5)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Default Fact Sheet ID</mat-label>
+                    <input matInput type="number" [(ngModel)]="graphragConfig.defaultFactSheetId" [ngModelOptions]="{standalone: true}" min="1"
+                           [disabled]="!graphragConfig.enabled">
+                    <mat-hint>Fact sheet to use for queries (default: 1)</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <div class="settings-actions">
+                  <button mat-raised-button color="primary" (click)="saveGraphRAGConfig()" [disabled]="isSavingSettings">
+                    <mat-icon>save</mat-icon>
+                    Save GraphRAG Settings
+                  </button>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Neo4j Settings -->
+            <mat-tab label="Neo4j">
+              <div class="settings-form">
+                <p class="settings-description">
+                  Configure Neo4j graph database connection for storing and querying knowledge graphs.
+                </p>
+
+                <div class="toggle-section">
+                  <mat-slide-toggle [(ngModel)]="neo4jConfig.enabled" [ngModelOptions]="{standalone: true}" color="primary">
+                    Enable Neo4j
+                  </mat-slide-toggle>
+                  <p class="toggle-hint">When enabled, knowledge graph data will be stored in Neo4j for advanced graph queries and visualization.</p>
+                </div>
+
+                <div class="config-grid" [class.disabled]="!neo4jConfig.enabled">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Connection URI</mat-label>
+                    <input matInput [(ngModel)]="neo4jConfig.uri" [ngModelOptions]="{standalone: true}"
+                           placeholder="bolt://localhost:7687"
+                           [disabled]="!neo4jConfig.enabled">
+                    <mat-hint>Neo4j connection URI (bolt:// or neo4j://)</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Username</mat-label>
+                    <input matInput [(ngModel)]="neo4jConfig.username" [ngModelOptions]="{standalone: true}"
+                           placeholder="neo4j"
+                           [disabled]="!neo4jConfig.enabled">
+                    <mat-hint>Neo4j database username</mat-hint>
+                  </mat-form-field>
+
+                  <mat-form-field appearance="outline">
+                    <mat-label>Password</mat-label>
+                    <input matInput type="password" [(ngModel)]="neo4jConfig.password" [ngModelOptions]="{standalone: true}"
+                           placeholder="Enter password"
+                           [disabled]="!neo4jConfig.enabled">
+                    <mat-hint>Neo4j database password</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <!-- Connection Test Result -->
+                <div class="connection-test-result" *ngIf="connectionTestMessage">
+                  <mat-icon [class.success]="connectionTestSuccess" [class.error]="connectionTestSuccess === false">
+                    {{ connectionTestSuccess ? 'check_circle' : 'error' }}
+                  </mat-icon>
+                  <span [class.success]="connectionTestSuccess" [class.error]="connectionTestSuccess === false">
+                    {{ connectionTestMessage }}
+                  </span>
+                </div>
+
+                <div class="settings-actions">
+                  <button mat-stroked-button color="accent"
+                          (click)="testNeo4jConnection()"
+                          [disabled]="!neo4jConfig.enabled || isTestingConnection || isSavingSettings">
+                    <mat-icon>power</mat-icon>
+                    {{ isTestingConnection ? 'Testing...' : 'Test Connection' }}
+                  </button>
+                  <button mat-raised-button color="primary" (click)="saveNeo4jConfig()" [disabled]="isSavingSettings">
+                    <mat-icon>save</mat-icon>
+                    Save Neo4j Settings
+                  </button>
+                </div>
+              </div>
+            </mat-tab>
+
+            <!-- Graph Building Settings -->
+            <mat-tab label="Graph Building">
+              <div class="settings-form">
+                <p class="settings-description">
+                  Configure automatic knowledge graph extraction during document indexing.
+                  When enabled, entities and relationships are extracted from documents as they are indexed.
+                </p>
+
+                <div class="toggle-section">
+                  <mat-slide-toggle [(ngModel)]="graphBuildingConfig.enabled" [ngModelOptions]="{standalone: true}" color="primary">
+                    Enable Graph Building
+                  </mat-slide-toggle>
+                  <p class="toggle-hint">When enabled, knowledge graph triples will be extracted from documents during indexing.</p>
+                </div>
+
+                <div class="config-section" [class.disabled]="!graphBuildingConfig.enabled">
+                  <h4>Builder Configuration</h4>
+                  <div class="config-grid">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Builder Type</mat-label>
+                      <mat-select [(ngModel)]="graphBuildingConfig.builderType" [ngModelOptions]="{standalone: true}"
+                                  [disabled]="!graphBuildingConfig.enabled">
+                        <mat-option value="llm">LLM-based Extraction</mat-option>
+                        <mat-option value="pattern">Pattern-based Extraction</mat-option>
+                        <mat-option value="manual">Manual Only</mat-option>
+                      </mat-select>
+                      <mat-hint>Method for extracting entities and relationships</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Storage Backend</mat-label>
+                      <mat-select [(ngModel)]="graphBuildingConfig.storageType" [ngModelOptions]="{standalone: true}"
+                                  [disabled]="!graphBuildingConfig.enabled">
+                        <mat-option value="jpa">JPA (Built-in Database)</mat-option>
+                        <mat-option value="neo4j">Neo4j Graph Database</mat-option>
+                      </mat-select>
+                      <mat-hint>Where to store extracted graph data</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+
+                <!-- LLM Configuration (only shown for LLM builder type) -->
+                <div class="config-section" *ngIf="graphBuildingConfig.builderType === 'llm'"
+                     [class.disabled]="!graphBuildingConfig.enabled">
+                  <h4>LLM Configuration</h4>
+                  <div class="config-grid">
+                    <mat-form-field appearance="outline">
+                      <mat-label>LLM Provider</mat-label>
+                      <mat-select [(ngModel)]="graphBuildingConfig.modelProvider" [ngModelOptions]="{standalone: true}"
+                                  (selectionChange)="onLlmProviderChange()"
+                                  [disabled]="!graphBuildingConfig.enabled">
+                        <mat-option *ngFor="let provider of availableLlmProviders" [value]="provider">
+                          {{ provider | titlecase }}
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint>AI provider for entity extraction</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Model</mat-label>
+                      <mat-select [(ngModel)]="graphBuildingConfig.modelName" [ngModelOptions]="{standalone: true}"
+                                  [disabled]="!graphBuildingConfig.enabled">
+                        <mat-option *ngFor="let model of availableLlmModels" [value]="model">
+                          {{ model }}
+                        </mat-option>
+                      </mat-select>
+                      <mat-hint>LLM model to use for extraction</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Temperature</mat-label>
+                      <input matInput type="number" [(ngModel)]="graphBuildingConfig.temperature" [ngModelOptions]="{standalone: true}"
+                             step="0.1" min="0" max="2"
+                             [disabled]="!graphBuildingConfig.enabled">
+                      <mat-hint>Lower = more deterministic (0.0 recommended)</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Max Tokens</mat-label>
+                      <input matInput type="number" [(ngModel)]="graphBuildingConfig.maxTokens" [ngModelOptions]="{standalone: true}"
+                             min="256" max="8192"
+                             [disabled]="!graphBuildingConfig.enabled">
+                      <mat-hint>Max tokens per extraction (default: 2048)</mat-hint>
+                    </mat-form-field>
+
+                    <mat-form-field appearance="outline">
+                      <mat-label>Batch Size</mat-label>
+                      <input matInput type="number" [(ngModel)]="graphBuildingConfig.batchSize" [ngModelOptions]="{standalone: true}"
+                             min="1" max="100"
+                             [disabled]="!graphBuildingConfig.enabled">
+                      <mat-hint>Chunks to process per batch (default: 10)</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+
+                <!-- Auto-Accept Configuration -->
+                <div class="config-section" [class.disabled]="!graphBuildingConfig.enabled">
+                  <h4>Auto-Accept Settings</h4>
+                  <div class="toggle-section">
+                    <mat-slide-toggle [(ngModel)]="graphBuildingConfig.autoAccept" [ngModelOptions]="{standalone: true}" color="accent"
+                                      [disabled]="!graphBuildingConfig.enabled">
+                      Auto-Accept High-Confidence Proposals
+                    </mat-slide-toggle>
+                    <p class="toggle-hint">Automatically accept proposals above the confidence threshold without review.</p>
+                  </div>
+
+                  <div class="config-grid" *ngIf="graphBuildingConfig.autoAccept">
+                    <mat-form-field appearance="outline">
+                      <mat-label>Confidence Threshold</mat-label>
+                      <input matInput type="number" [(ngModel)]="graphBuildingConfig.autoAcceptThreshold" [ngModelOptions]="{standalone: true}"
+                             step="0.05" min="0.5" max="1.0"
+                             [disabled]="!graphBuildingConfig.enabled">
+                      <mat-hint>Min confidence for auto-accept (0.5 - 1.0)</mat-hint>
+                    </mat-form-field>
+                  </div>
+                </div>
+
+                <!-- Entity Types Configuration -->
+                <div class="config-section" [class.disabled]="!graphBuildingConfig.enabled">
+                  <h4>Entity Types to Extract</h4>
+                  <p class="section-hint">Select which types of entities to identify in documents.</p>
+
+                  <div class="entity-types-actions">
+                    <button mat-stroked-button (click)="selectAllEntityTypes()"
+                            [disabled]="!graphBuildingConfig.enabled">
+                      Select All
+                    </button>
+                    <button mat-stroked-button (click)="deselectAllEntityTypes()"
+                            [disabled]="!graphBuildingConfig.enabled">
+                      Deselect All
+                    </button>
+                  </div>
+
+                  <div class="entity-types-grid">
+                    <mat-checkbox *ngFor="let entityType of availableEntityTypes"
+                                  [checked]="isEntityTypeSelected(entityType)"
+                                  (change)="toggleEntityType(entityType)"
+                                  [disabled]="!graphBuildingConfig.enabled"
+                                  color="primary">
+                      {{ entityType }}
+                    </mat-checkbox>
+                  </div>
+                </div>
+
+                <!-- Custom Prompt (Advanced) -->
+                <div class="config-section" *ngIf="graphBuildingConfig.builderType === 'llm'"
+                     [class.disabled]="!graphBuildingConfig.enabled">
+                  <h4>Custom Extraction Prompt (Optional)</h4>
+                  <mat-form-field appearance="outline" class="full-width">
+                    <mat-label>Custom Prompt</mat-label>
+                    <textarea matInput [(ngModel)]="graphBuildingConfig.customPrompt" [ngModelOptions]="{standalone: true}"
+                              rows="4"
+                              placeholder="Leave empty to use the default extraction prompt..."
+                              [disabled]="!graphBuildingConfig.enabled"></textarea>
+                    <mat-hint>Override the default extraction prompt. Use the placeholder TEXT for the input chunk.</mat-hint>
+                  </mat-form-field>
+                </div>
+
+                <div class="settings-actions">
+                  <button mat-stroked-button color="warn"
+                          (click)="resetGraphBuildingConfig()"
+                          [disabled]="isSavingGraphBuilding">
+                    <mat-icon>restore</mat-icon>
+                    Reset to Defaults
+                  </button>
+                  <button mat-raised-button color="primary"
+                          (click)="saveGraphBuildingConfig()"
+                          [disabled]="isSavingGraphBuilding">
+                    <mat-icon>save</mat-icon>
+                    {{ isSavingGraphBuilding ? 'Saving...' : 'Save Graph Building Settings' }}
+                  </button>
+                </div>
+              </div>
+            </mat-tab>
+          </mat-tab-group>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

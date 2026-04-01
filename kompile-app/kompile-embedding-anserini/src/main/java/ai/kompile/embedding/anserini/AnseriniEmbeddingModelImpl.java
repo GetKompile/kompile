@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,7 @@ import java.util.stream.Collectors;
  * </p>
  */
 @Service("anseriniEmbeddingModelImpl")
+@ConditionalOnClass(name = "ai.kompile.embedding.anserini.AnseriniEmbeddingModelImpl")
 @ConditionalOnProperty(value = "kompile.embedding.anserini.enabled", havingValue = "true", matchIfMissing = true)
 @org.springframework.context.annotation.Lazy
 @org.springframework.context.annotation.Primary
@@ -244,6 +246,19 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             loadingMessage = "Starting embedding subprocess...";
 
             try {
+                // Clean up any dead subprocess from a previous failed attempt.
+                // This handles the case where the subprocess process died (e.g., OOM)
+                // but the launcher object still exists with stale state.
+                if (subprocessLauncher != null && !subprocessLauncher.isRunning()) {
+                    log.info("Cleaning up stale subprocess launcher from previous failed attempt");
+                    try {
+                        subprocessLauncher.stop();
+                    } catch (Exception ignored) {
+                        // Best effort cleanup
+                    }
+                    subprocessLauncher = null;
+                }
+
                 // Phase 1: Start subprocess
                 loadingPhase = LoadingPhase.STARTING_SUBPROCESS;
                 loadingMessage = "Starting embedding subprocess...";
@@ -390,7 +405,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         String msg = e.getMessage();
         if (msg == null) return false;
         String upper = msg.toUpperCase();
-        return upper.contains("TIMEOUT") || upper.contains("CONNECTION") || upper.contains("UNAVAILABLE");
+        return upper.contains("TIMEOUT") || upper.contains("CONNECTION") || upper.contains("UNAVAILABLE")
+                || upper.contains("STREAM CLOSED") || upper.contains("NOT ALIVE")
+                || upper.contains("PROCESS MAY HAVE CRASHED") || upper.contains("CRASH HANDLING TRIGGERED")
+                || upper.contains("SUBPROCESS CRASHED");
     }
 
     // ========== Subprocess callbacks ==========

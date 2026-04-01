@@ -20,6 +20,7 @@ package ai.kompile.pipelines.framework.api.configschema;
 import ai.kompile.pipelines.framework.api.Configuration;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.Singular;
@@ -32,6 +33,7 @@ import java.util.Optional;
 
 @Getter
 @Builder
+@JsonTypeInfo(use = JsonTypeInfo.Id.NONE)
 public class StepSchema implements Configuration {
     private static final long serialVersionUID = 1L;
 

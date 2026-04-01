@@ -794,6 +794,7 @@ public class ChatSessionTool {
         if (simpleName.contains("IndexOperations")) return "Index Operations";
         if (simpleName.contains("ApplicationConfig")) return "Application Configuration";
         if (simpleName.contains("ChatSession")) return "Chat Sessions";
+        if (simpleName.contains("AgentDelegation")) return "Agent Delegation";
         if (simpleName.contains("Rag")) return "RAG Operations";
         if (simpleName.contains("Filesystem")) return "Filesystem Operations";
 

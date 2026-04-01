@@ -1,0 +1,63 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* Import the Sphinx theme style.  */
+@import url("default.css");
+
+/* Wrap sidebar content even within words so that long
+   document names do not escape sidebar borders.  */
+div.sphinxsidebarwrapper {
+  word-wrap: break-word;
+}
+
+/* Make links inside parsed-literal blocks more obvious
+   by using a background color and increased line spacing
+   to make them look boxed.  */
+.literal-block {
+  line-height: 1.4;
+}
+.literal-block a.reference.internal {
+  background-color: #dfdfdf;
+}
+
+/* Remove unwanted margin in case list item contains a div-wrapping
+   directive like `.. versionadded` or `.. deprecated`. */
+dd > :first-child > p {
+  margin-top: 0px;
+}
+
+div.outdated {
+  background-color: #f0f0c0;
+  color: black;
+  font-size: 90%;
+  padding-bottom: 5px;
+  padding-left: 2px;
+  padding-right: 2px;
+  padding-top: 5px;
+  text-align: center;
+  width: 100%;
+}
+
+/* Revert style to the inherited (normal text) for `:guide:` links */
+code.xref.cmake-guide {
+  font-size: inherit;
+  font-family: inherit;
+  font-weight: inherit;
+  padding: inherit;
+}
+code.xref.cmake-guide span.pre {
+  white-space: inherit;
+}

@@ -1,0 +1,337 @@
+<!-- OCR Debug - Transparent VLM Pipeline -->
+<div class="ocr-debug-container">
+
+  <!-- Header -->
+  <div class="page-header">
+    <div class="header-left">
+      <mat-icon class="header-icon">document_scanner</mat-icon>
+      <h2>OCR Debug</h2>
+    </div>
+    <button mat-stroked-button (click)="refreshAll()" [disabled]="isLoadingStatus">
+      <mat-icon>refresh</mat-icon> Refresh
+    </button>
+  </div>
+
+  <!-- Status Cards -->
+  <div class="status-cards" *ngIf="status">
+    <div class="status-card">
+      <div class="status-label">Staging</div>
+      <div class="status-value" [class.status-ok]="status.stagingReachable" [class.status-error]="!status.stagingReachable">
+        {{ status.stagingReachable ? 'Connected' : 'Unreachable' }}
+      </div>
+      <div class="status-detail">{{ status.stagingUrl }}</div>
+    </div>
+    <div class="status-card">
+      <div class="status-label">VLM Model</div>
+      <div class="status-value" [class.status-ok]="status.vlmLoaded" [class.status-warn]="!status.vlmLoaded">
+        {{ status.vlmLoaded ? 'Loaded' : 'Not Loaded' }}
+      </div>
+      <div class="status-detail" *ngIf="status.vlmModelId">{{ status.vlmModelId }}</div>
+    </div>
+    <div class="status-card">
+      <div class="status-label">Registry Models</div>
+      <div class="status-value">{{ status.registryModelCount }}</div>
+      <div class="status-detail">OCR/VLM types</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <mat-tab-group>
+
+    <!-- Tab 1: Process Document -->
+    <mat-tab label="Process Document">
+      <div class="tab-content">
+
+        <!-- File Upload -->
+        <div class="upload-section">
+          <div class="upload-area" (click)="fileInput.click()">
+            <mat-icon>cloud_upload</mat-icon>
+            <p *ngIf="!selectedFile">Click to select PDF or image</p>
+            <p *ngIf="selectedFile">{{ selectedFile.name }} ({{ formatBytes(selectedFile.size) }})</p>
+            <input #fileInput type="file" accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" (change)="onFileSelected($event)" hidden>
+          </div>
+
+          <div class="test-options">
+            <mat-form-field appearance="outline" class="option-field">
+              <mat-label>Model ID (optional)</mat-label>
+              <input matInput [(ngModel)]="testModelId" placeholder="e.g. smoldocling-256m">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="option-field-small">
+              <mat-label>Max Tokens</mat-label>
+              <input matInput type="number" [(ngModel)]="testMaxTokens">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="option-field-small">
+              <mat-label>Output Format</mat-label>
+              <mat-select [(ngModel)]="testOutputFormat">
+                <mat-option *ngFor="let fmt of vlmOutputFormats" [value]="fmt">{{ fmt }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="option-field-small">
+              <mat-label>Page (optional)</mat-label>
+              <input matInput type="number" [(ngModel)]="selectedPage" min="1">
+            </mat-form-field>
+
+            <button mat-raised-button color="primary" (click)="runTest()"
+                    [disabled]="!selectedFile || isTesting">
+              <mat-icon>play_arrow</mat-icon>
+              {{ isTesting ? 'Processing...' : 'Run' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress -->
+        <mat-progress-bar *ngIf="isTesting" mode="indeterminate"></mat-progress-bar>
+
+        <!-- Results -->
+        <div class="results-section" *ngIf="testResult">
+
+          <!-- Pipeline Trace -->
+          <div class="trace-section">
+            <h3>Pipeline Trace</h3>
+            <div class="trace-steps">
+              <div class="trace-step" *ngFor="let step of testResult.steps">
+                <div class="step-header">
+                  <span class="step-name">{{ step.name }}</span>
+                  <span class="step-duration">{{ step.durationMs }}ms</span>
+                </div>
+                <div class="step-bar">
+                  <div class="step-bar-fill" [style.width.%]="getStepDurationPercent(step.durationMs)"
+                       [class.step-error]="step.detail.startsWith('FAILED')"></div>
+                </div>
+                <div class="step-detail">{{ step.detail }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stats -->
+          <div class="stats-row">
+            <div class="stat">
+              <span class="stat-label">Total Time</span>
+              <span class="stat-value">{{ testResult.totalTimeMs }}ms</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Tokens</span>
+              <span class="stat-value">{{ testResult.tokensGenerated }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Speed</span>
+              <span class="stat-value">{{ testResult.tokensPerSecond }} tok/s</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Model</span>
+              <span class="stat-value">{{ testResult.modelId }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Format</span>
+              <span class="stat-value">{{ testResult.outputFormat }}</span>
+            </div>
+          </div>
+
+          <!-- Comparison toggle -->
+          <div class="comparison-toggle" *ngIf="selectedFile">
+            <mat-slide-toggle [(ngModel)]="comparisonMode" (change)="toggleComparisonMode()">
+              Side-by-side comparison
+            </mat-slide-toggle>
+          </div>
+
+          <!-- Comparison View -->
+          <div class="comparison-container" *ngIf="comparisonMode">
+            <div class="comparison-pane pdf-pane">
+              <div class="pane-header">PDF Rendering</div>
+              <div class="pane-content">
+                <div *ngIf="isLoadingPageImage" class="loading-overlay">
+                  <mat-spinner diameter="40"></mat-spinner>
+                </div>
+                <img *ngIf="currentPageImage?.imageData"
+                     [src]="'data:image/png;base64,' + currentPageImage!.imageData"
+                     alt="PDF page" class="page-image">
+                <p *ngIf="!currentPageImage?.imageData && !isLoadingPageImage">No page rendered</p>
+              </div>
+            </div>
+            <div class="comparison-pane ocr-pane">
+              <div class="pane-header">VLM Output</div>
+              <div class="pane-content">
+                <pre class="output-text">{{ testResult.parsedOutput || testResult.rawOutput || 'No output' }}</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Output Panels (non-comparison) -->
+          <div class="output-panels" *ngIf="!comparisonMode">
+            <div class="output-panel" *ngIf="testResult.rawOutput">
+              <div class="panel-header">
+                <h4>Raw Output</h4>
+                <button mat-icon-button (click)="copyToClipboard(testResult.rawOutput!)" matTooltip="Copy">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+              <pre class="output-text">{{ testResult.rawOutput }}</pre>
+            </div>
+            <div class="output-panel" *ngIf="testResult.parsedOutput && testResult.parsedOutput !== testResult.rawOutput">
+              <div class="panel-header">
+                <h4>Parsed Output</h4>
+                <button mat-icon-button (click)="copyToClipboard(testResult.parsedOutput!)" matTooltip="Copy">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+              <pre class="output-text">{{ testResult.parsedOutput }}</pre>
+            </div>
+          </div>
+
+          <!-- Error -->
+          <div class="error-panel" *ngIf="testResult.error">
+            <mat-icon>error</mat-icon>
+            <span>{{ testResult.error }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tab 2: Models -->
+    <mat-tab label="Models">
+      <div class="tab-content">
+
+        <!-- VLM Control -->
+        <div class="vlm-control-section">
+          <h3>VLM Model Control</h3>
+          <div class="vlm-control-row">
+            <mat-form-field appearance="outline" class="option-field">
+              <mat-label>Model ID</mat-label>
+              <input matInput [(ngModel)]="vlmLoadModelId" placeholder="e.g. smoldocling-256m">
+            </mat-form-field>
+            <button mat-raised-button color="primary" (click)="loadVlm()" [disabled]="isLoadingVlm || !vlmLoadModelId">
+              <mat-icon>download</mat-icon>
+              {{ isLoadingVlm ? 'Loading...' : 'Load VLM' }}
+            </button>
+            <button mat-stroked-button color="warn" (click)="unloadVlm()" [disabled]="isUnloadingVlm">
+              <mat-icon>eject</mat-icon>
+              {{ isUnloadingVlm ? 'Unloading...' : 'Unload VLM' }}
+            </button>
+          </div>
+          <div class="vlm-status-info" *ngIf="status">
+            <span [style.color]="status.vlmLoaded ? '#4caf50' : '#9e9e9e'">
+              <mat-icon [inline]="true">{{ status.vlmLoaded ? 'check_circle' : 'radio_button_unchecked' }}</mat-icon>
+              {{ status.vlmLoaded ? 'VLM loaded: ' + status.vlmModelId : 'No VLM loaded' }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Registry Models -->
+        <h3>Registry Models (OCR/VLM)</h3>
+        <div *ngIf="isLoadingModels" class="loading-indicator">
+          <mat-spinner diameter="30"></mat-spinner>
+          <span>Loading models...</span>
+        </div>
+
+        <div *ngIf="!isLoadingModels && models.length === 0" class="empty-state">
+          <mat-icon>inbox</mat-icon>
+          <p>No OCR/VLM models in registry</p>
+        </div>
+
+        <div *ngFor="let type of getModelTypes()" class="model-type-group">
+          <h4>
+            <mat-icon>{{ getModelTypeIcon(type) }}</mat-icon>
+            {{ getModelTypeLabel(type) }}
+          </h4>
+          <div class="models-grid">
+            <div class="model-card" *ngFor="let model of getModelsByType(type)">
+              <div class="model-card-header">
+                <span class="model-id">{{ model.modelId }}</span>
+                <span class="model-status" [style.color]="getStatusColor(model.status)">{{ model.status }}</span>
+              </div>
+              <div class="model-card-body">
+                <div *ngIf="model.description" class="model-description">{{ model.description }}</div>
+                <div *ngIf="model.framework" class="model-framework">Framework: {{ model.framework }}</div>
+                <div *ngIf="model.path" class="model-path">{{ model.path }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Tab 3: Benchmark -->
+    <mat-tab label="Benchmark">
+      <div class="tab-content">
+        <div class="benchmark-controls">
+          <mat-form-field appearance="outline" class="option-field">
+            <mat-label>Model ID (optional)</mat-label>
+            <input matInput [(ngModel)]="benchmarkModelId" placeholder="Uses loaded VLM if empty">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="option-field-small">
+            <mat-label>Iterations</mat-label>
+            <input matInput type="number" [(ngModel)]="benchmarkIterations" min="1" max="20">
+          </mat-form-field>
+          <button mat-raised-button color="primary" (click)="runQuickBenchmark()" [disabled]="isBenchmarking">
+            <mat-icon>speed</mat-icon> Quick Benchmark
+          </button>
+          <button mat-stroked-button (click)="runFileBenchmark()" [disabled]="isBenchmarking || !selectedFile">
+            <mat-icon>insert_drive_file</mat-icon> File Benchmark
+          </button>
+        </div>
+
+        <mat-progress-bar *ngIf="isBenchmarking" mode="indeterminate"></mat-progress-bar>
+
+        <div *ngIf="benchmarkResult" class="benchmark-results">
+          <div class="stats-row" *ngIf="benchmarkResult.summary">
+            <div class="stat stat-primary">
+              <span class="stat-label">Avg Tokens/sec</span>
+              <span class="stat-value">{{ benchmarkResult.summary.avgTokensPerSecond.toFixed(1) }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Avg Time</span>
+              <span class="stat-value">{{ benchmarkResult.summary.avgGenerateTimeMs.toFixed(0) }}ms</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Avg Tokens</span>
+              <span class="stat-value">{{ benchmarkResult.summary.avgGeneratedTokens.toFixed(0) }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Min tok/s</span>
+              <span class="stat-value">{{ benchmarkResult.summary.minTokensPerSecond.toFixed(1) }}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Max tok/s</span>
+              <span class="stat-value">{{ benchmarkResult.summary.maxTokensPerSecond.toFixed(1) }}</span>
+            </div>
+          </div>
+
+          <table class="iteration-table" *ngIf="benchmarkResult.results?.length">
+            <thead>
+              <tr>
+                <th>Iteration</th>
+                <th>Time (ms)</th>
+                <th>Tokens</th>
+                <th>Tokens/sec</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let iter of benchmarkResult.results">
+                <td>{{ iter.iteration }}</td>
+                <td>{{ iter.generateTimeMs }}</td>
+                <td>{{ iter.generatedTokens }}</td>
+                <td>{{ iter.tokensPerSecond.toFixed(1) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="error-panel" *ngIf="benchmarkResult.error">
+            <mat-icon>error</mat-icon>
+            <span>{{ benchmarkResult.error }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+  </mat-tab-group>
+
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="errorMessage" (click)="errorMessage = null">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <mat-icon class="close-icon">close</mat-icon>
+  </div>
+</div>

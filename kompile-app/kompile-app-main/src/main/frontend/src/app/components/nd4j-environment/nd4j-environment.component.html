@@ -1,0 +1,1064 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="nd4j-container" [class.modal-mode]="isModal">
+  <!-- Header -->
+  <div class="nd4j-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">memory</mat-icon>
+      <div>
+        <h2>ND4J Environment Configuration</h2>
+        <p class="subtitle">Configure threading, memory, and performance settings</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="loadConfiguration()" [disabled]="loading" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-icon-button (click)="close()" *ngIf="isModal" matTooltip="Close">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="loading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-container" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Configuration Content -->
+  <div class="config-content" *ngIf="config && !loading">
+    <!-- Quick Presets -->
+    <mat-card class="preset-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>tune</mat-icon>
+          Quick Presets
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="preset-buttons">
+          <button mat-stroked-button *ngFor="let preset of getPresetKeys()"
+                  (click)="applyPreset(preset)"
+                  [matTooltip]="getPresetDescription(preset)">
+            <mat-icon *ngIf="preset === 'minimal'">speed</mat-icon>
+            <mat-icon *ngIf="preset === 'balanced'">balance</mat-icon>
+            <mat-icon *ngIf="preset === 'detailed'">bug_report</mat-icon>
+            <mat-icon *ngIf="preset === 'performance'">rocket_launch</mat-icon>
+            {{ preset | titlecase }}
+          </button>
+          <button mat-stroked-button color="warn" (click)="resetToDefaults()" matTooltip="Reset to defaults">
+            <mat-icon>restart_alt</mat-icon>
+            Reset
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Available Devices -->
+    <mat-expansion-panel expanded>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>devices</mat-icon>
+          Available Devices
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ isCudaBackend ? 'CUDA Backend' : 'CPU Backend' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="devices-container">
+        <!-- Backend Type -->
+        <div class="device-card backend-card">
+          <div class="device-header">
+            <mat-icon class="device-icon" [class.cuda]="isCudaBackend">
+              {{ isCudaBackend ? 'memory' : 'computer' }}
+            </mat-icon>
+            <div class="device-title">
+              <span class="device-name">Compute Backend</span>
+              <span class="device-type">{{ isCudaBackend ? 'NVIDIA CUDA' : 'CPU (Native)' }}</span>
+            </div>
+            <mat-chip [class.cuda-chip]="isCudaBackend" [class.cpu-chip]="!isCudaBackend">
+              {{ isCudaBackend ? 'GPU' : 'CPU' }}
+            </mat-chip>
+          </div>
+        </div>
+
+        <!-- CPU Information -->
+        <div class="device-card cpu-card">
+          <div class="device-header">
+            <mat-icon class="device-icon cpu">developer_board</mat-icon>
+            <div class="device-title">
+              <span class="device-name">CPU Processors</span>
+              <span class="device-type">Available for parallel operations</span>
+            </div>
+          </div>
+          <div class="device-stats">
+            <div class="stat-item">
+              <span class="stat-value">{{ availableProcessors }}</span>
+              <span class="stat-label">Available Cores</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ maxThreads }}</span>
+              <span class="stat-label">ND4J Max Threads</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value">{{ ompNumThreads }}</span>
+              <span class="stat-label">OpenMP Threads</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CUDA Devices (if available) -->
+        <div class="device-card gpu-card" *ngIf="isCudaBackend">
+          <div class="device-header">
+            <mat-icon class="device-icon gpu">memory</mat-icon>
+            <div class="device-title">
+              <span class="device-name">CUDA Devices</span>
+              <span class="device-type">GPU Accelerated Computing</span>
+            </div>
+          </div>
+          <div class="device-stats">
+            <div class="stat-item">
+              <span class="stat-value">{{ cudaDeviceCount }}</span>
+              <span class="stat-label">GPU Device(s)</span>
+            </div>
+            <div class="stat-item" *ngIf="cudaCurrentDevice !== null">
+              <span class="stat-value">{{ cudaCurrentDevice }}</span>
+              <span class="stat-label">Active Device</span>
+            </div>
+            <div class="stat-item" *ngIf="cudaTensorCoreEnabled !== null">
+              <span class="stat-value">{{ cudaTensorCoreEnabled ? 'Yes' : 'No' }}</span>
+              <span class="stat-label">Tensor Cores</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- No CUDA Info -->
+        <div class="device-card no-gpu-card" *ngIf="!isCudaBackend">
+          <div class="device-header">
+            <mat-icon class="device-icon no-gpu">memory</mat-icon>
+            <div class="device-title">
+              <span class="device-name">No GPU Devices</span>
+              <span class="device-type">CUDA backend not active</span>
+            </div>
+          </div>
+          <div class="device-info-note">
+            <mat-icon>info</mat-icon>
+            <span>To use GPU acceleration, start the application with the CUDA backend configured.</span>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Thread Configuration -->
+    <mat-expansion-panel expanded>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>hub</mat-icon>
+          Thread Configuration
+        </mat-panel-title>
+        <mat-panel-description>
+          Available: {{ availableProcessors }} CPUs
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <!-- ND4J Max Threads -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Max Threads</span>
+            <span class="setting-description">Maximum threads for ND4J operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slider min="1" [max]="availableProcessors * 2" step="1" showTickMarks discrete>
+              <input matSliderThumb [(ngModel)]="maxThreads" [ngModelOptions]="{standalone: true}" (change)="onMaxThreadsChange()">
+            </mat-slider>
+            <span class="value-display">{{ maxThreads }}</span>
+          </div>
+        </div>
+
+        <!-- Max Master Threads -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Max Master Threads</span>
+            <span class="setting-description">Master thread pool size</span>
+          </div>
+          <div class="setting-control">
+            <mat-slider min="1" [max]="availableProcessors * 2" step="1" showTickMarks discrete>
+              <input matSliderThumb [(ngModel)]="maxMasterThreads" [ngModelOptions]="{standalone: true}" (change)="onMaxMasterThreadsChange()">
+            </mat-slider>
+            <span class="value-display">{{ maxMasterThreads }}</span>
+          </div>
+        </div>
+
+        <!-- OMP Threads -->
+        <div class="setting-row highlight">
+          <div class="setting-info">
+            <span class="setting-label">OpenMP Threads</span>
+            <span class="setting-description">Threads for parallel operations (via NativeOps)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slider min="1" [max]="availableProcessors * 2" step="1" showTickMarks discrete>
+              <input matSliderThumb [(ngModel)]="ompNumThreads" [ngModelOptions]="{standalone: true}" (change)="onOmpThreadsChange()">
+            </mat-slider>
+            <span class="value-display">{{ ompNumThreads }}</span>
+          </div>
+        </div>
+
+        <!-- OpenBLAS Threads -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">OpenBLAS Threads</span>
+            <span class="setting-description">Internal threads per BLAS operation</span>
+          </div>
+          <div class="setting-control">
+            <mat-slider min="1" [max]="availableProcessors * 2" step="1" showTickMarks discrete>
+              <input matSliderThumb [(ngModel)]="openBlasThreads" [ngModelOptions]="{standalone: true}" (change)="onOpenBlasThreadsChange()">
+            </mat-slider>
+            <span class="value-display">{{ openBlasThreads }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Memory Configuration -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>memory</mat-icon>
+          Memory Configuration
+        </mat-panel-title>
+        <mat-panel-description>
+          Configure memory limits for ND4J operations
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <!-- Max Primary Memory -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Max Primary Memory</span>
+            <span class="setting-description">Maximum heap/primary memory allocation (0 = unlimited)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="maxPrimaryMemoryMb" [ngModelOptions]="{standalone: true}"
+                     (change)="onMaxPrimaryMemoryChange()" min="0" step="256">
+              <span matSuffix>MB</span>
+            </mat-form-field>
+            <span class="value-display">{{ formatMemory(maxPrimaryMemoryMb) }}</span>
+          </div>
+        </div>
+
+        <!-- Max Special Memory -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Max Special Memory</span>
+            <span class="setting-description">Maximum GPU/special memory allocation (0 = unlimited)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="maxSpecialMemoryMb" [ngModelOptions]="{standalone: true}"
+                     (change)="onMaxSpecialMemoryChange()" min="0" step="256">
+              <span matSuffix>MB</span>
+            </mat-form-field>
+            <span class="value-display">{{ formatMemory(maxSpecialMemoryMb) }}</span>
+          </div>
+        </div>
+
+        <!-- Max Device Memory -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Max Device Memory</span>
+            <span class="setting-description">Maximum device memory allocation (0 = unlimited)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="maxDeviceMemoryMb" [ngModelOptions]="{standalone: true}"
+                     (change)="onMaxDeviceMemoryChange()" min="0" step="256">
+              <span matSuffix>MB</span>
+            </mat-form-field>
+            <span class="value-display">{{ formatMemory(maxDeviceMemoryMb) }}</span>
+          </div>
+        </div>
+
+        <div class="memory-info-note">
+          <mat-icon>info</mat-icon>
+          <span>Set values to 0 for unlimited memory. Changes are applied immediately and persisted.</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Lifecycle Tracking -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>monitor_heart</mat-icon>
+          Lifecycle Tracking
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ config.summary?.lifecycle?.enabled ? 'Enabled' : 'Disabled' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Enable Lifecycle Tracking</span>
+            <span class="setting-description">Track memory allocations and operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="lifecycleTracking" [ngModelOptions]="{standalone: true}" (change)="toggleLifecycleTracking()">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="tracker-chips" *ngIf="config.summary?.lifecycle?.enabled">
+          <mat-chip-set>
+            <mat-chip [class.active]="config.summary?.trackers?.ndArrayTracking">NDArray</mat-chip>
+            <mat-chip [class.active]="config.summary?.trackers?.dataBufferTracking">DataBuffer</mat-chip>
+            <mat-chip [class.active]="config.summary?.trackers?.tadCacheTracking">TAD Cache</mat-chip>
+            <mat-chip [class.active]="config.summary?.trackers?.shapeCacheTracking">Shape Cache</mat-chip>
+            <mat-chip [class.active]="config.summary?.trackers?.opContextTracking">OpContext</mat-chip>
+          </mat-chip-set>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Debug Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>bug_report</mat-icon>
+          Debug Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ debugEnabled ? 'Debug mode active' : 'Production mode' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Debug Mode</span>
+            <span class="setting-description">Enable debug mode with extra validation and logging</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="debugEnabled" [ngModelOptions]="{standalone: true}" (change)="updateDebugSetting('debug')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Verbose Output</span>
+            <span class="setting-description">Enable detailed operation logging</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="verboseEnabled" [ngModelOptions]="{standalone: true}" (change)="updateDebugSetting('verbose')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Profiling</span>
+            <span class="setting-description">Track operation timing (performance overhead)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="profilingEnabled" [ngModelOptions]="{standalone: true}" (change)="updateDebugSetting('profiling')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Leaks Detector</span>
+            <span class="setting-description">Enable memory leak detection</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="leaksDetectorEnabled" [ngModelOptions]="{standalone: true}" (change)="updateDebugSetting('leaksDetector')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="memory-info-note" *ngIf="debugEnabled || verboseEnabled || profilingEnabled">
+          <mat-icon>warning</mat-icon>
+          <span>Debug options enabled - performance may be impacted</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Advanced Debug Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>science</mat-icon>
+          Advanced Debug Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Native array logging and change detection
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Log Native NDArray Creation</span>
+            <span class="setting-description">Log when native NDArrays are created</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="logNativeNDArrayCreation" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('logNativeNDArrayCreation')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Log NDArray Events</span>
+            <span class="setting-description">Log NDArray lifecycle events</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="logNDArrayEvents" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('logNDArrayEvents')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Check Input Change</span>
+            <span class="setting-description">Check if input arrays change during operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="checkInputChange" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('checkInputChange')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Check Output Change</span>
+            <span class="setting-description">Check if output arrays change unexpectedly</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="checkOutputChange" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('checkOutputChange')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Track Workspace Open/Close</span>
+            <span class="setting-description">Track workspace open/close operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="trackWorkspaceOpenClose" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('trackWorkspaceOpenClose')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Variable Tracing (SameDiff)</span>
+            <span class="setting-description">Enable variable tracing in SameDiff</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="variableTracingEnabled" [ngModelOptions]="{standalone: true}" (change)="updateAdvancedDebugSetting('variableTracingEnabled')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Function Trace Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>timeline</mat-icon>
+          Function Trace Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Memory allocation tracing (high overhead)
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Print Allocate Trace</span>
+            <span class="setting-description">Print stack trace on memory allocations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="funcTracePrintAllocate" [ngModelOptions]="{standalone: true}" (change)="updateFunctionTraceSetting('funcTracePrintAllocate')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Print Deallocate Trace</span>
+            <span class="setting-description">Print stack trace on memory deallocations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="funcTracePrintDeallocate" [ngModelOptions]="{standalone: true}" (change)="updateFunctionTraceSetting('funcTracePrintDeallocate')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Java Only Traces</span>
+            <span class="setting-description">Only print Java stack frames (exclude native)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="funcTracePrintJavaOnly" [ngModelOptions]="{standalone: true}" (change)="updateFunctionTraceSetting('funcTracePrintJavaOnly')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="memory-info-note" *ngIf="funcTracePrintAllocate || funcTracePrintDeallocate">
+          <mat-icon>warning</mat-icon>
+          <span>Function tracing enabled - expect high volume of output and significant performance overhead</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Core Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>settings</mat-icon>
+          Core Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          BLAS and helper configuration
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Enable BLAS</span>
+            <span class="setting-description">Use BLAS for matrix operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="enableBlas" [ngModelOptions]="{standalone: true}" (change)="updateCoreSetting('enableBlas')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Helpers Allowed</span>
+            <span class="setting-description">Allow cuDNN/MKLDNN helpers for accelerated operations</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="helpersAllowed" [ngModelOptions]="{standalone: true}" (change)="updateCoreSetting('helpersAllowed')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">BLAS Serialization</span>
+            <span class="setting-description">Serialize BLAS calls via mutex for thread safety</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="blasSerializationEnabled" [ngModelOptions]="{standalone: true}" (change)="updateBlasSerializationSetting()">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="memory-info-note" *ngIf="!enableBlas">
+          <mat-icon>warning</mat-icon>
+          <span>BLAS disabled - matrix operations will use slower fallback implementations</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Memory Deletion Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>delete_sweep</mat-icon>
+          Memory Deletion Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Control memory cleanup behavior
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Delete Shape Info</span>
+            <span class="setting-description">Delete shape info when no longer needed</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="deleteShapeInfo" [ngModelOptions]="{standalone: true}" (change)="updateDeletionSetting('deleteShapeInfo')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Delete Primary Memory</span>
+            <span class="setting-description">Delete CPU memory when arrays are closed</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="deletePrimary" [ngModelOptions]="{standalone: true}" (change)="updateDeletionSetting('deletePrimary')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Delete Special Memory</span>
+            <span class="setting-description">Delete GPU memory when arrays are closed</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="deleteSpecial" [ngModelOptions]="{standalone: true}" (change)="updateDeletionSetting('deleteSpecial')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="memory-info-note" *ngIf="!deletePrimary || !deleteSpecial">
+          <mat-icon>warning</mat-icon>
+          <span>Memory deletion disabled - this may cause memory leaks</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- JavaCPP Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>extension</mat-icon>
+          JavaCPP Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Native library loading configuration
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Logger Debug</span>
+            <span class="setting-description">Enable JavaCPP debug logging</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="javacppLoggerDebug" [ngModelOptions]="{standalone: true}" (change)="updateJavacppSetting('loggerDebug')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Paths First</span>
+            <span class="setting-description">Prioritize JavaCPP paths when loading native libraries</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="javacppPathsFirst" [ngModelOptions]="{standalone: true}" (change)="updateJavacppSetting('pathsFirst')">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="memory-info-note">
+          <mat-icon>info</mat-icon>
+          <span>JavaCPP settings are applied via system properties</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Triton Compiler Configuration (GPU only) -->
+    <mat-expansion-panel *ngIf="isCudaBackend">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>bolt</mat-icon>
+          Triton Compiler
+        </mat-panel-title>
+        <mat-panel-description>
+          GPU kernel compilation and optimization
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Build Threads</span>
+            <span class="setting-description">Number of threads for Triton compilation</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="tritonBuildThreads" [ngModelOptions]="{standalone: true}" min="1" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Num Warps</span>
+            <span class="setting-description">Warps per thread block (0 = auto)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="tritonNumWarps" [ngModelOptions]="{standalone: true}" min="0" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Num Stages</span>
+            <span class="setting-description">Pipeline stages (0 = auto)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="tritonNumStages" [ngModelOptions]="{standalone: true}" min="0" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Num CTAs</span>
+            <span class="setting-description">Cooperative thread arrays per kernel</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="tritonNumCTAs" [ngModelOptions]="{standalone: true}" min="1" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Cache Enabled</span>
+            <span class="setting-description">Cache compiled kernels for reuse</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="tritonCacheEnabled" [ngModelOptions]="{standalone: true}">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">FP Fusion</span>
+            <span class="setting-description">Allow floating-point fusion in kernels</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="tritonEnableFpFusion" [ngModelOptions]="{standalone: true}">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Verbose</span>
+            <span class="setting-description">Enable verbose compiler output</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="tritonVerbose" [ngModelOptions]="{standalone: true}">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Always Compile</span>
+            <span class="setting-description">Force recompilation even with cache</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="tritonAlwaysCompile" [ngModelOptions]="{standalone: true}">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Override Architecture</span>
+            <span class="setting-description">Override GPU architecture (e.g. sm_80, sm_90)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="text" [(ngModel)]="tritonOverrideArch" [ngModelOptions]="{standalone: true}" placeholder="auto">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px; display: flex; gap: 8px;">
+          <button mat-raised-button color="primary" (click)="saveAllTritonSettings()">
+            <mat-icon>save</mat-icon> Save Triton Settings
+          </button>
+          <button mat-button (click)="applyPreset('triton-optimal')">
+            <mat-icon>auto_awesome</mat-icon> Apply Optimal
+          </button>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Performance Thresholds -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>speed</mat-icon>
+          Performance Thresholds
+        </mat-panel-title>
+        <mat-panel-description>
+          Parallelization thresholds
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">TAD Threshold</span>
+            <span class="setting-description">Minimum TADs before parallelization (0 = default)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="tadThreshold" [ngModelOptions]="{standalone: true}" min="0" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Elementwise Threshold</span>
+            <span class="setting-description">Minimum elements before parallelization (0 = default)</span>
+          </div>
+          <div class="setting-control memory-control">
+            <mat-form-field appearance="outline" class="memory-input">
+              <input matInput type="number" [(ngModel)]="elementwiseThreshold" [ngModelOptions]="{standalone: true}" min="0" step="1">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info"></div>
+          <div class="setting-control">
+            <button mat-stroked-button color="primary" (click)="updateThresholds()">
+              <mat-icon>save</mat-icon>
+              Apply Thresholds
+            </button>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Op Timing Profiler -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>speed</mat-icon>
+          Op Timing Profiler
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ opTimingEnabled ? 'Profiling active' : 'Profiling disabled' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <!-- Op Timing Controls -->
+        <div class="op-timing-controls">
+          <div class="control-row">
+            <mat-slide-toggle name="opTimingEnabled" [(ngModel)]="opTimingEnabled" [ngModelOptions]="{standalone: true}" (change)="toggleOpTiming()"
+              [disabled]="opTimingLoading">
+              Enable Op Profiling
+            </mat-slide-toggle>
+            <div class="status-indicator" [class.enabled]="opTimingEnabled">
+              <mat-icon>{{ opTimingEnabled ? 'play_circle' : 'pause_circle' }}</mat-icon>
+              <span>{{ opTimingEnabled ? 'Active' : 'Inactive' }}</span>
+            </div>
+          </div>
+
+          <div class="mode-toggles">
+            <mat-slide-toggle name="opTimingDetailedMode" [(ngModel)]="opTimingDetailedMode" [ngModelOptions]="{standalone: true}"
+              matTooltip="Enable detailed phase-level timing (validation, memory alloc, helper exec, native exec)">
+              Detailed Mode
+            </mat-slide-toggle>
+            <mat-slide-toggle name="opTimingTraceMode" [(ngModel)]="opTimingTraceMode" [ngModelOptions]="{standalone: true}"
+              matTooltip="Enable trace mode for Chrome trace export">
+              Trace Mode
+            </mat-slide-toggle>
+          </div>
+
+          <div class="action-buttons">
+            <button mat-stroked-button (click)="flushOpTimingStats()" [disabled]="opTimingLoading || !opTimingEnabled"
+              matTooltip="Flush ring buffer and get statistics">
+              <mat-icon>refresh</mat-icon>
+              Flush Stats
+            </button>
+            <button mat-stroked-button (click)="resetOpTiming()" [disabled]="opTimingLoading"
+              matTooltip="Reset all timing data">
+              <mat-icon>restart_alt</mat-icon>
+              Reset
+            </button>
+            <button mat-stroked-button (click)="exportChromeTrace()" [disabled]="opTimingLoading || !opTimingTraceMode"
+              matTooltip="Export to Chrome trace format">
+              <mat-icon>download</mat-icon>
+              Chrome Trace
+            </button>
+            <button mat-stroked-button (click)="exportCSV()" [disabled]="opTimingLoading">
+              <mat-icon>table_chart</mat-icon>
+              CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats Summary -->
+        <div class="op-timing-summary" *ngIf="opTimingStats.length > 0">
+          <div class="summary-item">
+            <span class="summary-label">Total Ops</span>
+            <span class="summary-value">{{ opTimingStats.length }}</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Total Executions</span>
+            <span class="summary-value">{{ getTotalExecutions() | number }}</span>
+          </div>
+          <div class="summary-item" *ngIf="lastFlushTime">
+            <span class="summary-label">Last Flush</span>
+            <span class="summary-value">{{ lastFlushTime | date:'shortTime' }}</span>
+          </div>
+        </div>
+
+        <!-- Op Timing Stats Table -->
+        <div class="op-timing-table-container" *ngIf="opTimingStats.length > 0">
+          <table mat-table [dataSource]="opTimingStats" class="op-timing-table">
+            <!-- Rank Column -->
+            <ng-container matColumnDef="rank">
+              <th mat-header-cell *matHeaderCellDef>#</th>
+              <td mat-cell *matCellDef="let stat">{{ stat.rank }}</td>
+            </ng-container>
+
+            <!-- Op Name Column -->
+            <ng-container matColumnDef="opName">
+              <th mat-header-cell *matHeaderCellDef>Op Name</th>
+              <td mat-cell *matCellDef="let stat"><code>{{ stat.opName }}</code></td>
+            </ng-container>
+
+            <!-- Calls Column -->
+            <ng-container matColumnDef="calls">
+              <th mat-header-cell *matHeaderCellDef>Calls</th>
+              <td mat-cell *matCellDef="let stat">{{ stat.calls | number }}</td>
+            </ng-container>
+
+            <!-- Total Time Column -->
+            <ng-container matColumnDef="totalMs">
+              <th mat-header-cell *matHeaderCellDef>Total (ms)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.totalMs) }}</td>
+            </ng-container>
+
+            <!-- Avg Time Column -->
+            <ng-container matColumnDef="avgUs">
+              <th mat-header-cell *matHeaderCellDef>Avg (μs)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.avgUs) }}</td>
+            </ng-container>
+
+            <!-- Min Time Column -->
+            <ng-container matColumnDef="minUs">
+              <th mat-header-cell *matHeaderCellDef>Min (μs)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.minUs) }}</td>
+            </ng-container>
+
+            <!-- Max Time Column -->
+            <ng-container matColumnDef="maxUs">
+              <th mat-header-cell *matHeaderCellDef>Max (μs)</th>
+              <td mat-cell *matCellDef="let stat">{{ formatNumber(stat.maxUs) }}</td>
+            </ng-container>
+
+            <tr mat-header-row *matHeaderRowDef="opTimingColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: opTimingColumns;"></tr>
+          </table>
+        </div>
+
+        <!-- Native Not Available Warning -->
+        <div class="op-timing-warning" *ngIf="!opTimingNativeAvailable && opTimingEnabled">
+          <mat-icon>info</mat-icon>
+          <p><strong>Tracking Mode:</strong> Native op timing profiling is not available in this ND4J build.
+             Op timing will track state but won't collect actual timing statistics.
+             Full profiling requires ND4J with OpTimingTracker support.</p>
+        </div>
+
+        <!-- Empty State -->
+        <div class="op-timing-empty" *ngIf="opTimingStats.length === 0 && !opTimingLoading && opTimingNativeAvailable">
+          <mat-icon>speed</mat-icon>
+          <p>No timing data available. Enable profiling, run operations, then click "Flush Stats".</p>
+        </div>
+
+        <!-- Loading State -->
+        <div class="op-timing-loading" *ngIf="opTimingLoading">
+          <mat-spinner diameter="24"></mat-spinner>
+          <span>Loading...</span>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Current Configuration Summary -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>info</mat-icon>
+          Current Configuration
+        </mat-panel-title>
+      </mat-expansion-panel-header>
+
+      <div class="config-summary">
+        <div class="summary-section">
+          <h4>Threads</h4>
+          <table>
+            <tr><td>Max Threads:</td><td>{{ config.summary?.threads?.maxThreads }}</td></tr>
+            <tr><td>Max Master Threads:</td><td>{{ config.summary?.threads?.maxMasterThreads }}</td></tr>
+            <tr><td>Available Processors:</td><td>{{ config.summary?.threads?.availableProcessors }}</td></tr>
+          </table>
+        </div>
+
+        <div class="summary-section">
+          <h4>BLAS/OMP</h4>
+          <table>
+            <tr><td>OpenMP Threads:</td><td>{{ config.summary?.blas?.ompNumThreads }}</td></tr>
+            <tr><td>OpenBLAS Threads:</td><td>{{ config.summary?.blas?.openBlasThreads }}</td></tr>
+            <tr><td>BLAS Serialization:</td><td>{{ config.summary?.blas?.serializationEnabled ? 'Enabled' : 'Disabled' }}</td></tr>
+          </table>
+        </div>
+
+        <div class="summary-section">
+          <h4>Memory Limits</h4>
+          <table>
+            <tr><td>Max Primary:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxPrimaryMemory || 0)) }}</td></tr>
+            <tr><td>Max Special:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxSpecialMemory || 0)) }}</td></tr>
+            <tr><td>Max Device:</td><td>{{ formatMemory(bytesToMb(config.actual?.maxDeviceMemory || 0)) }}</td></tr>
+          </table>
+        </div>
+
+        <div class="summary-section">
+          <h4>JavaCPP</h4>
+          <table>
+            <tr><td>Logger Debug:</td><td>{{ config.summary?.javacpp?.loggerDebug ? 'Yes' : 'No' }}</td></tr>
+            <tr><td>Paths First:</td><td>{{ config.summary?.javacpp?.pathsFirst ? 'Yes' : 'No' }}</td></tr>
+          </table>
+        </div>
+
+        <div class="summary-section">
+          <h4>Config File</h4>
+          <p class="config-path">{{ config.summary?.configFilePath }}</p>
+          <mat-chip [class.active]="config.summary?.configFileExists">
+            {{ config.summary?.configFileExists ? 'Exists' : 'Not found' }}
+          </mat-chip>
+        </div>
+      </div>
+    </mat-expansion-panel>
+  </div>
+</div>

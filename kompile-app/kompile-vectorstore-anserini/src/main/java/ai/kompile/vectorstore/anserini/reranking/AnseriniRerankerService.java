@@ -24,6 +24,7 @@ import ai.kompile.core.reranking.RerankerService;
 import ai.kompile.core.reranking.RerankerType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -66,6 +67,7 @@ import java.util.List;
  * {@link ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl}.
  */
 @Service
+@ConditionalOnClass(name = "ai.kompile.vectorstore.anserini.AnseriniVectorStoreImpl")
 @ConditionalOnProperty(name = "kompile.reranker.enabled", havingValue = "true", matchIfMissing = true)
 public class AnseriniRerankerService implements RerankerService {
 

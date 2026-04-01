@@ -107,3 +107,30 @@ model_catalog:
         max_sequence_length: 512
         training_data: "MS MARCO"
         description: "MiniLM L12 cross-encoder for reranking"
+
+  vlm:
+    - id: florence-2-base
+      source: huggingface
+      repo: microsoft/Florence-2-base
+      format: onnx
+      files:
+        vision_encoder: onnx/vision_encoder.onnx
+        decoder: onnx/decoder_model.onnx
+        embed_tokens: onnx/embed_tokens.onnx
+        tokenizer: tokenizer.json
+      metadata:
+        hidden_size: 768
+        description: "Florence-2 Base - Document understanding and OCR"
+
+    - id: florence-2-large
+      source: huggingface
+      repo: microsoft/Florence-2-large
+      format: onnx
+      files:
+        vision_encoder: onnx/vision_encoder.onnx
+        decoder: onnx/decoder_model.onnx
+        embed_tokens: onnx/embed_tokens.onnx
+        tokenizer: tokenizer.json
+      metadata:
+        hidden_size: 1024
+        description: "Florence-2 Large - High-quality document understanding and OCR"

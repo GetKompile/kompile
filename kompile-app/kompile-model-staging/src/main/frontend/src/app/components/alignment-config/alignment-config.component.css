@@ -1,0 +1,12 @@
+.alignment-config { padding: 16px; max-width: 1000px; }
+.alignment-config h2 { margin-bottom: 16px; }
+.section-card { margin-bottom: 16px; }
+.alg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.alg-card { cursor: pointer; transition: all 0.2s; }
+.alg-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
+.alg-card.selected { border: 2px solid #1976d2; background: rgba(25,118,210,0.04); }
+.alg-card p { font-size: 0.85rem; color: rgba(0,0,0,0.6); }
+.reward-chip { margin-top: 8px; }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.peft-toggle { margin-top: 16px; }
+.actions { margin-top: 24px; }

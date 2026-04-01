@@ -1,0 +1,727 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+.op-timing-container {
+  padding: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.section-header mat-icon {
+  font-size: 32px;
+  width: 32px;
+  height: 32px;
+  color: #1976d2;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 500;
+}
+
+.header-subtitle {
+  margin: 4px 0 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.loading-overlay {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: #ffebee;
+  border-radius: 8px;
+  color: #c62828;
+  margin-bottom: 16px;
+}
+
+.error-message mat-icon {
+  color: #c62828;
+}
+
+/* Controls Card */
+.controls-card {
+  margin-bottom: 16px;
+}
+
+.controls-card mat-card-header {
+  margin-bottom: 16px;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: #f5f5f5;
+  color: #666;
+}
+
+.status-indicator.enabled {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-indicator mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.mode-toggles {
+  display: flex;
+  gap: 16px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 32px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.stat-value {
+  font-size: 1.2rem;
+  font-weight: 500;
+  color: #333;
+}
+
+/* Hotspots Card */
+.hotspots-card {
+  margin-bottom: 16px;
+}
+
+.export-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.hotspots-table {
+  width: 100%;
+}
+
+.hotspots-table th {
+  font-weight: 600;
+  color: #666;
+}
+
+.op-name-cell code {
+  background: #f5f5f5;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9rem;
+}
+
+.selected-row {
+  background: #e3f2fd !important;
+}
+
+.selected-row:hover {
+  background: #bbdefb !important;
+}
+
+button.selected mat-icon {
+  color: #1976d2;
+}
+
+/* Helper percentage colors */
+.helper-high {
+  color: #2e7d32;
+  font-weight: 500;
+}
+
+.helper-medium {
+  color: #f57c00;
+}
+
+.helper-low {
+  color: #c62828;
+}
+
+.helper-none {
+  color: #999;
+}
+
+/* Details Panel */
+.details-panel {
+  margin-bottom: 16px;
+}
+
+.details-panel mat-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.details-panel mat-panel-title code {
+  background: #f5f5f5;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Roboto Mono', monospace;
+}
+
+.details-content {
+  padding: 16px 0;
+}
+
+.loading-breakdown {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  justify-content: center;
+}
+
+/* Phase Breakdown */
+.breakdown-content {
+  padding: 16px;
+}
+
+.phase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.phase-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.phase-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.phase-name {
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.phase-percent {
+  font-weight: 600;
+  color: #1976d2;
+}
+
+.phase-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.breakdown-stats {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.breakdown-stats h4 {
+  margin: 0 0 16px;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+/* Histogram */
+.histogram-content {
+  padding: 16px;
+}
+
+.histogram-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.histogram-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bucket-range {
+  min-width: 150px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.85rem;
+  color: #666;
+  text-align: right;
+}
+
+.bar-container {
+  flex: 1;
+  height: 20px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  background: linear-gradient(90deg, #1976d2, #42a5f5);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.bucket-count {
+  min-width: 100px;
+  font-size: 0.85rem;
+  color: #333;
+}
+
+.histogram-percentiles {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.histogram-percentiles h4 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.percentile-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.percentile-label {
+  font-weight: 500;
+  min-width: 40px;
+}
+
+.percentile-value {
+  font-family: 'Roboto Mono', monospace;
+}
+
+/* Raw Output */
+.raw-output {
+  padding: 16px;
+}
+
+.raw-output pre {
+  background: #263238;
+  color: #aed581;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* No Data */
+.no-data {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: #666;
+}
+
+.no-data mat-icon {
+  color: #1976d2;
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  text-align: center;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px dashed #e0e0e0;
+}
+
+.empty-state mat-icon {
+  font-size: 64px;
+  width: 64px;
+  height: 64px;
+  color: #bdbdbd;
+  margin-bottom: 16px;
+}
+
+.empty-state h3 {
+  margin: 0 0 8px;
+  color: #666;
+}
+
+.empty-state p {
+  margin: 0 0 24px;
+  color: #999;
+  max-width: 500px;
+}
+
+.empty-state .instructions {
+  text-align: left;
+  color: #666;
+  padding-left: 24px;
+}
+
+.empty-state .instructions li {
+  margin-bottom: 8px;
+}
+
+/* Subprocess Overhead Card */
+.subprocess-card {
+  margin-bottom: 16px;
+}
+
+.subprocess-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.subprocess-loading {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+/* Active Subprocesses */
+.active-subprocesses {
+  margin-bottom: 24px;
+}
+
+.active-subprocesses h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 500;
+  color: #2e7d32;
+}
+
+.active-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.active-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #e8f5e9;
+  border-radius: 8px;
+  border-left: 4px solid #2e7d32;
+}
+
+.active-item mat-icon {
+  color: #2e7d32;
+}
+
+.active-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.active-info .task-id {
+  font-weight: 500;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9rem;
+}
+
+.active-info .subprocess-type {
+  font-size: 0.85rem;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.active-info .model-id {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.active-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+  text-align: right;
+  color: #555;
+}
+
+/* Aggregate Statistics */
+.subprocess-aggregates {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+}
+
+.subprocess-aggregates h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+  font-size: 1rem;
+  font-weight: 500;
+  color: #1976d2;
+}
+
+/* Subprocess History Table */
+.subprocess-history {
+  margin-top: 16px;
+}
+
+.subprocess-history h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.subprocess-table {
+  width: 100%;
+}
+
+.subprocess-table th {
+  font-weight: 600;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.subprocess-table td {
+  font-size: 0.9rem;
+}
+
+.task-id-code {
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.type-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  vertical-align: middle;
+  margin-right: 4px;
+  color: #666;
+}
+
+.success-icon {
+  color: #2e7d32;
+}
+
+.failure-icon {
+  color: #c62828;
+}
+
+/* Overhead percentage colors */
+.overhead-high {
+  color: #c62828;
+  font-weight: 600;
+}
+
+.overhead-medium {
+  color: #f57c00;
+  font-weight: 500;
+}
+
+.overhead-low {
+  color: #fbc02d;
+}
+
+.overhead-minimal {
+  color: #2e7d32;
+}
+
+/* Subprocess Empty State */
+.subprocess-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  text-align: center;
+  color: #999;
+}
+
+.subprocess-empty mat-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  color: #bdbdbd;
+  margin-bottom: 12px;
+}
+
+.subprocess-empty p {
+  margin: 0;
+  max-width: 400px;
+}
+
+/* Subprocess Op Timing Card (where actual inference runs) */
+.subprocess-op-timing-card {
+  margin-bottom: 16px;
+  border-left: 4px solid #7b1fa2;
+}
+
+.subprocess-op-timing-card mat-card-header {
+  background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 16px;
+  border-radius: 4px 4px 0 0;
+}
+
+.subprocess-icon {
+  color: #7b1fa2 !important;
+}
+
+.subprocess-stats {
+  background: #f3e5f5;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.subprocess-stats .stat-value {
+  color: #7b1fa2;
+}
+
+.subprocess-op-timing-card .hotspots-table {
+  background: #fafafa;
+}
+
+.subprocess-op-timing-card .hotspots-table th {
+  background: #f3e5f5;
+  color: #4a148c;
+}
+
+.subprocess-no-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: #666;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-top: 16px;
+}
+
+.subprocess-no-ops mat-icon {
+  color: #7b1fa2;
+}
+
+.subprocess-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: #c62828;
+  background: #ffebee;
+  border-radius: 8px;
+}
+
+.subprocess-error mat-icon {
+  color: #c62828;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .controls-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mode-toggles {
+    flex-direction: column;
+  }
+
+  .summary-stats {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .bucket-range {
+    min-width: 100px;
+    font-size: 0.75rem;
+  }
+
+  .bucket-count {
+    min-width: 80px;
+    font-size: 0.75rem;
+  }
+}

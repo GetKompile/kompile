@@ -25,8 +25,8 @@ import ai.kompile.core.indexers.IndexerService;
 
 import io.anserini.search.SimpleSearcher;
 import io.anserini.search.ScoredDoc;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.lucene.index.IndexableField;
 // We will use the fully qualified name for org.apache.lucene.document.Document to avoid import clashes
 // import org.springframework.ai.document.Document; // Not directly used in this class's method signatures
@@ -52,7 +52,7 @@ import java.util.stream.Stream;
 @Service("anseriniDocumentRetriever")
 public class AnseriniDocumentRetrieverImpl implements DocumentRetriever {
 
-    private static final Logger logger = LogManager.getLogger(AnseriniDocumentRetrieverImpl.class);
+    private static final Logger logger = LoggerFactory.getLogger(AnseriniDocumentRetrieverImpl.class);
     private  AnseriniConfig anseriniConfig;
     private SimpleSearcher searcher;
     private IndexerService indexerService;

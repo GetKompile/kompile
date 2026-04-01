@@ -1,0 +1,303 @@
+/*
+ * Copyright 2025 Kompile Inc.
+ */
+
+.react-agent-config {
+  padding: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 24px;
+    font-weight: 500;
+
+    mat-icon {
+      color: #673ab7;
+    }
+  }
+
+  .fact-sheet-badge {
+    font-size: 14px;
+    background: #e3f2fd;
+    color: #1976d2;
+    padding: 4px 12px;
+    border-radius: 16px;
+    margin-left: 8px;
+  }
+
+  .status-indicators {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      font-size: 13px;
+      color: #666;
+
+      span {
+        strong {
+          color: #333;
+        }
+      }
+    }
+  }
+}
+
+.metrics-card {
+  margin-bottom: 24px;
+
+  .metrics-grid {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 80px;
+
+      .metric-value {
+        font-size: 28px;
+        font-weight: 600;
+        color: #333;
+      }
+
+      .metric-label {
+        font-size: 12px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+    }
+  }
+}
+
+.tab-content {
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+// Configuration tab
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 16px;
+  align-items: center;
+
+  mat-slide-toggle {
+    margin: 8px 0;
+  }
+}
+
+// Forms
+.test-case-form,
+.suite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.form-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+
+  mat-form-field {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  mat-slide-toggle {
+    align-self: center;
+  }
+}
+
+.full-width {
+  width: 100%;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+// Tables
+.table-card {
+  mat-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  table {
+    width: 100%;
+  }
+
+  .truncate {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+  }
+
+  .cell-subtitle {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+  }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  color: #999;
+
+  mat-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    margin-bottom: 16px;
+  }
+
+  p {
+    margin: 0;
+  }
+}
+
+// Suite test case management
+.suite-test-cases {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+
+  @media (max-width: 768px) {
+    grid-template-columns: 1fr;
+  }
+
+  .test-case-list {
+    h4 {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      font-weight: 500;
+      color: #666;
+    }
+
+    mat-chip-set {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  }
+}
+
+// Evaluation type description in select
+.eval-type-desc {
+  font-size: 11px;
+  color: #999;
+  display: block;
+  margin-top: 2px;
+}
+
+// Pass rate colors
+.pass-rate-good {
+  color: #4caf50;
+  font-weight: 600;
+}
+
+.pass-rate-warning {
+  color: #ff9800;
+  font-weight: 600;
+}
+
+.pass-rate-bad {
+  color: #f44336;
+  font-weight: 600;
+}
+
+// Material overrides
+mat-card {
+  margin-bottom: 0;
+
+  mat-card-header {
+    margin-bottom: 16px;
+  }
+}
+
+mat-expansion-panel {
+  margin-bottom: 0;
+}
+
+mat-tab-group {
+  background: #fff;
+  border-radius: 4px;
+}
+
+// Loading state
+mat-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+// Responsive adjustments
+@media (max-width: 600px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+
+    .status-indicators {
+      align-items: flex-start;
+    }
+  }
+
+  .metrics-card .metrics-grid {
+    justify-content: space-between;
+
+    .metric {
+      min-width: 60px;
+
+      .metric-value {
+        font-size: 22px;
+      }
+    }
+  }
+
+  .form-row {
+    flex-direction: column;
+
+    mat-form-field {
+      min-width: 100%;
+    }
+  }
+
+  .table-card .truncate {
+    max-width: 120px;
+  }
+}

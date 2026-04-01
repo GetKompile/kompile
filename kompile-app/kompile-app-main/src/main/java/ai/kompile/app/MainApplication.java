@@ -17,6 +17,7 @@
 package ai.kompile.app;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.cli.common.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.nd4j.imports.converters.DifferentialFunctionClassHolder;
@@ -67,6 +68,17 @@ public class MainApplication {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public static void main(String[] args) throws Exception {
+        // Route to subprocess if --subprocess=TYPE flag is present.
+        // This enables the unified native executable approach: a single binary
+        // that can act as the main web server OR any subprocess type.
+        String subprocessType = extractSubprocessType(args);
+        if (subprocessType != null) {
+            // Strip the --subprocess= flag from args before forwarding
+            String[] forwardArgs = stripSubprocessFlag(args);
+            dispatchSubprocess(subprocessType, forwardArgs);
+            return; // Subprocess has exited, do not start Spring Boot
+        }
+
         String maxFileSizeArg = DEFAULT_MAX_FILE_SIZE;
         String maxRequestSizeArg = DEFAULT_MAX_REQUEST_SIZE;
         for (String arg : args) {
@@ -78,32 +90,54 @@ public class MainApplication {
         }
 
 
-        Nd4j.getEnvironment().setDebug(true);
-        Nd4j.getEnvironment().setVerbose(true);
         System.setProperty(MAX_FILE_SIZE_PROPERTY, maxFileSizeArg);
         System.setProperty(MAX_REQUEST_SIZE_PROPERTY, maxRequestSizeArg);
 
-        DifferentialFunctionClassHolder.initInstance();
+        // In GraalVM native images, Log4j2 API's ServiceLoaderUtil uses MethodHandles
+        // to invoke ServiceLoader.load() which is not supported. Bypass by directly
+        // specifying the SLF4J bridge provider, avoiding ServiceLoader entirely.
+        System.setProperty("log4j.provider", "org.apache.logging.slf4j.SLF4JProvider");
 
-        // Use built-in backend discovery - automatically finds CUDA, CPU, or other available backends
-        Nd4jBackend backend = Nd4jBackend.load();
-        Nd4j.backend = backend;
-        logger.info("Loaded ND4J backend: {}", backend.getClass().getSimpleName());
+        // Configure JavaCPP for native image mode BEFORE any ND4J calls.
+        // In native image mode, JavaCPP uses the same directory as the binary
+        // for its native library cache. We must set this up first so that
+        // ND4J can find its native libraries (libnd4jcpu.so, etc.).
+        configureJavaCppForNativeImage();
 
-        // NativeOps is automatically initialized by backend loading
-        NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
-        nativeOps.initializeDevicesAndFunctions();
+        // Skip ND4J initialization during Spring AOT processing (no native backend available at build time)
+        if (!Boolean.getBoolean("spring.aot.processing")) {
+            try {
+                Nd4j.getEnvironment().setDebug(true);
+                Nd4j.getEnvironment().setVerbose(true);
 
-        // CRITICAL: Load and apply persisted ND4J environment configuration BEFORE
-        // Spring context starts.
-        // This ensures that persisted settings (threads, lifecycle tracking, etc.) are
-        // applied
-        // before any beans (like embedding models) start using ND4J.
-        loadAndApplyPersistedNd4jConfig();
-        logger.info("ND4J environment configured: maxThreads={}, maxMasterThreads={}, lifecycleTracking={}",
-                Nd4j.getEnvironment().maxThreads(),
-                Nd4j.getEnvironment().maxMasterThreads(),
-                Nd4j.getEnvironment().isLifecycleTracking());
+                DifferentialFunctionClassHolder.initInstance();
+
+                // Use built-in backend discovery - automatically finds CUDA, CPU, or other available backends
+                Nd4jBackend backend = Nd4jBackend.load();
+                Nd4j.backend = backend;
+                logger.info("Loaded ND4J backend: {}", backend.getClass().getSimpleName());
+
+                // NativeOps is automatically initialized by backend loading
+                NativeOps nativeOps = NativeOpsHolder.getInstance().getDeviceNativeOps();
+                nativeOps.initializeDevicesAndFunctions();
+
+                // CRITICAL: Load and apply persisted ND4J environment configuration BEFORE
+                // Spring context starts.
+                // This ensures that persisted settings (threads, lifecycle tracking, etc.) are
+                // applied
+                // before any beans (like embedding models) start using ND4J.
+                loadAndApplyPersistedNd4jConfig();
+                logger.info("ND4J environment configured: maxThreads={}, maxMasterThreads={}, lifecycleTracking={}",
+                        Nd4j.getEnvironment().maxThreads(),
+                        Nd4j.getEnvironment().maxMasterThreads(),
+                        Nd4j.getEnvironment().isLifecycleTracking());
+            } catch (Throwable e) {
+                logger.warn("ND4J initialization failed (backend may not be available). " +
+                        "Embedding operations will use subprocess mode. Error: {}", e.getMessage());
+            }
+        } else {
+            logger.info("Spring AOT processing mode - skipping ND4J initialization");
+        }
 
         logger.info("Attempting to set Max File Size (from command line or default) to: {}", maxFileSizeArg);
         logger.info("Attempting to set Max Request Size (from command line or default) to: {}", maxRequestSizeArg);
@@ -125,6 +159,112 @@ public class MainApplication {
             }
         }
     }
+
+    // ==================== Subprocess Routing ====================
+
+    /**
+     * Subprocess type flag prefix. Must match SubprocessExecutableConfig.subprocessTypeFlag.
+     */
+    private static final String SUBPROCESS_FLAG = "--subprocess=";
+
+    /**
+     * Extracts the subprocess type from command-line arguments.
+     *
+     * @param args command-line arguments
+     * @return the subprocess type string (e.g. "ingest", "embedding"), or null if not a subprocess invocation
+     */
+    private static String extractSubprocessType(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith(SUBPROCESS_FLAG)) {
+                return arg.substring(SUBPROCESS_FLAG.length()).trim().toLowerCase();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Strips the --subprocess= flag from args, returning the remaining arguments
+     * to forward to the subprocess main class.
+     */
+    private static String[] stripSubprocessFlag(String[] args) {
+        return java.util.Arrays.stream(args)
+                .filter(a -> !a.startsWith(SUBPROCESS_FLAG))
+                .toArray(String[]::new);
+    }
+
+    /**
+     * Dispatches to the appropriate subprocess main class based on the type.
+     * This enables the unified native executable approach where a single binary
+     * can serve as the main app or any subprocess type.
+     *
+     * <p>Supported subprocess types:</p>
+     * <ul>
+     *   <li>{@code ingest} → {@link ai.kompile.app.subprocess.IngestSubprocessMain}</li>
+     *   <li>{@code vector-population} → {@link ai.kompile.app.subprocess.VectorPopulationSubprocessMain}</li>
+     *   <li>{@code embedding} → {@link ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain}</li>
+     *   <li>{@code model-init} → {@link ai.kompile.app.subprocess.model.ModelInitSubprocessMain}</li>
+     *   <li>{@code vlm-test} → {@link ai.kompile.app.subprocess.VlmTestSubprocessMain}</li>
+     *   <li>{@code training} → {@link ai.kompile.staging.subprocess.TrainingSubprocessMain}</li>
+     * </ul>
+     *
+     * @param type the subprocess type (kebab-case)
+     * @param args remaining arguments to forward
+     */
+    private static void dispatchSubprocess(String type, String[] args) throws Exception {
+        // Configure JavaCPP for native image before any ND4J usage in subprocesses
+        configureJavaCppForNativeImage();
+
+        // Log4j bypass for native image subprocesses too
+        System.setProperty("log4j.provider", "org.apache.logging.slf4j.SLF4JProvider");
+
+        logger.info("Dispatching to subprocess: {} with {} args", type, args.length);
+
+        // Map subprocess type to its main class.
+        // Most are direct references; training uses reflection since
+        // kompile-model-staging may not be on the classpath.
+        switch (type) {
+            case "ingest":
+                ai.kompile.app.subprocess.IngestSubprocessMain.main(args);
+                break;
+            case "vector-population":
+                ai.kompile.app.subprocess.VectorPopulationSubprocessMain.main(args);
+                break;
+            case "embedding":
+                ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain.main(args);
+                break;
+            case "model-init":
+                ai.kompile.app.subprocess.model.ModelInitSubprocessMain.main(args);
+                break;
+            case "vlm-test":
+                ai.kompile.app.subprocess.VlmTestSubprocessMain.main(args);
+                break;
+            case "training":
+                invokeSubprocessMainByReflection("ai.kompile.staging.subprocess.TrainingSubprocessMain", args);
+                break;
+            default:
+                System.err.println("Unknown subprocess type: " + type);
+                System.err.println("Supported types: ingest, vector-population, embedding, model-init, vlm-test, training");
+                System.exit(1);
+        }
+    }
+
+    /**
+     * Invokes a subprocess main class by reflection. Used for subprocess types
+     * whose module may not be a compile-time dependency of kompile-app-main.
+     */
+    private static void invokeSubprocessMainByReflection(String className, String[] args) throws Exception {
+        try {
+            Class<?> clazz = Class.forName(className);
+            java.lang.reflect.Method mainMethod = clazz.getMethod("main", String[].class);
+            mainMethod.invoke(null, (Object) args);
+        } catch (ClassNotFoundException e) {
+            System.err.println("Subprocess class not available: " + className);
+            System.err.println("Ensure the module is on the classpath.");
+            System.exit(1);
+        }
+    }
+
+    // ==================== End Subprocess Routing ====================
 
     /**
      * Load and apply persisted ND4J environment configuration.
@@ -244,6 +384,65 @@ public class MainApplication {
         } catch (IOException e) {
             logger.error("Failed to persist ND4J config to {}: {}", configFilePath, e.getMessage());
             logger.warn("Settings will still be applied but won't persist across restarts");
+        }
+    }
+
+    /**
+     * Configure JavaCPP properties for GraalVM native image mode.
+     * In native image mode, JavaCPP uses the same directory as the binary
+     * for its native library cache. Native libraries (libnd4jcpu.so, etc.)
+     * must be placed alongside the binary.
+     *
+     * This MUST be called before any ND4J/JavaCPP class initialization.
+     */
+    private static void configureJavaCppForNativeImage() {
+        if (NativeImageInfo.isRunningInNativeImage()) {
+            logger.info("Running as GraalVM native image - configuring JavaCPP for native mode");
+
+            // Get the directory containing the native executable
+            String execPath = NativeImageInfo.getExecutablePath();
+            Path binaryDir;
+            if (execPath != null) {
+                binaryDir = Paths.get(execPath).toAbsolutePath().getParent();
+            } else {
+                // Fallback: use current working directory
+                binaryDir = Paths.get(".").toAbsolutePath();
+                logger.warn("Could not determine native executable path, using CWD: {}", binaryDir);
+            }
+
+            // Set JavaCPP cache directory to the binary's directory.
+            // In native image mode, JavaCPP looks for native libraries here.
+            System.setProperty("org.bytedeco.javacpp.cachedir", binaryDir.toString());
+
+            // Ensure pathsFirst is set so JavaCPP checks the cache dir first
+            System.setProperty("org.bytedeco.javacpp.pathsFirst", "true");
+
+            // Also set the platform-specific library path so System.loadLibrary can find natives
+            String existingLibPath = System.getProperty("java.library.path", "");
+            if (!existingLibPath.contains(binaryDir.toString())) {
+                String newLibPath = binaryDir.toString() +
+                        (existingLibPath.isEmpty() ? "" : ":" + existingLibPath);
+                System.setProperty("java.library.path", newLibPath);
+            }
+
+            // Set the ND4J resource directory to binary directory as well
+            System.setProperty("org.bytedeco.javacpp.platform.resourcedir", binaryDir.toString());
+
+            logger.info("JavaCPP native image config: cachedir={}, pathsFirst=true, java.library.path includes binary dir",
+                    binaryDir);
+
+            // Also check for a 'natives' subdirectory alongside the binary
+            Path nativesDir = binaryDir.resolve("natives");
+            if (Files.isDirectory(nativesDir)) {
+                String libPath = System.getProperty("java.library.path", "");
+                if (!libPath.contains(nativesDir.toString())) {
+                    System.setProperty("java.library.path",
+                            nativesDir.toString() + ":" + libPath);
+                }
+                logger.info("Found natives/ directory alongside binary: {}", nativesDir);
+            }
+        } else {
+            logger.debug("Running in JVM mode - using default JavaCPP configuration");
         }
     }
 
@@ -698,8 +897,8 @@ public class MainApplication {
 
                 log.info("ND4J native resource cleanup completed");
 
-            } catch (Exception e) {
-                log.warn("Error during ND4J native resource cleanup", e);
+            } catch (Throwable e) {
+                log.warn("Error during ND4J native resource cleanup (ND4J may not be initialized): {}", e.getMessage());
             }
 
             // CRITICAL: Cleanup order matters!
@@ -709,40 +908,48 @@ public class MainApplication {
             // 3. Then clear Shape cache (cleans up shapes created during scalar cleanup)
             // 4. Finally trigger leak check
 
-            // Step 1: DifferentialFunctionClassHolder cleanup
-            // CRITICAL: Operation prototypes hold scalar INDArrays with native memory
-            // These must be explicitly closed before leak detection or they will be
-            // reported as leaks
             try {
-                log.info("Step 1: Cleaning up DifferentialFunctionClassHolder operation prototypes...");
-                org.nd4j.imports.converters.DifferentialFunctionClassHolder.cleanup();
-                log.info("Operation prototypes cleaned up successfully");
-            } catch (Exception e) {
-                log.warn("Error cleaning up operation prototypes", e);
-            }
+                // Step 1: DifferentialFunctionClassHolder cleanup
+                // CRITICAL: Operation prototypes hold scalar INDArrays with native memory
+                // These must be explicitly closed before leak detection or they will be
+                // reported as leaks
+                try {
+                    log.info("Step 1: Cleaning up DifferentialFunctionClassHolder operation prototypes...");
+                    org.nd4j.imports.converters.DifferentialFunctionClassHolder.cleanup();
+                    log.info("Operation prototypes cleaned up successfully");
+                } catch (Throwable e) {
+                    log.warn("Error cleaning up operation prototypes: {}", e.getMessage());
+                }
 
-            // Step 2: Clear native TAD cache (after scalar cleanup to catch any TADs
-            // created during close)
-            try {
-                log.info("Step 2: Clearing native TAD cache after scalar cleanup...");
-                Nd4j.getNativeOps().clearTADCache();
-                log.info("TAD cache cleared");
-            } catch (Exception e) {
-                log.warn("Error clearing TAD cache", e);
-            }
+                // Step 2: Clear native TAD cache (after scalar cleanup to catch any TADs
+                // created during close)
+                try {
+                    log.info("Step 2: Clearing native TAD cache after scalar cleanup...");
+                    Nd4j.getNativeOps().clearTADCache();
+                    log.info("TAD cache cleared");
+                } catch (Throwable e) {
+                    log.warn("Error clearing TAD cache: {}", e.getMessage());
+                }
 
-            // Step 3: Clear native Shape cache (after scalar cleanup to catch any shapes
-            // created during close)
-            try {
-                log.info("Step 3: Clearing native Shape cache after scalar cleanup...");
-                Nd4j.getNativeOps().clearShapeCache();
-                log.info("Shape cache cleared");
-            } catch (Exception e) {
-                log.warn("Error clearing Shape cache", e);
-            }
+                // Step 3: Clear native Shape cache (after scalar cleanup to catch any shapes
+                // created during close)
+                try {
+                    log.info("Step 3: Clearing native Shape cache after scalar cleanup...");
+                    Nd4j.getNativeOps().clearShapeCache();
+                    log.info("Shape cache cleared");
+                } catch (Throwable e) {
+                    log.warn("Error clearing Shape cache: {}", e.getMessage());
+                }
 
-            log.warn("All cleanup complete. Triggering leak check...");
-            Nd4j.getNativeOps().triggerLeakCheck();
+                try {
+                    log.warn("All cleanup complete. Triggering leak check...");
+                    Nd4j.getNativeOps().triggerLeakCheck();
+                } catch (Throwable e) {
+                    log.warn("Could not trigger leak check: {}", e.getMessage());
+                }
+            } catch (Throwable e) {
+                log.warn("ND4J cleanup steps skipped (ND4J may not be initialized): {}", e.getMessage());
+            }
 
             System.err.println("=== Cleanup complete. External process will terminate JVM in 2 seconds. ===");
             System.err.flush();

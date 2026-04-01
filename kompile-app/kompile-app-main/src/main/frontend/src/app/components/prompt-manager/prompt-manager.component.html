@@ -1,0 +1,300 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~  Licensed under the Apache License, Version 2.0
+  -->
+
+<div class="prompt-manager">
+  <div class="manager-header">
+    <h3>System Prompts</h3>
+    <p class="subtitle">Manage versioned system prompts for your RAG application</p>
+  </div>
+
+  <div class="manager-toolbar">
+    <button mat-raised-button color="primary" (click)="startCreating()">
+      <mat-icon>add</mat-icon>
+      New Prompt
+    </button>
+    <mat-form-field appearance="outline" class="search-field">
+      <mat-label>Search prompts</mat-label>
+      <input matInput
+             [value]="searchQuery"
+             (input)="onSearchChange($any($event.target).value)"
+             placeholder="Search by name...">
+      <mat-icon matSuffix>search</mat-icon>
+    </mat-form-field>
+  </div>
+
+  <div class="manager-content">
+    <!-- Prompts List -->
+    <div class="prompts-list">
+      <div class="list-header">
+        <span>Prompts ({{ prompts.length }})</span>
+      </div>
+
+      <div class="list-content" *ngIf="!loading; else loadingTpl">
+        <div *ngIf="prompts.length === 0" class="empty-state">
+          <mat-icon>description</mat-icon>
+          <p>No prompts found</p>
+          <button mat-button color="primary" (click)="startCreating()">
+            Create your first prompt
+          </button>
+        </div>
+
+        <div *ngFor="let prompt of prompts"
+             class="prompt-item"
+             [class.selected]="selectedPrompt?.id === prompt.id"
+             [class.active]="prompt.isActive"
+             (click)="selectPrompt(prompt)">
+          <div class="prompt-item-header">
+            <span class="prompt-name">{{ prompt.name }}</span>
+            <span *ngIf="prompt.isActive" class="active-badge">Active</span>
+          </div>
+          <div class="prompt-item-meta">
+            <span class="version">v{{ prompt.version }}</span>
+            <span class="date">{{ formatDate(prompt.updatedAt) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editor Panel -->
+    <div class="editor-panel" *ngIf="selectedPrompt || isCreating">
+      <div class="editor-tabs">
+        <button class="tab-btn"
+                [class.active]="activeTab === 'editor'"
+                (click)="activeTab = 'editor'">
+          <mat-icon>edit</mat-icon>
+          Editor
+        </button>
+        <button class="tab-btn"
+                [class.active]="activeTab === 'versions'"
+                (click)="activeTab = 'versions'"
+                *ngIf="!isCreating">
+          <mat-icon>history</mat-icon>
+          Versions
+        </button>
+        <button class="tab-btn"
+                [class.active]="activeTab === 'testing'"
+                (click)="activeTab = 'testing'"
+                *ngIf="!isCreating">
+          <mat-icon>science</mat-icon>
+          Testing
+        </button>
+      </div>
+
+      <!-- Editor Tab -->
+      <div class="tab-content" *ngIf="activeTab === 'editor'">
+        <div class="editor-form">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput
+                   [(ngModel)]="editedName" [ngModelOptions]="{standalone: true}"
+                   [disabled]="!isEditing"
+                   placeholder="Enter prompt name">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput
+                      [(ngModel)]="editedDescription" [ngModelOptions]="{standalone: true}"
+                      [disabled]="!isEditing"
+                      rows="2"
+                      placeholder="Describe what this prompt does"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width content-field">
+            <mat-label>Prompt Content</mat-label>
+            <textarea matInput
+                      [(ngModel)]="editedContent" [ngModelOptions]="{standalone: true}"
+                      [disabled]="!isEditing"
+                      rows="12"
+                      placeholder="Enter your system prompt here..."></textarea>
+            <mat-hint>Use {{'{{'}}variable{{'}}'}} or ${{'{variable}'}} syntax for variables</mat-hint>
+          </mat-form-field>
+
+          <!-- Tags -->
+          <div class="tags-section">
+            <label>Tags</label>
+            <div class="tags-container">
+              <mat-chip-set>
+                <mat-chip *ngFor="let tag of editedTags"
+                          [removable]="isEditing"
+                          (removed)="removeTag(tag)">
+                  {{ tag }}
+                  <mat-icon matChipRemove *ngIf="isEditing">cancel</mat-icon>
+                </mat-chip>
+              </mat-chip-set>
+              <div class="add-tag" *ngIf="isEditing">
+                <input [(ngModel)]="newTag" [ngModelOptions]="{standalone: true}"
+                       placeholder="Add tag..."
+                       (keydown.enter)="addTag()">
+                <button mat-icon-button (click)="addTag()" [disabled]="!newTag.trim()">
+                  <mat-icon>add</mat-icon>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Change Notes (only when editing existing) -->
+          <mat-form-field appearance="outline" class="full-width" *ngIf="isEditing && !isCreating">
+            <mat-label>Change Notes</mat-label>
+            <textarea matInput
+                      [(ngModel)]="changeNotes" [ngModelOptions]="{standalone: true}"
+                      rows="2"
+                      placeholder="Describe your changes (optional)"></textarea>
+          </mat-form-field>
+        </div>
+
+        <div class="editor-actions">
+          <ng-container *ngIf="!isEditing">
+            <button mat-raised-button color="primary" (click)="startEditing()">
+              <mat-icon>edit</mat-icon>
+              Edit
+            </button>
+            <button mat-raised-button (click)="createNewVersion()" *ngIf="selectedPrompt">
+              <mat-icon>content_copy</mat-icon>
+              New Version
+            </button>
+            <button mat-raised-button
+                    color="accent"
+                    (click)="activateVersion(selectedPrompt!)"
+                    *ngIf="selectedPrompt && !selectedPrompt.isActive">
+              <mat-icon>check_circle</mat-icon>
+              Activate
+            </button>
+            <button mat-button color="warn"
+                    (click)="deletePrompt(selectedPrompt!)"
+                    *ngIf="selectedPrompt">
+              <mat-icon>delete</mat-icon>
+              Delete
+            </button>
+          </ng-container>
+
+          <ng-container *ngIf="isEditing">
+            <button mat-raised-button color="primary"
+                    (click)="savePrompt()"
+                    [disabled]="saving">
+              <mat-icon>save</mat-icon>
+              {{ saving ? 'Saving...' : (isCreating ? 'Create' : 'Save') }}
+            </button>
+            <button mat-button (click)="cancelEditing()" [disabled]="saving">
+              Cancel
+            </button>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- Versions Tab -->
+      <div class="tab-content" *ngIf="activeTab === 'versions' && !isCreating">
+        <div class="version-history">
+          <h4>Version History</h4>
+          <div class="version-list">
+            <div *ngFor="let version of versionHistory"
+                 class="version-item"
+                 [class.current]="version.id === selectedPrompt?.id"
+                 [class.active]="version.isActive">
+              <div class="version-header">
+                <span class="version-number">Version {{ version.version }}</span>
+                <span *ngIf="version.isActive" class="active-badge">Active</span>
+                <span *ngIf="version.id === selectedPrompt?.id" class="current-badge">Current</span>
+              </div>
+              <div class="version-meta">
+                <span class="date">{{ formatDate(version.createdAt) }}</span>
+                <span class="notes" *ngIf="version.changeNotes">{{ version.changeNotes }}</span>
+              </div>
+              <div class="version-actions" *ngIf="version.id !== selectedPrompt?.id">
+                <button mat-button (click)="selectPrompt(version)">
+                  View
+                </button>
+                <button mat-button color="primary"
+                        (click)="activateVersion(version)"
+                        *ngIf="!version.isActive">
+                  Activate
+                </button>
+              </div>
+            </div>
+
+            <div *ngIf="versionHistory.length === 0" class="empty-state small">
+              <p>No version history available</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Testing Tab -->
+      <div class="tab-content" *ngIf="activeTab === 'testing' && !isCreating">
+        <div class="testing-section">
+          <!-- Stats -->
+          <div class="test-stats" *ngIf="testStats">
+            <div class="stat-card">
+              <span class="stat-value">{{ testStats.totalTests }}</span>
+              <span class="stat-label">Total Tests</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">{{ formatScore(testStats.passRate) }}</span>
+              <span class="stat-label">Pass Rate</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">{{ formatScore(testStats.averageScore) }}</span>
+              <span class="stat-label">Avg Score</span>
+            </div>
+          </div>
+
+          <!-- Available Suites -->
+          <div class="available-suites">
+            <h4>Available Eval Suites</h4>
+            <div *ngIf="availableSuites.length === 0" class="empty-state small">
+              <p>No eval suites available for this fact sheet</p>
+            </div>
+            <div *ngFor="let suite of availableSuites" class="suite-item">
+              <div class="suite-info">
+                <span class="suite-name">{{ suite.name }}</span>
+                <span class="suite-desc" *ngIf="suite.description">{{ suite.description }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Test Results -->
+          <div class="test-results">
+            <h4>Recent Test Results</h4>
+            <div *ngIf="testResults.length === 0" class="empty-state small">
+              <p>No test results yet</p>
+            </div>
+            <div *ngFor="let result of testResults" class="result-item" [class.passed]="result.passed">
+              <div class="result-header">
+                <mat-icon [class.passed]="result.passed" [class.failed]="!result.passed">
+                  {{ result.passed ? 'check_circle' : 'cancel' }}
+                </mat-icon>
+                <span class="suite-name">{{ result.evalSuiteName }}</span>
+                <span class="score">{{ formatScore(result.score) }}</span>
+              </div>
+              <div class="result-meta">
+                <span>{{ result.passedCount }}/{{ result.totalCount }} passed</span>
+                <span class="date">{{ formatDate(result.completedAt || '') }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State when nothing selected -->
+    <div class="editor-panel empty" *ngIf="!selectedPrompt && !isCreating">
+      <div class="empty-state">
+        <mat-icon>description</mat-icon>
+        <p>Select a prompt or create a new one</p>
+        <button mat-raised-button color="primary" (click)="startCreating()">
+          <mat-icon>add</mat-icon>
+          New Prompt
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<ng-template #loadingTpl>
+  <div class="loading-state">
+    <mat-spinner diameter="32"></mat-spinner>
+    <span>Loading prompts...</span>
+  </div>
+</ng-template>

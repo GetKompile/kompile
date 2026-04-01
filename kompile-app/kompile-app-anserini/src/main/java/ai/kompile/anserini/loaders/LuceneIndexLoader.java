@@ -25,6 +25,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexableField;
+import ai.kompile.vectorstore.anserini.util.NativeCompatibleDirectoryFactory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.slf4j.Logger;
@@ -91,7 +92,7 @@ public class LuceneIndexLoader implements StreamingDocumentLoader {
     public LargeDocumentInfo getDocumentInfo(DocumentSourceDescriptor source) throws Exception {
         Path path = Paths.get(source.getPathOrUrl());
 
-        try (Directory dir = FSDirectory.open(path);
+        try (Directory dir = NativeCompatibleDirectoryFactory.open(path);
                 DirectoryReader reader = DirectoryReader.open(dir)) {
 
             int numDocs = reader.numDocs();
@@ -138,7 +139,7 @@ public class LuceneIndexLoader implements StreamingDocumentLoader {
 
         // Note: The reader needs to remain open for the iterator to work.
         // We wrap it in an AutoCloseable iterator or ensure it closes when exhausted.
-        Directory dir = FSDirectory.open(path);
+        Directory dir = NativeCompatibleDirectoryFactory.open(path);
         DirectoryReader reader = DirectoryReader.open(dir);
 
         final int totalDocs = reader.maxDoc();

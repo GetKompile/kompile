@@ -1,0 +1,96 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="eval-dataset-manager">
+  <div class="header">
+    <h2>Eval Datasets</h2>
+    <button mat-raised-button color="primary" (click)="showUpload = !showUpload">
+      <mat-icon>upload_file</mat-icon> Upload Dataset
+    </button>
+  </div>
+
+  <mat-card *ngIf="showUpload" class="upload-form">
+    <mat-card-header><mat-card-title>Upload Dataset</mat-card-title></mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Name</mat-label>
+        <input matInput [(ngModel)]="uploadName">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Description</mat-label>
+        <textarea matInput [(ngModel)]="uploadDescription" rows="2"></textarea>
+      </mat-form-field>
+      <div class="file-input">
+        <button mat-stroked-button (click)="fileInput.click()">
+          <mat-icon>attach_file</mat-icon> Choose File
+        </button>
+        <input #fileInput type="file" accept=".csv,.jsonl" (change)="onFileSelected($event)" hidden>
+        <span *ngIf="selectedFile">{{ selectedFile.name }}</span>
+        <span class="hint">Supported: CSV, JSONL (with query/expected_answer columns)</span>
+      </div>
+      <div class="form-actions">
+        <button mat-button (click)="showUpload = false">Cancel</button>
+        <button mat-raised-button color="primary" (click)="uploadDataset()" [disabled]="!selectedFile">Upload</button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading && datasets.length === 0" class="empty-state">
+    <mat-icon>dataset</mat-icon>
+    <p>No eval datasets uploaded yet.</p>
+  </div>
+
+  <div class="dataset-list" *ngIf="!loading">
+    <mat-card *ngFor="let ds of datasets" class="dataset-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>description</mat-icon>
+        <mat-card-title>{{ ds.name }}</mat-card-title>
+        <mat-card-subtitle>
+          {{ ds.format?.toUpperCase() }} - {{ ds.sampleCount }} samples
+          <span *ngIf="ds.version"> - v{{ ds.version }}</span>
+        </mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <p *ngIf="ds.description">{{ ds.description }}</p>
+        <div class="meta">
+          <span>Suite: {{ ds.suiteId | slice:0:8 }}...</span>
+          <span *ngIf="ds.createdAt">Created {{ ds.createdAt | date:'short' }}</span>
+        </div>
+
+        <div *ngIf="previewDatasetId === ds.id && previewRows.length > 0" class="preview-section">
+          <h4>Preview (first {{ previewRows.length }} rows)</h4>
+          <table mat-table [dataSource]="previewRows" class="preview-table">
+            <ng-container matColumnDef="name">
+              <th mat-header-cell *matHeaderCellDef>Name</th>
+              <td mat-cell *matCellDef="let row">{{ row.name }}</td>
+            </ng-container>
+            <ng-container matColumnDef="query">
+              <th mat-header-cell *matHeaderCellDef>Query</th>
+              <td mat-cell *matCellDef="let row" class="truncate">{{ row.query }}</td>
+            </ng-container>
+            <ng-container matColumnDef="expectedAnswer">
+              <th mat-header-cell *matHeaderCellDef>Expected Answer</th>
+              <td mat-cell *matCellDef="let row" class="truncate">{{ row.expectedAnswer || '-' }}</td>
+            </ng-container>
+            <tr mat-header-row *matHeaderRowDef="previewDisplayedColumns"></tr>
+            <tr mat-row *matRowDef="let row; columns: previewDisplayedColumns;"></tr>
+          </table>
+        </div>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button mat-button (click)="togglePreview(ds.id)">
+          <mat-icon>{{ previewDatasetId === ds.id ? 'visibility_off' : 'visibility' }}</mat-icon>
+          {{ previewDatasetId === ds.id ? 'Hide' : 'Preview' }}
+        </button>
+        <button mat-icon-button color="warn" (click)="deleteDataset(ds.id)" matTooltip="Delete">
+          <mat-icon>delete</mat-icon>
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+</div>

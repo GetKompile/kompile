@@ -1,0 +1,315 @@
+<!--
+  Copyright 2025 Kompile Inc.
+  Licensed under the Apache License, Version 2.0
+-->
+<div class="output-classifier-config">
+  <!-- Error Banner -->
+  <div class="error-banner" *ngIf="error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-icon-button (click)="clearError()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <div class="main-layout">
+    <!-- Classifier List Panel -->
+    <div class="classifiers-panel">
+      <div class="panel-header">
+        <h3>Classifiers</h3>
+        <button mat-icon-button (click)="newClassifier()" matTooltip="New Classifier">
+          <mat-icon>add</mat-icon>
+        </button>
+      </div>
+
+      <div class="loading" *ngIf="loading">
+        <mat-spinner diameter="30"></mat-spinner>
+      </div>
+
+      <div class="classifier-list" *ngIf="!loading">
+        <div class="classifier-item" *ngFor="let classifier of classifiers"
+             [class.selected]="selectedClassifier?.id === classifier.id"
+             [class.disabled]="!classifier.enabled"
+             (click)="selectClassifier(classifier)">
+          <div class="classifier-info">
+            <span class="classifier-name">{{ classifier.name }}</span>
+            <span class="rule-count">{{ classifier.rules?.length || 0 }} rules</span>
+          </div>
+          <div class="classifier-actions">
+            <button mat-icon-button (click)="toggleClassifierEnabled(classifier); $event.stopPropagation()"
+                    [matTooltip]="classifier.enabled ? 'Disable' : 'Enable'">
+              <mat-icon>{{ classifier.enabled ? 'toggle_on' : 'toggle_off' }}</mat-icon>
+            </button>
+            <button mat-icon-button (click)="editClassifier(classifier); $event.stopPropagation()"
+                    matTooltip="Edit">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button color="warn" (click)="deleteClassifier(classifier); $event.stopPropagation()"
+                    matTooltip="Delete">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </div>
+
+        <div class="empty-state" *ngIf="classifiers.length === 0">
+          <mat-icon>rule</mat-icon>
+          <p>No classifiers configured</p>
+          <button mat-stroked-button (click)="newClassifier()">Create Classifier</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Classifier Editor / Rule Panel -->
+    <div class="content-panel">
+      <!-- Classifier Form -->
+      <div class="classifier-form" *ngIf="editingClassifier">
+        <h3>{{ selectedClassifier ? 'Edit Classifier' : 'New Classifier' }}</h3>
+
+        <form [formGroup]="classifierForm">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput formControlName="name" placeholder="Classifier name">
+            <mat-error>Name is required</mat-error>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput formControlName="description" rows="2"></textarea>
+          </mat-form-field>
+
+          <div class="form-row">
+            <mat-checkbox formControlName="enabled">Enabled</mat-checkbox>
+            <mat-checkbox formControlName="applyAllMatches">Apply All Matching Rules</mat-checkbox>
+          </div>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Default Action</mat-label>
+            <mat-select formControlName="defaultAction">
+              <mat-option *ngFor="let action of actions" [value]="action">{{ action }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tags (comma-separated)</mat-label>
+            <input matInput formControlName="tags" placeholder="tag1, tag2">
+          </mat-form-field>
+
+          <div class="form-actions">
+            <button mat-button (click)="cancelEditClassifier()">Cancel</button>
+            <button mat-raised-button color="primary" [disabled]="classifierForm.invalid || saving"
+                    (click)="saveClassifier()">
+              {{ saving ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Selected Classifier Rules -->
+      <div class="rules-section" *ngIf="selectedClassifier && !editingClassifier">
+        <div class="section-header">
+          <h3>{{ selectedClassifier.name }} - Rules</h3>
+          <button mat-raised-button color="primary" (click)="newRule()">
+            <mat-icon>add</mat-icon> Add Rule
+          </button>
+        </div>
+
+        <p class="description" *ngIf="selectedClassifier.description">
+          {{ selectedClassifier.description }}
+        </p>
+
+        <!-- Rule List with Drag-Drop -->
+        <div class="rules-list" cdkDropList (cdkDropListDropped)="dropRule($event)">
+          <div class="rule-item" *ngFor="let rule of selectedClassifier.rules; let i = index"
+               cdkDrag [class.disabled]="!rule.enabled">
+            <div class="drag-handle" cdkDragHandle>
+              <mat-icon>drag_indicator</mat-icon>
+            </div>
+
+            <div class="rule-content">
+              <div class="rule-header">
+                <span class="rule-name">{{ rule.name }}</span>
+                <span class="severity-badge" [ngClass]="getSeverityClass(rule.severity)">
+                  {{ rule.severity }}
+                </span>
+                <span class="action-badge" [ngClass]="getActionClass(rule.action)">
+                  {{ rule.action }}
+                </span>
+              </div>
+              <div class="rule-pattern">
+                <code>{{ rule.pattern }}</code>
+              </div>
+              <div class="rule-type">{{ rule.classificationType }}</div>
+            </div>
+
+            <div class="rule-actions">
+              <button mat-icon-button (click)="editRule(rule)" matTooltip="Edit">
+                <mat-icon>edit</mat-icon>
+              </button>
+              <button mat-icon-button color="warn" (click)="deleteRule(rule)" matTooltip="Delete">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <div class="empty-rules" *ngIf="!selectedClassifier.rules || selectedClassifier.rules.length === 0">
+            <p>No rules defined. Add rules to classify output patterns.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Rule Editor -->
+      <div class="rule-editor" *ngIf="editingRule">
+        <h3>{{ editingRule.id ? 'Edit Rule' : 'New Rule' }}</h3>
+
+        <!-- Templates -->
+        <div class="templates-section" *ngIf="!editingRule.id && templates.length > 0">
+          <h4>Quick Start Templates</h4>
+          <div class="template-chips">
+            <mat-chip-option *ngFor="let template of templates"
+                             (click)="applyTemplate(template)">
+              {{ template.name }}
+            </mat-chip-option>
+          </div>
+        </div>
+
+        <form [formGroup]="ruleForm">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Rule Name</mat-label>
+            <input matInput formControlName="name" placeholder="e.g., Compilation Error">
+            <mat-error>Name is required</mat-error>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput formControlName="description" rows="2"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Pattern (Regex)</mat-label>
+            <textarea matInput formControlName="pattern" rows="2"
+                      placeholder="(?i)error:\s*(.+?)(?:\n|$)"></textarea>
+            <mat-error>Pattern is required</mat-error>
+          </mat-form-field>
+
+          <div class="form-row">
+            <mat-checkbox formControlName="caseSensitive">Case Sensitive</mat-checkbox>
+            <mat-checkbox formControlName="multiline">Multiline</mat-checkbox>
+          </div>
+
+          <div class="form-row">
+            <mat-form-field appearance="outline">
+              <mat-label>Classification Type</mat-label>
+              <mat-select formControlName="classificationType">
+                <mat-option *ngFor="let type of classificationTypes" [value]="type">{{ type }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Severity</mat-label>
+              <mat-select formControlName="severity">
+                <mat-option *ngFor="let sev of severityLevels" [value]="sev">
+                  <span [ngClass]="getSeverityClass(sev)">{{ sev }}</span>
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Action</mat-label>
+            <mat-select formControlName="action">
+              <mat-option *ngFor="let action of actions" [value]="action">{{ action }}</mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Action-specific fields -->
+          <ng-container [ngSwitch]="ruleForm.get('action')?.value">
+            <mat-form-field appearance="outline" class="full-width" *ngSwitchCase="'TRANSITION_STATE'">
+              <mat-label>Target State ID</mat-label>
+              <input matInput formControlName="targetStateId">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width" *ngSwitchCase="'EXECUTE_TASK'">
+              <mat-label>Handler Task ID</mat-label>
+              <input matInput formControlName="handlerTaskId">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width"
+                            *ngIf="ruleForm.get('action')?.value === 'INVOKE_LLM' || ruleForm.get('action')?.value === 'INVOKE_LLM_FOR_FIX'">
+              <mat-label>LLM Prompt Template</mat-label>
+              <textarea matInput formControlName="llmPromptTemplate" rows="3"
+                        placeholder="Analyze the following error and suggest a fix: ${matchedText}"></textarea>
+            </mat-form-field>
+
+            <div class="form-row"
+                 *ngIf="ruleForm.get('action')?.value === 'RETRY' || ruleForm.get('action')?.value === 'RETRY_WITH_BACKOFF'">
+              <mat-form-field appearance="outline">
+                <mat-label>Max Retries</mat-label>
+                <input matInput type="number" formControlName="maxRetries">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Retry Delay (sec)</mat-label>
+                <input matInput type="number" formControlName="retryDelaySeconds">
+              </mat-form-field>
+            </div>
+
+            <mat-form-field appearance="outline" class="full-width" *ngSwitchCase="'CUSTOM'">
+              <mat-label>Action Config (JSON)</mat-label>
+              <textarea matInput formControlName="actionConfig" rows="3"></textarea>
+            </mat-form-field>
+          </ng-container>
+
+          <div class="form-row">
+            <mat-checkbox formControlName="enabled">Enabled</mat-checkbox>
+            <mat-checkbox formControlName="stopOnMatch">Stop on Match</mat-checkbox>
+          </div>
+
+          <!-- Pattern Tester -->
+          <div class="pattern-tester">
+            <h4>Test Pattern</h4>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Test Input</mat-label>
+              <textarea matInput [(ngModel)]="testPatternInput" [ngModelOptions]="{standalone: true}"
+                        rows="4" placeholder="Paste sample output to test..."></textarea>
+            </mat-form-field>
+            <button mat-stroked-button (click)="testPattern()"
+                    [disabled]="!ruleForm.get('pattern')?.value || !testPatternInput">
+              <mat-icon>play_arrow</mat-icon> Test
+            </button>
+
+            <div class="test-result" *ngIf="testPatternResult">
+              <div class="result-header" [class.valid]="testPatternResult.valid"
+                   [class.invalid]="!testPatternResult.valid">
+                <mat-icon>{{ testPatternResult.valid ? 'check_circle' : 'error' }}</mat-icon>
+                {{ testPatternResult.valid ? 'Pattern valid' : 'Pattern error' }}
+              </div>
+              <div *ngIf="testPatternResult.error" class="result-error">{{ testPatternResult.error }}</div>
+              <div *ngIf="testPatternResult.matchCount !== undefined" class="result-matches">
+                {{ testPatternResult.matchCount }} match(es) found
+              </div>
+              <div *ngIf="testPatternResult.matches && testPatternResult.matches.length > 0"
+                   class="matches-list">
+                <div *ngFor="let match of testPatternResult.matches" class="match-item">
+                  <code>{{ match.text }}</code>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button mat-button (click)="cancelEditRule()">Cancel</button>
+            <button mat-raised-button color="primary" [disabled]="ruleForm.invalid || saving"
+                    (click)="saveRule()">
+              {{ saving ? 'Saving...' : 'Save Rule' }}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Empty State -->
+      <div class="empty-content" *ngIf="!selectedClassifier && !editingClassifier && !loading">
+        <mat-icon>rule</mat-icon>
+        <p>Select a classifier or create a new one</p>
+      </div>
+    </div>
+  </div>
+</div>

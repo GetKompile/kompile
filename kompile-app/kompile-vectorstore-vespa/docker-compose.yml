@@ -1,0 +1,73 @@
+# =============================================================================
+# Docker Compose for Vespa VectorStore
+# =============================================================================
+# This configuration runs a single-node Vespa instance suitable for
+# development and testing with Kompile.
+#
+# Usage:
+#   # Start Vespa
+#   docker-compose up -d
+#
+#   # Wait for Vespa to be ready (typically 1-2 minutes)
+#   curl -s http://localhost:19071/state/v1/health | jq .
+#
+#   # Deploy the application package
+#   vespa deploy --wait 300 src/main/resources/vespa-app
+#   # Or using curl:
+#   # (cd src/main/resources/vespa-app && zip -r - .) | \
+#   #   curl --header "Content-Type: application/zip" \
+#   #        --data-binary @- \
+#   #        http://localhost:19071/application/v2/tenant/default/prepareandactivate
+#
+#   # Verify deployment
+#   curl http://localhost:8080/search/?yql=select%20*%20from%20document%20where%20true
+#
+#   # Stop Vespa
+#   docker-compose down
+#
+# System Requirements:
+#   - Docker with at least 4GB RAM allocated
+#   - 10GB+ disk space for the Vespa image
+#
+# For more information: https://docs.vespa.ai/en/vespa-quick-start.html
+# =============================================================================
+
+version: '3.8'
+
+services:
+  vespa:
+    image: vespaengine/vespa:8
+    container_name: kompile-vespa
+    hostname: vespa-container
+    ports:
+      # Query/Feed API
+      - "8080:8080"
+      # Config server (for deployment)
+      - "19071:19071"
+      # Metrics
+      - "19092:19092"
+    volumes:
+      # Persist data across restarts
+      - vespa-data:/opt/vespa/var
+      # Mount application package for development
+      - ./src/main/resources/vespa-app:/app
+    environment:
+      # Optimize for development/single-node
+      - VESPA_CONFIGSERVERS=vespa-container
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19071/state/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  vespa-data:
+    driver: local

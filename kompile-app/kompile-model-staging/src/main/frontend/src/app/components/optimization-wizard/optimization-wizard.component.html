@@ -1,0 +1,554 @@
+<!--
+    Copyright 2025 Kompile Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="optimization-wizard">
+  <!-- Header -->
+  <div class="wizard-header">
+    <h2>Model Optimization Wizard</h2>
+    <p class="subtitle">Configure and apply graph optimizations to improve model performance</p>
+  </div>
+
+  <!-- Step Indicator -->
+  <div class="step-indicator">
+    <div class="step" [class.active]="currentStep >= 1" [class.completed]="currentStep > 1" (click)="goToStep(1)">
+      <div class="step-number">1</div>
+      <div class="step-label">Select Model</div>
+    </div>
+    <div class="step-connector" [class.active]="currentStep > 1"></div>
+    <div class="step" [class.active]="currentStep >= 2" [class.completed]="currentStep > 2" (click)="goToStep(2)">
+      <div class="step-number">2</div>
+      <div class="step-label">Configure</div>
+    </div>
+    <div class="step-connector" [class.active]="currentStep > 2"></div>
+    <div class="step" [class.active]="currentStep >= 3" [class.completed]="currentStep > 3" (click)="goToStep(3)">
+      <div class="step-number">3</div>
+      <div class="step-label">Review</div>
+    </div>
+    <div class="step-connector" [class.active]="currentStep > 3"></div>
+    <div class="step" [class.active]="currentStep >= 4" [class.completed]="currentStep > 4">
+      <div class="step-number">4</div>
+      <div class="step-label">Results</div>
+    </div>
+  </div>
+
+  <!-- Step Content -->
+  <div class="step-content">
+
+    <!-- Step 1: Select Model -->
+    <div class="step-panel" *ngIf="currentStep === 1">
+      <h3>Select a Model to Optimize</h3>
+
+      <div *ngIf="loadingModels" class="loading-indicator">
+        <mat-spinner diameter="40"></mat-spinner>
+        <span>Loading models...</span>
+      </div>
+
+      <div class="model-grid" *ngIf="!loadingModels">
+        <mat-card *ngFor="let model of models"
+                  class="model-card"
+                  [class.selected]="selectedModel?.model_id === model.model_id"
+                  [class.optimized]="isModelOptimized(model)"
+                  (click)="selectModel(model)">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>{{ model.type === 'cross_encoder' ? 'compare_arrows' : 'hub' }}</mat-icon>
+            <mat-card-title>{{ model.model_id }}</mat-card-title>
+            <mat-card-subtitle>{{ getModelTypeDisplay(model) }}</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <div class="model-info">
+              <span class="info-item">
+                <mat-icon>straighten</mat-icon>
+                {{ model.metadata?.embeddingDim || 'N/A' }} dims
+              </span>
+              <span class="info-item" *ngIf="model.metadata?.maxSequenceLength">
+                <mat-icon>format_list_numbered</mat-icon>
+                {{ model.metadata.maxSequenceLength }} seq
+              </span>
+            </div>
+            <mat-chip-set class="status-chips">
+              <mat-chip [class.status-active]="model.status === 'active'"
+                       [class.status-available]="model.status === 'available'">
+                {{ model.status }}
+              </mat-chip>
+              <mat-chip *ngIf="isModelOptimized(model)" class="status-optimized">
+                <mat-icon>bolt</mat-icon> Optimized
+              </mat-chip>
+            </mat-chip-set>
+          </mat-card-content>
+        </mat-card>
+      </div>
+
+      <!-- Optimization details for selected model -->
+      <mat-card class="details-card" *ngIf="selectedModel && optimizationDetails">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>info</mat-icon>
+          <mat-card-title>Optimization Status</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <div *ngIf="optimizationDetails.optimized">
+            <p><strong>Optimized:</strong> Yes</p>
+            <p><strong>Optimized At:</strong> {{ formatDate(optimizationDetails.optimizedAt) }}</p>
+            <p><strong>Time Taken:</strong> {{ formatDuration(optimizationDetails.optimizationTimeMs) }}</p>
+            <p *ngIf="optimizationDetails.appliedOptimizations?.length">
+              <strong>Applied Optimizations:</strong>
+            </p>
+            <mat-chip-set *ngIf="optimizationDetails.appliedOptimizations?.length">
+              <mat-chip *ngFor="let opt of optimizationDetails.appliedOptimizations">{{ opt }}</mat-chip>
+            </mat-chip-set>
+            <p *ngIf="optimizationDetails.stats">
+              <strong>Stats:</strong>
+              Ops: {{ optimizationDetails.stats.ops_before }} &rarr; {{ optimizationDetails.stats.ops_after }},
+              Vars: {{ optimizationDetails.stats.vars_before }} &rarr; {{ optimizationDetails.stats.vars_after }}
+            </p>
+            <mat-checkbox [(ngModel)]="forceOptimize" class="force-checkbox">
+              Force re-optimization (will create new backup)
+            </mat-checkbox>
+
+            <!-- Restore Section -->
+            <div class="restore-section">
+              <mat-divider></mat-divider>
+              <h4>Restore Original Model</h4>
+              <p class="restore-description">
+                Restore the model to its original unoptimized state using the backup file.
+              </p>
+              <p *ngIf="optimizationDetails.hasBackup" class="backup-info">
+                <mat-icon>backup</mat-icon>
+                <span>Backup available: {{ optimizationDetails.backupFile }}</span>
+              </p>
+              <p *ngIf="!optimizationDetails.hasBackup" class="no-backup-warning">
+                <mat-icon>warning</mat-icon>
+                <span>No backup available. Model cannot be restored.</span>
+              </p>
+
+              <!-- Restore Button -->
+              <button mat-raised-button color="warn"
+                      *ngIf="!showRestoreConfirm && !isRestoring"
+                      [disabled]="!canRestore()"
+                      (click)="showRestoreDialog()">
+                <mat-icon>restore</mat-icon>
+                Restore to Original
+              </button>
+
+              <!-- Restore Confirmation -->
+              <div class="restore-confirm" *ngIf="showRestoreConfirm">
+                <p class="confirm-message">
+                  <mat-icon>warning</mat-icon>
+                  Are you sure you want to restore the model to its unoptimized state?
+                  This will replace the current optimized model with the original backup.
+                </p>
+                <div class="confirm-actions">
+                  <button mat-stroked-button (click)="cancelRestore()">Cancel</button>
+                  <button mat-raised-button color="warn" (click)="confirmRestore()">
+                    <mat-icon>restore</mat-icon>
+                    Confirm Restore
+                  </button>
+                </div>
+              </div>
+
+              <!-- Restoring Indicator -->
+              <div class="restoring-indicator" *ngIf="isRestoring">
+                <mat-spinner diameter="24"></mat-spinner>
+                <span>Restoring model...</span>
+              </div>
+
+              <!-- Restore Result -->
+              <div class="restore-result" *ngIf="restoreResult && !isRestoring">
+                <mat-icon [class.success-icon]="restoreResult.success" [class.error-icon]="!restoreResult.success">
+                  {{ restoreResult.success ? 'check_circle' : 'error' }}
+                </mat-icon>
+                <span *ngIf="restoreResult.success">Model restored successfully!</span>
+                <span *ngIf="!restoreResult.success" class="error-message">{{ restoreResult.error }}</span>
+              </div>
+            </div>
+          </div>
+          <div *ngIf="!optimizationDetails.optimized">
+            <p>This model has not been optimized yet.</p>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+
+    <!-- Step 2: Configure Optimizations -->
+    <div class="step-panel" *ngIf="currentStep === 2">
+      <h3>Configure Optimizations</h3>
+
+      <div *ngIf="loadingOptimizations" class="loading-indicator">
+        <mat-spinner diameter="40"></mat-spinner>
+        <span>Loading optimization options...</span>
+      </div>
+
+      <div class="config-content" *ngIf="!loadingOptimizations">
+        <!-- Presets -->
+        <div class="presets-section">
+          <h4>Quick Presets</h4>
+          <div class="preset-buttons">
+            <button mat-stroked-button
+                    *ngFor="let preset of presets"
+                    [class.selected]="selectedPreset?.id === preset.id"
+                    (click)="selectPreset(preset)"
+                    [matTooltip]="preset.description">
+              {{ preset.name }}
+            </button>
+            <button mat-stroked-button (click)="clearPreset()" *ngIf="selectedPreset">
+              <mat-icon>clear</mat-icon> Custom
+            </button>
+          </div>
+        </div>
+
+        <!-- Optimization Groups -->
+        <div class="optimizations-section">
+          <div class="section-header">
+            <h4>Available Optimizations</h4>
+            <div class="section-actions">
+              <button mat-button (click)="selectAllOptimizations()">Select All</button>
+              <button mat-button (click)="clearAllOptimizations()">Clear All</button>
+            </div>
+          </div>
+
+          <mat-expansion-panel *ngFor="let group of optimizationGroups" [expanded]="true">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-icon>{{ group.categoryIcon }}</mat-icon>
+                {{ group.categoryName }}
+              </mat-panel-title>
+              <mat-panel-description>
+                {{ group.optimizations.length }} optimizations
+              </mat-panel-description>
+            </mat-expansion-panel-header>
+
+            <div class="optimization-list">
+              <div class="optimization-item" *ngFor="let opt of group.optimizations">
+                <mat-checkbox
+                  [checked]="isOptimizationEnabled(opt.id)"
+                  (change)="toggleOptimization(opt.id)">
+                  <span class="opt-name">{{ opt.displayName }}</span>
+                  <span class="opt-default" *ngIf="opt.isDefault">(default)</span>
+                </mat-checkbox>
+                <p class="opt-description">{{ opt.description }}</p>
+              </div>
+            </div>
+          </mat-expansion-panel>
+        </div>
+
+        <!-- Quantization -->
+        <div class="quantization-section">
+          <h4>Quantization (Optional)</h4>
+          <p class="section-description">
+            Reduce model size by converting weights to lower precision.
+          </p>
+          <div class="quantization-options">
+            <mat-radio-group [(ngModel)]="selectedQuantization" (change)="toggleQuantization($event.value)">
+              <mat-radio-button [value]="null">None</mat-radio-button>
+              <mat-radio-button *ngFor="let q of quantizationTypes" [value]="q.id">
+                {{ q.displayName }}
+                <span class="q-description">- {{ q.description }}</span>
+              </mat-radio-button>
+            </mat-radio-group>
+          </div>
+        </div>
+
+        <!-- Options -->
+        <div class="options-section">
+          <h4>Options</h4>
+          <mat-checkbox [(ngModel)]="createBackup">
+            Create backup before optimization (recommended)
+          </mat-checkbox>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Review -->
+    <div class="step-panel" *ngIf="currentStep === 3">
+      <h3>Review Configuration</h3>
+
+      <mat-card class="review-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>info</mat-icon>
+          <mat-card-title>Selected Model</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <p><strong>Model ID:</strong> {{ selectedModel?.model_id }}</p>
+          <p><strong>Type:</strong> {{ getModelTypeDisplay(selectedModel!) }}</p>
+          <p><strong>Status:</strong> {{ selectedModel?.status }}</p>
+          <p *ngIf="selectedModel?.metadata?.embeddingDim">
+            <strong>Embedding Dim:</strong> {{ selectedModel?.metadata?.embeddingDim }}
+          </p>
+        </mat-card-content>
+      </mat-card>
+
+      <mat-card class="review-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>tune</mat-icon>
+          <mat-card-title>Enabled Optimizations ({{ enabledOptimizations.size }})</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-chip-set>
+            <mat-chip *ngFor="let name of getEnabledOptimizationNames()">{{ name }}</mat-chip>
+          </mat-chip-set>
+          <p *ngIf="selectedQuantization" class="quant-info">
+            <mat-icon>compress</mat-icon>
+            <strong>Quantization:</strong> {{ selectedQuantization }}
+          </p>
+        </mat-card-content>
+      </mat-card>
+
+      <mat-card class="review-card options-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>settings</mat-icon>
+          <mat-card-title>Options</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <p>
+            <mat-icon>{{ createBackup ? 'check_circle' : 'cancel' }}</mat-icon>
+            Create backup: {{ createBackup ? 'Yes' : 'No' }}
+          </p>
+          <p *ngIf="forceOptimize">
+            <mat-icon>warning</mat-icon>
+            Force re-optimization: Yes
+          </p>
+        </mat-card-content>
+      </mat-card>
+
+      <div class="warning-banner" *ngIf="!createBackup">
+        <mat-icon>warning</mat-icon>
+        <span>Warning: Optimizing without a backup cannot be undone.</span>
+      </div>
+    </div>
+
+    <!-- Step 4: Results -->
+    <div class="step-panel" *ngIf="currentStep === 4">
+      <h3>Optimization Results</h3>
+
+      <div *ngIf="isOptimizing" class="optimizing-indicator">
+        <mat-spinner diameter="60"></mat-spinner>
+        <p>Optimizing model...</p>
+        <p class="optimizing-subtitle">This may take a few moments</p>
+      </div>
+
+      <div *ngIf="!isOptimizing && optimizationResult">
+        <mat-card class="result-card" [class.success]="optimizationResult.success" [class.error]="!optimizationResult.success">
+          <mat-card-header>
+            <mat-icon mat-card-avatar [class.success-icon]="optimizationResult.success" [class.error-icon]="!optimizationResult.success">
+              {{ optimizationResult.success ? 'check_circle' : 'error' }}
+            </mat-icon>
+            <mat-card-title>{{ optimizationResult.success ? 'Optimization Complete' : 'Optimization Failed' }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p *ngIf="optimizationResult.message">{{ optimizationResult.message }}</p>
+            <p *ngIf="optimizationResult.error" class="error-message">{{ optimizationResult.error }}</p>
+
+            <div *ngIf="optimizationResult.success" class="result-details">
+              <div class="result-stat">
+                <span class="stat-label">Time Taken</span>
+                <span class="stat-value">{{ formatDuration(optimizationResult.optimizationTimeMs) }}</span>
+              </div>
+
+              <div class="result-stat" *ngIf="optimizationResult.stats">
+                <span class="stat-label">Operations</span>
+                <span class="stat-value">
+                  {{ optimizationResult.stats.ops_before }} &rarr; {{ optimizationResult.stats.ops_after }}
+                  <span class="reduction" *ngIf="optimizationResult.stats.ops_before && optimizationResult.stats.ops_after">
+                    (-{{ ((optimizationResult.stats.ops_before - optimizationResult.stats.ops_after) / optimizationResult.stats.ops_before * 100).toFixed(1) }}%)
+                  </span>
+                </span>
+              </div>
+
+              <div class="result-stat" *ngIf="optimizationResult.stats">
+                <span class="stat-label">Variables</span>
+                <span class="stat-value">
+                  {{ optimizationResult.stats.vars_before }} &rarr; {{ optimizationResult.stats.vars_after }}
+                </span>
+              </div>
+
+              <div class="result-stat" *ngIf="optimizationResult.stats?.size_before_bytes">
+                <span class="stat-label">Size</span>
+                <span class="stat-value">
+                  {{ formatBytes(optimizationResult.stats?.size_before_bytes) }} &rarr; {{ formatBytes(optimizationResult.stats?.size_after_bytes) }}
+                  <span class="reduction" *ngIf="optimizationResult.stats?.reduction_percent">
+                    (-{{ optimizationResult.stats?.reduction_percent?.toFixed(1) }}%)
+                  </span>
+                </span>
+              </div>
+
+              <div class="result-stat" *ngIf="optimizationResult.backupFile">
+                <span class="stat-label">Backup</span>
+                <span class="stat-value">{{ optimizationResult.backupFile }}</span>
+              </div>
+            </div>
+
+            <div class="applied-optimizations" *ngIf="optimizationResult.appliedOptimizations?.length">
+              <h4>Applied Optimizations</h4>
+              <mat-chip-set>
+                <mat-chip *ngFor="let opt of optimizationResult.appliedOptimizations">{{ opt }}</mat-chip>
+              </mat-chip-set>
+            </div>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-button (click)="resetWizard()">Optimize Another Model</button>
+            <button mat-button routerLink="/registry">View Registry</button>
+          </mat-card-actions>
+        </mat-card>
+
+        <!-- A/B Comparison Section -->
+        <mat-card class="comparison-card" *ngIf="optimizationResult?.success">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>compare</mat-icon>
+            <mat-card-title>A/B Comparison</mat-card-title>
+            <mat-card-subtitle>Compare optimized vs original model outputs</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <!-- Sample text input -->
+            <mat-form-field class="comparison-input" appearance="outline">
+              <mat-label>Sample text (optional)</mat-label>
+              <input matInput [(ngModel)]="comparisonSampleText" placeholder="Enter text for inference test">
+              <mat-hint>Leave empty to use default dummy inputs</mat-hint>
+            </mat-form-field>
+
+            <!-- Run Comparison button -->
+            <button mat-raised-button color="accent"
+                    [disabled]="!canCompare() || isComparing"
+                    (click)="startComparison()">
+              <mat-icon>compare_arrows</mat-icon>
+              {{ isComparing ? 'Comparing...' : 'Run Comparison' }}
+            </button>
+
+            <!-- Comparing spinner -->
+            <div class="comparing-indicator" *ngIf="isComparing">
+              <mat-spinner diameter="32"></mat-spinner>
+              <span>Running inference on both models...</span>
+            </div>
+
+            <!-- Comparison Result -->
+            <div *ngIf="comparisonResult && !isComparing" class="comparison-results">
+              <!-- Verdict banner -->
+              <div class="verdict-banner" *ngIf="comparisonResult.success"
+                   [class.verdict-match]="comparisonResult.outputsMatch"
+                   [class.verdict-differ]="!comparisonResult.outputsMatch">
+                <mat-icon>{{ comparisonResult.outputsMatch ? 'check_circle' : 'warning' }}</mat-icon>
+                <span *ngIf="comparisonResult.outputsMatch">Outputs match (max diff: {{ comparisonResult.maxAbsoluteDifference?.toExponential(2) }})</span>
+                <span *ngIf="!comparisonResult.outputsMatch">Outputs differ (max diff: {{ comparisonResult.maxAbsoluteDifference?.toExponential(2) }})</span>
+              </div>
+
+              <!-- Error -->
+              <div class="verdict-banner verdict-differ" *ngIf="!comparisonResult.success">
+                <mat-icon>error</mat-icon>
+                <span>{{ comparisonResult.error }}</span>
+              </div>
+
+              <!-- Side-by-side table -->
+              <table class="comparison-table" *ngIf="comparisonResult.success && comparisonResult.optimizedResult && comparisonResult.originalResult">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Original</th>
+                    <th>Optimized</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Inference Time</td>
+                    <td>{{ formatDuration(comparisonResult.originalResult.inferenceTimeMs) }}</td>
+                    <td>{{ formatDuration(comparisonResult.optimizedResult.inferenceTimeMs) }}</td>
+                  </tr>
+                  <tr>
+                    <td>Operations</td>
+                    <td>{{ comparisonResult.originalResult.numOps }}</td>
+                    <td>{{ comparisonResult.optimizedResult.numOps }}</td>
+                  </tr>
+                  <tr>
+                    <td>Variables</td>
+                    <td>{{ comparisonResult.originalResult.numVars }}</td>
+                    <td>{{ comparisonResult.optimizedResult.numVars }}</td>
+                  </tr>
+                  <tr>
+                    <td>Model Size</td>
+                    <td>{{ formatBytes(comparisonResult.originalResult.modelSizeBytes) }}</td>
+                    <td>{{ formatBytes(comparisonResult.optimizedResult.modelSizeBytes) }}</td>
+                  </tr>
+                  <tr>
+                    <td>Speedup Factor</td>
+                    <td colspan="2" class="speedup-value">{{ comparisonResult.speedupFactor }}x</td>
+                  </tr>
+                  <tr>
+                    <td>Max Abs Diff</td>
+                    <td colspan="2">{{ comparisonResult.maxAbsoluteDifference?.toExponential(4) }}</td>
+                  </tr>
+                  <tr>
+                    <td>Mean Abs Diff</td>
+                    <td colspan="2">{{ comparisonResult.meanAbsoluteDifference?.toExponential(4) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </div>
+  </div>
+
+  <!-- Navigation Buttons -->
+  <div class="wizard-actions">
+    <button mat-stroked-button (click)="prevStep()" [disabled]="currentStep === 1">
+      <mat-icon>arrow_back</mat-icon> Back
+    </button>
+    <span class="spacer"></span>
+    <button mat-raised-button color="primary"
+            *ngIf="currentStep < 3"
+            (click)="nextStep()"
+            [disabled]="!canProceed()">
+      Next <mat-icon>arrow_forward</mat-icon>
+    </button>
+    <button mat-raised-button color="primary"
+            *ngIf="currentStep === 3"
+            (click)="startOptimization()"
+            [disabled]="isOptimizing">
+      <mat-icon>bolt</mat-icon> Start Optimization
+    </button>
+    <button mat-raised-button color="primary"
+            *ngIf="currentStep === 4 && optimizationResult?.success"
+            (click)="resetWizard()">
+      <mat-icon>refresh</mat-icon> Start Over
+    </button>
+  </div>
+
+  <!-- History Panel -->
+  <mat-expansion-panel class="history-panel" *ngIf="optimizationHistory.length > 0">
+    <mat-expansion-panel-header>
+      <mat-panel-title>
+        <mat-icon>history</mat-icon>
+        Recent Optimizations
+      </mat-panel-title>
+      <mat-panel-description>
+        {{ optimizationHistory.length }} entries
+      </mat-panel-description>
+    </mat-expansion-panel-header>
+
+    <mat-list>
+      <mat-list-item *ngFor="let h of optimizationHistory">
+        <mat-icon matListItemIcon [class.success-icon]="h.success" [class.error-icon]="!h.success">
+          {{ h.success ? 'check_circle' : 'error' }}
+        </mat-icon>
+        <span matListItemTitle>{{ h.modelId }}</span>
+        <span matListItemLine>
+          {{ formatDate(h.timestamp) }} - {{ formatDuration(h.timeMs) }}
+          <span *ngIf="h.appliedOptimizations?.length"> - {{ h.appliedOptimizations.length }} optimizations</span>
+        </span>
+      </mat-list-item>
+    </mat-list>
+
+    <button mat-button (click)="clearHistory()">Clear History</button>
+  </mat-expansion-panel>
+</div>

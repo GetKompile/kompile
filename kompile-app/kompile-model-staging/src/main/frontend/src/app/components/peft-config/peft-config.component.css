@@ -1,0 +1,11 @@
+.peft-config { padding: 16px; }
+.peft-config h2 { margin-bottom: 16px; }
+.peft-type-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
+.peft-type-card { cursor: pointer; transition: all 0.2s; }
+.peft-type-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
+.peft-type-card.selected { border: 2px solid #1976d2; background: rgba(25,118,210,0.04); }
+.peft-type-card p { font-size: 0.85rem; color: rgba(0,0,0,0.6); }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; align-items: start; }
+.full-width { width: 100%; }
+.step-actions { display: flex; gap: 8px; margin-top: 16px; }
+.review-summary p { margin: 8px 0; }

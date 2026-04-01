@@ -1,0 +1,148 @@
+<div class="dialog-container">
+  <div class="dialog-header" [style.background-color]="data.color">
+    <div class="header-icon">
+      <mat-icon>{{ data.icon }}</mat-icon>
+    </div>
+    <div class="header-content">
+      <h2>Configure {{ data.displayName }}</h2>
+      <p>Set up OAuth credentials for {{ data.displayName }} integration</p>
+    </div>
+    <button mat-icon-button class="close-button" (click)="onCancel()">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <mat-dialog-content>
+    <form [formGroup]="form" class="settings-form">
+      <!-- Callback URL Section -->
+      <div class="callback-section">
+        <div class="section-label">
+          <mat-icon>link</mat-icon>
+          <span>Redirect URI / Callback URL</span>
+        </div>
+        <div class="callback-url">
+          <code>{{ callbackUrl }}</code>
+          <button mat-icon-button matTooltip="Copy to clipboard" (click)="copyToClipboard(callbackUrl)">
+            <mat-icon>content_copy</mat-icon>
+          </button>
+        </div>
+        <p class="helper-text">Add this URL to your OAuth application's redirect URIs</p>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Credentials Section -->
+      <div class="credentials-section">
+        <div class="section-label">
+          <mat-icon>key</mat-icon>
+          <span>OAuth Credentials</span>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Client ID</mat-label>
+          <input matInput formControlName="clientId" placeholder="Enter your OAuth client ID">
+          <mat-icon matSuffix>badge</mat-icon>
+          <mat-error *ngIf="form.get('clientId')?.hasError('required')">
+            Client ID is required
+          </mat-error>
+          <mat-hint>The OAuth 2.0 client identifier from your provider</mat-hint>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Client Secret</mat-label>
+          <input matInput formControlName="clientSecret"
+                 [type]="showSecret ? 'text' : 'password'"
+                 placeholder="Enter your OAuth client secret">
+          <button mat-icon-button matSuffix (click)="toggleSecretVisibility()" type="button"
+                  [matTooltip]="showSecret ? 'Hide secret' : 'Show secret'">
+            <mat-icon>{{ showSecret ? 'visibility_off' : 'visibility' }}</mat-icon>
+          </button>
+          <mat-error *ngIf="form.get('clientSecret')?.hasError('required')">
+            Client Secret is required
+          </mat-error>
+          <mat-hint>The OAuth 2.0 client secret (stored encrypted)</mat-hint>
+        </mat-form-field>
+
+        <!-- Tenant ID for Microsoft -->
+        <mat-form-field appearance="outline" class="full-width" *ngIf="data.providerId === 'microsoft'">
+          <mat-label>Tenant ID</mat-label>
+          <input matInput formControlName="tenantId" placeholder="common">
+          <mat-icon matSuffix>apartment</mat-icon>
+          <mat-hint>Azure AD tenant ID (use 'common' for multi-tenant apps)</mat-hint>
+        </mat-form-field>
+      </div>
+
+      <mat-divider></mat-divider>
+
+      <!-- Scopes Section -->
+      <mat-expansion-panel class="scopes-panel">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon>security</mat-icon>
+            OAuth Scopes (Advanced)
+          </mat-panel-title>
+          <mat-panel-description>
+            Customize requested permissions
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Scopes</mat-label>
+          <textarea matInput formControlName="scopes" rows="3"
+                    placeholder="Space-separated list of OAuth scopes"></textarea>
+          <mat-hint>Leave default unless you need specific permissions</mat-hint>
+        </mat-form-field>
+
+        <div class="default-scopes" *ngIf="data.setupInfo?.defaultScopes?.length">
+          <span class="scopes-label">Default scopes:</span>
+          <div class="scope-chips">
+            <span class="scope-chip" *ngFor="let scope of data.setupInfo?.defaultScopes">{{ scope }}</span>
+          </div>
+        </div>
+      </mat-expansion-panel>
+
+      <!-- Setup Instructions -->
+      <mat-expansion-panel class="instructions-panel">
+        <mat-expansion-panel-header>
+          <mat-panel-title>
+            <mat-icon>help_outline</mat-icon>
+            Setup Instructions
+          </mat-panel-title>
+          <mat-panel-description>
+            How to get your credentials
+          </mat-panel-description>
+        </mat-expansion-panel-header>
+
+        <div class="instructions-content">
+          <ol class="setup-steps">
+            <li *ngFor="let step of data.setupInfo?.setupSteps">{{ step }}</li>
+          </ol>
+
+          <a mat-stroked-button color="primary" [href]="data.setupInfo?.consoleUrl" target="_blank"
+             class="console-link" *ngIf="data.setupInfo?.consoleUrl">
+            <mat-icon>open_in_new</mat-icon>
+            Open {{ data.displayName }} Developer Console
+          </a>
+        </div>
+      </mat-expansion-panel>
+    </form>
+  </mat-dialog-content>
+
+  <mat-dialog-actions>
+    <div class="action-left">
+      <button mat-button color="warn" (click)="onDelete()"
+              *ngIf="data.settings?.configured" [disabled]="saving">
+        <mat-icon>delete</mat-icon>
+        Remove Configuration
+      </button>
+    </div>
+    <div class="action-right">
+      <button mat-button (click)="onCancel()" [disabled]="saving">Cancel</button>
+      <button mat-raised-button color="primary" (click)="onSave()" [disabled]="saving || !form.valid">
+        <mat-spinner *ngIf="saving" diameter="20"></mat-spinner>
+        <mat-icon *ngIf="!saving">save</mat-icon>
+        {{ saving ? 'Saving...' : 'Save Configuration' }}
+      </button>
+    </div>
+  </mat-dialog-actions>
+</div>

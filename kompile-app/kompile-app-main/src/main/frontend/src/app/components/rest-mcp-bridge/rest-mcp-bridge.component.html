@@ -1,0 +1,674 @@
+<!--
+ *   Copyright 2025 Kompile Inc.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ * limitations under the License.
+ -->
+
+<div class="rest-mcp-bridge">
+  <div class="header">
+    <h2>REST-MCP Bridge</h2>
+    <p class="subtitle">Connect REST APIs to MCP servers bidirectionally</p>
+  </div>
+
+  <mat-tab-group [(selectedIndex)]="activeTab" class="main-tabs">
+    <!-- Bridges Tab -->
+    <mat-tab label="Bridges">
+      <div class="tab-content">
+        <div class="toolbar">
+          <button mat-raised-button color="primary" (click)="createBridge()">
+            <mat-icon>add</mat-icon> New Bridge
+          </button>
+          <button mat-button (click)="openImportDialog()">
+            <mat-icon>upload</mat-icon> Import
+          </button>
+          <button mat-button (click)="loadBridges()">
+            <mat-icon>refresh</mat-icon> Refresh
+          </button>
+        </div>
+
+        <div class="bridge-list" *ngIf="!isLoading">
+          <mat-card *ngFor="let bridge of bridges" class="bridge-card"
+            [class.selected]="selectedBridge?.id === bridge.id">
+            <mat-card-header>
+              <mat-icon mat-card-avatar [style.color]="getStatusColor(bridge.status)">{{ getStatusIcon(bridge.status)
+                }}</mat-icon>
+              <mat-card-title>{{ bridge.name }}</mat-card-title>
+              <mat-card-subtitle>
+                <mat-icon class="direction-icon">{{ getDirectionIcon(bridge.direction) }}</mat-icon>
+                {{ getDirectionDisplayName(bridge.direction) }}
+              </mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p *ngIf="bridge.description">{{ bridge.description }}</p>
+              <div class="bridge-info">
+                <div class="info-item">
+                  <span class="info-label">Base URL:</span>
+                  <code>{{ bridge.restApiConfig?.baseUrl }}</code>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">MCP Port:</span>
+                  <code>{{ bridge.mcpServerRef?.port }}</code>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Auth:</span>
+                  <span>{{ getAuthTypeDisplayName(bridge.authConfig?.type || 'NONE') }}</span>
+                </div>
+              </div>
+              <div class="stats">
+                <span class="stat"><mat-icon>link</mat-icon> {{ bridge.mappings.length || 0 }} mappings</span>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <button mat-button (click)="selectBridge(bridge)">
+                <mat-icon>settings</mat-icon> Configure
+              </button>
+              <button mat-button (click)="editBridge(bridge)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button *ngIf="bridge.status === 'STOPPED'" (click)="startBridge(bridge)" color="primary">
+                <mat-icon>play_arrow</mat-icon> Start
+              </button>
+              <button mat-button *ngIf="bridge.status === 'RUNNING'" (click)="stopBridge(bridge)" color="warn">
+                <mat-icon>stop</mat-icon> Stop
+              </button>
+              <button mat-icon-button [matMenuTriggerFor]="bridgeMenu">
+                <mat-icon>more_vert</mat-icon>
+              </button>
+              <mat-menu #bridgeMenu="matMenu">
+                <button mat-menu-item (click)="syncBridge(bridge)">
+                  <mat-icon>sync</mat-icon> Sync
+                </button>
+                <button mat-menu-item (click)="exportBridge(bridge)">
+                  <mat-icon>download</mat-icon> Export
+                </button>
+                <button mat-menu-item (click)="deleteBridge(bridge)" class="delete-action">
+                  <mat-icon>delete</mat-icon> Delete
+                </button>
+              </mat-menu>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="bridges.length === 0" class="empty-state">
+            <mat-icon>swap_horiz</mat-icon>
+            <p>No REST-MCP bridges configured yet.</p>
+            <button mat-raised-button color="primary" (click)="createBridge()">Create Your First Bridge</button>
+          </div>
+        </div>
+
+        <mat-spinner *ngIf="isLoading" diameter="40"></mat-spinner>
+      </div>
+    </mat-tab>
+
+    <!-- Mappings Tab -->
+    <mat-tab label="Mappings" [disabled]="!selectedBridge">
+      <div class="tab-content" *ngIf="selectedBridge">
+        <div class="toolbar">
+          <span class="context-info">Bridge: <strong>{{ selectedBridge.name }}</strong></span>
+          <button mat-raised-button color="primary" (click)="createMapping()">
+            <mat-icon>add</mat-icon> New Mapping
+          </button>
+        </div>
+
+        <div class="mapping-list">
+          <mat-card *ngFor="let mapping of selectedBridge.mappings" class="mapping-card">
+            <mat-card-header>
+              <mat-icon mat-card-avatar>link</mat-icon>
+              <mat-card-title>{{ mapping.mcpTool.name || 'Unnamed Tool' }}</mat-card-title>
+              <mat-card-subtitle>{{ mapping.restEndpoint.method }} {{ mapping.restEndpoint.path }}</mat-card-subtitle>
+            </mat-card-header>
+
+            <mat-card-content>
+              <p *ngIf="mapping.mcpTool?.description">{{ mapping.mcpTool.description }}</p>
+              <div class="mapping-details">
+                <div class="detail-row">
+                  <span class="detail-label">REST Endpoint:</span>
+                  <code>{{ mapping.restEndpoint.method }} {{ mapping.restEndpoint.path }}</code>
+                </div>
+                <div class="detail-row">
+                  <span class="detail-label">MCP Tool:</span>
+                  <code>{{ mapping.mcpTool.name }}</code>
+                </div>
+                <div class="params"
+                  *ngIf="mapping.restEndpoint?.queryParams?.length || mapping.restEndpoint?.pathParams?.length">
+                  <span class="detail-label">Parameters:</span>
+                  <mat-chip-listbox>
+                    <mat-chip *ngFor="let param of mapping.restEndpoint?.pathParams">
+                      :{{ param.name }}
+                    </mat-chip>
+                    <mat-chip *ngFor="let param of mapping.restEndpoint?.queryParams">
+                      ?{{ param.name }}
+                    </mat-chip>
+                  </mat-chip-listbox>
+                </div>
+              </div>
+            </mat-card-content>
+
+            <mat-card-actions>
+              <mat-slide-toggle [checked]="mapping.enabled" (change)="toggleMapping(mapping)">Enabled</mat-slide-toggle>
+              <button mat-button (click)="openTestDialog(mapping)">
+                <mat-icon>play_circle</mat-icon> Test
+              </button>
+              <button mat-button (click)="editMapping(mapping)">
+                <mat-icon>edit</mat-icon> Edit
+              </button>
+              <button mat-button color="warn" (click)="deleteMapping(mapping)">
+                <mat-icon>delete</mat-icon> Delete
+              </button>
+            </mat-card-actions>
+          </mat-card>
+
+          <div *ngIf="selectedBridge.mappings?.length === 0" class="empty-state">
+            <mat-icon>link_off</mat-icon>
+            <p>No mappings configured for this bridge.</p>
+            <p class="hint">Use the Discover tab to automatically find endpoints, or add them manually.</p>
+            <button mat-raised-button color="primary" (click)="createMapping()">Add Mapping</button>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Discover Tab -->
+    <mat-tab label="Discover">
+      <div class="tab-content">
+        <div class="discover-section">
+          <h3>Discover Endpoints & Tools</h3>
+          <p class="hint">Discover endpoints from external REST APIs or built-in application tools.</p>
+
+          <div class="discover-form">
+            <mat-button-toggle-group [(ngModel)]="discoveryMode" [ngModelOptions]="{standalone: true}" class="mode-toggle">
+              <mat-button-toggle value="openapi">OpenAPI Spec</mat-button-toggle>
+              <mat-button-toggle value="probe">Probe URL</mat-button-toggle>
+              <mat-button-toggle value="builtin">Built-in Tools</mat-button-toggle>
+            </mat-button-toggle-group>
+
+            <!-- External Discovery (OpenAPI/Probe) -->
+            <ng-container *ngIf="discoveryMode !== 'builtin'">
+              <mat-form-field appearance="outline" class="url-field">
+                <mat-label>{{ discoveryMode === 'openapi' ? 'OpenAPI Specification URL' : 'Base URL to Probe'
+                  }}</mat-label>
+                <input matInput [(ngModel)]="discoverUrl" [ngModelOptions]="{standalone: true}"
+                  [placeholder]="discoveryMode === 'openapi' ? 'https://api.example.com/openapi.json' : 'https://api.example.com'">
+              </mat-form-field>
+
+              <button mat-raised-button color="primary" (click)="discoverEndpoints()"
+                [disabled]="isDiscovering || !discoverUrl.trim()">
+                <mat-icon>search</mat-icon>
+                {{ isDiscovering ? 'Discovering...' : 'Discover Endpoints' }}
+              </button>
+            </ng-container>
+
+            <!-- Built-in Tools Discovery -->
+            <ng-container *ngIf="discoveryMode === 'builtin'">
+              <div class="builtin-actions">
+                <button mat-raised-button color="primary" (click)="discoverBuiltInTools()"
+                  [disabled]="isLoadingBuiltIn">
+                  <mat-icon>search</mat-icon>
+                  {{ isLoadingBuiltIn ? 'Discovering...' : 'Discover Built-in Tools' }}
+                </button>
+                <button mat-raised-button color="accent" (click)="createBuiltInToolsBridge()"
+                  [disabled]="isLoadingBuiltIn">
+                  <mat-icon>add_circle</mat-icon>
+                  Create Built-in Tools Bridge
+                </button>
+                <button mat-button (click)="refreshBuiltInTools()" [disabled]="isLoadingBuiltIn">
+                  <mat-icon>refresh</mat-icon>
+                  Refresh
+                </button>
+                <button mat-button (click)="downloadOpenApiSpec()">
+                  <mat-icon>download</mat-icon>
+                  Export OpenAPI
+                </button>
+              </div>
+            </ng-container>
+          </div>
+
+          <div class="discovered-results" *ngIf="discoveredMappings.length > 0">
+            <div class="results-header">
+              <h4>Discovered Endpoints ({{ discoveredMappings.length }})</h4>
+              <button mat-button color="primary" (click)="addAllDiscoveredMappings()" *ngIf="selectedBridge">
+                <mat-icon>add_circle</mat-icon> Add All to Bridge
+              </button>
+            </div>
+
+            <mat-card *ngFor="let mapping of discoveredMappings" class="discovered-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar>api</mat-icon>
+                <mat-card-title>{{ mapping.mcpTool.name }}</mat-card-title>
+                <mat-card-subtitle>{{ mapping.restEndpoint.method }} {{ mapping.restEndpoint.path }}</mat-card-subtitle>
+              </mat-card-header>
+
+              <mat-card-content>
+                <p *ngIf="mapping.mcpTool?.description">{{ mapping.mcpTool.description }}</p>
+              </mat-card-content>
+
+              <mat-card-actions>
+                <button mat-button color="primary" (click)="addDiscoveredMapping(mapping)" [disabled]="!selectedBridge">
+                  <mat-icon>add</mat-icon> Add to Bridge
+                </button>
+              </mat-card-actions>
+            </mat-card>
+
+            <p *ngIf="!selectedBridge" class="warning-hint">
+              <mat-icon>info</mat-icon>
+              Select a bridge first to add discovered mappings.
+            </p>
+          </div>
+
+          <mat-spinner *ngIf="isDiscovering" diameter="40"></mat-spinner>
+
+          <!-- Built-in Tools Results -->
+          <div class="builtin-tools-results" *ngIf="discoveryMode === 'builtin' && builtInTools.length > 0">
+            <div class="results-header">
+              <h4>Built-in Application Tools ({{ builtInTools.length }})</h4>
+              <div class="header-actions">
+                <button mat-button color="primary" (click)="addBuiltInToolsToBridge()" *ngIf="selectedBridge">
+                  <mat-icon>add_circle</mat-icon> Add All to Selected Bridge
+                </button>
+              </div>
+            </div>
+
+            <mat-card *ngFor="let tool of builtInTools" class="builtin-tool-card">
+              <mat-card-header>
+                <mat-icon mat-card-avatar color="primary">build</mat-icon>
+                <mat-card-title>{{ tool.name }}</mat-card-title>
+                <mat-card-subtitle>{{ tool.beanName }}.{{ tool.methodName }}()</mat-card-subtitle>
+              </mat-card-header>
+
+              <mat-card-content>
+                <p *ngIf="tool.description">{{ tool.description }}</p>
+                <div class="tool-details">
+                  <div class="detail-row">
+                    <span class="detail-label">Return Type:</span>
+                    <code>{{ tool.returnType }}</code>
+                  </div>
+                  <div class="params" *ngIf="tool.parameters?.length">
+                    <span class="detail-label">Parameters:</span>
+                    <mat-chip-listbox>
+                      <mat-chip *ngFor="let param of tool.parameters" [matTooltip]="param.description">
+                        {{ param.name }}: {{ param.type }}
+                        <span *ngIf="param.required" class="required-indicator">*</span>
+                      </mat-chip>
+                    </mat-chip-listbox>
+                  </div>
+                </div>
+              </mat-card-content>
+
+              <mat-card-actions>
+                <button mat-button color="primary"
+                  (click)="addBuiltInMapping(builtInMappings[builtInTools.indexOf(tool)])"
+                  [disabled]="!selectedBridge || builtInTools.indexOf(tool) >= builtInMappings.length">
+                  <mat-icon>add</mat-icon> Add to Bridge
+                </button>
+              </mat-card-actions>
+            </mat-card>
+
+            <p *ngIf="!selectedBridge" class="warning-hint">
+              <mat-icon>info</mat-icon>
+              Select a bridge first to add built-in tool mappings, or create a dedicated bridge using "Create Built-in
+              Tools Bridge".
+            </p>
+          </div>
+
+          <mat-spinner *ngIf="isLoadingBuiltIn" diameter="40"></mat-spinner>
+
+          <div *ngIf="discoveryMode === 'builtin' && builtInTools.length === 0 && !isLoadingBuiltIn"
+            class="empty-state builtin-empty">
+            <mat-icon>build_circle</mat-icon>
+            <p>Click "Discover Built-in Tools" to find application tools.</p>
+            <p class="hint">Built-in tools are Spring beans annotated with &#64;Tool that can be exposed via MCP.</p>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Bridge Dialog -->
+  <div class="dialog-overlay" *ngIf="showBridgeDialog" (click)="cancelBridgeDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ isEditing ? 'Edit' : 'Create' }} REST-MCP Bridge</h3>
+
+      <div class="form-content" *ngIf="editingBridge">
+        <mat-form-field appearance="outline">
+          <mat-label>Bridge Name</mat-label>
+          <input matInput [(ngModel)]="editingBridge.name" [ngModelOptions]="{standalone: true}" placeholder="My API Bridge">
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Description</mat-label>
+          <textarea matInput [(ngModel)]="editingBridge.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Bridge Direction</mat-label>
+          <mat-select [(ngModel)]="editingBridge.direction" [ngModelOptions]="{standalone: true}">
+            <mat-option *ngFor="let dir of bridgeDirections" [value]="dir">
+              {{ getDirectionDisplayName(dir) }}
+            </mat-option>
+          </mat-select>
+          <mat-hint>{{ editingBridge.direction === 'REST_TO_MCP' ? 'Expose REST endpoints as MCP tools' : 'Expose MCP
+            tools as REST endpoints' }}</mat-hint>
+        </mat-form-field>
+
+        <div class="config-section">
+          <h4>REST API Configuration</h4>
+          <mat-form-field appearance="outline">
+            <mat-label>Base URL</mat-label>
+            <input matInput [(ngModel)]="editingBridge.restApiConfig.baseUrl" [ngModelOptions]="{standalone: true}" placeholder="https://api.example.com">
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>OpenAPI URL (optional)</mat-label>
+            <input matInput [(ngModel)]="editingBridge.restApiConfig.openApiUrl" [ngModelOptions]="{standalone: true}"
+              placeholder="https://api.example.com/openapi.json">
+          </mat-form-field>
+
+          <div class="row">
+            <mat-form-field appearance="outline">
+              <mat-label>Timeout (ms)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingBridge.restApiConfig.timeoutMs" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Rate Limit (req/sec)</mat-label>
+              <input matInput type="number" [(ngModel)]="editingBridge.restApiConfig.rateLimitPerSecond" [ngModelOptions]="{standalone: true}"
+                placeholder="0 = unlimited">
+            </mat-form-field>
+          </div>
+
+          <mat-checkbox [(ngModel)]="editingBridge.restApiConfig.verifySsl" [ngModelOptions]="{standalone: true}">Verify SSL Certificates</mat-checkbox>
+        </div>
+
+        <div class="config-section">
+          <h4>MCP Server Configuration</h4>
+          <div class="row">
+            <mat-form-field appearance="outline">
+              <mat-label>Port</mat-label>
+              <input matInput type="number" [(ngModel)]="editingBridge.mcpServerRef.port" [ngModelOptions]="{standalone: true}" min="1" max="65535">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Base Path</mat-label>
+              <input matInput [(ngModel)]="editingBridge.mcpServerRef.basePath" [ngModelOptions]="{standalone: true}" placeholder="/mcp-bridge">
+            </mat-form-field>
+          </div>
+        </div>
+
+        <div class="config-section">
+          <h4>Authentication <button mat-icon-button (click)="openAuthDialog()"><mat-icon>edit</mat-icon></button></h4>
+          <p class="auth-summary">
+            Type: <strong>{{ getAuthTypeDisplayName(editingBridge.authConfig?.type || 'NONE') }}</strong>
+          </p>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="editingBridge.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelBridgeDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveBridge()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mapping Dialog -->
+  <div class="dialog-overlay" *ngIf="showMappingDialog" (click)="cancelMappingDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>{{ editingMapping?.id ? 'Edit' : 'Create' }} Endpoint Mapping</h3>
+
+      <div class="form-content" *ngIf="editingMapping">
+        <div class="config-section">
+          <h4>REST Endpoint</h4>
+          <div class="row">
+            <mat-form-field appearance="outline" class="method-field">
+              <mat-label>Method</mat-label>
+              <mat-select [(ngModel)]="editingMapping.restEndpoint.method" [ngModelOptions]="{standalone: true}">
+                <mat-option *ngFor="let method of httpMethods" [value]="method">{{ method }}</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="path-field">
+              <mat-label>Path</mat-label>
+              <input matInput [(ngModel)]="editingMapping.restEndpoint.path" [ngModelOptions]="{standalone: true}" placeholder="/api/users/{id}">
+            </mat-form-field>
+          </div>
+
+          <div class="row">
+            <mat-form-field appearance="outline">
+              <mat-label>Content Type</mat-label>
+              <input matInput [(ngModel)]="editingMapping.restEndpoint.contentType" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Accept Type</mat-label>
+              <input matInput [(ngModel)]="editingMapping.restEndpoint.acceptType" [ngModelOptions]="{standalone: true}">
+            </mat-form-field>
+          </div>
+
+          <!-- Path Parameters -->
+          <div class="params-section">
+            <h5>Path Parameters <button mat-icon-button (click)="addPathParam()"><mat-icon>add</mat-icon></button></h5>
+            <div class="param-row" *ngFor="let param of editingMapping.restEndpoint.pathParams; let i = index">
+              <mat-form-field appearance="outline">
+                <mat-label>Name</mat-label>
+                <input matInput [(ngModel)]="param.name" [ngModelOptions]="{standalone: true}">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Type</mat-label>
+                <mat-select [(ngModel)]="param.type" [ngModelOptions]="{standalone: true}">
+                  <mat-option *ngFor="let t of parameterTypes" [value]="t">{{ t }}</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-checkbox [(ngModel)]="param.required" [ngModelOptions]="{standalone: true}">Required</mat-checkbox>
+              <button mat-icon-button color="warn" (click)="removePathParam(i)">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </div>
+
+          <!-- Query Parameters -->
+          <div class="params-section">
+            <h5>Query Parameters <button mat-icon-button (click)="addQueryParam()"><mat-icon>add</mat-icon></button>
+            </h5>
+            <div class="param-row" *ngFor="let param of editingMapping.restEndpoint.queryParams; let i = index">
+              <mat-form-field appearance="outline">
+                <mat-label>Name</mat-label>
+                <input matInput [(ngModel)]="param.name" [ngModelOptions]="{standalone: true}">
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Type</mat-label>
+                <mat-select [(ngModel)]="param.type" [ngModelOptions]="{standalone: true}">
+                  <mat-option *ngFor="let t of parameterTypes" [value]="t">{{ t }}</mat-option>
+                </mat-select>
+              </mat-form-field>
+              <mat-checkbox [(ngModel)]="param.required" [ngModelOptions]="{standalone: true}">Required</mat-checkbox>
+              <button mat-icon-button color="warn" (click)="removeQueryParam(i)">
+                <mat-icon>delete</mat-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="config-section">
+          <h4>MCP Tool</h4>
+          <mat-form-field appearance="outline">
+            <mat-label>Tool Name</mat-label>
+            <input matInput [(ngModel)]="editingMapping.mcpTool.name" [ngModelOptions]="{standalone: true}" placeholder="get_users">
+            <mat-hint>Use snake_case for tool names</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Description</mat-label>
+            <textarea matInput [(ngModel)]="editingMapping.mcpTool.description" [ngModelOptions]="{standalone: true}" rows="2"></textarea>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline">
+            <mat-label>Category (optional)</mat-label>
+            <input matInput [(ngModel)]="editingMapping.mcpTool.category" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+        </div>
+
+        <mat-slide-toggle [(ngModel)]="editingMapping.enabled" [ngModelOptions]="{standalone: true}">Enabled</mat-slide-toggle>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelMappingDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveMapping()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth Dialog -->
+  <div class="dialog-overlay" *ngIf="showAuthDialog" (click)="cancelAuthDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>Authentication Configuration</h3>
+
+      <div class="form-content" *ngIf="editingBridge?.authConfig">
+        <mat-form-field appearance="outline">
+          <mat-label>Authentication Type</mat-label>
+          <mat-select [(ngModel)]="editingBridge!.authConfig!.type" [ngModelOptions]="{standalone: true}" (selectionChange)="onAuthTypeChange()">
+            <mat-option *ngFor="let type of authTypes" [value]="type">
+              {{ getAuthTypeDisplayName(type) }}
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <!-- API Key -->
+        <ng-container *ngIf="editingBridge!.authConfig!.type === 'API_KEY'">
+          <mat-form-field appearance="outline">
+            <mat-label>API Key Header</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.apiKeyHeader" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>API Key</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.apiKey" [ngModelOptions]="{standalone: true}" type="password">
+          </mat-form-field>
+        </ng-container>
+
+        <!-- Bearer Token -->
+        <ng-container *ngIf="editingBridge!.authConfig!.type === 'BEARER'">
+          <mat-form-field appearance="outline">
+            <mat-label>Bearer Token</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.bearerToken" [ngModelOptions]="{standalone: true}" type="password">
+          </mat-form-field>
+        </ng-container>
+
+        <!-- Basic Auth -->
+        <ng-container *ngIf="editingBridge!.authConfig!.type === 'BASIC'">
+          <mat-form-field appearance="outline">
+            <mat-label>Username</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.username" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Password</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.password" [ngModelOptions]="{standalone: true}" type="password">
+          </mat-form-field>
+        </ng-container>
+
+        <!-- OAuth2 -->
+        <ng-container *ngIf="editingBridge!.authConfig!.type === 'OAUTH2' && editingBridge!.authConfig!.oauth2">
+          <mat-form-field appearance="outline">
+            <mat-label>Token URL</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.oauth2!.tokenUrl" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Client ID</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.oauth2!.clientId" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Client Secret</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.oauth2!.clientSecret" [ngModelOptions]="{standalone: true}" type="password">
+          </mat-form-field>
+          <mat-form-field appearance="outline">
+            <mat-label>Scope (optional)</mat-label>
+            <input matInput [(ngModel)]="editingBridge!.authConfig!.oauth2!.scope" [ngModelOptions]="{standalone: true}">
+          </mat-form-field>
+        </ng-container>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelAuthDialog()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Dialog -->
+  <div class="dialog-overlay" *ngIf="showImportDialog" (click)="cancelImportDialog()">
+    <div class="dialog" (click)="$event.stopPropagation()">
+      <h3>Import Bridge Configuration</h3>
+
+      <div class="form-content">
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>JSON Configuration</mat-label>
+          <textarea matInput [(ngModel)]="importJson" [ngModelOptions]="{standalone: true}" rows="10"
+            placeholder="Paste JSON configuration here..."></textarea>
+        </mat-form-field>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelImportDialog()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="importBridge()"
+          [disabled]="!importJson.trim()">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Dialog -->
+  <div class="dialog-overlay" *ngIf="showTestDialog" (click)="cancelTestDialog()">
+    <div class="dialog dialog-large" (click)="$event.stopPropagation()">
+      <h3>Test Endpoint Mapping</h3>
+
+      <div class="form-content" *ngIf="editingMapping">
+        <div class="test-info">
+          <p><strong>Tool:</strong> {{ editingMapping.mcpTool.name }}</p>
+          <p><strong>Endpoint:</strong> {{ editingMapping.restEndpoint.method }} {{ editingMapping.restEndpoint.path }}
+          </p>
+        </div>
+
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Test Input (JSON)</mat-label>
+          <textarea matInput [(ngModel)]="testInput" [ngModelOptions]="{standalone: true}" rows="5" placeholder='{"param": "value"}'></textarea>
+        </mat-form-field>
+
+        <button mat-raised-button color="primary" (click)="runTest()" [disabled]="isTesting">
+          <mat-icon>{{ isTesting ? 'hourglass_empty' : 'play_arrow' }}</mat-icon>
+          {{ isTesting ? 'Testing...' : 'Run Test' }}
+        </button>
+
+        <div class="test-result" *ngIf="testResult">
+          <div class="result-header" [class.success]="testResult.success" [class.error]="!testResult.success">
+            <mat-icon>{{ testResult.success ? 'check_circle' : 'error' }}</mat-icon>
+            <span>{{ testResult.success ? 'Success' : 'Failed' }}</span>
+            <span class="status-code" *ngIf="testResult.statusCode">Status: {{ testResult.statusCode }}</span>
+            <span class="duration">{{ testResult.durationMs }}ms</span>
+          </div>
+
+          <div class="result-body" *ngIf="testResult.response">
+            <h5>Response:</h5>
+            <pre>{{ testResult.response | json }}</pre>
+          </div>
+
+          <div class="result-error" *ngIf="testResult.error">
+            <h5>Error:</h5>
+            <pre>{{ testResult.error }}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="dialog-actions">
+        <button mat-button (click)="cancelTestDialog()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>

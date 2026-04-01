@@ -16,6 +16,7 @@
 
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewChecked, AfterViewInit, ChangeDetectionStrategy, ChangeDetectorRef, NgZone, HostListener } from '@angular/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { HttpClient } from '@angular/common/http';
 import { MatDialog } from '@angular/material/dialog';
 import { Subscription, fromEvent } from 'rxjs';
 import { throttleTime, takeUntil, filter } from 'rxjs/operators';
@@ -29,6 +30,7 @@ import { AgentService } from '../../services/agent.service';
 import { ChatStorageService } from '../../services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '../../services/chat-history.service';
 import { FolderService } from '../../services/folder.service';
+import { ModelContextService } from '../../services/model-context.service';
 
 // Models
 import {
@@ -45,7 +47,9 @@ import {
   ApiAgentConfigRequest,
   LocalAgentSession,
   RagServiceStatus,
-  ChatFolder
+  ChatFolder,
+  KompileLocalModelStatus,
+  ActiveModelContext
 } from '../../models/api-models';
 
 // Unified message interface
@@ -254,6 +258,11 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   ragMaxResults: number = 5;
   ragThreshold: number = 0.0;
 
+  // Graph RAG settings (knowledge graph-based retrieval)
+  graphRagEnabled: boolean = false;
+  graphRagSearchType: string = 'LOCAL';
+  graphRagMaxResults: number = 5;
+
   // Timeout settings (0 = no timeout)
   timeoutSeconds: number = 300; // Default 5 minutes
   timeoutOptions: { label: string; value: number }[] = [
@@ -268,6 +277,17 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   // Agent session for chat
   private agentSession: LocalAgentSession | null = null;
+
+  // Kompile Local Model state
+  kompileLocalStatus: any = null;
+  kompileLocalStagingUrl: string = 'http://localhost:8081';
+  kompileLocalLoading: boolean = false;
+
+  // Active Model Context state
+  activeModelContext: ActiveModelContext | null = null;
+  modelContextLoading: boolean = false;
+  embeddingSwitchLoading: boolean = false;
+  showModelSwitchDropdown: boolean = false;
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // FOLDER CONFIGURATION
@@ -296,6 +316,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private storageService: ChatStorageService,
     private chatHistoryService: ChatHistoryService,
     private folderService: FolderService,
+    private modelContextService: ModelContextService,
+    private http: HttpClient,
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
     private sanitizer: DomSanitizer,
@@ -326,6 +348,8 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.checkRagServiceStatus();
     this.loadAgents();
     this.loadFolders();
+    this.loadKompileLocalStatus();
+    this.initModelContext();
 
     // Subscribe to agent updates
     this.subscriptions.push(
@@ -782,6 +806,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
           enableRag: this.ragEnabled,
           ragMaxResults: this.ragMaxResults,
           ragSimilarityThreshold: this.ragThreshold,
+          enableGraphRag: this.graphRagEnabled,
+          graphRagMaxResults: this.graphRagMaxResults,
+          graphRagSearchType: this.graphRagSearchType,
+          graphRagConversationId: this.currentSession?.conversationId || this.currentSession?.id,
           folderId: this.selectedFolder?.folderId,
           timeoutSeconds: this.timeoutSeconds
         }
@@ -1132,9 +1160,24 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
 
   selectAgent(agent: AgentProvider): void {
     this.selectedAgent = agent;
+    this.skipPermissions = agent.skipPermissions;
     if (this.currentSession) {
       this.currentSession.agentName = agent.name;
       this.saveSessions();
+    }
+  }
+
+  onSkipPermissionsChange(): void {
+    if (this.selectedAgent) {
+      this.agentService.updateSkipPermissions(this.selectedAgent.name, this.skipPermissions)
+        .subscribe({
+          next: () => {
+            if (this.selectedAgent) {
+              this.selectedAgent.skipPermissions = this.skipPermissions;
+            }
+          },
+          error: (err: any) => console.error('Failed to persist skipPermissions:', err)
+        });
     }
   }
 
@@ -1283,6 +1326,80 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
       error: (err: any) => {
         this.apiAgentTestLoading = false;
         this.apiAgentTestResult = 'Error: ' + (err.message || 'Connection failed');
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // KOMPILE LOCAL MODEL
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  loadKompileLocalStatus(): void {
+    this.agentService.getKompileLocalStatus().subscribe({
+      next: (status: KompileLocalModelStatus) => {
+        this.kompileLocalStatus = status;
+        if (status.stagingUrl) {
+          this.kompileLocalStagingUrl = status.stagingUrl;
+        }
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.kompileLocalStatus = null;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  connectKompileLocal(): void {
+    this.kompileLocalLoading = true;
+    this.cdr.markForCheck();
+
+    this.agentService.connectKompileLocal(this.kompileLocalStagingUrl).subscribe({
+      next: () => {
+        this.kompileLocalLoading = false;
+        this.loadKompileLocalStatus();
+        this.refreshAgents();
+      },
+      error: (err: any) => {
+        this.kompileLocalLoading = false;
+        console.error('Failed to connect kompile-local:', err);
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  disconnectKompileLocal(): void {
+    this.kompileLocalLoading = true;
+    this.cdr.markForCheck();
+
+    this.agentService.disconnectKompileLocal().subscribe({
+      next: () => {
+        this.kompileLocalLoading = false;
+        this.loadKompileLocalStatus();
+        this.refreshAgents();
+      },
+      error: (err: any) => {
+        this.kompileLocalLoading = false;
+        console.error('Failed to disconnect kompile-local:', err);
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  refreshKompileLocalStatus(): void {
+    this.kompileLocalLoading = true;
+    this.cdr.markForCheck();
+
+    this.agentService.discoverKompileLocal().subscribe({
+      next: () => {
+        this.kompileLocalLoading = false;
+        this.loadKompileLocalStatus();
+        this.refreshAgents();
+      },
+      error: (err: any) => {
+        this.kompileLocalLoading = false;
+        console.error('Failed to refresh kompile-local:', err);
         this.cdr.markForCheck();
       }
     });
@@ -1537,6 +1654,24 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     return `${(ms / 1000).toFixed(1)}s`;
   }
 
+  getSessionTokenUsage(): { totalInput: number; totalOutput: number; totalTokens: number } {
+    let totalInput = 0;
+    let totalOutput = 0;
+    for (const msg of this.messages) {
+      if (msg.tokenMetrics) {
+        totalInput += msg.tokenMetrics.inputTokens || 0;
+        totalOutput += msg.tokenMetrics.outputTokens || 0;
+      }
+    }
+    return { totalInput, totalOutput, totalTokens: totalInput + totalOutput };
+  }
+
+  formatTokenCount(count: number): string {
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+    if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+    return count.toString();
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // MESSAGE ACTIONS (Backend-Driven Pattern)
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1757,6 +1892,73 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ACTIVE MODEL CONTEXT
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private initModelContext(): void {
+    this.subscriptions.push(
+      this.modelContextService.context$.subscribe(ctx => {
+        this.activeModelContext = ctx;
+        this.cdr.markForCheck();
+      })
+    );
+    this.subscriptions.push(
+      this.modelContextService.loading$.subscribe(loading => {
+        this.modelContextLoading = loading;
+        this.cdr.markForCheck();
+      })
+    );
+    this.modelContextService.refresh();
+  }
+
+  refreshModelContext(): void {
+    this.modelContextService.refresh();
+  }
+
+  switchEmbeddingModel(modelId: string): void {
+    if (!modelId || this.embeddingSwitchLoading) return;
+    if (modelId === this.activeModelContext?.embedding?.modelId) {
+      this.showModelSwitchDropdown = false;
+      return;
+    }
+    this.embeddingSwitchLoading = true;
+    this.showModelSwitchDropdown = false;
+
+    // Use the existing /api/models/embedding/switch/{modelId} endpoint
+    const url = `${this.modelContextService.backendUrl}/models/embedding/switch/${encodeURIComponent(modelId)}`;
+    this.http.post(url, {}).subscribe({
+      next: () => {
+        this.embeddingSwitchLoading = false;
+        this.modelContextService.refresh();
+        this.cdr.markForCheck();
+      },
+      error: (err: any) => {
+        console.error('Failed to switch embedding model:', err);
+        this.embeddingSwitchLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  openStagingModelCard(modelId: string): void {
+    const url = this.modelContextService.getStagingModelCardUrl(modelId);
+    if (url) {
+      window.open(url, '_blank');
+    }
+  }
+
+  openStagingApp(): void {
+    const ctx = this.activeModelContext;
+    if (ctx?.staging?.uiUrl) {
+      window.open(ctx.staging.uiUrl, '_blank');
+    }
+  }
+
+  toggleModelSwitchDropdown(): void {
+    this.showModelSwitchDropdown = !this.showModelSwitchDropdown;
   }
 
   /**

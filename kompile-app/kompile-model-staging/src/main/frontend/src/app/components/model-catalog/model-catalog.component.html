@@ -25,6 +25,63 @@
     <button mat-raised-button color="primary" (click)="loadCatalog()">Retry</button>
   </div>
 
+  <!-- Auto-Optimization Settings -->
+  <div class="auto-optimize-section" *ngIf="!isLoading && !error">
+    <mat-card class="auto-optimize-card">
+      <mat-card-header (click)="autoOptimizeSettingsExpanded = !autoOptimizeSettingsExpanded"
+                        class="clickable-header">
+        <mat-icon mat-card-avatar>tune</mat-icon>
+        <mat-card-title>Auto-Optimization</mat-card-title>
+        <mat-card-subtitle>Automatically optimize models after staging</mat-card-subtitle>
+        <div class="header-actions">
+          <mat-slide-toggle [checked]="autoOptimizeEnabled"
+                            (change)="toggleAutoOptimize()"
+                            (click)="$event.stopPropagation()"
+                            color="primary">
+          </mat-slide-toggle>
+          <mat-icon class="expand-icon">{{ autoOptimizeSettingsExpanded ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+      </mat-card-header>
+
+      <mat-card-content *ngIf="autoOptimizeSettingsExpanded">
+        <div class="optimize-settings">
+          <!-- Preset Selector -->
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Optimization Preset</mat-label>
+            <mat-select [value]="autoOptimizeConfig.preset"
+                        (selectionChange)="onPresetChange($event.value)">
+              <mat-option *ngFor="let preset of availablePresets" [value]="preset.id">
+                {{ preset.name }} - {{ preset.description }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Enabled Passes -->
+          <div class="passes-list">
+            <h4>Enabled Passes</h4>
+            <mat-chip-set>
+              <mat-chip *ngFor="let pass of autoOptimizeConfig.enabledPasses">
+                {{ pass }}
+              </mat-chip>
+            </mat-chip-set>
+          </div>
+
+          <!-- Max Iterations -->
+          <mat-form-field appearance="outline" class="compact-field">
+            <mat-label>Max Iterations</mat-label>
+            <input matInput type="number" [(ngModel)]="autoOptimizeConfig.maxIterations" min="1" max="10">
+          </mat-form-field>
+
+          <button mat-raised-button color="primary" (click)="saveAutoOptimizeConfig()"
+                  *ngIf="autoOptimizeEnabled">
+            <mat-icon>save</mat-icon>
+            Save Config
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+  </div>
+
   <!-- Main Content -->
   <div class="catalog-content" *ngIf="!isLoading && !error && catalog">
 
@@ -38,48 +95,9 @@
       <p class="section-description">Dense retrieval encoders for embedding text into vector space</p>
 
       <div class="model-grid">
-        <mat-card *ngFor="let model of getEncoders()" class="model-card">
-          <mat-card-header>
-            <mat-icon mat-card-avatar class="model-avatar">transform</mat-icon>
-            <mat-card-title>{{ model.id }}</mat-card-title>
-            <mat-card-subtitle>
-              <mat-icon class="source-icon">{{ getSourceIcon(model.source) }}</mat-icon>
-              {{ model.source }}
-            </mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <p class="model-description">{{ model.metadata.description }}</p>
-            <div class="model-specs">
-              <div class="spec" *ngIf="model.metadata.embeddingDim">
-                <span class="spec-label">Dimensions</span>
-                <span class="spec-value">{{ model.metadata.embeddingDim }}</span>
-              </div>
-              <div class="spec" *ngIf="model.metadata.maxSequenceLength">
-                <span class="spec-label">Max Length</span>
-                <span class="spec-value">{{ model.metadata.maxSequenceLength }}</span>
-              </div>
-              <div class="spec">
-                <span class="spec-label">Format</span>
-                <span class="spec-value">{{ model.format }}</span>
-              </div>
-            </div>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary"
-                    (click)="stageModel(model)"
-                    [disabled]="isStaging(model.id)">
-              <mat-icon>{{ isStaging(model.id) ? 'sync' : 'cloud_download' }}</mat-icon>
-              {{ isStaging(model.id) ? 'Staging...' : 'Stage' }}
-            </button>
-            <button mat-button color="accent"
-                    (click)="stageModel(model, true)"
-                    [disabled]="isStaging(model.id)"
-                    matTooltip="Download, convert, and promote in one step">
-              <mat-icon>rocket_launch</mat-icon>
-              Auto-Promote
-            </button>
-          </mat-card-actions>
-        </mat-card>
+        <ng-container *ngFor="let model of getEncoders()">
+          <ng-container *ngTemplateOutlet="modelCard; context: { $implicit: model, icon: 'transform' }"></ng-container>
+        </ng-container>
       </div>
     </section>
 
@@ -93,55 +111,314 @@
       <p class="section-description">Reranking models for improving search result relevance</p>
 
       <div class="model-grid">
-        <mat-card *ngFor="let model of getCrossEncoders()" class="model-card cross-encoder">
-          <mat-card-header>
-            <mat-icon mat-card-avatar class="model-avatar">compare_arrows</mat-icon>
-            <mat-card-title>{{ model.id }}</mat-card-title>
-            <mat-card-subtitle>
-              <mat-icon class="source-icon">{{ getSourceIcon(model.source) }}</mat-icon>
-              {{ model.source }}
-            </mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <p class="model-description">{{ model.metadata.description }}</p>
-            <div class="model-specs">
-              <div class="spec" *ngIf="model.metadata.hiddenSize">
-                <span class="spec-label">Hidden Size</span>
-                <span class="spec-value">{{ model.metadata.hiddenSize }}</span>
-              </div>
-              <div class="spec" *ngIf="model.metadata.numLayers">
-                <span class="spec-label">Layers</span>
-                <span class="spec-value">{{ model.metadata.numLayers }}</span>
-              </div>
-              <div class="spec" *ngIf="model.metadata.trainingData">
-                <span class="spec-label">Training</span>
-                <span class="spec-value">{{ model.metadata.trainingData }}</span>
-              </div>
-            </div>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary"
-                    (click)="stageModel(model)"
-                    [disabled]="isStaging(model.id)">
-              <mat-icon>{{ isStaging(model.id) ? 'sync' : 'cloud_download' }}</mat-icon>
-              {{ isStaging(model.id) ? 'Staging...' : 'Stage' }}
-            </button>
-            <button mat-button color="accent"
-                    (click)="stageModel(model, true)"
-                    [disabled]="isStaging(model.id)">
-              <mat-icon>rocket_launch</mat-icon>
-              Auto-Promote
-            </button>
-          </mat-card-actions>
-        </mat-card>
+        <ng-container *ngFor="let model of getCrossEncoders()">
+          <ng-container *ngTemplateOutlet="modelCard; context: { $implicit: model, icon: 'compare_arrows' }"></ng-container>
+        </ng-container>
+      </div>
+    </section>
+
+    <!-- VLM Section -->
+    <section class="model-section" *ngIf="getVlmModels().length > 0">
+      <h2 class="section-title">
+        <mat-icon>visibility</mat-icon>
+        Vision-Language Models
+        <span class="count-badge">{{ getVlmModels().length }}</span>
+      </h2>
+      <p class="section-description">Vision-language models for document understanding, OCR, and image analysis</p>
+
+      <div class="model-grid">
+        <ng-container *ngFor="let model of getVlmModels()">
+          <ng-container *ngTemplateOutlet="modelCard; context: { $implicit: model, icon: 'visibility' }"></ng-container>
+        </ng-container>
       </div>
     </section>
 
     <!-- Empty State -->
-    <div class="empty-state" *ngIf="getEncoders().length === 0 && getCrossEncoders().length === 0">
+    <div class="empty-state" *ngIf="getEncoders().length === 0 && getCrossEncoders().length === 0 && getVlmModels().length === 0">
       <mat-icon>inventory_2</mat-icon>
       <p>No models available in the catalog</p>
     </div>
 
   </div>
 </div>
+
+<!-- ==================== Shared Model Card Template ==================== -->
+<ng-template #modelCard let-model let-icon="icon">
+  <mat-card class="model-card" [class.installed]="model.installed" [class.not-installed]="!model.installed">
+
+    <!-- Header -->
+    <mat-card-header>
+      <mat-icon mat-card-avatar class="model-avatar" [class.avatar-installed]="model.installed">{{ icon }}</mat-icon>
+      <mat-card-title>{{ model.id }}</mat-card-title>
+      <mat-card-subtitle>
+        <mat-icon class="source-icon">{{ getSourceIcon(model.source) }}</mat-icon>
+        {{ model.source }}
+      </mat-card-subtitle>
+    </mat-card-header>
+
+    <!-- Installed / Not Installed Banner -->
+    <div class="status-banner installed-banner" *ngIf="model.installed">
+      <mat-icon>check_circle</mat-icon>
+      <span>Installed</span>
+    </div>
+    <div class="status-banner not-installed-banner" *ngIf="!model.installed">
+      <mat-icon>cloud_off</mat-icon>
+      <span>Not Downloaded</span>
+    </div>
+
+    <mat-card-content>
+      <p class="model-description" *ngIf="model.metadata?.description">{{ model.metadata.description }}</p>
+
+      <!-- Specs -->
+      <div class="model-specs">
+        <div class="spec" *ngIf="model.metadata?.embeddingDim">
+          <span class="spec-label">Dimensions</span>
+          <span class="spec-value">{{ model.metadata.embeddingDim }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.hiddenSize">
+          <span class="spec-label">Hidden Size</span>
+          <span class="spec-value">{{ model.metadata.hiddenSize }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.numLayers">
+          <span class="spec-label">Layers</span>
+          <span class="spec-value">{{ model.metadata.numLayers }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.maxSequenceLength">
+          <span class="spec-label">Max Length</span>
+          <span class="spec-value">{{ model.metadata.maxSequenceLength }}</span>
+        </div>
+        <div class="spec">
+          <span class="spec-label">Format</span>
+          <span class="spec-value">{{ model.format }}</span>
+        </div>
+        <div class="spec" *ngIf="model.modelType">
+          <span class="spec-label">Type</span>
+          <span class="spec-value">{{ model.modelType }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.framework">
+          <span class="spec-label">Framework</span>
+          <span class="spec-value">{{ model.metadata.framework }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.encoderType">
+          <span class="spec-label">Encoder</span>
+          <span class="spec-value">{{ model.metadata.encoderType }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.version">
+          <span class="spec-label">Version</span>
+          <span class="spec-value">{{ model.metadata.version }}</span>
+        </div>
+        <div class="spec" *ngIf="model.metadata?.trainingData">
+          <span class="spec-label">Training</span>
+          <span class="spec-value">{{ model.metadata.trainingData }}</span>
+        </div>
+      </div>
+
+      <!-- RAG Role Badge -->
+      <div class="rag-role-badge" *ngIf="model.metadata?.ragRole">
+        <mat-chip color="accent">{{ model.metadata.ragRole }}</mat-chip>
+      </div>
+
+      <!-- OCR Info (for OCR models) -->
+      <div class="ocr-info" *ngIf="isOcrModel(model)">
+        <div class="info-chips-header">OCR Details</div>
+        <div class="info-chips">
+          <span class="info-chip" *ngIf="model.metadata?.inputHeight && model.metadata?.inputWidth">
+            Input: {{ model.metadata.inputHeight }}x{{ model.metadata.inputWidth }}
+          </span>
+          <span class="info-chip" *ngIf="model.metadata?.supportedLanguages?.length">
+            {{ model.metadata.supportedLanguages.join(', ') }}
+          </span>
+          <span class="info-chip" *ngIf="model.metadata?.supportsBatch">Batch: Yes</span>
+          <span class="info-chip" *ngIf="model.metadata?.supportsHandwriting">Handwriting</span>
+          <span class="info-chip" *ngIf="model.metadata?.averageAccuracy != null">
+            Accuracy: {{ model.metadata.averageAccuracy | number:'1.1-1' }}%
+          </span>
+        </div>
+      </div>
+
+      <!-- VLM Info (for VLM models) -->
+      <div class="vlm-info" *ngIf="isVlmModel(model)">
+        <div class="info-chips-header">VLM Architecture</div>
+        <div class="info-chips">
+          <span class="info-chip" *ngIf="model.metadata?.imageSize">
+            Image: {{ model.metadata.imageSize }}px
+          </span>
+          <span class="info-chip" *ngIf="model.metadata?.tileSize">
+            Tile: {{ model.metadata.tileSize }}px
+          </span>
+          <span class="info-chip" *ngIf="model.metadata?.visionFrames">
+            Frames: {{ model.metadata.visionFrames }}
+          </span>
+          <span class="info-chip" *ngFor="let comp of model.metadata?.components || []">
+            {{ comp }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Vision Encoder Output Names -->
+      <div class="io-names-section" *ngIf="model.metadata?.visionEncoderOutputNames?.length">
+        <div class="info-chips-header">Vision Encoder Outputs</div>
+        <div class="info-chips">
+          <span class="io-chip output" *ngFor="let name of model.metadata.visionEncoderOutputNames"
+                [class.primary]="name === model.metadata?.visionEncoderPrimaryOutputName">
+            {{ name }}
+          </span>
+        </div>
+      </div>
+
+      <!-- Graph I/O Names (for installed models with graph info) -->
+      <div class="io-names-section" *ngIf="graphInfoCache[model.id]">
+        <div class="info-chips-header">Graph I/O</div>
+        <div class="info-chips">
+          <span class="io-chip input" *ngFor="let name of graphInfoCache[model.id].inputNames">
+            <mat-icon class="io-icon">input</mat-icon>{{ name }}
+          </span>
+          <span class="io-chip output" *ngFor="let name of graphInfoCache[model.id].outputNames">
+            <mat-icon class="io-icon">output</mat-icon>{{ name }}
+          </span>
+        </div>
+      </div>
+
+      <!-- ==================== DSP Execution Plan (Compact) ==================== -->
+      <div class="dsp-plan-section" *ngIf="dspPlanCache[model.id]">
+        <div class="info-chips-header">
+          <mat-icon class="dsp-plan-icon">account_tree</mat-icon>
+          DSP Execution Plan
+          <span class="dsp-plan-stats" *ngIf="fullGraphInfoCache[model.id]">
+            {{ fullGraphInfoCache[model.id].totalOps }} ops &middot;
+            depth {{ fullGraphInfoCache[model.id].analysis?.graphDepth || '?' }}
+          </span>
+        </div>
+        <div class="dsp-plan-flow">
+          <ng-container *ngFor="let stage of dspPlanCache[model.id]; let last = last">
+            <div class="dsp-plan-node" [style.border-color]="stage.color">
+              <mat-icon [style.color]="stage.color" class="dsp-node-icon">{{ stage.icon }}</mat-icon>
+              <div class="dsp-node-content">
+                <span class="dsp-node-label">{{ stage.label }}</span>
+                <span class="dsp-node-detail">{{ stage.detail }}</span>
+              </div>
+            </div>
+            <mat-icon *ngIf="!last" class="dsp-plan-arrow">arrow_forward</mat-icon>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- ==================== Optimization Section ==================== -->
+      <div class="optimization-section" *ngIf="canOptimize(model)">
+
+        <!-- Optimized: show details -->
+        <div class="optimization-status optimized" *ngIf="model.metadata?.optimized">
+          <div class="opt-header">
+            <mat-icon>bolt</mat-icon>
+            <span class="opt-title">Graph Optimized</span>
+            <span class="opt-reduction" *ngIf="model.metadata?.optimization_stats?.reduction_percent != null">
+              {{ model.metadata.optimization_stats.reduction_percent.toFixed(1) }}% smaller
+            </span>
+          </div>
+
+          <!-- Stats row -->
+          <div class="opt-stats" *ngIf="model.metadata?.optimization_stats">
+            <span class="opt-stat-item" *ngIf="model.metadata.optimization_stats.ops_before != null">
+              <mat-icon class="stat-icon">functions</mat-icon>
+              Ops: {{ model.metadata.optimization_stats.ops_before }} &rarr; {{ model.metadata.optimization_stats.ops_after }}
+            </span>
+            <span class="opt-stat-item" *ngIf="model.metadata.optimization_stats.vars_before != null">
+              <mat-icon class="stat-icon">data_array</mat-icon>
+              Vars: {{ model.metadata.optimization_stats.vars_before }} &rarr; {{ model.metadata.optimization_stats.vars_after }}
+            </span>
+            <span class="opt-stat-item" *ngIf="model.metadata?.optimization_time_ms != null">
+              <mat-icon class="stat-icon">timer</mat-icon>
+              {{ formatOptTime(model.metadata.optimization_time_ms) }}
+            </span>
+            <span class="opt-stat-item" *ngIf="model.metadata?.optimization_config?.preset">
+              <mat-icon class="stat-icon">tune</mat-icon>
+              {{ model.metadata.optimization_config.preset }}
+            </span>
+          </div>
+
+          <!-- Per-pass breakdown -->
+          <div class="pass-breakdown" *ngIf="getResolvedPasses(model).length > 0">
+            <div class="pass-breakdown-label">Applied Optimization Passes</div>
+            <div class="pass-list">
+              <div class="pass-item" *ngFor="let pass of getResolvedPasses(model)"
+                   [matTooltip]="pass.description">
+                <div class="pass-item-header">
+                  <mat-icon class="pass-icon" [style.color]="getCategoryColor(pass.category)">{{ pass.icon }}</mat-icon>
+                  <span class="pass-name">{{ pass.name }}</span>
+                  <span class="pass-category" [style.background]="getCategoryColor(pass.category)">{{ pass.category }}</span>
+                </div>
+                <div class="pass-description">{{ pass.description }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- NOT Optimized: big warning -->
+        <div class="optimization-status not-optimized" *ngIf="!model.metadata?.optimized">
+          <div class="opt-header">
+            <mat-icon>warning</mat-icon>
+            <span class="opt-title">Not Optimized</span>
+          </div>
+          <p class="opt-description">
+            This model has not been run through the SameDiff GraphOptimizer.
+            Optimization can reduce model size, fuse operations, and improve inference speed.
+          </p>
+        </div>
+      </div>
+
+    </mat-card-content>
+
+    <!-- Actions -->
+    <mat-card-actions>
+      <!-- Not installed: show Stage / Auto-Promote -->
+      <ng-container *ngIf="!model.installed">
+        <button mat-raised-button color="primary"
+                (click)="stageModel(model)"
+                [disabled]="isStaging(model.id)">
+          <mat-icon>{{ isStaging(model.id) ? 'sync' : 'cloud_download' }}</mat-icon>
+          {{ isStaging(model.id) ? 'Staging...' : 'Stage' }}
+        </button>
+        <button mat-button color="accent"
+                (click)="stageModel(model, true)"
+                [disabled]="isStaging(model.id)"
+                matTooltip="Download, convert, and promote in one step">
+          <mat-icon>rocket_launch</mat-icon>
+          Auto-Promote
+        </button>
+      </ng-container>
+
+      <!-- Installed SameDiff model + not optimized: show Optimize button -->
+      <button mat-raised-button color="accent"
+              *ngIf="canOptimize(model) && !model.metadata?.optimized"
+              (click)="optimizeModel(model)"
+              [disabled]="isOptimizing(model.id)">
+        <mat-icon>{{ isOptimizing(model.id) ? 'sync' : 'bolt' }}</mat-icon>
+        {{ isOptimizing(model.id) ? 'Optimizing...' : 'Optimize' }}
+      </button>
+
+      <!-- Installed SameDiff model + optimized: show Re-Optimize -->
+      <button mat-button color="accent"
+              *ngIf="canOptimize(model) && model.metadata?.optimized"
+              (click)="optimizeModel(model)"
+              [disabled]="isOptimizing(model.id)"
+              matTooltip="Re-run graph optimization">
+        <mat-icon>{{ isOptimizing(model.id) ? 'sync' : 'bolt' }}</mat-icon>
+        Re-Optimize
+      </button>
+
+      <!-- View computation graph (installed models only) -->
+      <button mat-icon-button
+              *ngIf="model.installed"
+              (click)="showGraph(model.id)"
+              matTooltip="View computation graph (DAG)"
+              class="graph-btn">
+        <mat-icon>account_tree</mat-icon>
+      </button>
+
+      <!-- Info button always -->
+      <button mat-icon-button (click)="showModelInfo(model)" matTooltip="View all model details" class="info-btn">
+        <mat-icon>info_outline</mat-icon>
+      </button>
+    </mat-card-actions>
+  </mat-card>
+</ng-template>

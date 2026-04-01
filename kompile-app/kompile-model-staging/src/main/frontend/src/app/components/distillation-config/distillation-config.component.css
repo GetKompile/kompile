@@ -1,0 +1,17 @@
+.distillation-config { padding: 16px; max-width: 1000px; }
+.distillation-config h2 { margin-bottom: 16px; }
+.section-card { margin-bottom: 16px; }
+.model-select-grid { display: flex; align-items: center; gap: 16px; }
+.model-select-col { flex: 1; }
+.model-select-col h3 { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.arrow-col { display: flex; align-items: center; }
+.arrow-icon { font-size: 32px; width: 32px; height: 32px; color: rgba(0,0,0,0.3); }
+.full-width { width: 100%; }
+.type-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.type-card { cursor: pointer; transition: all 0.2s; }
+.type-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.15); }
+.type-card.selected { border: 2px solid #1976d2; background: rgba(25,118,210,0.04); }
+.type-card p { font-size: 0.85rem; color: rgba(0,0,0,0.6); }
+.params-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.peft-toggle { margin-top: 16px; }
+.actions { margin-top: 24px; }

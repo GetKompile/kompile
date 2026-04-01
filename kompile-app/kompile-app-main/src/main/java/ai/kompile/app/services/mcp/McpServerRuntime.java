@@ -41,6 +41,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -495,13 +496,193 @@ public class McpServerRuntime {
             case HTTP_ENDPOINT:
                 return executeHttpTool(toolConfig, arguments);
             case SCRIPT:
-                return Map.of("status", "Script execution not implemented", "tool", toolConfig.getName());
+                return executeScriptTool(toolConfig, arguments);
             case JAVA_CLASS:
-                return Map.of("status", "Java class execution not implemented", "tool", toolConfig.getName());
+                return executeJavaClassTool(toolConfig, arguments);
             case BUILT_IN:
-                return Map.of("status", "Built-in tool execution not implemented", "tool", toolConfig.getName());
+                return executeBuiltInTool(toolConfig, arguments);
             default:
                 throw new UnsupportedOperationException("Unknown tool type: " + toolConfig.getImplementationType());
+        }
+    }
+
+    private Object executeScriptTool(McpToolConfig toolConfig, Map<String, Object> arguments) throws Exception {
+        McpToolConfig.ScriptConfig scriptConfig = toolConfig.getScriptConfig();
+        if (scriptConfig == null) {
+            throw new IllegalStateException("Script configuration is required for SCRIPT tools");
+        }
+
+        String language = scriptConfig.getLanguage() != null ? scriptConfig.getLanguage() : "python";
+        String interpreter;
+        switch (language.toLowerCase()) {
+            case "python":
+            case "python3":
+                interpreter = "python3";
+                break;
+            case "javascript":
+            case "node":
+                interpreter = "node";
+                break;
+            case "bash":
+            case "sh":
+                interpreter = "bash";
+                break;
+            default:
+                throw new UnsupportedOperationException("Unsupported script language: " + language);
+        }
+
+        // Determine script content: inline script or file path
+        List<String> command = new ArrayList<>();
+        command.add(interpreter);
+
+        java.nio.file.Path tempScript = null;
+        try {
+            if (scriptConfig.getScriptPath() != null && !scriptConfig.getScriptPath().isEmpty()) {
+                command.add(scriptConfig.getScriptPath());
+            } else if (scriptConfig.getScript() != null && !scriptConfig.getScript().isEmpty()) {
+                // Write inline script to temp file
+                String ext = language.contains("python") ? ".py" : language.contains("javascript") ? ".js" : ".sh";
+                tempScript = java.nio.file.Files.createTempFile("mcp-script-", ext);
+                java.nio.file.Files.writeString(tempScript, scriptConfig.getScript());
+                command.add(tempScript.toString());
+            } else {
+                throw new IllegalStateException("Script tool requires either 'script' or 'scriptPath'");
+            }
+
+            // Pass arguments as JSON via stdin
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            if (scriptConfig.getEnvironment() != null) {
+                pb.environment().putAll(scriptConfig.getEnvironment());
+            }
+
+            Process process = pb.start();
+
+            // Write arguments as JSON to stdin
+            String argsJson = objectMapper.writeValueAsString(arguments);
+            process.getOutputStream().write(argsJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            process.getOutputStream().close();
+
+            // Read output
+            String output;
+            try (var reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                output = reader.lines().collect(Collectors.joining("\n"));
+            }
+
+            boolean finished = process.waitFor(scriptConfig.getTimeoutMs(), TimeUnit.MILLISECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new java.util.concurrent.TimeoutException(
+                        "Script execution timed out after " + scriptConfig.getTimeoutMs() + "ms");
+            }
+
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                return Map.of("error", "Script exited with code " + exitCode, "output", output);
+            }
+
+            // Try to parse as JSON, fall back to plain text
+            try {
+                return objectMapper.readTree(output);
+            } catch (Exception e) {
+                return Map.of("result", output);
+            }
+        } finally {
+            if (tempScript != null) {
+                java.nio.file.Files.deleteIfExists(tempScript);
+            }
+        }
+    }
+
+    private Object executeJavaClassTool(McpToolConfig toolConfig, Map<String, Object> arguments) throws Exception {
+        McpToolConfig.JavaClassConfig javaConfig = toolConfig.getJavaClassConfig();
+        if (javaConfig == null) {
+            throw new IllegalStateException("Java class configuration is required for JAVA_CLASS tools");
+        }
+
+        String className = javaConfig.getClassName();
+        String methodName = javaConfig.getMethodName();
+        if (className == null || methodName == null) {
+            throw new IllegalStateException("Both className and methodName are required for JAVA_CLASS tools");
+        }
+
+        Class<?> clazz = Class.forName(className);
+        Object instance = clazz.getDeclaredConstructor().newInstance();
+
+        // Find the method - look for one accepting Map<String, Object>
+        java.lang.reflect.Method method = null;
+        for (java.lang.reflect.Method m : clazz.getMethods()) {
+            if (m.getName().equals(methodName)) {
+                Class<?>[] paramTypes = m.getParameterTypes();
+                if (paramTypes.length == 1 && paramTypes[0].isAssignableFrom(Map.class)) {
+                    method = m;
+                    break;
+                } else if (paramTypes.length == 0) {
+                    method = m;
+                    // Keep looking for a method that accepts arguments
+                }
+            }
+        }
+
+        if (method == null) {
+            throw new NoSuchMethodException("No suitable method '" + methodName + "' found in " + className);
+        }
+
+        Object result;
+        if (method.getParameterCount() == 0) {
+            result = method.invoke(instance);
+        } else {
+            result = method.invoke(instance, arguments);
+        }
+
+        if (result == null) {
+            return Map.of("status", "success");
+        }
+
+        // If already a Map or JsonNode, return as-is
+        if (result instanceof Map || result instanceof com.fasterxml.jackson.databind.JsonNode) {
+            return result;
+        }
+
+        return Map.of("result", result.toString());
+    }
+
+    private Object executeBuiltInTool(McpToolConfig toolConfig, Map<String, Object> arguments) throws Exception {
+        // Built-in tools are handled by forwarding to the local HTTP API
+        // The tool name maps to a REST endpoint on this server
+        String toolName = toolConfig.getName();
+        String localUrl = "http://localhost:" + config.getPort() + "/api/tools/" + toolName + "/execute";
+
+        try {
+            String requestBody = objectMapper.writeValueAsString(arguments);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(localUrl))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() >= 400) {
+                // Fall back to returning tool info
+                return Map.of(
+                        "status", "error",
+                        "tool", toolName,
+                        "message", "Built-in tool returned HTTP " + response.statusCode(),
+                        "response", response.body()
+                );
+            }
+
+            return objectMapper.readTree(response.body());
+        } catch (java.net.ConnectException e) {
+            logger.warn("Built-in tool {} not available via local API, returning tool info", toolName);
+            return Map.of(
+                    "status", "unavailable",
+                    "tool", toolName,
+                    "message", "Built-in tool endpoint not reachable"
+            );
         }
     }
 

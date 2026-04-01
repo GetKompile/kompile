@@ -1,0 +1,629 @@
+<!--
+  Copyright 2025 Kompile Inc.
+-->
+
+<div class="react-agent-config">
+  <!-- Header -->
+  <div class="header">
+    <h2>
+      <mat-icon>psychology</mat-icon>
+      ReAct Agent Configuration
+      <span *ngIf="factSheetName" class="fact-sheet-badge">{{ factSheetName }}</span>
+    </h2>
+    <div class="status-indicators" *ngIf="status">
+      <mat-chip-set>
+        <mat-chip [color]="status.available ? 'primary' : 'warn'" selected>
+          {{ status.available ? 'Available' : 'Unavailable' }}
+        </mat-chip>
+        <mat-chip *ngIf="status.evalTrackingEnabled" color="accent" selected>
+          Eval Tracking
+        </mat-chip>
+      </mat-chip-set>
+      <div class="stats">
+        <span><strong>{{ status.testCaseCount }}</strong> Test Cases</span>
+        <span><strong>{{ status.suiteCount }}</strong> Suites</span>
+        <span><strong>{{ status.resultCount }}</strong> Results</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics Summary (when viewing a fact sheet) -->
+  <mat-card *ngIf="factSheetId && metrics" class="metrics-card">
+    <mat-card-header>
+      <mat-card-title>Fact Sheet Metrics</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <div class="metrics-grid">
+        <div class="metric">
+          <span class="metric-value">{{ metrics.totalTestCases }}</span>
+          <span class="metric-label">Total Tests</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ metrics.enabledTestCases }}</span>
+          <span class="metric-label">Enabled</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ metrics.totalResults }}</span>
+          <span class="metric-label">Executions</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" [ngClass]="getPassRateClass(metrics.passRate)">
+            {{ formatScore(metrics.passRate) }}
+          </span>
+          <span class="metric-label">Pass Rate</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value">{{ formatScore(metrics.averageScore) }}</span>
+          <span class="metric-label">Avg Score</span>
+        </div>
+      </div>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Loading indicator -->
+  <mat-progress-bar *ngIf="isLoading" mode="indeterminate"></mat-progress-bar>
+
+  <!-- Tabs -->
+  <mat-tab-group [(selectedIndex)]="selectedTab" animationDuration="200ms">
+
+    <!-- Configuration Tab -->
+    <mat-tab label="Configuration">
+      <ng-template matTabContent>
+        <div class="tab-content" *ngIf="config">
+          <mat-card>
+            <mat-card-header>
+              <mat-card-title>Agent Settings</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <mat-slide-toggle [(ngModel)]="config.enabled" [ngModelOptions]="{standalone: true}" disabled>
+                  Agent Enabled
+                </mat-slide-toggle>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Steps</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.maxSteps" [ngModelOptions]="{standalone: true}" disabled>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Execution Mode</mat-label>
+                  <mat-select [(ngModel)]="config.executionMode" [ngModelOptions]="{standalone: true}" disabled>
+                    <mat-option value="SEQUENTIAL">Sequential</mat-option>
+                    <mat-option value="PARALLEL">Parallel</mat-option>
+                  </mat-select>
+                </mat-form-field>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card>
+            <mat-card-header>
+              <mat-card-title>Graph RAG Settings</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <mat-slide-toggle [(ngModel)]="config.graphRagEnabled" [ngModelOptions]="{standalone: true}" disabled>
+                  Graph RAG Enabled
+                </mat-slide-toggle>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Search Type</mat-label>
+                  <mat-select [(ngModel)]="config.graphRagSearchType" [ngModelOptions]="{standalone: true}" disabled>
+                    <mat-option value="LOCAL">Local</mat-option>
+                    <mat-option value="GLOBAL">Global</mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Results</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.graphRagMaxResults" [ngModelOptions]="{standalone: true}" disabled>
+                </mat-form-field>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card>
+            <mat-card-header>
+              <mat-card-title>Evaluation Settings</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <mat-slide-toggle [(ngModel)]="config.evalBasedEnabled" [ngModelOptions]="{standalone: true}" disabled>
+                  Eval-Based Reasoning
+                </mat-slide-toggle>
+
+                <mat-slide-toggle [(ngModel)]="config.evalTrackingEnabled" [ngModelOptions]="{standalone: true}" disabled>
+                  Eval Tracking
+                </mat-slide-toggle>
+
+                <mat-slide-toggle [(ngModel)]="config.evalHookEnabled" [ngModelOptions]="{standalone: true}" disabled>
+                  Eval Hook
+                </mat-slide-toggle>
+
+                <mat-slide-toggle [(ngModel)]="config.selfEvaluate" [ngModelOptions]="{standalone: true}" disabled>
+                  Self Evaluate
+                </mat-slide-toggle>
+
+                <mat-slide-toggle [(ngModel)]="config.evaluateReasoning" [ngModelOptions]="{standalone: true}" disabled>
+                  Evaluate Reasoning
+                </mat-slide-toggle>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Quality Threshold</mat-label>
+                  <input matInput type="number" step="0.1" min="0" max="1"
+                         [(ngModel)]="config.qualityThreshold" [ngModelOptions]="{standalone: true}" disabled>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Result Retention (days)</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.evalRetentionDays" [ngModelOptions]="{standalone: true}" disabled>
+                </mat-form-field>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card>
+            <mat-card-header>
+              <mat-card-title>Output Settings</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-grid">
+                <mat-slide-toggle [(ngModel)]="config.summarizeResults" [ngModelOptions]="{standalone: true}" disabled>
+                  Summarize Results
+                </mat-slide-toggle>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Max Result Length</mat-label>
+                  <input matInput type="number" [(ngModel)]="config.maxResultLength" [ngModelOptions]="{standalone: true}" disabled>
+                </mat-form-field>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+    <!-- Test Cases Tab -->
+    <mat-tab label="Test Cases">
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <!-- Test Case Form -->
+          <mat-expansion-panel [expanded]="selectedTestCase !== null">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                {{ selectedTestCase ? 'Edit Test Case' : 'Create Test Case' }}
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            <form [formGroup]="testCaseForm" class="test-case-form">
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Name</mat-label>
+                  <input matInput formControlName="name" placeholder="Test case name">
+                  <mat-error *ngIf="testCaseForm.get('name')?.hasError('required')">
+                    Name is required
+                  </mat-error>
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Priority</mat-label>
+                  <mat-select formControlName="priority">
+                    <mat-option [value]="1">1 - Critical</mat-option>
+                    <mat-option [value]="2">2 - High</mat-option>
+                    <mat-option [value]="3">3 - Medium</mat-option>
+                    <mat-option [value]="4">4 - Low</mat-option>
+                    <mat-option [value]="5">5 - Optional</mat-option>
+                  </mat-select>
+                </mat-form-field>
+
+                <mat-slide-toggle formControlName="enabled">Enabled</mat-slide-toggle>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <textarea matInput formControlName="description" rows="2"
+                          placeholder="Optional description"></textarea>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Query</mat-label>
+                <textarea matInput formControlName="query" rows="3"
+                          placeholder="The test query to run"></textarea>
+                <mat-error *ngIf="testCaseForm.get('query')?.hasError('required')">
+                  Query is required
+                </mat-error>
+              </mat-form-field>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Expected Answer</mat-label>
+                <textarea matInput formControlName="expectedAnswer" rows="3"
+                          placeholder="The expected answer (for comparison)"></textarea>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Expected Facts (comma-separated)</mat-label>
+                  <input matInput formControlName="expectedFacts"
+                         placeholder="fact1, fact2, fact3">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Forbidden Facts (comma-separated)</mat-label>
+                  <input matInput formControlName="forbiddenFacts"
+                         placeholder="bad_fact1, bad_fact2">
+                </mat-form-field>
+              </div>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Expected Entities (comma-separated)</mat-label>
+                  <input matInput formControlName="expectedEntities"
+                         placeholder="entity1, entity2">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Expected Tool Calls (comma-separated)</mat-label>
+                  <input matInput formControlName="expectedToolCalls"
+                         placeholder="rag_query, search_graph">
+                </mat-form-field>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Evaluation Types</mat-label>
+                <mat-select formControlName="evaluationTypes" multiple>
+                  <mat-option *ngFor="let type of evaluationTypes" [value]="type.type">
+                    {{ type.name }}
+                    <span class="eval-type-desc">{{ type.description }}</span>
+                  </mat-option>
+                </mat-select>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Tags (comma-separated)</mat-label>
+                  <input matInput formControlName="tags" placeholder="tag1, tag2">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Timeout (ms)</mat-label>
+                  <input matInput type="number" formControlName="timeoutMs">
+                </mat-form-field>
+              </div>
+
+              <div class="form-actions">
+                <button mat-button type="button" (click)="cancelTestCaseEdit()"
+                        *ngIf="selectedTestCase">
+                  Cancel
+                </button>
+                <button mat-raised-button color="primary" type="button"
+                        (click)="selectedTestCase ? updateTestCase() : createTestCase()"
+                        [disabled]="testCaseForm.invalid">
+                  {{ selectedTestCase ? 'Update' : 'Create' }}
+                </button>
+              </div>
+            </form>
+          </mat-expansion-panel>
+
+          <!-- Test Cases Table -->
+          <mat-card class="table-card">
+            <mat-card-header>
+              <mat-card-title>Test Cases ({{ testCases.length }})</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <table mat-table [dataSource]="testCases" class="full-width">
+                <!-- Name Column -->
+                <ng-container matColumnDef="name">
+                  <th mat-header-cell *matHeaderCellDef>Name</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <strong>{{ tc.name }}</strong>
+                    <div class="cell-subtitle" *ngIf="tc.description">{{ tc.description }}</div>
+                  </td>
+                </ng-container>
+
+                <!-- Query Column -->
+                <ng-container matColumnDef="query">
+                  <th mat-header-cell *matHeaderCellDef>Query</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <span class="truncate" [matTooltip]="tc.query">{{ tc.query }}</span>
+                  </td>
+                </ng-container>
+
+                <!-- Expected Answer Column -->
+                <ng-container matColumnDef="expectedAnswer">
+                  <th mat-header-cell *matHeaderCellDef>Expected Answer</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <span class="truncate" [matTooltip]="tc.expectedAnswer">
+                      {{ tc.expectedAnswer || '-' }}
+                    </span>
+                  </td>
+                </ng-container>
+
+                <!-- Priority Column -->
+                <ng-container matColumnDef="priority">
+                  <th mat-header-cell *matHeaderCellDef>Priority</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <mat-chip [color]="tc.priority <= 2 ? 'warn' : 'primary'" selected>
+                      P{{ tc.priority || 3 }}
+                    </mat-chip>
+                  </td>
+                </ng-container>
+
+                <!-- Enabled Column -->
+                <ng-container matColumnDef="enabled">
+                  <th mat-header-cell *matHeaderCellDef>Enabled</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <mat-slide-toggle [checked]="tc.enabled !== false"
+                                      (change)="toggleTestCaseEnabled(tc)">
+                    </mat-slide-toggle>
+                  </td>
+                </ng-container>
+
+                <!-- Actions Column -->
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let tc">
+                    <button mat-icon-button matTooltip="Edit" (click)="editTestCase(tc)">
+                      <mat-icon>edit</mat-icon>
+                    </button>
+                    <button mat-icon-button matTooltip="Delete" color="warn"
+                            (click)="deleteTestCase(tc)">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="testCaseColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: testCaseColumns;"></tr>
+              </table>
+
+              <div *ngIf="testCases.length === 0" class="empty-state">
+                <mat-icon>assignment</mat-icon>
+                <p>No test cases yet. Create one above.</p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+    <!-- Suites Tab -->
+    <mat-tab label="Suites">
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <!-- Suite Form -->
+          <mat-expansion-panel [expanded]="selectedSuite !== null">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                {{ selectedSuite ? 'Edit Suite' : 'Create Suite' }}
+              </mat-panel-title>
+            </mat-expansion-panel-header>
+
+            <form [formGroup]="suiteForm" class="suite-form">
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Name</mat-label>
+                  <input matInput formControlName="name" placeholder="Suite name">
+                  <mat-error *ngIf="suiteForm.get('name')?.hasError('required')">
+                    Name is required
+                  </mat-error>
+                </mat-form-field>
+
+                <mat-slide-toggle formControlName="enabled">Enabled</mat-slide-toggle>
+              </div>
+
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Description</mat-label>
+                <textarea matInput formControlName="description" rows="2"
+                          placeholder="Optional description"></textarea>
+              </mat-form-field>
+
+              <div class="form-row">
+                <mat-form-field appearance="outline">
+                  <mat-label>Tags (comma-separated)</mat-label>
+                  <input matInput formControlName="tags" placeholder="tag1, tag2">
+                </mat-form-field>
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Required Pass Rate</mat-label>
+                  <input matInput type="number" step="0.1" min="0" max="1"
+                         formControlName="requiredPassRate">
+                  <mat-hint>0.0 - 1.0</mat-hint>
+                </mat-form-field>
+              </div>
+
+              <div class="form-actions">
+                <button mat-button type="button" (click)="cancelSuiteEdit()"
+                        *ngIf="selectedSuite">
+                  Cancel
+                </button>
+                <button mat-raised-button color="primary" type="button"
+                        (click)="selectedSuite ? updateSuite() : createSuite()"
+                        [disabled]="suiteForm.invalid">
+                  {{ selectedSuite ? 'Update' : 'Create' }}
+                </button>
+              </div>
+            </form>
+          </mat-expansion-panel>
+
+          <!-- Suites Table -->
+          <mat-card class="table-card">
+            <mat-card-header>
+              <mat-card-title>Suites ({{ suites.length }})</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <table mat-table [dataSource]="suites" class="full-width">
+                <!-- Name Column -->
+                <ng-container matColumnDef="name">
+                  <th mat-header-cell *matHeaderCellDef>Name</th>
+                  <td mat-cell *matCellDef="let suite">
+                    <strong>{{ suite.name }}</strong>
+                    <div class="cell-subtitle" *ngIf="suite.description">{{ suite.description }}</div>
+                  </td>
+                </ng-container>
+
+                <!-- Test Case Count Column -->
+                <ng-container matColumnDef="testCaseCount">
+                  <th mat-header-cell *matHeaderCellDef>Test Cases</th>
+                  <td mat-cell *matCellDef="let suite">
+                    <mat-chip selected>{{ getTestCaseCount(suite) }}</mat-chip>
+                  </td>
+                </ng-container>
+
+                <!-- Pass Rate Column -->
+                <ng-container matColumnDef="passRate">
+                  <th mat-header-cell *matHeaderCellDef>Required Pass Rate</th>
+                  <td mat-cell *matCellDef="let suite">
+                    {{ formatScore(suite.requiredPassRate || 0.8) }}
+                  </td>
+                </ng-container>
+
+                <!-- Enabled Column -->
+                <ng-container matColumnDef="enabled">
+                  <th mat-header-cell *matHeaderCellDef>Enabled</th>
+                  <td mat-cell *matCellDef="let suite">
+                    <mat-icon [color]="suite.enabled !== false ? 'primary' : 'warn'">
+                      {{ suite.enabled !== false ? 'check_circle' : 'cancel' }}
+                    </mat-icon>
+                  </td>
+                </ng-container>
+
+                <!-- Actions Column -->
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let suite">
+                    <button mat-icon-button matTooltip="Edit" (click)="editSuite(suite)">
+                      <mat-icon>edit</mat-icon>
+                    </button>
+                    <button mat-icon-button matTooltip="Delete" color="warn"
+                            (click)="deleteSuite(suite)">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="suiteColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: suiteColumns;"></tr>
+              </table>
+
+              <div *ngIf="suites.length === 0" class="empty-state">
+                <mat-icon>folder</mat-icon>
+                <p>No suites yet. Create one above.</p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <!-- Suite Test Cases Management -->
+          <mat-card *ngIf="selectedSuite" class="table-card">
+            <mat-card-header>
+              <mat-card-title>Test Cases in "{{ selectedSuite.name }}"</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="suite-test-cases">
+                <div class="test-case-list">
+                  <h4>Included Test Cases</h4>
+                  <mat-chip-set>
+                    <mat-chip *ngFor="let tcId of selectedSuite.testCaseIds"
+                              [removable]="true"
+                              (removed)="removeTestCaseFromSuite(selectedSuite, tcId)">
+                      {{ getTestCaseById(tcId)?.name || tcId }}
+                      <mat-icon matChipRemove>cancel</mat-icon>
+                    </mat-chip>
+                  </mat-chip-set>
+                  <p *ngIf="!selectedSuite.testCaseIds?.length">No test cases added yet.</p>
+                </div>
+
+                <div class="test-case-list">
+                  <h4>Available Test Cases</h4>
+                  <mat-chip-set>
+                    <mat-chip *ngFor="let tc of testCases"
+                              [disabled]="selectedSuite.testCaseIds?.includes(tc.id || '')"
+                              (click)="addTestCaseToSuite(selectedSuite, tc)">
+                      <mat-icon>add</mat-icon>
+                      {{ tc.name }}
+                    </mat-chip>
+                  </mat-chip-set>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </ng-template>
+    </mat-tab>
+
+    <!-- Results Tab -->
+    <mat-tab label="Results" *ngIf="factSheetId">
+      <ng-template matTabContent>
+        <div class="tab-content">
+          <mat-card class="table-card">
+            <mat-card-header>
+              <mat-card-title>Recent Results ({{ results.length }})</mat-card-title>
+              <button mat-icon-button matTooltip="Refresh" (click)="loadResults()">
+                <mat-icon>refresh</mat-icon>
+              </button>
+            </mat-card-header>
+            <mat-card-content>
+              <table mat-table [dataSource]="results" class="full-width">
+                <!-- Test Case Column -->
+                <ng-container matColumnDef="testCase">
+                  <th mat-header-cell *matHeaderCellDef>Test Case</th>
+                  <td mat-cell *matCellDef="let result">
+                    <strong>{{ result.testCaseName || result.testCaseId || 'Ad-hoc' }}</strong>
+                    <div class="cell-subtitle truncate" [matTooltip]="result.query">
+                      {{ result.query }}
+                    </div>
+                  </td>
+                </ng-container>
+
+                <!-- Passed Column -->
+                <ng-container matColumnDef="passed">
+                  <th mat-header-cell *matHeaderCellDef>Status</th>
+                  <td mat-cell *matCellDef="let result">
+                    <mat-chip [color]="result.passed ? 'primary' : 'warn'" selected>
+                      {{ result.passed ? 'PASSED' : 'FAILED' }}
+                    </mat-chip>
+                  </td>
+                </ng-container>
+
+                <!-- Score Column -->
+                <ng-container matColumnDef="score">
+                  <th mat-header-cell *matHeaderCellDef>Score</th>
+                  <td mat-cell *matCellDef="let result">
+                    <span [ngClass]="getPassRateClass(result.score)">
+                      {{ formatScore(result.score) }}
+                    </span>
+                  </td>
+                </ng-container>
+
+                <!-- Completed At Column -->
+                <ng-container matColumnDef="completedAt">
+                  <th mat-header-cell *matHeaderCellDef>Completed</th>
+                  <td mat-cell *matCellDef="let result">
+                    {{ formatDate(result.completedAt) }}
+                  </td>
+                </ng-container>
+
+                <!-- Actions Column -->
+                <ng-container matColumnDef="actions">
+                  <th mat-header-cell *matHeaderCellDef>Actions</th>
+                  <td mat-cell *matCellDef="let result">
+                    <button mat-icon-button matTooltip="View Details">
+                      <mat-icon>visibility</mat-icon>
+                    </button>
+                  </td>
+                </ng-container>
+
+                <tr mat-header-row *matHeaderRowDef="resultColumns"></tr>
+                <tr mat-row *matRowDef="let row; columns: resultColumns;"></tr>
+              </table>
+
+              <div *ngIf="results.length === 0" class="empty-state">
+                <mat-icon>assessment</mat-icon>
+                <p>No results yet. Run some test cases to see results here.</p>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      </ng-template>
+    </mat-tab>
+  </mat-tab-group>
+</div>

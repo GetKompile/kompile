@@ -1,0 +1,131 @@
+<!-- Table Renderer Component Template -->
+<div class="table-renderer-container" [class.compact]="compact">
+
+  <!-- Error State -->
+  <div *ngIf="parseError" class="error-container">
+    <mat-icon color="warn">error</mat-icon>
+    <span>{{ parseError }}</span>
+  </div>
+
+  <!-- No Content State -->
+  <div *ngIf="!parsedTable && !parseError" class="no-content">
+    <mat-icon>table_chart</mat-icon>
+    <span>No table content available</span>
+  </div>
+
+  <!-- Table Content -->
+  <div *ngIf="parsedTable" class="table-content">
+
+    <!-- Table Header with Metadata -->
+    <div class="table-header" *ngIf="showMetadata">
+      <div class="table-info">
+        <mat-chip-listbox>
+          <mat-chip highlighted color="primary">
+            <mat-icon>grid_on</mat-icon>
+            {{ parsedTable.rowCount }} rows x {{ parsedTable.columnCount }} cols
+          </mat-chip>
+          <mat-chip *ngIf="passage?.tableType">
+            {{ passage?.tableType }}
+          </mat-chip>
+          <mat-chip *ngIf="passage?.tablePageNumber">
+            Page {{ passage?.tablePageNumber }}
+          </mat-chip>
+        </mat-chip-listbox>
+      </div>
+
+      <div class="table-actions" *ngIf="showExport">
+        <button mat-icon-button
+                matTooltip="Copy as Markdown"
+                (click)="copyAsMarkdown()">
+          <mat-icon>content_copy</mat-icon>
+        </button>
+        <button mat-icon-button
+                matTooltip="Export as CSV"
+                (click)="exportAsCsv()">
+          <mat-icon>download</mat-icon>
+        </button>
+        <button mat-icon-button
+                *ngIf="parsedTable.rowCount > maxRowsBeforePagination"
+                matTooltip="Toggle Collapse"
+                (click)="toggleCollapse()">
+          <mat-icon>{{ isCollapsed ? 'expand_more' : 'expand_less' }}</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapsed Preview -->
+    <div *ngIf="isCollapsed" class="collapsed-preview" (click)="toggleCollapse()">
+      <div class="preview-text">
+        <mat-icon>table_chart</mat-icon>
+        <span>Table with {{ parsedTable.rowCount }} rows. Click to expand.</span>
+      </div>
+      <div class="preview-headers">
+        <span *ngFor="let header of parsedTable.headers; let last = last">
+          {{ header }}<span *ngIf="!last">, </span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Expanded Table -->
+    <div *ngIf="!isCollapsed" class="table-wrapper">
+      <table class="rendered-table" [class.hover-enabled]="enableHover">
+        <!-- Header -->
+        <thead *ngIf="showHeader">
+          <tr>
+            <th *ngFor="let header of parsedTable.headers; trackBy: trackByIndex"
+                class="table-header-cell">
+              {{ header }}
+            </th>
+          </tr>
+        </thead>
+
+        <!-- Body -->
+        <tbody>
+          <tr *ngFor="let row of getVisibleRows(); let i = index; trackBy: trackByIndex"
+              class="table-row"
+              [class.even-row]="i % 2 === 0"
+              [class.odd-row]="i % 2 !== 0">
+            <td *ngFor="let cell of row; trackBy: trackByIndex"
+                class="table-cell">
+              {{ cell }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Pagination -->
+      <div *ngIf="totalPages > 1" class="pagination-container">
+        <button mat-icon-button
+                [disabled]="currentPage === 0"
+                (click)="goToPage(0)"
+                matTooltip="First page">
+          <mat-icon>first_page</mat-icon>
+        </button>
+        <button mat-icon-button
+                [disabled]="currentPage === 0"
+                (click)="goToPage(currentPage - 1)"
+                matTooltip="Previous page">
+          <mat-icon>chevron_left</mat-icon>
+        </button>
+
+        <span class="page-info">
+          Page {{ currentPage + 1 }} of {{ totalPages }}
+          ({{ parsedTable.rowCount }} rows)
+        </span>
+
+        <button mat-icon-button
+                [disabled]="currentPage === totalPages - 1"
+                (click)="goToPage(currentPage + 1)"
+                matTooltip="Next page">
+          <mat-icon>chevron_right</mat-icon>
+        </button>
+        <button mat-icon-button
+                [disabled]="currentPage === totalPages - 1"
+                (click)="goToPage(totalPages - 1)"
+                matTooltip="Last page">
+          <mat-icon>last_page</mat-icon>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

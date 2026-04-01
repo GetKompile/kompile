@@ -45,7 +45,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnClass({
+@ConditionalOnClass(value = {
         LanguageModel.class,
         KompilePipelineLanguageModelImpl.class,
         // PipelineExecutor.class, // KompilePipelineLanguageModelImpl no longer takes it in constructor
@@ -53,8 +53,8 @@ import java.util.Optional;
         ObjectMapper.class,
         Metrics.class,
         Profiler.class,
-        SequencePipeline.class // For defaultPipelineExecutor
-})
+        SequencePipeline.class, // For defaultPipelineExecutor
+}, name = "ai.kompile.app.llm.pipeline.config.KompilePipelineLanguageModelAutoConfiguration")
 // This property enables the entire configuration for the pipeline-based LLM
 @ConditionalOnProperty(prefix = "kompile.langmodel.pipeline", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class KompilePipelineLanguageModelAutoConfiguration {

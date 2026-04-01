@@ -49,6 +49,7 @@ public class AgentRegistryService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentRegistryService.class);
     private static final String API_AGENTS_CONFIG_FILE = "api-agents.json";
+    private static final String AGENT_PERMISSIONS_FILE = "agent-permissions.json";
 
     private final Map<String, AgentProvider> agents = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -109,6 +110,9 @@ public class AgentRegistryService {
 
         // Load persisted API agent configurations
         loadApiAgentsFromConfig();
+
+        // Load persisted agent permission overrides
+        loadAgentPermissions();
 
         int availableCount = getAvailableAgentCount();
         log.info("Agent availability check complete: {} of {} agents available", availableCount, agents.size());
@@ -523,5 +527,66 @@ public class AgentRegistryService {
         public int maxTokens = 4096;
         public String description;
         public boolean isDefault;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // AGENT SKIP-PERMISSIONS PERSISTENCE
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    private Path getAgentPermissionsPath() {
+        return getConfigDir().resolve(AGENT_PERMISSIONS_FILE);
+    }
+
+    private void loadAgentPermissions() {
+        Path configPath = getAgentPermissionsPath();
+        if (!Files.exists(configPath)) {
+            return;
+        }
+
+        try {
+            Map<String, Boolean> perms = objectMapper.readValue(
+                    configPath.toFile(),
+                    new TypeReference<Map<String, Boolean>>() {});
+            for (Map.Entry<String, Boolean> entry : perms.entrySet()) {
+                AgentProvider agent = agents.get(entry.getKey());
+                if (agent != null) {
+                    agent.setSkipPermissions(entry.getValue());
+                    log.debug("Loaded skipPermissions={} for agent '{}'", entry.getValue(), entry.getKey());
+                }
+            }
+            log.info("Loaded agent permission overrides for {} agents", perms.size());
+        } catch (Exception e) {
+            log.error("Failed to load agent permissions: {}", e.getMessage());
+        }
+    }
+
+    private void saveAgentPermissions() {
+        try {
+            Path configDir = getConfigDir();
+            Files.createDirectories(configDir);
+
+            Map<String, Boolean> perms = new ConcurrentHashMap<>();
+            for (AgentProvider agent : agents.values()) {
+                perms.put(agent.getName(), agent.isSkipPermissions());
+            }
+            objectMapper.writerWithDefaultPrettyPrinter()
+                    .writeValue(getAgentPermissionsPath().toFile(), perms);
+            log.debug("Saved agent permissions");
+        } catch (Exception e) {
+            log.error("Failed to save agent permissions: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Update the skipPermissions setting for an agent and persist.
+     */
+    public void updateAgentSkipPermissions(String agentName, boolean skipPermissions) {
+        AgentProvider agent = agents.get(agentName);
+        if (agent == null) {
+            throw new IllegalArgumentException("Agent not found: " + agentName);
+        }
+        agent.setSkipPermissions(skipPermissions);
+        saveAgentPermissions();
+        log.info("Updated skipPermissions={} for agent '{}'", skipPermissions, agentName);
     }
 }
