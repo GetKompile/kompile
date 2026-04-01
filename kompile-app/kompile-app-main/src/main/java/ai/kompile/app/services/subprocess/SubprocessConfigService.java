@@ -56,12 +56,23 @@ public class SubprocessConfigService {
      * Maximum native/off-heap bytes for JavaCPP.
      *
      * When empty, the subprocess launcher will auto-calculate this value as
-     * (heapSize * 2).
+     * (heapSize * offHeapMultiplier).
      */
     private volatile String offHeapMaxBytes;
+    /**
+     * Off-heap memory multiplier relative to heap size.
+     * Used when offHeapMaxBytes is empty. Default 2 for ingest/vectorpop, 3 for VLM.
+     */
+    private volatile int offHeapMultiplier;
     private volatile int timeoutMinutes;
     private volatile int heartbeatIntervalSeconds;
     private volatile int staleThresholdSeconds;
+
+    // VLM subprocess configuration (separate from ingest/vectorpop)
+    private volatile String vlmHeapSize;
+    private volatile int vlmOffHeapMultiplier;
+    private volatile int vlmTimeoutMinutes;
+    private volatile int vlmCudaPinnedHostLimitMb;
 
     // Pipeline configuration (non-embedding settings - embedding batch sizes come
     // from AnseriniEmbeddingProperties)
@@ -88,8 +99,24 @@ public class SubprocessConfigService {
     @Value("${kompile.ingest.subprocess.offheap-max-bytes:}")
     private String defaultOffHeapMaxBytes;
 
+    @Value("${kompile.ingest.subprocess.off-heap-multiplier:2}")
+    private int defaultOffHeapMultiplier;
+
     @Value("${kompile.ingest.subprocess.timeout-minutes:60}")
     private int defaultTimeoutMinutes;
+
+    // VLM subprocess defaults
+    @Value("${kompile.vlm-test.subprocess.heap-size:16g}")
+    private String defaultVlmHeapSize;
+
+    @Value("${kompile.vlm-test.subprocess.off-heap-multiplier:3}")
+    private int defaultVlmOffHeapMultiplier;
+
+    @Value("${kompile.vlm-test.subprocess.timeout-minutes:30}")
+    private int defaultVlmTimeoutMinutes;
+
+    @Value("${kompile.vlm-test.subprocess.cuda-pinned-host-limit-mb:8192}")
+    private int defaultVlmCudaPinnedHostLimitMb;
 
     @Value("${kompile.ingest.subprocess.heartbeat-interval-seconds:10}")
     private int defaultHeartbeatIntervalSeconds;
@@ -147,6 +174,16 @@ public class SubprocessConfigService {
     @Value("${kompile.subprocess.restart.progress-stall-warning-seconds:60}")
     private int defaultProgressStallWarningSeconds;
 
+    // GPU memory monitoring defaults
+    @Value("${kompile.memory.gpu-threshold-percent:75}")
+    private int defaultGpuMemoryThresholdPercent;
+
+    @Value("${kompile.memory.gpu-critical-percent:85}")
+    private int defaultGpuMemoryCriticalPercent;
+
+    @Value("${kompile.memory.gpu-kill-threshold-percent:92}")
+    private int defaultGpuMemoryKillThresholdPercent;
+
     // Runtime restart configuration
     private volatile boolean restartEnabled;
     private volatile int maxRestartAttempts;
@@ -160,6 +197,11 @@ public class SubprocessConfigService {
     private volatile boolean restartOnTimeout;
     private volatile int stallDetectionThresholdSeconds;
     private volatile int progressStallWarningSeconds;
+
+    // GPU memory monitoring runtime config
+    private volatile int gpuMemoryThresholdPercent;
+    private volatile int gpuMemoryCriticalPercent;
+    private volatile int gpuMemoryKillThresholdPercent;
 
     // Native executable configuration - runtime values
     // Mode: "auto" (detect based on runtime context), "jvm" (always use classpath), "native" (always use native executable)
@@ -220,7 +262,12 @@ public class SubprocessConfigService {
         this.javaPath = defaultJavaPath;
         this.heapSize = defaultHeapSize;
         this.offHeapMaxBytes = normalizeOptionalString(defaultOffHeapMaxBytes);
+        this.offHeapMultiplier = defaultOffHeapMultiplier;
         this.timeoutMinutes = defaultTimeoutMinutes;
+        this.vlmHeapSize = defaultVlmHeapSize;
+        this.vlmOffHeapMultiplier = defaultVlmOffHeapMultiplier;
+        this.vlmTimeoutMinutes = defaultVlmTimeoutMinutes;
+        this.vlmCudaPinnedHostLimitMb = defaultVlmCudaPinnedHostLimitMb;
         this.heartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds;
         this.staleThresholdSeconds = defaultStaleThresholdSeconds;
 
@@ -245,6 +292,11 @@ public class SubprocessConfigService {
         this.restartOnTimeout = defaultRestartOnTimeout;
         this.stallDetectionThresholdSeconds = defaultStallDetectionThresholdSeconds;
         this.progressStallWarningSeconds = defaultProgressStallWarningSeconds;
+
+        // GPU memory monitoring defaults
+        this.gpuMemoryThresholdPercent = defaultGpuMemoryThresholdPercent;
+        this.gpuMemoryCriticalPercent = defaultGpuMemoryCriticalPercent;
+        this.gpuMemoryKillThresholdPercent = defaultGpuMemoryKillThresholdPercent;
 
         // Native executable defaults
         this.nativeExecutableMode = normalizeOptionalString(defaultNativeExecutableMode);
@@ -290,8 +342,23 @@ public class SubprocessConfigService {
                 Object v = config.get("offHeapMaxBytes");
                 this.offHeapMaxBytes = normalizeOptionalString(v != null ? v.toString() : null);
             }
+            if (config.containsKey("offHeapMultiplier")) {
+                this.offHeapMultiplier = ((Number) config.get("offHeapMultiplier")).intValue();
+            }
             if (config.containsKey("timeoutMinutes")) {
                 this.timeoutMinutes = ((Number) config.get("timeoutMinutes")).intValue();
+            }
+            if (config.containsKey("vlmHeapSize")) {
+                this.vlmHeapSize = (String) config.get("vlmHeapSize");
+            }
+            if (config.containsKey("vlmOffHeapMultiplier")) {
+                this.vlmOffHeapMultiplier = ((Number) config.get("vlmOffHeapMultiplier")).intValue();
+            }
+            if (config.containsKey("vlmTimeoutMinutes")) {
+                this.vlmTimeoutMinutes = ((Number) config.get("vlmTimeoutMinutes")).intValue();
+            }
+            if (config.containsKey("vlmCudaPinnedHostLimitMb")) {
+                this.vlmCudaPinnedHostLimitMb = ((Number) config.get("vlmCudaPinnedHostLimitMb")).intValue();
             }
             if (config.containsKey("heartbeatIntervalSeconds")) {
                 this.heartbeatIntervalSeconds = ((Number) config.get("heartbeatIntervalSeconds")).intValue();
@@ -350,6 +417,17 @@ public class SubprocessConfigService {
             }
             if (config.containsKey("progressStallWarningSeconds")) {
                 this.progressStallWarningSeconds = ((Number) config.get("progressStallWarningSeconds")).intValue();
+            }
+
+            // GPU memory monitoring config
+            if (config.containsKey("gpuMemoryThresholdPercent")) {
+                this.gpuMemoryThresholdPercent = ((Number) config.get("gpuMemoryThresholdPercent")).intValue();
+            }
+            if (config.containsKey("gpuMemoryCriticalPercent")) {
+                this.gpuMemoryCriticalPercent = ((Number) config.get("gpuMemoryCriticalPercent")).intValue();
+            }
+            if (config.containsKey("gpuMemoryKillThresholdPercent")) {
+                this.gpuMemoryKillThresholdPercent = ((Number) config.get("gpuMemoryKillThresholdPercent")).intValue();
             }
 
             // Native executable config
@@ -411,7 +489,12 @@ public class SubprocessConfigService {
             config.put("javaPath", javaPath);
             config.put("heapSize", heapSize);
             config.put("offHeapMaxBytes", offHeapMaxBytes);
+            config.put("offHeapMultiplier", offHeapMultiplier);
             config.put("timeoutMinutes", timeoutMinutes);
+            config.put("vlmHeapSize", vlmHeapSize);
+            config.put("vlmOffHeapMultiplier", vlmOffHeapMultiplier);
+            config.put("vlmTimeoutMinutes", vlmTimeoutMinutes);
+            config.put("vlmCudaPinnedHostLimitMb", vlmCudaPinnedHostLimitMb);
             config.put("heartbeatIntervalSeconds", heartbeatIntervalSeconds);
             config.put("staleThresholdSeconds", staleThresholdSeconds);
 
@@ -436,6 +519,11 @@ public class SubprocessConfigService {
             config.put("restartOnTimeout", restartOnTimeout);
             config.put("stallDetectionThresholdSeconds", stallDetectionThresholdSeconds);
             config.put("progressStallWarningSeconds", progressStallWarningSeconds);
+
+            // GPU memory monitoring config
+            config.put("gpuMemoryThresholdPercent", gpuMemoryThresholdPercent);
+            config.put("gpuMemoryCriticalPercent", gpuMemoryCriticalPercent);
+            config.put("gpuMemoryKillThresholdPercent", gpuMemoryKillThresholdPercent);
 
             // Native executable config
             config.put("nativeExecutableMode", nativeExecutableMode);
@@ -474,8 +562,29 @@ public class SubprocessConfigService {
         return offHeapMaxBytes;
     }
 
+    public int getOffHeapMultiplier() {
+        return offHeapMultiplier;
+    }
+
     public int getTimeoutMinutes() {
         return timeoutMinutes;
+    }
+
+    // VLM subprocess getters
+    public String getVlmHeapSize() {
+        return vlmHeapSize;
+    }
+
+    public int getVlmOffHeapMultiplier() {
+        return vlmOffHeapMultiplier;
+    }
+
+    public int getVlmTimeoutMinutes() {
+        return vlmTimeoutMinutes;
+    }
+
+    public int getVlmCudaPinnedHostLimitMb() {
+        return vlmCudaPinnedHostLimitMb;
     }
 
     public int getHeartbeatIntervalSeconds() {
@@ -548,6 +657,19 @@ public class SubprocessConfigService {
 
     public int getProgressStallWarningSeconds() {
         return progressStallWarningSeconds;
+    }
+
+    // GPU memory monitoring getters
+    public int getGpuMemoryThresholdPercent() {
+        return gpuMemoryThresholdPercent;
+    }
+
+    public int getGpuMemoryCriticalPercent() {
+        return gpuMemoryCriticalPercent;
+    }
+
+    public int getGpuMemoryKillThresholdPercent() {
+        return gpuMemoryKillThresholdPercent;
     }
 
     // Native executable configuration getters
@@ -875,8 +997,23 @@ public class SubprocessConfigService {
         if (update.offHeapMaxBytes() != null) {
             this.offHeapMaxBytes = normalizeOptionalString(update.offHeapMaxBytes());
         }
+        if (update.offHeapMultiplier() != null) {
+            this.offHeapMultiplier = update.offHeapMultiplier();
+        }
         if (update.timeoutMinutes() != null) {
             this.timeoutMinutes = update.timeoutMinutes();
+        }
+        if (update.vlmHeapSize() != null) {
+            this.vlmHeapSize = update.vlmHeapSize();
+        }
+        if (update.vlmOffHeapMultiplier() != null) {
+            this.vlmOffHeapMultiplier = update.vlmOffHeapMultiplier();
+        }
+        if (update.vlmTimeoutMinutes() != null) {
+            this.vlmTimeoutMinutes = update.vlmTimeoutMinutes();
+        }
+        if (update.vlmCudaPinnedHostLimitMb() != null) {
+            this.vlmCudaPinnedHostLimitMb = update.vlmCudaPinnedHostLimitMb();
         }
         if (update.heartbeatIntervalSeconds() != null) {
             this.heartbeatIntervalSeconds = update.heartbeatIntervalSeconds();
@@ -966,7 +1103,12 @@ public class SubprocessConfigService {
         this.javaPath = defaultJavaPath;
         this.heapSize = defaultHeapSize;
         this.offHeapMaxBytes = normalizeOptionalString(defaultOffHeapMaxBytes);
+        this.offHeapMultiplier = defaultOffHeapMultiplier;
         this.timeoutMinutes = defaultTimeoutMinutes;
+        this.vlmHeapSize = defaultVlmHeapSize;
+        this.vlmOffHeapMultiplier = defaultVlmOffHeapMultiplier;
+        this.vlmTimeoutMinutes = defaultVlmTimeoutMinutes;
+        this.vlmCudaPinnedHostLimitMb = defaultVlmCudaPinnedHostLimitMb;
         this.heartbeatIntervalSeconds = defaultHeartbeatIntervalSeconds;
         this.staleThresholdSeconds = defaultStaleThresholdSeconds;
         // Pipeline settings (embedding batch sizes managed via BatchSizeConfigService)
@@ -1015,7 +1157,12 @@ public class SubprocessConfigService {
                 javaPath,
                 heapSize,
                 offHeapMaxBytes,
+                offHeapMultiplier,
                 timeoutMinutes,
+                vlmHeapSize,
+                vlmOffHeapMultiplier,
+                vlmTimeoutMinutes,
+                vlmCudaPinnedHostLimitMb,
                 heartbeatIntervalSeconds,
                 staleThresholdSeconds,
                 queueCapacity,
@@ -1138,7 +1285,13 @@ public class SubprocessConfigService {
             String javaPath,
             String heapSize,
             String offHeapMaxBytes,
+            Integer offHeapMultiplier,
             Integer timeoutMinutes,
+            // VLM subprocess configuration
+            String vlmHeapSize,
+            Integer vlmOffHeapMultiplier,
+            Integer vlmTimeoutMinutes,
+            Integer vlmCudaPinnedHostLimitMb,
             Integer heartbeatIntervalSeconds,
             Integer staleThresholdSeconds,
             // Pipeline settings (embedding batch sizes managed via BatchSizeConfigService)
@@ -1179,7 +1332,13 @@ public class SubprocessConfigService {
             String javaPath,
             String heapSize,
             String offHeapMaxBytes,
+            int offHeapMultiplier,
             int timeoutMinutes,
+            // VLM subprocess configuration
+            String vlmHeapSize,
+            int vlmOffHeapMultiplier,
+            int vlmTimeoutMinutes,
+            int vlmCudaPinnedHostLimitMb,
             int heartbeatIntervalSeconds,
             int staleThresholdSeconds,
             // Pipeline settings (embedding batch sizes managed via BatchSizeConfigService)

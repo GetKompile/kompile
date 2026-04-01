@@ -321,8 +321,20 @@ public class SubprocessIngestLauncher {
                     ? ingestConfiguration.getMemoryKillThresholdPercent()
                     : SubprocessArgs.DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT;
 
-            logger.debug("Subprocess memory thresholds: stop={}%, critical={}%, kill={}%",
-                    memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent);
+            // Get GPU memory thresholds from SubprocessConfigService (or use defaults)
+            int gpuMemoryThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getGpuMemoryThresholdPercent()
+                    : SubprocessArgs.DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
+            int gpuMemoryCriticalPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getGpuMemoryCriticalPercent()
+                    : SubprocessArgs.DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
+            int gpuMemoryKillThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getGpuMemoryKillThresholdPercent()
+                    : SubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+
+            logger.debug("Subprocess memory thresholds: heap stop={}%, critical={}%, kill={}%; GPU stop={}%, critical={}%, kill={}",
+                    memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent,
+                    gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent);
 
             // Resolve paths from active FactSheet via AppIndexConfigService
             String resolvedVectorPath = null;
@@ -385,6 +397,9 @@ public class SubprocessIngestLauncher {
                     .memoryCriticalPercent(memoryCriticalPercent)
                     .memoryKillThresholdPercent(memoryKillThresholdPercent)
                     .memoryCheckIntervalMs(SubprocessArgs.DEFAULT_MEMORY_CHECK_INTERVAL_MS)
+                    .gpuMemoryThresholdPercent(gpuMemoryThresholdPercent)
+                    .gpuMemoryCriticalPercent(gpuMemoryCriticalPercent)
+                    .gpuMemoryKillThresholdPercent(gpuMemoryKillThresholdPercent)
                     .options(effectiveOptions)
                     .build();
 
@@ -707,7 +722,8 @@ public class SubprocessIngestLauncher {
             return null;
         }
         try {
-            return Math.multiplyExact(heapBytes, 2L);
+            int multiplier = subprocessConfigService != null ? subprocessConfigService.getOffHeapMultiplier() : 2;
+            return Math.multiplyExact(heapBytes, (long) multiplier);
         } catch (ArithmeticException e) {
             return null;
         }
@@ -1033,7 +1049,16 @@ public class SubprocessIngestLauncher {
 
                 // Determine log level based on content
                 String level = "INFO";
-                if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
+                
+                // Check for GPU OOM patterns first (more specific)
+                if (isGpuOomLine(line)) {
+                    logger.error("[subprocess-{}] GPU OOM detected: {}", handle.getTaskId(), line);
+                    handle.setGpuOomDetected(true);
+                    handle.setOomDetected(true); // Also set general OOM flag
+                    level = "ERROR";
+                }
+                // Check for Java heap OOM
+                else if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
                     logger.error("[subprocess-{}] OOM detected: {}", handle.getTaskId(), line);
                     handle.setOomDetected(true);
                     level = "ERROR";
@@ -1067,6 +1092,19 @@ public class SubprocessIngestLauncher {
                 logger.debug("Stderr reader terminated for task: {}", handle.getTaskId());
             }
         }
+    }
+
+    /**
+     * Check if a stderr line indicates GPU/CUDA OOM.
+     */
+    private boolean isGpuOomLine(String line) {
+        String lower = line.toLowerCase();
+        return lower.contains("cuda out of memory") ||
+                lower.contains("cuda malloc failed") ||
+                lower.contains("cublas_status_alloc_failed") ||
+                lower.contains("out of memory") && (lower.contains("gpu") || lower.contains("cuda") || lower.contains("device")) ||
+                lower.contains("nccl") && lower.contains("out of memory") ||
+                lower.contains("could not allocate") && lower.contains("memory") && (lower.contains("gpu") || lower.contains("cuda"));
     }
 
     /**
@@ -2132,7 +2170,7 @@ public class SubprocessIngestLauncher {
             // No retry (or retry exhausted) - complete with failure
             handle.getResultFuture().complete(SubprocessHandle.SubprocessResult.failure(
                     handle.getTaskId(), exitCode, errorMessage, handle.getCurrentPhase(),
-                    handle.isCancelled(), handle.isOomDetected()));
+                    handle.isCancelled(), handle.isOomDetected(), handle.isGpuOomDetected()));
 
             // Update progress tracker with detailed message
             if (progressTracker != null) {

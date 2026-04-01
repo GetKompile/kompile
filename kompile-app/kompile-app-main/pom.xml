@@ -71,6 +71,12 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-app-anserini</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>log4j-core</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -138,11 +144,12 @@
 
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-core</artifactId>
+            <artifactId>log4j-api</artifactId>
         </dependency>
+        <!-- Bridge Log4j2 API calls to SLF4J/Logback (replaces log4j-core) -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-api</artifactId>
+            <artifactId>log4j-to-slf4j</artifactId>
         </dependency>
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>
@@ -188,6 +195,12 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-orchestrator</artifactId>
+        </dependency>
+
+        <!-- Model Staging service for remote model registry -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-staging</artifactId>
         </dependency>
 
         <!-- H2 Database for JPA (required by orchestrator) -->
@@ -237,6 +250,12 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-kvcache</artifactId>
+        </dependency>
+
+        <!-- Scheduling -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-quartz</artifactId>
         </dependency>
 
     </dependencies>
@@ -382,6 +401,399 @@
                                             <filtering>false</filtering>
                                         </resource>
                                     </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- GraalVM Native Image profile for kompile-app-main -->
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>${start-class}</mainClass>
+                            <imageName>kompile-app</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx24g</buildArg>
+                                <buildArg>--verbose</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-H:DeadlockWatchdogInterval=30</buildArg>
+                                <buildArg>-H:+DeadlockWatchdogExitOnTimeout</buildArg>
+                                <buildArg>--enable-url-protocols=https,http</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <!-- Build-time initialization (logging + ND4J deallocation) -->
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <!-- Runtime initialization (ND4J, JavaCPP, Lucene, JNI) -->
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene</buildArg>
+                                <buildArg>--initialize-at-run-time=io.netty.channel.epoll.Epoll</buildArg>
+                                <buildArg>--initialize-at-run-time=com.sun.jna.Native</buildArg>
+                                <buildArg>--initialize-at-run-time=net.bytebuddy</buildArg>
+                                <buildArg>-H:+AllowDeprecatedBuilderClassesOnImageClasspath</buildArg>
+                                <!-- Exclude ByteBuddy bytecode provider from ServiceLoader - Hibernate falls back to property-based selection -->
+                                <buildArg>-H:ServiceLoaderFeatureExcludeServices=org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
+                                <!-- Agent-generated configs for main app -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/main</buildArg>
+                                <!-- Resource inclusion -->
+                                <buildArg>-H:IncludeResources=static/.*</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/native-image/.*\.json</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <!-- Exclude BytecodeProvider service file so runtime ServiceLoader won't find ByteBuddy provider -->
+                                <buildArg>-H:ExcludeResources=META-INF/services/org.hibernate.bytecode.spi.BytecodeProvider</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring\.factories</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <version>${spring-boot.version}</version>
+                        <executions>
+                            <execution>
+                                <id>process-aot</id>
+                                <goals>
+                                    <goal>process-aot</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>${start-class}</mainClass>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Subprocess native image profiles -->
+        <profile>
+            <id>native-ingest</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-ingest</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.app.subprocess.IngestSubprocessMain</mainClass>
+                            <imageName>kompile-ingest</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene</buildArg>
+                                <!-- Agent-generated configs for ingest subprocess -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=opennlp/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>native-vector</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-vector</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.app.subprocess.VectorPopulationSubprocessMain</mainClass>
+                            <imageName>kompile-vector</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene</buildArg>
+                                <!-- Agent-generated configs for vector subprocess -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/vector</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>native-embedding</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-embedding</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.embedding.anserini.subprocess.EmbeddingSubprocessMain</mainClass>
+                            <imageName>kompile-embedding</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <!-- Agent-generated configs for embedding subprocess -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/embedding</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>native-model-init</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-model-init</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.app.subprocess.model.ModelInitSubprocessMain</mainClass>
+                            <imageName>kompile-model-init</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <!-- Agent-generated configs for model-init subprocess -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>native-vlm-test</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-vlm-test</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.app.subprocess.VlmTestSubprocessMain</mainClass>
+                            <imageName>kompile-vlm-test</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.apache.lucene</buildArg>
+                                <!-- Use ingest configs as baseline (VLM test has similar deps) -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/ingest</buildArg>
+                                <buildArg>-H:IncludeResources=application.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/spring/.*</buildArg>
+                                <buildArg>-H:IncludeResources=opennlp/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>native-training</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>build-native-training</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <mainClass>ai.kompile.staging.subprocess.TrainingSubprocessMain</mainClass>
+                            <imageName>kompile-training</imageName>
+                            <buildArgs>
+                                <buildArg>-J-Xmx18g</buildArg>
+                                <buildArg>--no-fallback</buildArg>
+                                <buildArg>--allow-incomplete-classpath</buildArg>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <buildArg>-Dorg.bytedeco.javacpp.nopointergc=true</buildArg>
+                                <buildArg>--initialize-at-build-time=org.slf4j</buildArg>
+                                <buildArg>--initialize-at-build-time=ch.qos.logback</buildArg>
+                                <buildArg>--initialize-at-build-time=org.nd4j.linalg.api.memory.deallocation</buildArg>
+                                <buildArg>--initialize-at-run-time=org.bytedeco.javacpp</buildArg>
+                                <buildArg>--initialize-at-run-time=org.eclipse.deeplearning4j</buildArg>
+                                <buildArg>--initialize-at-run-time=org.nd4j</buildArg>
+                                <!-- Use model-init configs as baseline (training has similar deps) -->
+                                <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/src/main/resources/META-INF/native-image/model-init</buildArg>
+                                <buildArg>-H:IncludeResources=org/bytedeco/.*</buildArg>
+                                <buildArg>-H:IncludeResources=org/nd4j/.*</buildArg>
+                                <buildArg>-H:IncludeResources=META-INF/services/.*</buildArg>
+                                <buildArg>-H:IncludeResources=log4j2\.component\.properties</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Distribution packaging profile -->
+        <profile>
+            <id>native-dist</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-assembly-plugin</artifactId>
+                        <version>3.7.1</version>
+                        <executions>
+                            <execution>
+                                <id>create-native-distribution</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>single</goal>
+                                </goals>
+                                <configuration>
+                                    <descriptors>
+                                        <descriptor>src/main/assembly/native-dist.xml</descriptor>
+                                    </descriptors>
+                                    <appendAssemblyId>true</appendAssemblyId>
                                 </configuration>
                             </execution>
                         </executions>
