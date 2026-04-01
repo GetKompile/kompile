@@ -17,6 +17,7 @@
 package ai.kompile.app.subprocess.model;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
+import ai.kompile.app.subprocess.SubprocessMemoryWatchdog;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import ai.kompile.embedding.anserini.RetryableErrorClassifier;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,6 +74,9 @@ public class ModelInitSubprocessMain {
     // Static holder for args - accessible by other components if needed
     private static volatile ModelInitSubprocessArgs currentArgs;
 
+    // Memory watchdog for monitoring heap and GPU memory
+    private static volatile SubprocessMemoryWatchdog memoryWatchdog;
+
     // Result holder - the initialized encoder (if successful)
     private static volatile SameDiffEncoder<?> initializedEncoder;
 
@@ -81,6 +85,13 @@ public class ModelInitSubprocessMain {
      */
     public static ModelInitSubprocessArgs getCurrentArgs() {
         return currentArgs;
+    }
+
+    /**
+     * Get the memory watchdog for this subprocess.
+     */
+    public static SubprocessMemoryWatchdog getMemoryWatchdog() {
+        return memoryWatchdog;
     }
 
     /**
@@ -119,12 +130,33 @@ public class ModelInitSubprocessMain {
             logger.info("Loaded subprocess args for task: {}, model: {}",
                     subprocessArgs.taskId(), subprocessArgs.modelIdentifier());
 
+            // Initialize and start memory watchdog with GPU thresholds
+            memoryWatchdog = new SubprocessMemoryWatchdog(
+                    subprocessArgs.memoryThresholdPercent(),
+                    subprocessArgs.memoryCriticalPercent(),
+                    subprocessArgs.memoryKillThresholdPercent(),
+                    subprocessArgs.memoryCheckIntervalMs(),
+                    subprocessArgs.gpuMemoryThresholdPercent(),
+                    subprocessArgs.gpuMemoryCriticalPercent(),
+                    subprocessArgs.gpuMemoryKillThresholdPercent()
+            );
+            memoryWatchdog.start();
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+                    subprocessArgs.memoryThresholdPercent(),
+                    subprocessArgs.memoryCriticalPercent(),
+                    subprocessArgs.memoryKillThresholdPercent(),
+                    subprocessArgs.gpuMemoryThresholdPercent(),
+                    subprocessArgs.gpuMemoryCriticalPercent(),
+                    subprocessArgs.gpuMemoryKillThresholdPercent());
+
             // Initialize progress reporter
             reporter = new ModelInitProgressReporter(subprocessArgs.taskId(),
                     subprocessArgs.modelIdentifier(), originalStdout);
 
             // Start heartbeat immediately
             reporter.startHeartbeat();
+            // Note: ModelInitProgressReporter is not compatible with SubprocessProgressReporter
+            // The watchdog will still log memory events via SLF4J
 
             // Log startup
             logger.info("═══════════════════════════════════════════════════════════════════════════════");
@@ -288,6 +320,11 @@ public class ModelInitSubprocessMain {
             exitCode = retriable ? 2 : 1; // Different exit codes for retriable vs permanent
 
         } finally {
+            // Stop memory watchdog first
+            if (memoryWatchdog != null) {
+                memoryWatchdog.close();
+                memoryWatchdog = null;
+            }
             // Stop heartbeat
             if (reporter != null) {
                 reporter.stopHeartbeat();

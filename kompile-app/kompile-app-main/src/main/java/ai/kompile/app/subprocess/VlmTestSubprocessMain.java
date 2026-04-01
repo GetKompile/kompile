@@ -54,9 +54,14 @@ public class VlmTestSubprocessMain {
 
     private static PrintStream originalStdout;
     private static volatile VlmTestSubprocessArgs currentArgs;
+    private static volatile SubprocessMemoryWatchdog memoryWatchdog;
 
     public static VlmTestSubprocessArgs getCurrentArgs() {
         return currentArgs;
+    }
+
+    public static SubprocessMemoryWatchdog getMemoryWatchdog() {
+        return memoryWatchdog;
     }
 
     public static void main(String[] args) {
@@ -83,8 +88,28 @@ public class VlmTestSubprocessMain {
             currentArgs = vlmArgs;
             logger.info("Loaded VLM test args for task: {}", vlmArgs.taskId());
 
+            // Initialize and start memory watchdog with GPU thresholds
+            memoryWatchdog = new SubprocessMemoryWatchdog(
+                    vlmArgs.memoryThresholdPercent(),
+                    vlmArgs.memoryCriticalPercent(),
+                    vlmArgs.memoryKillThresholdPercent(),
+                    vlmArgs.memoryCheckIntervalMs(),
+                    vlmArgs.gpuMemoryThresholdPercent(),
+                    vlmArgs.gpuMemoryCriticalPercent(),
+                    vlmArgs.gpuMemoryKillThresholdPercent()
+            );
+            memoryWatchdog.start();
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+                    vlmArgs.memoryThresholdPercent(),
+                    vlmArgs.memoryCriticalPercent(),
+                    vlmArgs.memoryKillThresholdPercent(),
+                    vlmArgs.gpuMemoryThresholdPercent(),
+                    vlmArgs.gpuMemoryCriticalPercent(),
+                    vlmArgs.gpuMemoryKillThresholdPercent());
+
             reporter = new SubprocessProgressReporter(vlmArgs.taskId(), originalStdout);
             reporter.startHeartbeat();
+            memoryWatchdog.setProgressReporter(reporter);
 
             // Initialize ND4J
             reporter.reportProgress("INIT", 5, "ND4J", "Initializing ND4J environment");
@@ -319,8 +344,14 @@ public class VlmTestSubprocessMain {
             exitCode = 1;
 
         } finally {
+            // Stop memory watchdog first
+            if (memoryWatchdog != null) {
+                memoryWatchdog.close();
+                memoryWatchdog = null;
+            }
             if (reporter != null) {
                 reporter.stopHeartbeat();
+                reporter.close();
             }
             cleanupNd4j();
         }

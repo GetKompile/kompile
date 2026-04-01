@@ -74,6 +74,15 @@ public record VlmTestSubprocessArgs(
         String stagingUrl,
         String stagingApiKey,
         String archivePath,
+        // Memory watchdog thresholds
+        int memoryThresholdPercent,
+        int memoryCriticalPercent,
+        int memoryKillThresholdPercent,
+        long memoryCheckIntervalMs,
+        // GPU memory thresholds
+        int gpuMemoryThresholdPercent,
+        int gpuMemoryCriticalPercent,
+        int gpuMemoryKillThresholdPercent,
         Map<String, String> options
 ) {
     public static final int DEFAULT_MAX_NEW_TOKENS = 4096;
@@ -83,6 +92,15 @@ public record VlmTestSubprocessArgs(
     public static final int DEFAULT_PDF_RENDER_DPI = 300;
     public static final int DEFAULT_PAGE_BATCH_SIZE = 1;
     public static final int DEFAULT_CUDA_PINNED_HOST_LIMIT_MB = 0;
+    // Memory watchdog defaults
+    public static final int DEFAULT_MEMORY_THRESHOLD_PERCENT = 80;
+    public static final int DEFAULT_MEMORY_CRITICAL_PERCENT = 90;
+    public static final int DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT = 95;
+    public static final long DEFAULT_MEMORY_CHECK_INTERVAL_MS = 2000;
+    // GPU threshold defaults (more conservative for VLM)
+    public static final int DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT = 75;
+    public static final int DEFAULT_GPU_MEMORY_CRITICAL_PERCENT = 85;
+    public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public VlmTestSubprocessArgs {
@@ -111,6 +129,15 @@ public record VlmTestSubprocessArgs(
         if (debugDiagnostics == null) debugDiagnostics = false;
         if (opTiming == null) opTiming = false;
         if (maxPages < 0) maxPages = 0;
+        // Memory watchdog defaults
+        if (memoryThresholdPercent <= 0) memoryThresholdPercent = DEFAULT_MEMORY_THRESHOLD_PERCENT;
+        if (memoryCriticalPercent <= 0) memoryCriticalPercent = DEFAULT_MEMORY_CRITICAL_PERCENT;
+        if (memoryKillThresholdPercent < 0) memoryKillThresholdPercent = DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT;
+        if (memoryCheckIntervalMs <= 0) memoryCheckIntervalMs = DEFAULT_MEMORY_CHECK_INTERVAL_MS;
+        // GPU memory threshold defaults
+        if (gpuMemoryThresholdPercent <= 0) gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
+        if (gpuMemoryCriticalPercent <= 0) gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
+        if (gpuMemoryKillThresholdPercent < 0) gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
     }
 
     public static VlmTestSubprocessArgs fromFile(Path path) throws IOException {
@@ -162,6 +189,15 @@ public record VlmTestSubprocessArgs(
         private String stagingUrl;
         private String stagingApiKey;
         private String archivePath;
+        // Memory watchdog thresholds
+        private int memoryThresholdPercent = DEFAULT_MEMORY_THRESHOLD_PERCENT;
+        private int memoryCriticalPercent = DEFAULT_MEMORY_CRITICAL_PERCENT;
+        private int memoryKillThresholdPercent = DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT;
+        private long memoryCheckIntervalMs = DEFAULT_MEMORY_CHECK_INTERVAL_MS;
+        // GPU memory thresholds
+        private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
+        private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
+        private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
         private Map<String, String> options = Map.of();
 
         public Builder taskId(String taskId) { this.taskId = taskId; return this; }
@@ -200,6 +236,17 @@ public record VlmTestSubprocessArgs(
         public Builder stagingApiKey(String stagingApiKey) { this.stagingApiKey = stagingApiKey; return this; }
         public Builder archivePath(String archivePath) { this.archivePath = archivePath; return this; }
         public Builder options(Map<String, String> options) { this.options = options; return this; }
+        
+        // Memory threshold builders
+        public Builder memoryThresholdPercent(int memoryThresholdPercent) { this.memoryThresholdPercent = memoryThresholdPercent; return this; }
+        public Builder memoryCriticalPercent(int memoryCriticalPercent) { this.memoryCriticalPercent = memoryCriticalPercent; return this; }
+        public Builder memoryKillThresholdPercent(int memoryKillThresholdPercent) { this.memoryKillThresholdPercent = memoryKillThresholdPercent; return this; }
+        public Builder memoryCheckIntervalMs(long memoryCheckIntervalMs) { this.memoryCheckIntervalMs = memoryCheckIntervalMs; return this; }
+        
+        // GPU memory threshold builders
+        public Builder gpuMemoryThresholdPercent(int gpuMemoryThresholdPercent) { this.gpuMemoryThresholdPercent = gpuMemoryThresholdPercent; return this; }
+        public Builder gpuMemoryCriticalPercent(int gpuMemoryCriticalPercent) { this.gpuMemoryCriticalPercent = gpuMemoryCriticalPercent; return this; }
+        public Builder gpuMemoryKillThresholdPercent(int gpuMemoryKillThresholdPercent) { this.gpuMemoryKillThresholdPercent = gpuMemoryKillThresholdPercent; return this; }
 
         public VlmTestSubprocessArgs build() {
             return new VlmTestSubprocessArgs(
@@ -215,6 +262,8 @@ public record VlmTestSubprocessArgs(
                     debugDiagnostics, opTiming,
                     maxPages,
                     modelSourceType, modelIdentifier, stagingUrl, stagingApiKey, archivePath,
+                    memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent, memoryCheckIntervalMs,
+                    gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent,
                     options
             );
         }

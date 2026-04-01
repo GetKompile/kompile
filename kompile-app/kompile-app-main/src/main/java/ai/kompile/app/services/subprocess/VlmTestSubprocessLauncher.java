@@ -240,6 +240,20 @@ public class VlmTestSubprocessLauncher {
                 argsBuilder.options(options);
             }
 
+            // Set memory watchdog thresholds (use defaults for VLM)
+            argsBuilder.memoryThresholdPercent(VlmTestSubprocessArgs.DEFAULT_MEMORY_THRESHOLD_PERCENT)
+                    .memoryCriticalPercent(VlmTestSubprocessArgs.DEFAULT_MEMORY_CRITICAL_PERCENT)
+                    .memoryKillThresholdPercent(VlmTestSubprocessArgs.DEFAULT_MEMORY_KILL_THRESHOLD_PERCENT)
+                    .memoryCheckIntervalMs(VlmTestSubprocessArgs.DEFAULT_MEMORY_CHECK_INTERVAL_MS);
+            
+            // Set GPU memory thresholds from config service (more conservative for VLM)
+            argsBuilder.gpuMemoryThresholdPercent(
+                    subprocessConfigService != null ? subprocessConfigService.getGpuMemoryThresholdPercent() : VlmTestSubprocessArgs.DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT)
+                    .gpuMemoryCriticalPercent(
+                            subprocessConfigService != null ? subprocessConfigService.getGpuMemoryCriticalPercent() : VlmTestSubprocessArgs.DEFAULT_GPU_MEMORY_CRITICAL_PERCENT)
+                    .gpuMemoryKillThresholdPercent(
+                            subprocessConfigService != null ? subprocessConfigService.getGpuMemoryKillThresholdPercent() : VlmTestSubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT);
+
             VlmTestSubprocessArgs args = argsBuilder.build();
 
             // Write args to temp file
