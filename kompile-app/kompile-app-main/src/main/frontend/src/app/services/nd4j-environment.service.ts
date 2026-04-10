@@ -634,4 +634,49 @@ export class Nd4jEnvironmentService {
   }): Observable<any> {
     return this.http.post<any>(this.baseUrl, settings);
   }
+
+  /**
+   * Get SameDiff graph optimizer / DSP framework settings
+   */
+  getFrameworkSettings(): Observable<any> {
+    return this.http.get<any>(`${this.baseUrl}/framework`);
+  }
+
+  /**
+   * Update SameDiff graph optimizer / DSP framework settings
+   */
+  updateFrameworkSettings(settings: {
+    optimizerEnabled?: boolean;
+    optimizerFp16?: boolean;
+    dspNoFreeze?: boolean;
+    dspNoNativeDecode?: boolean;
+    dspNoAttnOverride?: boolean;
+    dspNoDirect?: boolean;
+    tritonSkipKernels?: boolean;
+    tritonTf32?: boolean;
+    cublasDisableWorkspace?: boolean;
+    dspDiagnostics?: string;
+    opTiming?: boolean;
+  }): Observable<any> {
+    const params: any = {};
+    if (settings.optimizerEnabled !== undefined) params.optimizerEnabled = settings.optimizerEnabled;
+    if (settings.optimizerFp16 !== undefined) params.optimizerFp16 = settings.optimizerFp16;
+    if (settings.dspNoFreeze !== undefined) params.dspNoFreeze = settings.dspNoFreeze;
+    if (settings.dspNoNativeDecode !== undefined) params.dspNoNativeDecode = settings.dspNoNativeDecode;
+    if (settings.dspNoAttnOverride !== undefined) params.dspNoAttnOverride = settings.dspNoAttnOverride;
+    if (settings.dspNoDirect !== undefined) params.dspNoDirect = settings.dspNoDirect;
+    if (settings.tritonSkipKernels !== undefined) params.tritonSkipKernels = settings.tritonSkipKernels;
+    if (settings.tritonTf32 !== undefined) params.tritonTf32 = settings.tritonTf32;
+    if (settings.cublasDisableWorkspace !== undefined) params.cublasDisableWorkspace = settings.cublasDisableWorkspace;
+    if (settings.dspDiagnostics !== undefined) params.dspDiagnostics = settings.dspDiagnostics;
+    if (settings.opTiming !== undefined) params.opTiming = settings.opTiming;
+    return this.http.post<any>(`${this.baseUrl}/framework`, null, { params });
+  }
+
+  /**
+   * Apply a framework preset configuration
+   */
+  applyFrameworkPreset(presetName: string): Observable<any> {
+    return this.http.post<any>(`${this.baseUrl}/framework/preset/${presetName}`, null);
+  }
 }

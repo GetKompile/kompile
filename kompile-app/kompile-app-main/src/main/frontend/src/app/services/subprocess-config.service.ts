@@ -65,6 +65,13 @@ export interface SubprocessConfigResponse {
   resolvedNativeMode: boolean;
   runningInNativeImage: boolean;
   hasClasspath: boolean;
+  // Memory watchdog thresholds
+  offHeapThresholdPercent: number;
+  offHeapCriticalPercent: number;
+  offHeapKillThresholdPercent: number;
+  gpuMemoryThresholdPercent: number;
+  gpuMemoryCriticalPercent: number;
+  gpuMemoryKillThresholdPercent: number;
   // System info
   callbackBaseUrl: string;
   actualServerPort: number;
@@ -117,6 +124,13 @@ export interface SubprocessConfigUpdate {
   embeddingExecutablePath?: string;
   modelInitExecutablePath?: string;
   subprocessTypeFlag?: string;
+  // Memory watchdog thresholds
+  offHeapThresholdPercent?: number;
+  offHeapCriticalPercent?: number;
+  offHeapKillThresholdPercent?: number;
+  gpuMemoryThresholdPercent?: number;
+  gpuMemoryCriticalPercent?: number;
+  gpuMemoryKillThresholdPercent?: number;
 }
 
 /**
@@ -167,6 +181,20 @@ export interface SubprocessStatus {
   startTime: string;
   lastHeartbeat: string;
   elapsedTime: string;
+  // Memory metrics
+  heapUsagePercent: number;
+  heapUsedBytes: number;
+  heapMaxBytes: number;
+  offHeapUsagePercent: number;
+  offHeapUsedBytes: number;
+  offHeapMaxBytes: number;
+  gpuUsagePercent: number;
+  gpuUsedBytes: number;
+  gpuMaxBytes: number;
+  // Peak memory
+  peakHeapUsagePercent: number;
+  peakOffHeapUsagePercent: number;
+  peakGpuUsagePercent: number;
 }
 
 /**

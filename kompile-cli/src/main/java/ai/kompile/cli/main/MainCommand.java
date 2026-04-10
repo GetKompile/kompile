@@ -16,13 +16,22 @@
 
 package ai.kompile.cli.main;
 
+import ai.kompile.cli.main.app.IngestCommand;
+import ai.kompile.cli.main.app.IndexCommand;
+import ai.kompile.cli.main.app.JobsCommand;
+import ai.kompile.cli.main.app.ScheduleCommand;
+import ai.kompile.cli.main.app.SubprocessCommand;
 import ai.kompile.cli.main.chat.ChatCommand;
 import ai.kompile.cli.main.chat.LiteChatCommand;
+import ai.kompile.cli.main.chat.PassthroughCommand;
+import ai.kompile.cli.main.chat.ResumeCommand;
 import ai.kompile.cli.main.chat.SessionCommand;
+import ai.kompile.cli.main.mcp.McpStdioCommand;
 import ai.kompile.cli.main.build.BuildMain;
 import ai.kompile.cli.main.build.KompileApplicationBuilder;
 import ai.kompile.cli.main.config.ConfigMain;
 import ai.kompile.cli.main.install.InstallMain;
+import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
 import ai.kompile.cli.main.sdk.SdkMain;
 import ai.kompile.cli.main.uninstall.UnInstallMain;
@@ -45,11 +54,20 @@ import java.util.concurrent.Callable;
                 KompileApplicationBuilder.BuildKompileAppCommand.class,
                 InstallMain.class,
                 UnInstallMain.class,
+                ManageComponents.class,
                 SdkMain.class,
                 PipelineMain.class,
                 ChatCommand.class,
                 LiteChatCommand.class,
-                SessionCommand.class
+                SessionCommand.class,
+                PassthroughCommand.class,
+                ResumeCommand.class,
+                McpStdioCommand.class,
+                IngestCommand.class,
+                IndexCommand.class,
+                JobsCommand.class,
+                ScheduleCommand.class,
+                SubprocessCommand.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,

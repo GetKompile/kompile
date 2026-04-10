@@ -131,6 +131,24 @@ public record SubprocessArgs(
          */
         int gpuMemoryKillThresholdPercent,
 
+        // === Off-Heap (JavaCPP/Native) Memory Monitoring Configuration ===
+
+        /**
+         * Off-heap memory threshold percentage (0-100) at which to trigger graceful stop.
+         * Applied against org.bytedeco.javacpp.maxbytes limit.
+         * Default: 80
+         */
+        int offHeapThresholdPercent,
+
+        /** Off-heap memory critical percentage (0-100). Default: 90 */
+        int offHeapCriticalPercent,
+
+        /**
+         * Off-heap memory kill threshold percentage (0-100).
+         * Default: 95. Set to 0 to disable.
+         */
+        int offHeapKillThresholdPercent,
+
         /** Additional options as key-value pairs */
         Map<String, Object> options) {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -186,6 +204,21 @@ public record SubprocessArgs(
     public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
 
     /**
+     * Default off-heap memory threshold percentage at which to trigger graceful stop.
+     */
+    public static final int DEFAULT_OFF_HEAP_THRESHOLD_PERCENT = 80;
+
+    /**
+     * Default off-heap memory critical percentage.
+     */
+    public static final int DEFAULT_OFF_HEAP_CRITICAL_PERCENT = 90;
+
+    /**
+     * Default off-heap memory kill threshold percentage.
+     */
+    public static final int DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT = 95;
+
+    /**
      * Create SubprocessArgs with default values for unspecified parameters.
      */
     public static SubprocessArgs create(
@@ -225,6 +258,9 @@ public record SubprocessArgs(
                 DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT,
                 DEFAULT_GPU_MEMORY_CRITICAL_PERCENT,
                 DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT,
+                DEFAULT_OFF_HEAP_THRESHOLD_PERCENT,
+                DEFAULT_OFF_HEAP_CRITICAL_PERCENT,
+                DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT,
                 new HashMap<>());
     }
 
@@ -331,6 +367,10 @@ public record SubprocessArgs(
         private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        // Off-heap memory monitoring config
+        private int offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+        private int offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+        private int offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
         private Map<String, Object> options = new HashMap<>();
 
         public Builder taskId(String taskId) {
@@ -463,6 +503,21 @@ public record SubprocessArgs(
             return this;
         }
 
+        public Builder offHeapThresholdPercent(int offHeapThresholdPercent) {
+            this.offHeapThresholdPercent = Math.max(0, Math.min(offHeapThresholdPercent, 100));
+            return this;
+        }
+
+        public Builder offHeapCriticalPercent(int offHeapCriticalPercent) {
+            this.offHeapCriticalPercent = Math.max(0, Math.min(offHeapCriticalPercent, 100));
+            return this;
+        }
+
+        public Builder offHeapKillThresholdPercent(int offHeapKillThresholdPercent) {
+            this.offHeapKillThresholdPercent = Math.max(0, Math.min(offHeapKillThresholdPercent, 100));
+            return this;
+        }
+
         public Builder options(Map<String, Object> options) {
             this.options = options != null ? new HashMap<>(options) : new HashMap<>();
             return this;
@@ -513,6 +568,9 @@ public record SubprocessArgs(
                     gpuMemoryThresholdPercent,
                     gpuMemoryCriticalPercent,
                     gpuMemoryKillThresholdPercent,
+                    offHeapThresholdPercent,
+                    offHeapCriticalPercent,
+                    offHeapKillThresholdPercent,
                     options);
         }
     }

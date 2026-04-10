@@ -81,6 +81,10 @@ public record ModelInitSubprocessArgs(
         int gpuMemoryThresholdPercent,          // GPU warning threshold (default 75%)
         int gpuMemoryCriticalPercent,           // GPU critical threshold (default 85%)
         int gpuMemoryKillThresholdPercent,      // GPU kill threshold (default 92%)
+        // Off-heap (JavaCPP native) memory thresholds
+        int offHeapThresholdPercent,            // Off-heap warning threshold (default 80%)
+        int offHeapCriticalPercent,             // Off-heap critical threshold (default 90%)
+        int offHeapKillThresholdPercent,        // Off-heap kill threshold (default 95%)
 
         // === Validation Configuration ===
         boolean skipValidation,                 // Skip model output validation
@@ -103,6 +107,10 @@ public record ModelInitSubprocessArgs(
     private static final int DEFAULT_GPU_MEMORY_THRESHOLD = 75;
     private static final int DEFAULT_GPU_MEMORY_CRITICAL = 85;
     private static final int DEFAULT_GPU_MEMORY_KILL = 92;
+    // Off-heap threshold defaults
+    private static final int DEFAULT_OFF_HEAP_THRESHOLD = 80;
+    private static final int DEFAULT_OFF_HEAP_CRITICAL = 90;
+    private static final int DEFAULT_OFF_HEAP_KILL = 95;
     private static final String DEFAULT_VALIDATION_TEXT = "This is a validation test for the embedding model.";
 
     /**
@@ -169,6 +177,10 @@ public record ModelInitSubprocessArgs(
         private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD;
         private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL;
         private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL;
+        // Off-heap memory thresholds
+        private int offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD;
+        private int offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL;
+        private int offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL;
         private boolean skipValidation = false;
         private String validationTestText = DEFAULT_VALIDATION_TEXT;
         private Map<String, Object> options;
@@ -258,6 +270,21 @@ public record ModelInitSubprocessArgs(
             return this;
         }
 
+        public Builder offHeapThresholdPercent(int offHeapThresholdPercent) {
+            this.offHeapThresholdPercent = offHeapThresholdPercent;
+            return this;
+        }
+
+        public Builder offHeapCriticalPercent(int offHeapCriticalPercent) {
+            this.offHeapCriticalPercent = offHeapCriticalPercent;
+            return this;
+        }
+
+        public Builder offHeapKillThresholdPercent(int offHeapKillThresholdPercent) {
+            this.offHeapKillThresholdPercent = offHeapKillThresholdPercent;
+            return this;
+        }
+
         public Builder skipValidation(boolean skipValidation) {
             this.skipValidation = skipValidation;
             return this;
@@ -295,6 +322,9 @@ public record ModelInitSubprocessArgs(
                     gpuMemoryThresholdPercent,
                     gpuMemoryCriticalPercent,
                     gpuMemoryKillThresholdPercent,
+                    offHeapThresholdPercent,
+                    offHeapCriticalPercent,
+                    offHeapKillThresholdPercent,
                     skipValidation,
                     validationTestText,
                     options

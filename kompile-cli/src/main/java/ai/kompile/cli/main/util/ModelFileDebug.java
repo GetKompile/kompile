@@ -52,6 +52,6 @@ public class ModelFileDebug implements Callable<Integer> {
                 break;
         }
 
-        return null;
+        return 0;
     }
 }

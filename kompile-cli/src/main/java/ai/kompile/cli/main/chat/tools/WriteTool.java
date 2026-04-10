@@ -89,7 +89,12 @@ public class WriteTool implements CliTool {
             Files.writeString(path, content);
 
             long lines = content.lines().count();
-            String relativePath = context.getWorkingDirectory().relativize(path).toString();
+            String relativePath;
+            try {
+                relativePath = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
+            } catch (IllegalArgumentException ex) {
+                relativePath = path.toString();
+            }
             return ToolResult.success(relativePath,
                     (exists ? "Overwrote" : "Created") + " file with " + lines + " lines",
                     Map.of("path", relativePath, "lines", lines, "created", !exists));

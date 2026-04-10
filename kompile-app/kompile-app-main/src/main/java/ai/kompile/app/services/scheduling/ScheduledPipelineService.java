@@ -17,7 +17,6 @@
 package ai.kompile.app.services.scheduling;
 
 import ai.kompile.app.config.SchedulingProperties;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.quartz.*;
 import org.quartz.impl.matchers.GroupMatcher;
@@ -32,7 +31,6 @@ import java.util.*;
  */
 @Service
 @Slf4j
-@RequiredArgsConstructor
 @ConditionalOnProperty(name = "kompile.scheduling.enabled", havingValue = "true")
 public class ScheduledPipelineService {
 
@@ -40,6 +38,11 @@ public class ScheduledPipelineService {
 
     private final Scheduler scheduler;
     private final SchedulingProperties properties;
+
+    public ScheduledPipelineService(Scheduler scheduler, SchedulingProperties properties) {
+        this.scheduler = scheduler;
+        this.properties = properties;
+    }
 
     /**
      * Schedule a periodic staleness check for a fact sheet.

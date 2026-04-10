@@ -23,11 +23,12 @@ import org.jline.reader.LineReader;
 import org.jline.reader.ParsedLine;
 
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
  * JLine3 tab completer for the chat REPL.
- * Completes slash commands and tool names.
+ * Completes slash commands, tool names, and skill names.
  */
 public class ChatCompleter implements Completer {
 
@@ -35,13 +36,26 @@ public class ChatCompleter implements Completer {
             "/tools", "/tool", "/help", "/status", "/history", "/clear",
             "/rag", "/agents", "/agent", "/config", "/sessions", "/ask",
             "/conversations", "/transcript", "/memory", "/recall",
-            "/quit", "/exit"
+            "/quit", "/exit", "/queue", "/queues", "/queue-send",
+            "/queue-send-all", "/queue-remove", "/queue-clear", "/queue-status",
+            "/jobs", "/jobs-remove", "/jobs-clear", "/auto-dequeue", "/stats",
+            "/skills"
     };
 
     private final Supplier<List<McpSseClient.ToolInfo>> toolsSupplier;
+    private final Supplier<Set<String>> skillNamesSupplier;
 
+    /**
+     * Backward-compatible constructor (no skill completion).
+     */
     public ChatCompleter(Supplier<List<McpSseClient.ToolInfo>> toolsSupplier) {
+        this(toolsSupplier, Set::of);
+    }
+
+    public ChatCompleter(Supplier<List<McpSseClient.ToolInfo>> toolsSupplier,
+                         Supplier<Set<String>> skillNamesSupplier) {
         this.toolsSupplier = toolsSupplier;
+        this.skillNamesSupplier = skillNamesSupplier;
     }
 
     @Override
@@ -69,6 +83,18 @@ public class ChatCompleter implements Completer {
                 for (String cmd : SLASH_COMMANDS) {
                     if (cmd.startsWith(prefix)) {
                         candidates.add(new Candidate(cmd));
+                    }
+                }
+
+                // Complete skill names (e.g. /commit, /review)
+                Set<String> skillNames = skillNamesSupplier.get();
+                if (skillNames != null) {
+                    for (String skill : skillNames) {
+                        String skillCmd = "/" + skill;
+                        if (skillCmd.startsWith(prefix)) {
+                            candidates.add(new Candidate(skillCmd, skillCmd,
+                                    "skill", null, null, null, true));
+                        }
                     }
                 }
             }

@@ -36,6 +36,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Agentic chat loop with proper terminal rendering, output truncation,
@@ -74,9 +75,18 @@ public class AgenticChatLoop {
     private final String agentsMdContent; // loaded AGENTS.md content
     private final ai.kompile.cli.main.chat.tools.BackgroundProcessManager processManager; // background process tracking
     private ToolResultStore toolResultStore; // persists tool outputs to disk
+    private ai.kompile.cli.main.chat.ChatSessionMetrics sessionMetrics; // session metrics
+    private volatile AgentConfig currentAgentConfig; // currently active agent config (can be updated with roles)
 
     // Conversation history for compaction
     private final List<CompactionService.ConversationEntry> conversationHistory = new ArrayList<>();
+
+    // Cancel signal - set by ChatRepl when user presses Escape
+    private volatile AtomicBoolean cancelSignal;
+
+    // Callback fired once when the first output (step indicator or text chunk) is printed.
+    // Used by ChatRepl to stop the generating spinner.
+    private volatile Runnable onFirstOutput;
 
     /**
      * Server mode constructor - uses kompile-app REST endpoint.
@@ -139,14 +149,77 @@ public class AgenticChatLoop {
                     notification = r.red("[process:" + entry.getId() + "] exited with code " + code
                             + " (took " + durationStr + ") — \"" + desc + "\"");
                 }
-                System.out.println("\n" + notification);
-                System.out.flush();
+                System.out.println();
+                System.out.println(notification);
+                System.out.println();
             });
         }
+
+        // Initialize current agent config with default
+        this.currentAgentConfig = agentRegistry.getDefault();
 
         // Load AGENTS.md files from project hierarchy
         AgentsMdLoader loader = new AgentsMdLoader(workingDirectory);
         this.agentsMdContent = loader.load();
+    }
+
+    /**
+     * Sets the session metrics tracker for recording tool calls, steps, and token usage.
+     */
+    public void setSessionMetrics(ai.kompile.cli.main.chat.ChatSessionMetrics metrics) {
+        this.sessionMetrics = metrics;
+    }
+
+    /**
+     * Sets a callback to be fired once when the first output is produced.
+     * The callback is consumed after firing (set to null).
+     */
+    public void setOnFirstOutput(Runnable onFirstOutput) {
+        this.onFirstOutput = onFirstOutput;
+    }
+
+    /**
+     * Fire the onFirstOutput callback if set, then clear it.
+     */
+    private void fireFirstOutput() {
+        Runnable cb = this.onFirstOutput;
+        if (cb != null) {
+            this.onFirstOutput = null;
+            cb.run();
+        }
+    }
+
+    /**
+     * Sets the cancel signal for interrupting in-progress operations.
+     * The signal is checked between agentic steps and during LLM streaming.
+     */
+    public void setCancelSignal(AtomicBoolean cancelSignal) {
+        this.cancelSignal = cancelSignal;
+        if (directLlmClient != null) {
+            directLlmClient.setCancelSignal(cancelSignal);
+        }
+    }
+
+    /**
+     * Updates the current agent configuration (e.g., when a role is assigned).
+     */
+    public void setAgentConfig(AgentConfig agentConfig) {
+        this.currentAgentConfig = agentConfig;
+    }
+
+    /**
+     * Gets the current agent configuration.
+     */
+    public AgentConfig getCurrentAgentConfig() {
+        return currentAgentConfig;
+    }
+
+    /**
+     * Check if cancellation has been requested.
+     */
+    private boolean isCancelled() {
+        AtomicBoolean signal = this.cancelSignal;
+        return signal != null && signal.get();
     }
 
     /**
@@ -249,7 +322,16 @@ public class AgenticChatLoop {
         conversationHistory.add(CompactionService.ConversationEntry.user(message));
 
         while (step < maxSteps) {
+            // Check cancellation before each step
+            if (isCancelled()) {
+                System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                fullResponse.append("\n[Cancelled by user]");
+                break;
+            }
+
             step++;
+            if (sessionMetrics != null) sessionMetrics.recordAgenticStep();
+            fireFirstOutput();
             System.out.println(renderer.renderAgentTurnStart(step, maxSteps));
 
             // Check compaction
@@ -259,6 +341,9 @@ public class AgenticChatLoop {
                 if (compResult.isCompacted()) {
                     System.out.println(renderer.renderCompactionNotice(
                             compResult.getTokensBefore(), compResult.getTokensAfter()));
+                    if (sessionMetrics != null) {
+                        sessionMetrics.recordCompaction(compResult.getTokensBefore(), compResult.getTokensAfter());
+                    }
                     conversationHistory.clear();
                     conversationHistory.addAll(compResult.getEntries());
                 }
@@ -272,6 +357,16 @@ public class AgenticChatLoop {
                 result = streamServerTurn(
                         currentMessage, sessionId, serverAgent, ragEnabled,
                         systemPrompt, toolDefs, pendingToolResults);
+            }
+
+            // Check if cancelled during streaming
+            if (isCancelled()) {
+                if (!result.text.isEmpty()) {
+                    fullResponse.append(result.text);
+                }
+                System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                fullResponse.append("\n[Cancelled by user]");
+                break;
             }
 
             // Accumulate text output
@@ -295,6 +390,13 @@ public class AgenticChatLoop {
             List<ToolCallResult> readOnlyResults = new ArrayList<>();
 
             for (ToolCallRequest call : result.toolCalls) {
+                // Check cancellation before each tool
+                if (isCancelled()) {
+                    System.out.println("\n" + renderer.yellow("  ⊘ Cancelled — skipping remaining tools"));
+                    fullResponse.append("\n[Cancelled by user — tools skipped]");
+                    break;
+                }
+
                 boolean isReadOnly = READ_ONLY_TOOLS.contains(call.name);
 
                 // Start spinner for long-running tools
@@ -312,10 +414,13 @@ public class AgenticChatLoop {
                         System.out.println(renderer.renderToolCallComplete(call.name,
                                 ToolResult.error(errMsg)));
                         toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
+                        if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                         continue;
                     }
 
+                    long toolStart = System.currentTimeMillis();
                     ToolResult toolResult = tool.execute(call.arguments, toolContext);
+                    long toolDurationMs = System.currentTimeMillis() - toolStart;
 
                     // Truncate large outputs
                     OutputTruncator.TruncationResult truncResult =
@@ -351,6 +456,11 @@ public class AgenticChatLoop {
                     toolResults.add(new ToolCallResult(call.id, call.name,
                             toolResult.getOutput(), toolResult.isError()));
 
+                    // Record metrics
+                    if (sessionMetrics != null) {
+                        sessionMetrics.recordToolCall(call.name, toolResult.isError(), toolDurationMs);
+                    }
+
                     // Track in conversation history (include file path for compaction)
                     conversationHistory.add(CompactionService.ConversationEntry.toolResult(
                             call.name, call.id, outputWithPath));
@@ -368,6 +478,7 @@ public class AgenticChatLoop {
                     String errMsg = "Error: " + e.getMessage();
                     toolResultStore.save(call.name, call.id, null, errMsg, true);
                     toolResults.add(new ToolCallResult(call.id, call.name, errMsg, true));
+                    if (sessionMetrics != null) sessionMetrics.recordToolCall(call.name, true, 0);
                 }
             }
 
@@ -430,6 +541,13 @@ public class AgenticChatLoop {
 
         DirectLlmClient.StreamResult directResult =
                 directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults);
+
+        // Record token usage from API response
+        if (sessionMetrics != null) {
+            sessionMetrics.recordTokenUsage(
+                    directResult.inputTokens, directResult.outputTokens,
+                    directResult.cacheReadTokens, directResult.cacheCreationTokens);
+        }
 
         result.text = directResult.text;
         for (DirectLlmClient.ToolCallOutput tc : directResult.toolCalls) {
@@ -508,6 +626,9 @@ public class AgenticChatLoop {
                 String line;
 
                 while ((line = reader.readLine()) != null) {
+                    if (isCancelled()) {
+                        break;
+                    }
                     if (line.startsWith("event:")) {
                         eventType = line.substring(6).trim();
                     } else if (line.startsWith("data:")) {

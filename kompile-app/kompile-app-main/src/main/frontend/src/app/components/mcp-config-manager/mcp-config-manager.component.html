@@ -280,7 +280,7 @@
 
         <!-- Transport Type (read-only badge) -->
         <div class="transport-info">
-          <span class="transport-badge large" [class]="editingServer.transportType?.toLowerCase() || 'stdio'">
+          <span class="transport-badge large" [class]="editingServer.transportType.toLowerCase() || 'stdio'">
             {{ editingServer.transportType || 'STDIO' }}
           </span>
           <span class="transport-description">

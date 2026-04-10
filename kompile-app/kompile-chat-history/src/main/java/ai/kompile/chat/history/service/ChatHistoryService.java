@@ -195,6 +195,56 @@ public class ChatHistoryService {
     }
 
     /**
+     * Create a session with a specified source.
+     */
+    public ChatSession createSession(String title, String userId, Long factSheetId, String source) {
+        String sessionId = UUID.randomUUID().toString();
+
+        ChatSession session = ChatSession.builder()
+            .sessionId(sessionId)
+            .title(title != null ? title : "New Chat")
+            .userId(userId)
+            .factSheetId(factSheetId)
+            .source(source)
+            .build();
+
+        ChatSession saved = sessionRepository.save(session);
+        log.info("Created new chat session: {} source: {}", sessionId, source);
+        return saved;
+    }
+
+    /**
+     * Create a session with a given sessionId and source (for imports).
+     */
+    public ChatSession createSessionWithId(String sessionId, String title, String source) {
+        ChatSession session = ChatSession.builder()
+            .sessionId(sessionId)
+            .title(title != null ? title : "Imported Chat")
+            .source(source)
+            .build();
+
+        ChatSession saved = sessionRepository.save(session);
+        log.info("Created imported chat session: {} source: {}", sessionId, source);
+        return saved;
+    }
+
+    /**
+     * Get sessions by source.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatSession> getSessionsBySource(String source) {
+        return sessionRepository.findBySourceOrderByUpdatedAtDesc(source);
+    }
+
+    /**
+     * Check if a session with given ID and source already exists.
+     */
+    @Transactional(readOnly = true)
+    public boolean existsBySessionIdAndSource(String sessionId, String source) {
+        return sessionRepository.existsBySessionIdAndSource(sessionId, source);
+    }
+
+    /**
      * Get all messages for a session.
      */
     @Transactional(readOnly = true)

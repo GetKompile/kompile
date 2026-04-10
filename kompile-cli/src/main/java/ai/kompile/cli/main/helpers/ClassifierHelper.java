@@ -38,16 +38,16 @@ public class ClassifierHelper implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         StringBuilder stringBuilder = new StringBuilder();
-        if(os.endsWith("-"))
-            os = os.substring(0,os.length() - 2);
-        stringBuilder.append(os);
-        if(architecture.endsWith("-"))
-            architecture = architecture.substring(0,architecture.length() - 2);
+        if(os != null && os.endsWith("-"))
+            os = os.substring(0,os.length() - 1);
+        stringBuilder.append(os != null ? os : "");
+        if(architecture != null && architecture.endsWith("-"))
+            architecture = architecture.substring(0,architecture.length() - 1);
         stringBuilder.append("-");
-        stringBuilder.append(architecture);
+        stringBuilder.append(architecture != null ? architecture : "");
         if(helper != null && !helper.isEmpty()) {
             if(helper.endsWith("-"))
-                helper = helper.substring(0,helper.length() - 2);
+                helper = helper.substring(0,helper.length() - 1);
             if(helper.startsWith("-"))
                 helper = helper.substring(1);
             stringBuilder.append("-");
@@ -58,7 +58,7 @@ public class ClassifierHelper implements Callable<Integer> {
 
         if(extension != null && !extension.isEmpty()) {
             if(extension.endsWith("-"))
-                extension = extension.substring(0,extension.length() - 2);
+                extension = extension.substring(0,extension.length() - 1);
             if(extension.startsWith("-"))
                 extension = extension.substring(1);
             stringBuilder.append("-");

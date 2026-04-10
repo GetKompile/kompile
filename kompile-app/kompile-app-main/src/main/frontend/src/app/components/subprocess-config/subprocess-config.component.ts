@@ -139,6 +139,14 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
   editModelInitExecutablePath = '';
   editSubprocessTypeFlag = '--subprocess=';
 
+  // Edit form - Memory watchdog thresholds
+  editOffHeapThresholdPercent = 80;
+  editOffHeapCriticalPercent = 90;
+  editOffHeapKillThresholdPercent = 95;
+  editGpuMemoryThresholdPercent = 75;
+  editGpuMemoryCriticalPercent = 85;
+  editGpuMemoryKillThresholdPercent = 92;
+
   // Native mode options
   nativeModeOptions: NativeModeOption[] = [];
 
@@ -156,7 +164,7 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
 
   // Active processes
   activeProcesses: SubprocessStatus[] = [];
-  displayedColumns = ['taskId', 'fileName', 'phase', 'progress', 'elapsed', 'actions'];
+  displayedColumns = ['taskId', 'fileName', 'phase', 'progress', 'memory', 'elapsed', 'actions'];
 
   // System info
   systemInfo: SystemInfo | null = null;
@@ -286,6 +294,13 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
         this.editEmbeddingExecutablePath = config.embeddingExecutablePath || '';
         this.editModelInitExecutablePath = config.modelInitExecutablePath || '';
         this.editSubprocessTypeFlag = config.subprocessTypeFlag || '--subprocess=';
+        // Memory watchdog thresholds
+        this.editOffHeapThresholdPercent = config.offHeapThresholdPercent ?? 80;
+        this.editOffHeapCriticalPercent = config.offHeapCriticalPercent ?? 90;
+        this.editOffHeapKillThresholdPercent = config.offHeapKillThresholdPercent ?? 95;
+        this.editGpuMemoryThresholdPercent = config.gpuMemoryThresholdPercent ?? 75;
+        this.editGpuMemoryCriticalPercent = config.gpuMemoryCriticalPercent ?? 85;
+        this.editGpuMemoryKillThresholdPercent = config.gpuMemoryKillThresholdPercent ?? 92;
         this.isLoading = false;
         this.cdr.markForCheck();
       },
@@ -442,7 +457,14 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
       vectorPopulationExecutablePath: this.editVectorPopulationExecutablePath,
       embeddingExecutablePath: this.editEmbeddingExecutablePath,
       modelInitExecutablePath: this.editModelInitExecutablePath,
-      subprocessTypeFlag: this.editSubprocessTypeFlag
+      subprocessTypeFlag: this.editSubprocessTypeFlag,
+      // Memory watchdog thresholds
+      offHeapThresholdPercent: this.editOffHeapThresholdPercent,
+      offHeapCriticalPercent: this.editOffHeapCriticalPercent,
+      offHeapKillThresholdPercent: this.editOffHeapKillThresholdPercent,
+      gpuMemoryThresholdPercent: this.editGpuMemoryThresholdPercent,
+      gpuMemoryCriticalPercent: this.editGpuMemoryCriticalPercent,
+      gpuMemoryKillThresholdPercent: this.editGpuMemoryKillThresholdPercent
     };
 
     this.configService.updateConfiguration(update).subscribe({
@@ -501,6 +523,13 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
         this.editEmbeddingExecutablePath = config.embeddingExecutablePath || '';
         this.editModelInitExecutablePath = config.modelInitExecutablePath || '';
         this.editSubprocessTypeFlag = config.subprocessTypeFlag || '--subprocess=';
+        // Memory watchdog thresholds
+        this.editOffHeapThresholdPercent = config.offHeapThresholdPercent ?? 80;
+        this.editOffHeapCriticalPercent = config.offHeapCriticalPercent ?? 90;
+        this.editOffHeapKillThresholdPercent = config.offHeapKillThresholdPercent ?? 95;
+        this.editGpuMemoryThresholdPercent = config.gpuMemoryThresholdPercent ?? 75;
+        this.editGpuMemoryCriticalPercent = config.gpuMemoryCriticalPercent ?? 85;
+        this.editGpuMemoryKillThresholdPercent = config.gpuMemoryKillThresholdPercent ?? 92;
         this.isSaving = false;
         this.showSuccess('Configuration reset to defaults');
         this.cdr.markForCheck();
@@ -617,6 +646,19 @@ export class SubprocessConfigComponent implements OnInit, OnDestroy {
     const memGb = this.getMemoryGb();
     const maxGb = Math.min(Math.floor(memGb * 0.8), 1024); // Cap at 1TB
     return maxGb + 'g';
+  }
+
+  formatBytes(bytes: number): string {
+    if (!bytes || bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+  }
+
+  getMemoryBarColor(percent: number): string {
+    if (percent >= 90) return 'warn';
+    if (percent >= 75) return 'accent';
+    return 'primary';
   }
 
   private showSuccess(message: string): void {

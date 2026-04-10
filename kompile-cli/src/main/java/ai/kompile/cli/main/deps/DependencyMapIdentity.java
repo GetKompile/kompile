@@ -93,7 +93,7 @@ public class DependencyMapIdentity<K,V> implements IDependencyMap<K,V> {
                 if(predicate.test(v)) s.add(v);
             }
             for (V v : s) {
-                ret.remove(s);
+                ret.remove(v);
             }
             //remove the key as well
             if(prevSize == s.size()){

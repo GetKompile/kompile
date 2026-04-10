@@ -1,0 +1,98 @@
+.gpu-lifecycle-container {
+  padding: 16px;
+}
+
+.section-title {
+  margin: 24px 0 12px 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.87);
+}
+
+.section-title:first-child {
+  margin-top: 0;
+}
+
+.device-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.device-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.memory-bar {
+  margin-top: 12px;
+}
+
+.memory-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 4px;
+}
+
+.utilization-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: right;
+  margin-top: 4px;
+}
+
+.jobs-table {
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.jobs-table table {
+  width: 100%;
+}
+
+.budget-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.budget-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.budget-display {
+  padding: 8px 0;
+}
+
+.budget-field {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.field-label {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+}
+
+.budget-edit mat-form-field {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.status-message {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}

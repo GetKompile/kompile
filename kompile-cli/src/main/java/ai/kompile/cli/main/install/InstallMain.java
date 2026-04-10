@@ -35,7 +35,9 @@ import java.util.concurrent.Callable;
         ListPropertyPrograms.class,
         OpenBlasInstaller.class,
         InstallHeaders.class,
-        InstallPythonWrappers.class
+        InstallPythonWrappers.class,
+        InstallKompileApp.class,
+        InstallModelStaging.class
 })
 public class InstallMain implements Callable<Integer> {
     public InstallMain() {

@@ -130,7 +130,7 @@ public class ModelInitSubprocessMain {
             logger.info("Loaded subprocess args for task: {}, model: {}",
                     subprocessArgs.taskId(), subprocessArgs.modelIdentifier());
 
-            // Initialize and start memory watchdog with GPU thresholds
+            // Initialize and start memory watchdog with GPU + off-heap thresholds
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
@@ -138,16 +138,22 @@ public class ModelInitSubprocessMain {
                     subprocessArgs.memoryCheckIntervalMs(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent()
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent()
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}% off-heap stop={}%, critical={}%, kill={}%",
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
                     subprocessArgs.memoryKillThresholdPercent(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent());
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent());
 
             // Initialize progress reporter
             reporter = new ModelInitProgressReporter(subprocessArgs.taskId(),
@@ -173,11 +179,17 @@ public class ModelInitSubprocessMain {
             initializeNd4j(subprocessArgs.nd4jConfigJson());
             reporter.reportProgress(10, 100, "ND4J initialized");
 
+            // Check watchdog after ND4J init
+            checkWatchdogOrExit(memoryWatchdog, reporter, "ND4J initialization");
+
             // Phase 2: Configure model source
             reporter.reportPhaseTransition(ModelInitMessage.Phase.CONFIGURING_MODEL_SOURCE);
             reporter.reportProgress(15, 0, "Configuring model source...");
             configureModelSource(subprocessArgs, reporter);
             reporter.reportProgress(20, 100, "Model source configured");
+
+            // Check watchdog after model source config
+            checkWatchdogOrExit(memoryWatchdog, reporter, "model source configuration");
 
             // Phase 3: Look up model in registry
             reporter.reportPhaseTransition(ModelInitMessage.Phase.LOOKING_UP_REGISTRY);
@@ -191,6 +203,9 @@ public class ModelInitSubprocessMain {
             }
             reporter.reportProgress(30, 100, "Model found in registry");
 
+            // Check watchdog before heavy model loading
+            checkWatchdogOrExit(memoryWatchdog, reporter, "registry lookup");
+
             // Phase 4: Create encoder (this does the heavy lifting - loading model files)
             reporter.reportPhaseTransition(ModelInitMessage.Phase.CREATING_ENCODER);
             reporter.reportProgress(35, 0, "Creating encoder (loading model files)...");
@@ -202,6 +217,9 @@ public class ModelInitSubprocessMain {
 
             initializedEncoder = encoder;
             reporter.reportProgress(70, 100, String.format("Encoder created in %dms", encoderCreateTime));
+
+            // Check watchdog after heavy model loading
+            checkWatchdogOrExit(memoryWatchdog, reporter, "encoder creation");
 
             // Get encoder info
             String encoderType = AnseriniEncoderFactory.getEncoderTypeFromModelId(modelId).name();
@@ -336,6 +354,32 @@ public class ModelInitSubprocessMain {
         }
 
         System.exit(exitCode);
+    }
+
+    /**
+     * Check memory watchdog and exit gracefully if stop/kill threshold is exceeded.
+     * Even though the watchdog now force-terminates at kill threshold, checking shouldStop()
+     * allows graceful early exit before reaching the kill point.
+     */
+    private static void checkWatchdogOrExit(SubprocessMemoryWatchdog watchdog,
+                                             ModelInitProgressReporter reporter, String phase) {
+        if (watchdog == null) return;
+        if (watchdog.shouldKill()) {
+            logger.error("Memory watchdog kill threshold exceeded after {}", phase);
+            if (reporter != null) {
+                reporter.reportFailed("Memory kill threshold exceeded after " + phase,
+                        "MemoryKillThreshold", null, false);
+            }
+            System.exit(137);
+        } else if (watchdog.shouldStop()) {
+            logger.warn("Memory watchdog stop threshold exceeded after {} - aborting", phase);
+            if (reporter != null) {
+                reporter.reportFailed("Memory threshold exceeded after " + phase +
+                                " - aborting to prevent OOM",
+                        "MemoryThreshold", null, true);
+            }
+            System.exit(1);
+        }
     }
 
     /**

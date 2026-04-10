@@ -714,8 +714,15 @@ public class McpServerRuntime {
             case "GET":
                 request = requestBuilder.GET().build();
                 break;
+            case "DELETE":
+                request = requestBuilder.DELETE().build();
+                break;
+            case "PATCH":
+                request = requestBuilder.method("PATCH", HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                break;
             default:
-                throw new UnsupportedOperationException("HTTP method not supported: " + httpConfig.getMethod());
+                throw new UnsupportedOperationException("HTTP method not supported: " + httpConfig.getMethod() +
+                        ". Supported: GET, POST, PUT, DELETE, PATCH");
         }
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -749,10 +756,188 @@ public class McpServerRuntime {
                 }
                 return "HTTP URL not configured";
             case DATABASE:
-                return "Database resource not implemented";
+                return readDatabaseResource(resourceConfig);
             default:
                 return "Resource type not implemented: " + resourceConfig.getResourceType();
         }
+    }
+
+    private String readDatabaseResource(McpResourceConfig resourceConfig) {
+        McpResourceConfig.DatabaseResourceConfig dbConfig = resourceConfig.getDatabaseConfig();
+        if (dbConfig == null || dbConfig.getQuery() == null || dbConfig.getQuery().isEmpty()) {
+            return "Database resource not configured: missing query";
+        }
+
+        // Build JDBC URL from dataSourceName - supports Spring datasource naming convention
+        String dataSourceName = dbConfig.getDataSourceName();
+        if (dataSourceName == null || dataSourceName.isEmpty()) {
+            return "Database resource not configured: missing dataSourceName";
+        }
+
+        try {
+            // Look up datasource via JNDI or construct from common Spring properties
+            // For security, only allow SELECT queries
+            String query = dbConfig.getQuery().trim();
+            if (!query.toLowerCase().startsWith("select")) {
+                return "Only SELECT queries are allowed for database resources";
+            }
+
+            // Use the application's datasource - get it from Spring context
+            javax.sql.DataSource dataSource = resolveDataSource(dataSourceName);
+            if (dataSource == null) {
+                return "DataSource not found: " + dataSourceName;
+            }
+
+            try (java.sql.Connection conn = dataSource.getConnection();
+                 java.sql.PreparedStatement stmt = conn.prepareStatement(query)) {
+
+                // Bind parameters if any
+                if (dbConfig.getParameters() != null) {
+                    int idx = 1;
+                    for (Map.Entry<String, Object> param : dbConfig.getParameters().entrySet()) {
+                        stmt.setObject(idx++, param.getValue());
+                    }
+                }
+
+                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                    String format = dbConfig.getOutputFormat() != null ? dbConfig.getOutputFormat() : "json";
+                    switch (format.toLowerCase()) {
+                        case "csv":
+                            return resultSetToCsv(rs);
+                        case "text":
+                            return resultSetToText(rs);
+                        case "json":
+                        default:
+                            return resultSetToJson(rs);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.error("Error reading database resource: {}", e.getMessage(), e);
+            return "Database query error: " + e.getMessage();
+        }
+    }
+
+    private javax.sql.DataSource resolveDataSource(String dataSourceName) {
+        // Try to look up via Spring application context if available
+        try {
+            // Use JNDI lookup for named datasources
+            javax.naming.InitialContext ctx = new javax.naming.InitialContext();
+            return (javax.sql.DataSource) ctx.lookup("java:comp/env/" + dataSourceName);
+        } catch (Exception e) {
+            // If JNDI fails, try to create a simple connection from the datasource name
+            // which may be a JDBC URL
+            try {
+                if (dataSourceName.startsWith("jdbc:")) {
+                    return new javax.sql.DataSource() {
+                        @Override public java.sql.Connection getConnection() throws java.sql.SQLException {
+                            return java.sql.DriverManager.getConnection(dataSourceName);
+                        }
+                        @Override public java.sql.Connection getConnection(String u, String p) throws java.sql.SQLException {
+                            return java.sql.DriverManager.getConnection(dataSourceName, u, p);
+                        }
+                        @Override public java.io.PrintWriter getLogWriter() { return null; }
+                        @Override public void setLogWriter(java.io.PrintWriter out) {}
+                        @Override public void setLoginTimeout(int seconds) {}
+                        @Override public int getLoginTimeout() { return 0; }
+                        @Override public java.util.logging.Logger getParentLogger() { return null; }
+                        @Override public <T> T unwrap(Class<T> iface) { return null; }
+                        @Override public boolean isWrapperFor(Class<?> iface) { return false; }
+                    };
+                }
+            } catch (Exception ex) {
+                logger.warn("Failed to resolve DataSource '{}': {}", dataSourceName, ex.getMessage());
+            }
+            return null;
+        }
+    }
+
+    private String resultSetToJson(java.sql.ResultSet rs) throws Exception {
+        java.sql.ResultSetMetaData meta = rs.getMetaData();
+        int colCount = meta.getColumnCount();
+        ArrayNode rows = objectMapper.createArrayNode();
+
+        while (rs.next()) {
+            ObjectNode row = objectMapper.createObjectNode();
+            for (int i = 1; i <= colCount; i++) {
+                String colName = meta.getColumnLabel(i);
+                Object value = rs.getObject(i);
+                if (value == null) {
+                    row.putNull(colName);
+                } else if (value instanceof Number) {
+                    if (value instanceof Integer || value instanceof Long) {
+                        row.put(colName, ((Number) value).longValue());
+                    } else {
+                        row.put(colName, ((Number) value).doubleValue());
+                    }
+                } else if (value instanceof Boolean) {
+                    row.put(colName, (Boolean) value);
+                } else {
+                    row.put(colName, value.toString());
+                }
+            }
+            rows.add(row);
+        }
+
+        return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(rows);
+    }
+
+    private String resultSetToCsv(java.sql.ResultSet rs) throws Exception {
+        java.sql.ResultSetMetaData meta = rs.getMetaData();
+        int colCount = meta.getColumnCount();
+        StringBuilder sb = new StringBuilder();
+
+        // Header
+        for (int i = 1; i <= colCount; i++) {
+            if (i > 1) sb.append(",");
+            sb.append(escapeCsv(meta.getColumnLabel(i)));
+        }
+        sb.append("\n");
+
+        // Rows
+        while (rs.next()) {
+            for (int i = 1; i <= colCount; i++) {
+                if (i > 1) sb.append(",");
+                Object val = rs.getObject(i);
+                sb.append(val == null ? "" : escapeCsv(val.toString()));
+            }
+            sb.append("\n");
+        }
+
+        return sb.toString();
+    }
+
+    private String resultSetToText(java.sql.ResultSet rs) throws Exception {
+        java.sql.ResultSetMetaData meta = rs.getMetaData();
+        int colCount = meta.getColumnCount();
+        StringBuilder sb = new StringBuilder();
+
+        // Header
+        for (int i = 1; i <= colCount; i++) {
+            if (i > 1) sb.append("\t");
+            sb.append(meta.getColumnLabel(i));
+        }
+        sb.append("\n");
+        sb.append("-".repeat(colCount * 15)).append("\n");
+
+        // Rows
+        while (rs.next()) {
+            for (int i = 1; i <= colCount; i++) {
+                if (i > 1) sb.append("\t");
+                Object val = rs.getObject(i);
+                sb.append(val == null ? "NULL" : val.toString());
+            }
+            sb.append("\n");
+        }
+
+        return sb.toString();
+    }
+
+    private String escapeCsv(String value) {
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
     }
 
     private ObjectNode buildSchemaFromParameters(List<McpToolConfig.ParameterConfig> parameters) {

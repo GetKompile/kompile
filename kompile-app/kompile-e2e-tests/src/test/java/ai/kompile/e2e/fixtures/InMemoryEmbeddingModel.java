@@ -24,16 +24,23 @@ public class InMemoryEmbeddingModel implements EmbeddingModel {
     @Override
     public INDArray embed(String text) {
         float[] vector = hashToVector(text);
-        return Nd4j.createFromArray(new float[][] { vector });
+        INDArray arr = Nd4j.create(1, dims);
+        for (int i = 0; i < dims; i++) {
+            arr.putScalar(0, i, vector[i]);
+        }
+        return arr;
     }
 
     @Override
     public INDArray embed(List<String> texts) {
-        float[][] matrix = new float[texts.size()][dims];
+        INDArray arr = Nd4j.create(texts.size(), dims);
         for (int i = 0; i < texts.size(); i++) {
-            matrix[i] = hashToVector(texts.get(i));
+            float[] vector = hashToVector(texts.get(i));
+            for (int j = 0; j < dims; j++) {
+                arr.putScalar(i, j, vector[j]);
+            }
         }
-        return Nd4j.createFromArray(matrix);
+        return arr;
     }
 
     @Override

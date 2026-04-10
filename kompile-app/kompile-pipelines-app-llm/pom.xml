@@ -52,6 +52,18 @@
 
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-manager</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-steps-samediff</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-pipelines-framework-api</artifactId>
             <version>${project.version}</version>
         </dependency>

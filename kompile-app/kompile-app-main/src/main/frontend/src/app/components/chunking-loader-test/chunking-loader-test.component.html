@@ -530,11 +530,11 @@
               <span class="stat-label">File Size</span>
             </div>
             <div class="stat-item">
-              <span class="stat-value">{{ analysisResult.loadedDocuments?.length || 0 }}</span>
+              <span class="stat-value">{{ analysisResult.loadedDocuments.length || 0 }}</span>
               <span class="stat-label">Documents</span>
             </div>
             <div class="stat-item">
-              <span class="stat-value">{{ analysisResult.chunks?.length || 0 }}</span>
+              <span class="stat-value">{{ analysisResult.chunks.length || 0 }}</span>
               <span class="stat-label">Chunks</span>
             </div>
             <div class="stat-item" *ngIf="analysisResult.processingStats?.['avgChunkSize']">
@@ -700,7 +700,7 @@
             <mat-tab>
               <ng-template mat-tab-label>
                 <mat-icon>input</mat-icon>
-                <span>Loaders ({{ analysisResult.availableLoaders?.length || 0 }})</span>
+                <span>Loaders ({{ analysisResult.availableLoaders.length || 0 }})</span>
               </ng-template>
               <div class="tab-content">
                 <div class="selected-item-banner" *ngIf="analysisResult.selectedLoader">
@@ -733,7 +733,7 @@
             <mat-tab>
               <ng-template mat-tab-label>
                 <mat-icon>description</mat-icon>
-                <span>Documents ({{ analysisResult.loadedDocuments?.length || 0 }})</span>
+                <span>Documents ({{ analysisResult.loadedDocuments.length || 0 }})</span>
               </ng-template>
               <div class="tab-content">
                 <div *ngIf="!analysisResult.loadedDocuments?.length" class="no-items">

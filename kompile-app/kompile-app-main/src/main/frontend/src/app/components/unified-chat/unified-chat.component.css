@@ -428,6 +428,360 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
+   SIDEBAR TAB TOGGLE
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SOURCE FILTER ROW (unified sidebar)
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.source-filter-row {
+  display: flex;
+  padding: 4px 12px 8px;
+  gap: 4px;
+  align-items: center;
+}
+
+.source-filter-select {
+  flex: 1;
+  padding: 6px 10px;
+  background-color: #2d2d44;
+  border: 1px solid #3d3d5c;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-size: 0.82em;
+  cursor: pointer;
+}
+
+.source-filter-select:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.source-filter-select option {
+  background-color: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.refresh-sync-btn {
+  padding: 5px 8px;
+  background-color: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 6px;
+  color: #888;
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.refresh-sync-btn:hover:not(:disabled) {
+  background-color: #2d2d44;
+  color: #e0e0e0;
+}
+
+.refresh-sync-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Source badge inline (next to session name) */
+.source-badge-inline {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.65em;
+  font-weight: 600;
+  color: white;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* Synced session styling */
+.chat-item.synced .chat-item-content {
+  display: flex;
+  align-items: flex-start;
+}
+
+/* CLI Browser overlay */
+.cli-browser-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #1a1a2e;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cli-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2d2d44;
+  font-size: 0.9em;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.cli-browser-close {
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 1.1em;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.cli-browser-close:hover {
+  color: #e0e0e0;
+}
+
+/* Legacy tab toggle (hidden but kept for CLI browser) */
+.sidebar-tab-toggle {
+  display: none;
+}
+
+.sidebar-tab-btn {
+  flex: 1;
+  padding: 6px 12px;
+  background-color: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 6px;
+  color: #888;
+  font-size: 0.85em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sidebar-tab-btn:hover {
+  background-color: #2d2d44;
+  color: #e0e0e0;
+}
+
+.sidebar-tab-btn.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-color: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   CLI TRANSCRIPT BROWSER
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.cli-source-filter {
+  padding: 12px 16px 8px;
+}
+
+.cli-source-select {
+  width: 100%;
+  padding: 8px 12px;
+  background-color: #2d2d44;
+  border: 1px solid #3d3d5c;
+  border-radius: 8px;
+  color: #e0e0e0;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+
+.cli-source-select:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.cli-source-select option {
+  background-color: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.cli-source-summary {
+  padding: 4px 16px 8px;
+}
+
+.cli-source-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cli-source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7em;
+  font-weight: 600;
+  color: white;
+  opacity: 0.6;
+}
+
+.cli-source-badge.available {
+  opacity: 1;
+}
+
+.cli-source-badge.small {
+  padding: 1px 6px;
+  font-size: 0.65em;
+}
+
+.cli-source-dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.cli-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 24px;
+  color: #888;
+  font-size: 0.85em;
+}
+
+.cli-session .chat-item-content {
+  display: flex;
+  align-items: flex-start;
+}
+
+.import-btn {
+  padding: 4px 10px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.75em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.import-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  opacity: 0.9;
+}
+
+.import-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.load-btn {
+  padding: 4px 10px;
+  background-color: transparent;
+  color: #667eea;
+  border: 1px solid #667eea;
+  border-radius: 6px;
+  font-size: 0.75em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.load-btn:hover {
+  background-color: rgba(102, 126, 234, 0.1);
+}
+
+/* CLI Preview Panel */
+.cli-preview-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cli-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2d2d44;
+}
+
+.cli-preview-back {
+  padding: 4px 8px;
+  background-color: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 4px;
+  color: #888;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.cli-preview-back:hover {
+  background-color: #2d2d44;
+  color: #e0e0e0;
+}
+
+.cli-preview-title {
+  flex: 1;
+  font-size: 0.85em;
+  color: #e0e0e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-preview-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2d2d44;
+}
+
+.cli-preview-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.cli-preview-turn {
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+
+.cli-preview-turn.user {
+  background-color: #2d2d44;
+  color: #e0e0e0;
+}
+
+.cli-preview-turn.assistant {
+  background-color: #1e1e35;
+  color: #c0c0c0;
+}
+
+.cli-turn-role {
+  display: block;
+  font-size: 0.75em;
+  font-weight: 600;
+  color: #667eea;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.cli-preview-turn.assistant .cli-turn-role {
+  color: #a78bfa;
+}
+
+.cli-turn-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
    SETTINGS SIDEBAR (RIGHT)
    ═══════════════════════════════════════════════════════════════════════════════ */
 

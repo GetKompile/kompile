@@ -1,0 +1,103 @@
+<div class="vlm-orchestration-container">
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading">
+    <!-- Encoder Release -->
+    <mat-card class="config-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>visibility_off</mat-icon>
+        <mat-card-title>Vision Encoder Lifecycle</mat-card-title>
+        <mat-card-subtitle>Free GPU memory by releasing the vision encoder after encoding completes</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <mat-slide-toggle
+          [(ngModel)]="config.releaseEncoderAfterEncoding"
+          matTooltip="Release encoder after all pages are encoded (~1-2GB freed)">
+          Release encoder after encoding
+        </mat-slide-toggle>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Device Assignment -->
+    <mat-card class="config-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>devices</mat-icon>
+        <mat-card-title>Multi-GPU Device Assignment</mat-card-title>
+        <mat-card-subtitle>Assign VLM sub-models to specific GPU devices</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="config-field">
+          <mat-form-field appearance="outline">
+            <mat-label>Vision Encoder GPU</mat-label>
+            <mat-select [(ngModel)]="config.encoderDeviceId">
+              <mat-option *ngFor="let gpu of gpuOptions" [value]="gpu.id">
+                {{ gpu.label }}
+              </mat-option>
+            </mat-select>
+            <mat-hint>GPU for vision encoding (can be secondary GPU)</mat-hint>
+          </mat-form-field>
+        </div>
+        <div class="config-field">
+          <mat-form-field appearance="outline">
+            <mat-label>Decoder GPU</mat-label>
+            <mat-select [(ngModel)]="config.decoderDeviceId">
+              <mat-option *ngFor="let gpu of gpuOptions" [value]="gpu.id">
+                {{ gpu.label }}
+              </mat-option>
+            </mat-select>
+            <mat-hint>GPU for autoregressive decoding (main GPU recommended)</mat-hint>
+          </mat-form-field>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Triton Cache -->
+    <mat-card class="config-card">
+      <mat-card-header>
+        <mat-icon mat-card-avatar>bolt</mat-icon>
+        <mat-card-title>Triton JIT Cache</mat-card-title>
+        <mat-card-subtitle>Cache compiled Triton kernels to avoid ~74s recompilation on each run</mat-card-subtitle>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="toggle-field">
+          <mat-slide-toggle [(ngModel)]="config.tritonCacheEnabled">
+            Enable Triton cache
+          </mat-slide-toggle>
+        </div>
+        <div class="toggle-field">
+          <mat-slide-toggle [(ngModel)]="config.tritonAutoImport"
+                            [disabled]="!config.tritonCacheEnabled">
+            Auto-import cache on pipeline start
+          </mat-slide-toggle>
+        </div>
+        <div class="toggle-field">
+          <mat-slide-toggle [(ngModel)]="config.tritonAutoExport"
+                            [disabled]="!config.tritonCacheEnabled">
+            Auto-export cache after first compile
+          </mat-slide-toggle>
+        </div>
+        <div class="config-field">
+          <mat-form-field appearance="outline">
+            <mat-label>Cache Directory</mat-label>
+            <input matInput [(ngModel)]="config.tritonCacheDir"
+                   [disabled]="!config.tritonCacheEnabled">
+            <mat-hint>Path to store .tkcache bundles</mat-hint>
+          </mat-form-field>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Action Bar -->
+    <div class="action-bar">
+      <button mat-stroked-button color="warn" (click)="resetConfig()">
+        <mat-icon>restore</mat-icon> Reset
+      </button>
+      <button mat-flat-button color="primary" (click)="saveConfig()" [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        {{ saving ? 'Saving...' : 'Save Configuration' }}
+      </button>
+    </div>
+  </div>
+</div>

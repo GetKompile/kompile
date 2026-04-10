@@ -656,27 +656,55 @@ public class AgentChatService {
     }
 
     /**
+     * Build the base interactive command for the agent (without -p prompt).
+     * Used by both one-shot and passthrough interactive modes.
+     */
+    List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools) {
+        return buildInteractiveCommand(agent, skipPermissions, injectMcpTools, null);
+    }
+
+    /**
+     * Build the base interactive command for the agent (without -p prompt).
+     * Used by both one-shot and passthrough interactive modes.
+     *
+     * @param agent           the agent provider
+     * @param skipPermissions whether to add the skip-permissions flag
+     * @param injectMcpTools  whether to inject MCP server args
+     * @param agentArgs       optional extra CLI arguments to pass through to the agent
+     */
+    List<String> buildInteractiveCommand(AgentProvider agent, boolean skipPermissions, boolean injectMcpTools, List<String> agentArgs) {
+        List<String> command = new ArrayList<>();
+        command.add(agent.getCommand());
+
+        // Add skip permissions flag if enabled
+        if (skipPermissions && agent.getSkipPermissionsFlag() != null) {
+            command.add(agent.getSkipPermissionsFlag());
+        }
+
+        // Add MCP server configuration if agent supports it and tools are available
+        if (injectMcpTools && agent.isMcpSupported() && toolDiscoveryService != null) {
+            addMcpServerArgs(command, agent);
+        }
+
+        // Add agent-specific args
+        command.addAll(agent.safeArgs());
+
+        // Add caller-supplied pass-through args
+        if (agentArgs != null && !agentArgs.isEmpty()) {
+            command.addAll(agentArgs);
+        }
+
+        return command;
+    }
+
+    /**
      * Build the CLI command for the agent, including MCP server configuration if
      * supported.
      * Handles Gemini CLI workspace restrictions by creating prompt files in the
      * project directory.
      */
     private List<String> buildCommand(AgentProvider agent, AgentChatRequest request, String prompt) {
-        List<String> command = new ArrayList<>();
-        command.add(agent.getCommand());
-
-        // Add skip permissions flag if enabled
-        if (request.isSkipPermissions() && agent.getSkipPermissionsFlag() != null) {
-            command.add(agent.getSkipPermissionsFlag());
-        }
-
-        // Add MCP server configuration if agent supports it and tools are available
-        if (request.isInjectMcpTools() && agent.isMcpSupported() && toolDiscoveryService != null) {
-            addMcpServerArgs(command, agent);
-        }
-
-        // Add agent-specific args
-        command.addAll(agent.safeArgs());
+        List<String> command = buildInteractiveCommand(agent, request.isSkipPermissions(), request.isInjectMcpTools(), request.getAgentArgs());
 
         // Add the prompt - handle Gemini's workspace restrictions
         command.add("-p");

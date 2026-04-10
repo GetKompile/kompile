@@ -60,6 +60,15 @@ public class ChatConfig {
     @JsonProperty
     private boolean defaultMemory = true;
 
+    @JsonProperty
+    private String cancelKey = "ESCAPE";
+
+    @JsonProperty
+    private String chatMode = "standard"; // "standard" or "passthrough"
+
+    @JsonProperty
+    private String passthroughAgent = "claude"; // claude, codex, gemini, qwen, opencode
+
     public ChatConfig() {}
 
     public ChatConfig(String provider, String apiKey, String model, String baseUrl) {
@@ -91,6 +100,15 @@ public class ChatConfig {
 
     public boolean isDefaultMemory() { return defaultMemory; }
     public void setDefaultMemory(boolean defaultMemory) { this.defaultMemory = defaultMemory; }
+
+    public String getCancelKey() { return cancelKey; }
+    public void setCancelKey(String cancelKey) { this.cancelKey = cancelKey; }
+
+    public String getChatMode() { return chatMode; }
+    public void setChatMode(String chatMode) { this.chatMode = chatMode; }
+
+    public String getPassthroughAgent() { return passthroughAgent; }
+    public void setPassthroughAgent(String passthroughAgent) { this.passthroughAgent = passthroughAgent; }
 
     /**
      * Resolve the actual API base URL for the configured provider.
@@ -251,6 +269,23 @@ public class ChatConfig {
     public static final String[] PROVIDER_ORDER = {
             "kompile", "anthropic", "openai", "gemini", "ollama", "openrouter", "deepseek", "groq"
     };
+
+    // Available passthrough agents
+    public static final Map<String, String> PASSTHROUGH_AGENTS = Map.ofEntries(
+            Map.entry("claude", "Claude Code (Anthropic)"),
+            Map.entry("codex", "OpenAI Codex (OpenAI)"),
+            Map.entry("gemini", "Gemini CLI (Google)"),
+            Map.entry("qwen", "Qwen Code (Alibaba)"),
+            Map.entry("opencode", "OpenCode (open source)")
+    );
+
+    public static final String[] PASSTHROUGH_AGENT_ORDER = {
+            "claude", "codex", "gemini", "qwen", "opencode"
+    };
+
+    public static boolean isValidPassthroughAgent(String agent) {
+        return PASSTHROUGH_AGENTS.containsKey(agent.toLowerCase());
+    }
 
     @Override
     public String toString() {

@@ -74,6 +74,7 @@ public class AgentRegistryService {
                 .available(false) // Will be checked below
                 .isDefault(true)
                 .description("Anthropic's Claude Code CLI - requires local installation (not API)")
+                .interactivePromptPattern(null) // Claude uses stream-json result event for turn detection
                 .build();
         agents.put(claude.getName(), claude);
 
@@ -87,6 +88,7 @@ public class AgentRegistryService {
                 .available(false) // Will be checked below
                 .isDefault(false)
                 .description("OpenAI's Codex CLI - requires local installation (not API)")
+                .interactivePromptPattern("^> $")
                 .build();
         agents.put(codex.getName(), codex);
 
@@ -100,6 +102,7 @@ public class AgentRegistryService {
                 .available(false) // Will be checked below
                 .isDefault(false)
                 .description("Google's Gemini CLI - requires local installation (not API)")
+                .interactivePromptPattern("^> $")
                 .build();
         agents.put(gemini.getName(), gemini);
 

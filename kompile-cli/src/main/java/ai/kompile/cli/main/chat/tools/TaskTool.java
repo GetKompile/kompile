@@ -46,8 +46,30 @@ public class TaskTool implements CliTool {
     private final SubagentRunner subagentRunner;
 
     public TaskTool(AgentRegistry agentRegistry, SubagentRunner subagentRunner) {
+        if (subagentRunner == null) {
+            throw new IllegalArgumentException("SubagentRunner must not be null. " +
+                    "TaskTool requires a properly configured subagent runner for delegation.");
+        }
         this.agentRegistry = agentRegistry;
         this.subagentRunner = subagentRunner;
+    }
+
+    /**
+     * Validate that this TaskTool is properly configured and ready for use.
+     *
+     * @return true if properly configured, false otherwise
+     */
+    public boolean isHealthy() {
+        return subagentRunner != null && agentRegistry != null;
+    }
+
+    /**
+     * Get the list of available subagent types.
+     *
+     * @return list of subagent configs
+     */
+    public List<AgentConfig> getAvailableSubagents() {
+        return agentRegistry.getSubagents();
     }
 
     @Override

@@ -22,11 +22,13 @@ import ai.kompile.pipelines.framework.api.configschema.StepSchema;
 import ai.kompile.pipelines.framework.api.context.Context;
 import ai.kompile.pipelines.framework.api.data.Data;
 import ai.kompile.pipelines.framework.api.data.NDArray;
+import ai.kompile.pipelines.framework.api.data.NDArrayType;
 import ai.kompile.pipelines.framework.core.config.ConfigAccessor;
 import ai.kompile.pipelines.framework.core.config.SchemaRegistry;
 import org.deeplearning4j.nn.graph.ComputationGraph;
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork;
 import org.deeplearning4j.util.ModelSerializer;
+import org.nd4j.common.util.ArrayUtil;
 import org.nd4j.linalg.api.buffer.DataBuffer;
 import org.nd4j.linalg.api.buffer.DataType;
 import org.nd4j.linalg.api.ndarray.INDArray;
@@ -36,8 +38,17 @@ import org.nd4j.linalg.factory.Nd4j;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.util.*;
 
 
@@ -72,11 +83,18 @@ public class DL4JRunner implements PipelineStepRunner {
         try {
             URI uri = new URI(modelUriString);
             if (uri.getScheme() == null || "file".equalsIgnoreCase(uri.getScheme())) {
-                modelFile = new File(uri.getPath());
+                modelFile = uri.getScheme() == null ? new File(modelUriString) : new File(uri.getPath());
+            } else if ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme())) {
+                modelFile = downloadModelToTempFile(uri, modelUriString);
+            } else if ("s3".equalsIgnoreCase(uri.getScheme())) {
+                // Convert s3://bucket/key to HTTPS URL (S3 public or pre-signed URL pattern)
+                String bucket = uri.getHost();
+                String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
+                URI httpsUri = new URI("https", bucket + ".s3.amazonaws.com", "/" + key, null);
+                modelFile = downloadModelToTempFile(httpsUri, modelUriString);
             } else {
-                // TODO: Add support for other URI schemes (http, s3 etc.) using a resource loading utility
                 throw new IllegalArgumentException("Unsupported URI scheme for model: " + modelUriString +
-                        ". Only local file paths are currently supported directly.");
+                        ". Supported schemes: file, http, https, s3.");
             }
             if (!modelFile.exists() || !modelFile.isFile()) {
                 throw new FileNotFoundException("Model file not found or is not a regular file: " + modelFile.getAbsolutePath());
@@ -278,12 +296,92 @@ public class DL4JRunner implements PipelineStepRunner {
      */
     protected NDArray convertFromINDArray(INDArray indArray, String name) {
         Objects.requireNonNull(indArray, "INDArray to convert cannot be null for name: " + name);
-        // This is where you would instantiate your concrete Kompile NDArray implementation
-        // (e.g., new ai.kompile.pipelines.data.nd4j.ND4JNDArray(indArray, name); if you create such a class)
 
-        throw new UnsupportedOperationException(
-                "Conversion from INDArray to Kompile NDArray not fully implemented. " +
-                        "A concrete Kompile NDArray implementation (e.g., wrapping INDArray) is needed.");
+        final NDArrayType kompileType = mapNd4jToKompileType(indArray.dataType(), name);
+
+        // Ensure the INDArray is C-contiguous for reliable buffer access
+        INDArray contiguousIndArray = (indArray.isView() || indArray.ordering() != 'c') ? indArray.dup('c') : indArray;
+
+        // Get a direct ByteBuffer view or copy
+        ByteBuffer bb = contiguousIndArray.data().asNio();
+        ByteBuffer ownedBuffer;
+        if (bb.isDirect()) {
+            ownedBuffer = bb.slice().order(ByteOrder.nativeOrder());
+        } else {
+            ownedBuffer = ByteBuffer.allocateDirect(bb.remaining()).order(ByteOrder.nativeOrder());
+            ownedBuffer.put(bb.slice());
+            ownedBuffer.flip();
+        }
+
+        final String finalName = name;
+        final long[] finalShape = indArray.shape().clone();
+        final ByteBuffer finalBuffer = ownedBuffer.asReadOnlyBuffer();
+        final INDArray nativeRef = indArray;
+
+        return new NDArray() {
+            @Override public String name() { return finalName; }
+            @Override public long[] shape() { return finalShape; }
+            @Override public NDArrayType type() { return kompileType; }
+            @Override public ByteBuffer buffer() { return finalBuffer.duplicate(); }
+            @SuppressWarnings("unchecked")
+            @Override public <T> T getNative() { return (T) nativeRef; }
+            @Override public long length() { return ArrayUtil.prod(finalShape); }
+            @Override public int bufferSizeInBytes() { return finalBuffer.remaining(); }
+        };
+    }
+
+    private static NDArrayType mapNd4jToKompileType(DataType nd4jType, String name) {
+        switch (nd4jType) {
+            case FLOAT:    return NDArrayType.FLOAT;
+            case DOUBLE:   return NDArrayType.DOUBLE;
+            case INT:      return NDArrayType.INT32;
+            case LONG:     return NDArrayType.LONG;
+            case BYTE:     return NDArrayType.INT8;
+            case UBYTE:    return NDArrayType.UINT8;
+            case SHORT:    return NDArrayType.INT16;
+            case UINT16:   return NDArrayType.UINT16;
+            case UINT32:   return NDArrayType.UINT32;
+            case UINT64:   return NDArrayType.UINT64;
+            case BOOL:     return NDArrayType.BOOLEAN;
+            case HALF:     return NDArrayType.FLOAT16;
+            case BFLOAT16: return NDArrayType.BFLOAT16;
+            case UTF8:     return NDArrayType.UTF8;
+            default:
+                throw new UnsupportedOperationException(
+                        "Unsupported ND4J DataType '" + nd4jType + "' for Kompile NDArray conversion for output '" + name + "'.");
+        }
+    }
+
+    private File downloadModelToTempFile(URI uri, String originalUri) throws IOException {
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .connectTimeout(Duration.ofSeconds(30))
+                    .build();
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(uri)
+                    .timeout(Duration.ofMinutes(10))
+                    .GET()
+                    .build();
+
+            Path tempFile = Files.createTempFile("dl4j-model-", ".bin");
+            tempFile.toFile().deleteOnExit();
+
+            HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() >= 400) {
+                throw new IOException("HTTP error " + response.statusCode() + " downloading model from: " + originalUri);
+            }
+
+            try (InputStream is = response.body()) {
+                Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            return tempFile.toFile();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Download interrupted for model: " + originalUri, e);
+        }
     }
 
     @Override

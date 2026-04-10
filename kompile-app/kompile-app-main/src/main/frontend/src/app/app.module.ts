@@ -101,6 +101,12 @@ import { BenchmarkRunnerComponent } from './components/benchmark-runner/benchmar
 import { KVCacheDashboardComponent } from './components/kvcache/kvcache-dashboard.component';
 import { VlmTestWorkflowComponent } from './components/vlm-test-workflow/vlm-test-workflow.component';
 import { ToolPermissionsComponent } from './components/tool-permissions/tool-permissions.component';
+import { GpuLifecycleComponent } from './components/gpu-lifecycle/gpu-lifecycle.component';
+import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-orchestration.component';
+import { TritonCacheComponent } from './components/triton-cache/triton-cache.component';
+import { PassthroughChatComponent } from './components/passthrough-chat/passthrough-chat.component';
+import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framework.component';
+import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -260,7 +266,13 @@ import { MatNativeDateModule } from '@angular/material/core';
     SdkHubComponent,
     BenchmarkRunnerComponent,
     KVCacheDashboardComponent,
-    ToolPermissionsComponent
+    ToolPermissionsComponent,
+    GpuLifecycleComponent,
+    VlmOrchestrationComponent,
+    TritonCacheComponent,
+    PassthroughChatComponent,
+    Nd4jFrameworkComponent,
+    SameDiffLLMModelsComponent
   ],
   providers: [],
   bootstrap: [AppComponent]

@@ -34,7 +34,8 @@ import java.util.List;
 @Table(name = "chat_sessions", indexes = {
     @Index(name = "idx_chat_session_fact_sheet", columnList = "factSheetId"),
     @Index(name = "idx_chat_session_user", columnList = "userId"),
-    @Index(name = "idx_chat_session_updated", columnList = "updatedAt")
+    @Index(name = "idx_chat_session_updated", columnList = "updatedAt"),
+    @Index(name = "idx_chat_session_source", columnList = "source")
 })
 @Data
 @Builder
@@ -78,6 +79,13 @@ public class ChatSession {
 
     @Column
     private String metadata;
+
+    /**
+     * Source of the conversation: "app", "kompile", "claude-code", "opencode", "codex", "qwen".
+     * Null or "app" means created in the web UI.
+     */
+    @Column
+    private String source;
 
     /**
      * Optional folder this session is associated with.

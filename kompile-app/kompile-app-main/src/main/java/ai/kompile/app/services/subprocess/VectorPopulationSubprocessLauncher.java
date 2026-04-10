@@ -24,6 +24,7 @@ import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
+import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.OpTimingService;
 import ai.kompile.app.services.ServerPortService;
@@ -120,6 +121,9 @@ public class VectorPopulationSubprocessLauncher {
     private final IngestEventService ingestEventService;
     private final OpTimingService opTimingService;
     private final ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private ModelLifecycleManager modelLifecycleManager;
 
     // Scheduler for restart delays
     private final ScheduledExecutorService restartScheduler = Executors.newSingleThreadScheduledExecutor(
@@ -287,6 +291,17 @@ public class VectorPopulationSubprocessLauncher {
                     ? subprocessConfigService.getGpuMemoryKillThresholdPercent()
                     : VectorPopulationSubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
 
+            // Off-heap memory thresholds
+            int offHeapThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapThresholdPercent()
+                    : VectorPopulationSubprocessArgs.DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+            int offHeapCriticalPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapCriticalPercent()
+                    : VectorPopulationSubprocessArgs.DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+            int offHeapKillThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapKillThresholdPercent()
+                    : VectorPopulationSubprocessArgs.DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
+
             VectorPopulationSubprocessArgs args = VectorPopulationSubprocessArgs.builder()
                     .taskId(taskId)
                     .keywordIndexPath(keywordIndexPath)
@@ -313,6 +328,9 @@ public class VectorPopulationSubprocessLauncher {
                     .gpuMemoryThresholdPercent(gpuMemoryThresholdPercent)
                     .gpuMemoryCriticalPercent(gpuMemoryCriticalPercent)
                     .gpuMemoryKillThresholdPercent(gpuMemoryKillThresholdPercent)
+                    .offHeapThresholdPercent(offHeapThresholdPercent)
+                    .offHeapCriticalPercent(offHeapCriticalPercent)
+                    .offHeapKillThresholdPercent(offHeapKillThresholdPercent)
                     .options(options != null ? convertOptionsToStringMap(options) : Map.of())
                     .build();
 
@@ -370,6 +388,17 @@ public class VectorPopulationSubprocessLauncher {
 
             // Propagate ND4J environment variables with thread overrides
             propagateNd4jEnvironment(processBuilder.environment(), threadOverrides);
+
+            // === GPU LIFECYCLE: Acquire GPU resources for this vector population job ===
+            if (modelLifecycleManager != null) {
+                try {
+                    modelLifecycleManager.acquireGpuForVectorPopulation(taskId);
+                    logger.info("[vecpop-{}] GPU resources acquired for vector population job", taskId);
+                } catch (IllegalStateException e) {
+                    logger.warn("[vecpop-{}] Could not acquire GPU for vector population (may use CPU fallback): {}",
+                            taskId, e.getMessage());
+                }
+            }
 
             Process process = processBuilder.start();
             logger.info("Started vector population subprocess with PID: {}", process.pid());
@@ -951,8 +980,11 @@ public class VectorPopulationSubprocessLauncher {
                     handle.setStartupComplete(true);
                 }
                 handle.updateHeartbeat(heartbeat);
-                logger.debug("Task {} heartbeat: uptime={}ms, memory={}%",
-                        handle.getTaskId(), heartbeat.uptimeMs(), heartbeat.memoryUsagePercent());
+                logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
+                        handle.getTaskId(), heartbeat.uptimeMs(),
+                        String.format("%.1f", heartbeat.memoryUsagePercent()),
+                        String.format("%.1f", heartbeat.offHeapUsagePercent()),
+                        String.format("%.1f", heartbeat.gpuUsagePercent()));
             } else if (message instanceof SubprocessMessage.Log log) {
                 // Forward structured subprocess logs to UI (in addition to raw stderr/stdout
                 // forwarding)
@@ -1970,6 +2002,16 @@ public class VectorPopulationSubprocessLauncher {
         activeProcesses.remove(handle.getTaskId());
         warnedTaskIds.remove(handle.getTaskId());
 
+        // === GPU LIFECYCLE: Release GPU resources for this vector population job ===
+        if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
+            logger.info("[vecpop-{}] Releasing GPU resources for completed/failed vector population job", handle.getTaskId());
+            try {
+                modelLifecycleManager.releaseGpuForVectorPopulation(handle.getTaskId());
+            } catch (Exception e) {
+                logger.warn("[vecpop-{}] Error releasing GPU resources: {}", handle.getTaskId(), e.getMessage());
+            }
+        }
+
         Path argsFile = handle.getArgsFile();
         if (argsFile != null && Files.exists(argsFile)) {
             try {
@@ -2308,6 +2350,17 @@ public class VectorPopulationSubprocessLauncher {
             if (handle.isAlive()) {
                 logger.info("Cancelling subprocess: {}", handle.getTaskId());
                 handle.cancel();
+            }
+
+            // Release GPU hold for this job if held
+            if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
+                logger.info("[vecpop-{}] Releasing GPU resources during shutdown", handle.getTaskId());
+                try {
+                    modelLifecycleManager.releaseGpuForVectorPopulation(handle.getTaskId());
+                } catch (Exception e) {
+                    logger.warn("[vecpop-{}] Error releasing GPU during shutdown: {}",
+                            handle.getTaskId(), e.getMessage());
+                }
             }
         }
 
@@ -2873,6 +2926,12 @@ public class VectorPopulationSubprocessLauncher {
         private volatile double lastHeapUsagePercent = 0.0;
         private volatile long lastHeapUsedBytes = 0L;
         private volatile long lastHeapMaxBytes = 0L;
+        private volatile double lastOffHeapUsagePercent = 0.0;
+        private volatile long lastOffHeapUsedBytes = 0L;
+        private volatile long lastOffHeapMaxBytes = 0L;
+        private volatile double lastGpuUsagePercent = 0.0;
+        private volatile long lastGpuUsedBytes = 0L;
+        private volatile long lastGpuMaxBytes = 0L;
         private volatile String currentPhase = "STARTING";
         private volatile int progressPercent = 0;
         private volatile String lastMessage = "";
@@ -2986,6 +3045,12 @@ public class VectorPopulationSubprocessLauncher {
                 this.lastHeapUsagePercent = heartbeat.memoryUsagePercent();
                 this.lastHeapUsedBytes = heartbeat.heapUsedBytes();
                 this.lastHeapMaxBytes = heartbeat.heapMaxBytes();
+                this.lastOffHeapUsagePercent = heartbeat.offHeapUsagePercent();
+                this.lastOffHeapUsedBytes = heartbeat.offHeapUsedBytes();
+                this.lastOffHeapMaxBytes = heartbeat.offHeapMaxBytes();
+                this.lastGpuUsagePercent = heartbeat.gpuUsagePercent();
+                this.lastGpuUsedBytes = heartbeat.gpuUsedBytes();
+                this.lastGpuMaxBytes = heartbeat.gpuMaxBytes();
             }
         }
 
@@ -3044,13 +3109,19 @@ public class VectorPopulationSubprocessLauncher {
         public Status getStatus() {
             return new Status(taskId, keywordIndexPath, vectorIndexPath,
                     process.pid(), isAlive(), isCancelled(), isOomDetected(),
-                    currentPhase, progressPercent, lastMessage, startTime, lastHeartbeat);
+                    currentPhase, progressPercent, lastMessage, startTime, lastHeartbeat,
+                    lastHeapUsagePercent, lastHeapUsedBytes, lastHeapMaxBytes,
+                    lastOffHeapUsagePercent, lastOffHeapUsedBytes, lastOffHeapMaxBytes,
+                    lastGpuUsagePercent, lastGpuUsedBytes, lastGpuMaxBytes);
         }
 
         public record Status(String taskId, String keywordIndexPath, String vectorIndexPath,
                 long pid, boolean alive, boolean cancelled, boolean oomDetected,
                 String currentPhase, int progressPercent, String lastMessage,
-                Instant startTime, Instant lastHeartbeat) {
+                Instant startTime, Instant lastHeartbeat,
+                double heapUsagePercent, long heapUsedBytes, long heapMaxBytes,
+                double offHeapUsagePercent, long offHeapUsedBytes, long offHeapMaxBytes,
+                double gpuUsagePercent, long gpuUsedBytes, long gpuMaxBytes) {
         }
     }
 

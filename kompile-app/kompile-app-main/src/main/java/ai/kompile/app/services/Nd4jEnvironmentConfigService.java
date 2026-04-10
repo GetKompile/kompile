@@ -522,6 +522,72 @@ public class Nd4jEnvironmentConfigService {
                 log.info("Set OpenMP threads to {}", config.ompNumThreads());
             }
 
+            // === SAMEDIFF FRAMEWORK / DSP SETTINGS ===
+            // These are applied via system properties and Nd4j.framework API where available
+            if (config.optimizerEnabled() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.OPTIMIZER_ENABLED,
+                        config.optimizerEnabled().toString());
+            }
+            if (config.optimizerFp16() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.OPTIMIZER_FP16,
+                        config.optimizerFp16().toString());
+            }
+            if (config.dspNoFreeze() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_NO_FREEZE,
+                        config.dspNoFreeze().toString());
+            }
+            if (config.dspNoNativeDecode() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS,
+                        config.dspNoNativeDecode().toString());
+            }
+            if (config.dspNoAttnOverride() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_NO_ATTN_OVERRIDE,
+                        config.dspNoAttnOverride().toString());
+            }
+            if (config.dspNoDirect() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_NO_DIRECT,
+                        config.dspNoDirect().toString());
+            }
+            if (config.tritonSkipKernels() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_SKIP_KERNELS,
+                        config.tritonSkipKernels().toString());
+            }
+            if (config.tritonTf32() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.TRITON_TF32,
+                        config.tritonTf32().toString());
+            }
+            if (config.cublasDisableWorkspace() != null) {
+                // cublas.captureWorkspace: "0" = disabled, "1" = enabled
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.CUBLAS_CAPTURE_WORKSPACE,
+                        config.cublasDisableWorkspace() ? "0" : "1");
+            }
+            if (config.dspDiagnostics() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_DIAGNOSTICS,
+                        config.dspDiagnostics());
+                // Also apply via framework API if available
+                try {
+                    Nd4j.framework.execution().environment().get().setDspDiagnostics(config.dspDiagnostics());
+                } catch (Exception e) {
+                    log.debug("Could not set DSP diagnostics via framework API: {}", e.getMessage());
+                }
+            }
+            if (config.opTiming() != null) {
+                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.OP_TIMING,
+                        config.opTiming().toString());
+                // Also apply via framework profiling API if available
+                try {
+                    if (config.opTiming()) {
+                        Nd4j.framework.profiling().enableOpTiming(false);
+                    } else {
+                        Nd4j.framework.profiling().disableOpTiming();
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not set op timing via framework API: {}", e.getMessage());
+                }
+            }
+            log.info("Applied SameDiff framework/DSP settings: optimizer={}, fp16={}, diagnostics={}",
+                    config.optimizerEnabled(), config.optimizerFp16(), config.dspDiagnostics());
+
             // === CUDA CONFIGURATION ===
             // Only apply CUDA settings if running on CUDA backend
             if (!Nd4j.getEnvironment().isCPU()) {
@@ -875,5 +941,82 @@ public class Nd4jEnvironmentConfigService {
         summary.put("configFileExists", configFilePath != null && Files.exists(configFilePath));
 
         return summary;
+    }
+
+    /**
+     * Applies a framework preset configuration.
+     *
+     * @param presetName The preset name: "performance", "debug", "minimal", or "balanced"
+     * @return The applied configuration
+     */
+    public Nd4jEnvironmentConfig applyFrameworkPreset(String presetName) {
+        Nd4jEnvironmentConfig preset = switch (presetName.toLowerCase()) {
+            case "performance" -> Nd4jEnvironmentConfig.builder()
+                    .optimizerEnabled(true)
+                    .optimizerFp16(true)
+                    .dspNoFreeze(false)      // freeze enabled
+                    .dspNoNativeDecode(false) // native decode enabled
+                    .dspNoAttnOverride(false) // attention override enabled
+                    .dspNoDirect(false)       // direct mode enabled
+                    .tritonSkipKernels(false) // Triton kernels enabled
+                    .tritonTf32(false)        // TF32 disabled for max precision
+                    .cublasDisableWorkspace(false) // workspace capture enabled
+                    .dspDiagnostics(null)     // no diagnostics
+                    .opTiming(false)          // op timing disabled
+                    .build();
+
+            case "debug" -> Nd4jEnvironmentConfig.builder()
+                    .optimizerEnabled(true)
+                    .optimizerFp16(false)     // FP32 for debugging
+                    .dspNoFreeze(true)        // freeze disabled for inspection
+                    .dspNoNativeDecode(false)
+                    .dspNoAttnOverride(false)
+                    .dspNoDirect(false)
+                    .tritonSkipKernels(true)  // skip Triton for easier debugging
+                    .tritonTf32(false)
+                    .cublasDisableWorkspace(false)
+                    .dspDiagnostics("ALL")    // enable all diagnostics
+                    .opTiming(true)           // enable op timing
+                    .build();
+
+            case "minimal" -> Nd4jEnvironmentConfig.builder()
+                    .optimizerEnabled(false)  // disable optimizer
+                    .optimizerFp16(false)
+                    .dspNoFreeze(true)
+                    .dspNoNativeDecode(true)  // disable native decode
+                    .dspNoAttnOverride(true)  // disable attention override
+                    .dspNoDirect(true)        // disable direct mode
+                    .tritonSkipKernels(true)  // skip Triton
+                    .tritonTf32(false)
+                    .cublasDisableWorkspace(false)
+                    .dspDiagnostics(null)
+                    .opTiming(false)
+                    .build();
+
+            case "balanced" -> Nd4jEnvironmentConfig.builder()
+                    .optimizerEnabled(true)
+                    .optimizerFp16(true)
+                    .dspNoFreeze(false)
+                    .dspNoNativeDecode(false)
+                    .dspNoAttnOverride(false)
+                    .dspNoDirect(false)
+                    .tritonSkipKernels(false)
+                    .tritonTf32(true)         // TF32 enabled for performance
+                    .cublasDisableWorkspace(false)
+                    .dspDiagnostics(null)
+                    .opTiming(false)
+                    .build();
+
+            default -> throw new IllegalArgumentException(
+                    "Unknown framework preset: " + presetName + ". Valid presets: performance, debug, minimal, balanced");
+        };
+
+        // Merge preset with defaults to fill in any missing values
+        currentConfig = Nd4jEnvironmentConfig.defaults().merge(preset);
+        applyConfiguration(currentConfig);
+        persistConfig();
+
+        log.info("Applied SameDiff framework preset: {}", presetName);
+        return currentConfig;
     }
 }

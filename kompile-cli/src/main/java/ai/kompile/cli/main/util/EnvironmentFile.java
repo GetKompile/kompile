@@ -124,7 +124,7 @@ public class EnvironmentFile {
             if(!line.contains("=")) {
                 throw new IllegalStateException("File " + file + " has invalid line: " + line + " . All lines must be NAME=VALUE");
             }
-            String[] split = line.split("=");
+            String[] split = line.split("=", 2);
             ret.put(split[0],split[1]);
         }
 

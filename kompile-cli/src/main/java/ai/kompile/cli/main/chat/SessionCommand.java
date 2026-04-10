@@ -16,6 +16,8 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.format.ConversationFormatter;
+import ai.kompile.cli.main.chat.format.ConversationReader;
 import ai.kompile.cli.main.chat.tools.ConversationImportTool;
 import ai.kompile.cli.main.chat.tools.ToolContext;
 import ai.kompile.cli.main.chat.tools.ToolResult;
@@ -23,7 +25,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import picocli.CommandLine;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -41,7 +47,9 @@ import java.util.concurrent.Callable;
                 SessionCommand.ShowCommand.class,
                 SessionCommand.ImportCommand.class,
                 SessionCommand.ImportAllCommand.class,
-                SessionCommand.SearchCommand.class
+                SessionCommand.SearchCommand.class,
+                SessionCommand.TranslateCommand.class,
+                SessionCommand.MergeCommand.class
         }
 )
 public class SessionCommand implements Callable<Integer> {
@@ -56,12 +64,17 @@ public class SessionCommand implements Callable<Integer> {
         System.out.println("  import     Import a session from an external assistant");
         System.out.println("  import-all Import all sessions from a source");
         System.out.println("  search     Search across all sessions");
+        System.out.println("  translate  Convert a session to another format (openai, markdown, jsonl, etc.)");
+        System.out.println("  merge      Merge multiple sessions into one output");
         System.out.println();
         System.out.println("Examples:");
         System.out.println("  kompile session list --source=all");
         System.out.println("  kompile session show imported-claude-abc123");
         System.out.println("  kompile session import opencode ses_abc123");
         System.out.println("  kompile session search \"database migration\"");
+        System.out.println("  kompile session translate --from my-session --to-format openai");
+        System.out.println("  kompile session translate --from abc123 --source claude-code --to-format jsonl");
+        System.out.println("  kompile session merge --sessions id1,id2 --to-format markdown --output merged.md");
         return 0;
     }
 
@@ -379,9 +392,9 @@ public class SessionCommand implements Callable<Integer> {
                 totalMatches += searchKompileSessions(query, context);
             }
 
-            // TODO: Search external sources (requires SessionIndex implementation)
-            if ("all".equalsIgnoreCase(source) || "claude-code".equalsIgnoreCase(source)) {
-                // Will be implemented in Phase 2
+            // Search external/imported sessions via SessionIndex
+            if (!"kompile".equalsIgnoreCase(source)) {
+                totalMatches += searchIndexedSessions(query, source, context);
             }
 
             if (totalMatches == 0) {
@@ -410,7 +423,7 @@ public class SessionCommand implements Callable<Integer> {
                         if (lines[i].toLowerCase().contains(queryLower)) {
                             matchCount++;
                             System.out.println("── " + summary.sessionId() + " (line " + (i + 1) + ") ──");
-                            
+
                             // Show context
                             int start = Math.max(0, i - contextLines);
                             int end = Math.min(lines.length, i + contextLines + 1);
@@ -422,7 +435,7 @@ public class SessionCommand implements Callable<Integer> {
                                 }
                             }
                             System.out.println();
-                            
+
                             // Limit matches per session
                             if (matchCount % 10 == 0) {
                                 break;
@@ -435,6 +448,251 @@ public class SessionCommand implements Callable<Integer> {
             }
 
             return matchCount;
+        }
+
+        private int searchIndexedSessions(String query, String source, int contextLines) {
+            SessionIndex index = new SessionIndex();
+            index.load();
+
+            // Determine which sources to search
+            List<SessionIndex.SessionMetadata> sessions;
+            if ("all".equalsIgnoreCase(source)) {
+                // Get all non-kompile sessions (kompile already searched above)
+                sessions = index.listSessions(null);
+                sessions.removeIf(m -> "kompile".equalsIgnoreCase(m.source()));
+            } else {
+                sessions = index.listSessions(source);
+            }
+
+            if (sessions.isEmpty()) {
+                return 0;
+            }
+
+            int matchCount = 0;
+            String queryLower = query.toLowerCase();
+
+            for (SessionIndex.SessionMetadata meta : sessions) {
+                ChatHistory history = new ChatHistory(meta.sessionId());
+                try {
+                    String transcript = history.readTranscript();
+                    if (transcript == null) continue;
+
+                    String[] lines = transcript.split("\n");
+                    int sessionMatches = 0;
+                    for (int i = 0; i < lines.length; i++) {
+                        if (lines[i].toLowerCase().contains(queryLower)) {
+                            matchCount++;
+                            sessionMatches++;
+                            String sourceLabel = meta.source() != null ? meta.source() : "imported";
+                            System.out.println("── " + meta.sessionId() + " [" + sourceLabel + "] (line " + (i + 1) + ") ──");
+
+                            // Show context
+                            int start = Math.max(0, i - contextLines);
+                            int end = Math.min(lines.length, i + contextLines + 1);
+                            for (int j = start; j < end; j++) {
+                                if (j == i) {
+                                    System.out.println("> " + lines[j]);
+                                } else {
+                                    System.out.println("  " + lines[j]);
+                                }
+                            }
+                            System.out.println();
+
+                            // Limit matches per session
+                            if (sessionMatches >= 10) {
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Skip unreadable transcripts
+                }
+            }
+
+            return matchCount;
+        }
+    }
+
+    /**
+     * Translate a session to a different format.
+     */
+    @CommandLine.Command(name = "translate", description = "Convert a session to another format")
+    static class TranslateCommand implements Callable<Integer> {
+
+        @CommandLine.Option(names = {"--from", "-f"}, required = true,
+                description = "Session ID to translate")
+        private String from;
+
+        @CommandLine.Option(names = {"--source", "-s"},
+                description = "External source (claude-code, codex, qwen, opencode). If omitted, --from is a kompile session ID")
+        private String source;
+
+        @CommandLine.Option(names = {"--to-format", "-t"}, defaultValue = "openai",
+                description = "Output format: kompile, openai, anthropic, markdown, jsonl (default: openai)")
+        private String toFormat;
+
+        @CommandLine.Option(names = {"--output", "-o"},
+                description = "Output file path (stdout if omitted)")
+        private String output;
+
+        @Override
+        public Integer call() {
+            if (!ConversationFormatter.isSupported(toFormat)) {
+                System.err.println("Unknown format: " + toFormat);
+                System.err.println("Supported formats: " + String.join(", ", ConversationFormatter.SUPPORTED_FORMATS));
+                return 1;
+            }
+
+            List<ChatHistory.Turn> turns;
+            try {
+                if (source != null && !source.isEmpty()) {
+                    turns = ConversationReader.readExternalSession(source, from);
+                } else {
+                    turns = ConversationReader.readKompileSession(from);
+                }
+            } catch (IOException e) {
+                System.err.println("Error reading session: " + e.getMessage());
+                return 1;
+            }
+
+            if (turns.isEmpty()) {
+                System.err.println("No conversation turns found in session: " + from);
+                return 1;
+            }
+
+            String formatted;
+            try {
+                formatted = ConversationFormatter.format(turns, toFormat);
+            } catch (IllegalArgumentException e) {
+                System.err.println(e.getMessage());
+                return 1;
+            }
+
+            if (output != null && !output.isEmpty()) {
+                try {
+                    Files.writeString(Path.of(output), formatted + "\n", StandardCharsets.UTF_8);
+                    System.out.println("Translated " + turns.size() + " turns to " + toFormat + " format.");
+                    System.out.println("Written to: " + output);
+                } catch (IOException e) {
+                    System.err.println("Error writing output file: " + e.getMessage());
+                    return 1;
+                }
+            } else {
+                System.out.println(formatted);
+            }
+
+            return 0;
+        }
+    }
+
+    /**
+     * Merge multiple kompile sessions into a single output.
+     */
+    @CommandLine.Command(name = "merge", description = "Merge multiple sessions into one output")
+    static class MergeCommand implements Callable<Integer> {
+
+        @CommandLine.Option(names = {"--sessions"}, required = true, split = ",",
+                description = "Comma-separated kompile session IDs to merge")
+        private List<String> sessions;
+
+        @CommandLine.Option(names = {"--to-format", "-t"}, defaultValue = "kompile",
+                description = "Output format: kompile, openai, anthropic, markdown, jsonl (default: kompile)")
+        private String toFormat;
+
+        @CommandLine.Option(names = {"--output", "-o"},
+                description = "Output file path (stdout if omitted)")
+        private String output;
+
+        @CommandLine.Option(names = {"--separator"}, defaultValue = "--- Session Break ---",
+                description = "Separator text between merged sessions (kompile/markdown only)")
+        private String separator;
+
+        @Override
+        public Integer call() {
+            if (!ConversationFormatter.isSupported(toFormat)) {
+                System.err.println("Unknown format: " + toFormat);
+                System.err.println("Supported formats: " + String.join(", ", ConversationFormatter.SUPPORTED_FORMATS));
+                return 1;
+            }
+
+            if (sessions == null || sessions.isEmpty()) {
+                System.err.println("No session IDs provided. Use --sessions id1,id2,...");
+                return 1;
+            }
+
+            boolean usesSeparator = "kompile".equalsIgnoreCase(toFormat) || "markdown".equalsIgnoreCase(toFormat);
+
+            // For JSON formats, collect all turns into one list
+            // For text formats, format each session separately with separators
+            if (usesSeparator) {
+                return mergeWithSeparators();
+            } else {
+                return mergeFlat();
+            }
+        }
+
+        private int mergeWithSeparators() {
+            StringBuilder result = new StringBuilder();
+            int totalTurns = 0;
+            boolean first = true;
+
+            for (String sessionId : sessions) {
+                List<ChatHistory.Turn> turns;
+                try {
+                    turns = ConversationReader.readKompileSession(sessionId.trim());
+                } catch (IOException e) {
+                    System.err.println("Error reading session '" + sessionId.trim() + "': " + e.getMessage());
+                    return 1;
+                }
+
+                if (!first) {
+                    result.append("\n").append(separator).append("\n\n");
+                }
+                first = false;
+
+                result.append(ConversationFormatter.format(turns, toFormat));
+                totalTurns += turns.size();
+            }
+
+            return writeOutput(result.toString(), totalTurns);
+        }
+
+        private int mergeFlat() {
+            List<ChatHistory.Turn> allTurns = new ArrayList<>();
+
+            for (String sessionId : sessions) {
+                try {
+                    List<ChatHistory.Turn> turns = ConversationReader.readKompileSession(sessionId.trim());
+                    allTurns.addAll(turns);
+                } catch (IOException e) {
+                    System.err.println("Error reading session '" + sessionId.trim() + "': " + e.getMessage());
+                    return 1;
+                }
+            }
+
+            if (allTurns.isEmpty()) {
+                System.err.println("No turns found across the specified sessions.");
+                return 1;
+            }
+
+            String formatted = ConversationFormatter.format(allTurns, toFormat);
+            return writeOutput(formatted, allTurns.size());
+        }
+
+        private int writeOutput(String content, int totalTurns) {
+            if (output != null && !output.isEmpty()) {
+                try {
+                    Files.writeString(Path.of(output), content + "\n", StandardCharsets.UTF_8);
+                    System.out.println("Merged " + sessions.size() + " sessions (" + totalTurns + " turns) to " + toFormat + " format.");
+                    System.out.println("Written to: " + output);
+                } catch (IOException e) {
+                    System.err.println("Error writing output file: " + e.getMessage());
+                    return 1;
+                }
+            } else {
+                System.out.println(content);
+            }
+            return 0;
         }
     }
 }

@@ -20,10 +20,13 @@ import ai.kompile.cli.common.mcp.InstanceDiscovery;
 import ai.kompile.cli.common.mcp.McpSseClient;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.SetupWizard;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
+import ai.kompile.cli.main.chat.roles.RoleManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import picocli.CommandLine;
 
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -45,7 +48,7 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--session-id"}, description = "Chat session ID (generated if not provided)")
     private String sessionId;
 
-    @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions", defaultValue = "claude")
+    @CommandLine.Option(names = {"--agent"}, description = "Agent name for chat sessions (standard mode) or passthrough agent name (passthrough mode)", defaultValue = "claude")
     private String agentName;
 
     @CommandLine.Option(names = {"--rag"}, negatable = true, description = "Enable RAG for chat (default: true)", defaultValue = "true")
@@ -68,6 +71,15 @@ public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--setup"}, description = "Run LLM configuration setup wizard", defaultValue = "false")
     private boolean runSetup;
+
+    @CommandLine.Option(names = {"--mode"}, description = "Chat mode: 'standard' or 'passthrough' (overrides config)")
+    private String mode;
+
+    @CommandLine.Option(names = {"--role"}, description = "Assign a role to the agent (e.g. architect, reviewer, devops)")
+    private String role;
+
+    @CommandLine.Option(names = {"--roles"}, description = "Show role selection menu before starting chat", defaultValue = "false")
+    private boolean showRoleMenu;
 
     @Override
     public Integer call() {
@@ -103,8 +115,28 @@ public class ChatCommand implements Callable<Integer> {
 
         boolean isResume = resumeSessionId != null && !resumeSessionId.isBlank();
 
+        // Resolve role: --role flag > role selection menu > none
+        String resolvedRole = resolveRole();
+
         if (sessionId == null || sessionId.isBlank()) {
             sessionId = "cli-" + UUID.randomUUID().toString().substring(0, 8);
+        }
+
+        // Load config to determine chat mode
+        ChatConfig config = ChatConfig.loadOrFromEnv();
+        String chatMode = config != null ? config.getChatMode() : "standard";
+
+        // Allow --mode CLI flag to override config
+        if (mode != null && !mode.isBlank()) {
+            chatMode = mode.toLowerCase();
+        }
+
+        // If passthrough mode, delegate to PassthroughCommand
+        if ("passthrough".equals(chatMode) && config != null) {
+            // Allow --agent flag to override config's agent
+            String agent = agentName != null && !agentName.isBlank() ? agentName : config.getPassthroughAgent();
+            System.out.println("Starting passthrough mode with agent: " + agent);
+            return runPassthroughMode(agent, isResume);
         }
 
         // Try to find a server (unless --local is set)
@@ -112,7 +144,6 @@ public class ChatCommand implements Callable<Integer> {
 
         // If no server found via discovery, check if config points to a kompile instance
         if (targetUrl == null && !forceLocal) {
-            ChatConfig config = ChatConfig.loadOrFromEnv();
             if (config != null && config.isKompileServer()) {
                 targetUrl = config.resolveBaseUrl();
             }
@@ -120,17 +151,17 @@ public class ChatCommand implements Callable<Integer> {
 
         if (targetUrl != null) {
             // Server mode
-            return runServerMode(targetUrl, isResume);
+            return runServerMode(targetUrl, isResume, resolvedRole);
         } else {
             // Local mode - direct LLM
-            return runLocalMode(isResume);
+            return runLocalMode(isResume, resolvedRole);
         }
     }
 
     /**
      * Server mode: connect to kompile-app via MCP SSE.
      */
-    private int runServerMode(String targetUrl, boolean isResume) {
+    private int runServerMode(String targetUrl, boolean isResume, String assignedRole) {
         System.out.println("Connecting to " + targetUrl + " ...");
 
         try (McpSseClient client = new McpSseClient(targetUrl)) {
@@ -148,6 +179,12 @@ public class ChatCommand implements Callable<Integer> {
             System.out.println("Type /help for commands, /quit to exit.\n");
 
             ChatRepl repl = new ChatRepl(client, targetUrl, sessionId, rag, agentName, memory);
+
+            // Assign role if specified
+            if (assignedRole != null && !assignedRole.isBlank()) {
+                repl.assignRoleAtStartup(assignedRole);
+            }
+
             repl.run();
 
             return 0;
@@ -161,7 +198,7 @@ public class ChatCommand implements Callable<Integer> {
      * Local mode: direct LLM API calls without a server.
      * Runs setup wizard if no configuration exists.
      */
-    private int runLocalMode(boolean isResume) {
+    private int runLocalMode(boolean isResume, String assignedRole) {
         // Load or create LLM configuration
         ChatConfig config = ChatConfig.loadOrFromEnv();
 
@@ -175,24 +212,37 @@ public class ChatCommand implements Callable<Integer> {
 
             config = SetupWizard.run();
             if (config == null) {
-                System.err.println("Setup cancelled. Cannot start chat without LLM configuration.");
-                System.err.println();
-                System.err.println("Options:");
-                System.err.println("  kompile chat --setup          Run setup wizard");
-                System.err.println("  kompile chat --url <url>      Connect to kompile-app server");
-                System.err.println("  export OPENAI_API_KEY=sk-...  Set API key via environment");
-                System.err.println("  export ANTHROPIC_API_KEY=...  Set API key via environment");
+                System.err.println("Setup cancelled.");
                 return 1;
+            }
+            
+            // Check if user selected resume mode (wizard launched resume tool which already completed)
+            if ("resume".equals(config.getChatMode())) {
+                return 0; // Resume tool already finished
+            }
+
+            // Check if user selected passthrough mode in wizard
+            if ("passthrough".equals(config.getChatMode())) {
+                String agent = config.getPassthroughAgent();
+                System.out.println("Starting passthrough mode with agent: " + agent);
+                return runPassthroughMode(agent, isResume);
             }
         } else {
             if (!forceLocal) {
                 System.out.println("No running kompile-app instance found. Using local mode.");
             }
+
+            // Check if config has passthrough mode
+            if ("passthrough".equals(config.getChatMode())) {
+                String agent = config.getPassthroughAgent();
+                System.out.println("Starting passthrough mode with agent: " + agent);
+                return runPassthroughMode(agent, isResume);
+            }
         }
 
         // If user selected kompile provider, redirect to server mode
         if (config.isKompileServer()) {
-            return runServerMode(config.resolveBaseUrl(), isResume);
+            return runServerMode(config.resolveBaseUrl(), isResume, assignedRole);
         }
 
         if (isResume) {
@@ -211,10 +261,36 @@ public class ChatCommand implements Callable<Integer> {
                     memory,
                     config      // LLM config for direct calls
             );
+
+            // Assign role if specified
+            if (assignedRole != null && !assignedRole.isBlank()) {
+                repl.assignRoleAtStartup(assignedRole);
+            }
+
             repl.run();
             return 0;
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
+            return 1;
+        }
+    }
+
+    /**
+     * Passthrough mode: delegate to external CLI agent (Claude Code, Codex, etc.)
+     */
+    private int runPassthroughMode(String agent, boolean isResume) {
+        try {
+            PassthroughCommand passthrough = new PassthroughCommand();
+            // Set fields via reflection or direct access since we're in same package
+            passthrough.agent = agent;
+            passthrough.workingDir = ".";
+            passthrough.skipPermissions = true;
+            passthrough.injectTools = true;
+            passthrough.kompileUrl = "";
+            passthrough.mcpPort = 0;
+            return passthrough.call();
+        } catch (Exception e) {
+            System.err.println("Error running passthrough mode: " + e.getMessage());
             return 1;
         }
     }
@@ -276,6 +352,103 @@ public class ChatCommand implements Callable<Integer> {
             return "http://localhost:" + port;
         }
         return InstanceDiscovery.discover();
+    }
+
+    /**
+     * Resolve the role to assign at startup.
+     * Priority: --role flag > --roles menu > none
+     */
+    private String resolveRole() {
+        // If --role is specified, use it directly
+        if (role != null && !role.isBlank()) {
+            return role.trim();
+        }
+
+        // If --roles menu is requested, show selection
+        if (showRoleMenu) {
+            return promptForRole();
+        }
+
+        return null;
+    }
+
+    /**
+     * Show interactive role selection menu.
+     */
+    private String promptForRole() {
+        RoleManager roleManager = new RoleManager(Paths.get(System.getProperty("user.dir")));
+        List<RoleConfig> roles = roleManager.getAllRoles();
+
+        if (roles.isEmpty()) {
+            System.out.println("No roles available.");
+            return null;
+        }
+
+        System.out.println();
+        System.out.println("\033[1m\033[36m  ╭──────────────────────────────────────╮\033[0m");
+        System.out.println("\033[1m\033[36m  │       Select a Role                  │\033[0m");
+        System.out.println("\033[1m\033[36m  ╰──────────────────────────────────────╯\033[0m");
+        System.out.println();
+        System.out.println("  \033[1mAvailable Roles:\033[0m");
+        System.out.println();
+
+        // Group by category
+        var byCategory = roleManager.getRolesByCategory();
+        int idx = 1;
+        for (var entry : byCategory.entrySet()) {
+            System.out.println("  \033[1m[" + entry.getKey() + "]\033[0m");
+            for (String roleName : entry.getValue()) {
+                RoleConfig rc = roleManager.getRole(roleName);
+                if (rc != null) {
+                    System.out.printf("  \033[36m%d\033[0m  %-20s %s%n",
+                            idx, roleName, rc.getDescription());
+                    idx++;
+                }
+            }
+            System.out.println();
+        }
+
+        System.out.println("  \033[36m0\033[0m  (none - default agent)");
+        System.out.println();
+
+        java.util.Scanner scanner = new java.util.Scanner(System.in);
+        while (true) {
+            System.out.print("  \033[1mSelect role [0]:\033[0m ");
+            String input = scanner.nextLine().trim();
+            if (input.isEmpty() || "0".equals(input)) {
+                return null;
+            }
+
+            try {
+                int choice = Integer.parseInt(input);
+                if (choice < 0 || choice >= idx) {
+                    System.out.println("  \033[33mInvalid choice. Please enter 0-" + (idx - 1) + "\033[0m");
+                    continue;
+                }
+
+                // Map choice index to role
+                int current = 1;
+                for (var entry : byCategory.entrySet()) {
+                    for (String roleName : entry.getValue()) {
+                        if (current == choice) {
+                            System.out.println("  → \033[32m" + roleName + "\033[0m");
+                            System.out.println();
+                            return roleName;
+                        }
+                        current++;
+                    }
+                }
+            } catch (NumberFormatException e) {
+                // Accept role name directly
+                RoleConfig rc = roleManager.getRole(input.toLowerCase());
+                if (rc != null) {
+                    System.out.println("  → \033[32m" + rc.getName() + "\033[0m");
+                    System.out.println();
+                    return rc.getName();
+                }
+                System.out.println("  \033[33mRole not found. Try again.\033[0m");
+            }
+        }
     }
 
     private void createChatSession(McpSseClient client) throws Exception {

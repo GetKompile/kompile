@@ -36,11 +36,16 @@ public class InstallMaven implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         File mavenDir = Info.mavenDirectory();
-        if(mavenDir.exists() && mavenDir.list().length > 0) {
+        String[] mavenDirContents = mavenDir.exists() ? mavenDir.list() : null;
+        if(mavenDirContents != null && mavenDirContents.length > 0) {
             System.out.println("Maven already installed. Skipping. If there is a problem with your install, please call ./kompile uninstall maven");
         }
         File destination = new File(mavenDir,FILE_NAME);
         File archive = InstallMain.downloadAndLoadFrom(MAVEN_URL,FILE_NAME,false);
+        if(archive == null) {
+            System.err.println("Failed to download Maven archive.");
+            return 1;
+        }
         ArchiveUtils.unzipFileTo(archive.getAbsolutePath(),destination.getAbsolutePath(),true);
         //extracts to a directory, move everything to parent directory
         File mavenDirectory = new File(Info.mavenDirectory(),"apache-maven-3.8.6-bin.tar.gz/apache-maven-3.8.6/");

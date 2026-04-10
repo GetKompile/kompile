@@ -40,6 +40,7 @@ public class ChatSessionDto {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private String userId;
+    private String source;
     private List<ChatMessageDto> messages;
     private int messageCount;
 
@@ -51,6 +52,7 @@ public class ChatSessionDto {
             .createdAt(session.getCreatedAt())
             .updatedAt(session.getUpdatedAt())
             .userId(session.getUserId())
+            .source(session.getSource())
             .messageCount(session.getMessages().size());
 
         if (includeMessages) {

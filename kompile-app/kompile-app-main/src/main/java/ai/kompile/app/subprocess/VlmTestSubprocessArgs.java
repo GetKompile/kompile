@@ -61,6 +61,14 @@ public record VlmTestSubprocessArgs(
         Boolean dspNoDirect,            // nd4j.dsp.noDirect (default false)
         // CUDA / performance flags
         Boolean noCublasWorkspace,      // nd4j.cublas.captureWorkspace=0 (default false)
+        // CUDA graph capture OOM retry / memory management
+        Integer dspCaptureOomMaxRetries,       // ND4J_DSP_CAPTURE_OOM_MAX_RETRIES
+        Integer dspCaptureOomRetryInterval,    // ND4J_DSP_CAPTURE_OOM_RETRY_INTERVAL
+        Integer dspCublasWorkspaceMb,          // ND4J_DSP_CUBLAS_WORKSPACE_MB
+        Integer dspGraphMetadataSafetyMb,      // ND4J_DSP_GRAPH_METADATA_SAFETY_MB
+        Boolean dspProactiveEvictBeforeCapture, // ND4J_DSP_PROACTIVE_EVICT
+        Boolean dspLruEviction,                // ND4J_DSP_LRU_EVICTION
+        Integer dspCaptureWorkspaceMb,         // ND4J_DSP_CAPTURE_WORKSPACE_MB
         // Speculative decoding
         int speculativeTokens,          // 0 = disabled
         // Debug flags
@@ -83,6 +91,10 @@ public record VlmTestSubprocessArgs(
         int gpuMemoryThresholdPercent,
         int gpuMemoryCriticalPercent,
         int gpuMemoryKillThresholdPercent,
+        // Off-heap (JavaCPP native) memory thresholds
+        int offHeapThresholdPercent,
+        int offHeapCriticalPercent,
+        int offHeapKillThresholdPercent,
         Map<String, String> options
 ) {
     public static final int DEFAULT_MAX_NEW_TOKENS = 4096;
@@ -101,6 +113,10 @@ public record VlmTestSubprocessArgs(
     public static final int DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT = 75;
     public static final int DEFAULT_GPU_MEMORY_CRITICAL_PERCENT = 85;
     public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
+    // Off-heap threshold defaults
+    public static final int DEFAULT_OFF_HEAP_THRESHOLD_PERCENT = 80;
+    public static final int DEFAULT_OFF_HEAP_CRITICAL_PERCENT = 90;
+    public static final int DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT = 95;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public VlmTestSubprocessArgs {
@@ -138,6 +154,10 @@ public record VlmTestSubprocessArgs(
         if (gpuMemoryThresholdPercent <= 0) gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         if (gpuMemoryCriticalPercent <= 0) gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         if (gpuMemoryKillThresholdPercent < 0) gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        // Off-heap memory threshold defaults
+        if (offHeapThresholdPercent <= 0) offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+        if (offHeapCriticalPercent <= 0) offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+        if (offHeapKillThresholdPercent < 0) offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
     }
 
     public static VlmTestSubprocessArgs fromFile(Path path) throws IOException {
@@ -180,6 +200,14 @@ public record VlmTestSubprocessArgs(
         private Boolean dspNoAttnOverride = false;
         private Boolean dspNoDirect = false;
         private Boolean noCublasWorkspace = false;
+        // CUDA graph capture OOM retry fields
+        private Integer dspCaptureOomMaxRetries;
+        private Integer dspCaptureOomRetryInterval;
+        private Integer dspCublasWorkspaceMb;
+        private Integer dspGraphMetadataSafetyMb;
+        private Boolean dspProactiveEvictBeforeCapture;
+        private Boolean dspLruEviction;
+        private Integer dspCaptureWorkspaceMb;
         private int speculativeTokens = 0;
         private Boolean debugDiagnostics = false;
         private Boolean opTiming = false;
@@ -198,6 +226,10 @@ public record VlmTestSubprocessArgs(
         private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        // Off-heap memory thresholds
+        private int offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+        private int offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+        private int offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
         private Map<String, String> options = Map.of();
 
         public Builder taskId(String taskId) { this.taskId = taskId; return this; }
@@ -226,6 +258,14 @@ public record VlmTestSubprocessArgs(
         public Builder dspNoAttnOverride(Boolean dspNoAttnOverride) { this.dspNoAttnOverride = dspNoAttnOverride; return this; }
         public Builder dspNoDirect(Boolean dspNoDirect) { this.dspNoDirect = dspNoDirect; return this; }
         public Builder noCublasWorkspace(Boolean noCublasWorkspace) { this.noCublasWorkspace = noCublasWorkspace; return this; }
+        // CUDA graph capture OOM retry builder methods
+        public Builder dspCaptureOomMaxRetries(Integer dspCaptureOomMaxRetries) { this.dspCaptureOomMaxRetries = dspCaptureOomMaxRetries; return this; }
+        public Builder dspCaptureOomRetryInterval(Integer dspCaptureOomRetryInterval) { this.dspCaptureOomRetryInterval = dspCaptureOomRetryInterval; return this; }
+        public Builder dspCublasWorkspaceMb(Integer dspCublasWorkspaceMb) { this.dspCublasWorkspaceMb = dspCublasWorkspaceMb; return this; }
+        public Builder dspGraphMetadataSafetyMb(Integer dspGraphMetadataSafetyMb) { this.dspGraphMetadataSafetyMb = dspGraphMetadataSafetyMb; return this; }
+        public Builder dspProactiveEvictBeforeCapture(Boolean dspProactiveEvictBeforeCapture) { this.dspProactiveEvictBeforeCapture = dspProactiveEvictBeforeCapture; return this; }
+        public Builder dspLruEviction(Boolean dspLruEviction) { this.dspLruEviction = dspLruEviction; return this; }
+        public Builder dspCaptureWorkspaceMb(Integer dspCaptureWorkspaceMb) { this.dspCaptureWorkspaceMb = dspCaptureWorkspaceMb; return this; }
         public Builder speculativeTokens(int speculativeTokens) { this.speculativeTokens = speculativeTokens; return this; }
         public Builder debugDiagnostics(Boolean debugDiagnostics) { this.debugDiagnostics = debugDiagnostics; return this; }
         public Builder opTiming(Boolean opTiming) { this.opTiming = opTiming; return this; }
@@ -248,6 +288,11 @@ public record VlmTestSubprocessArgs(
         public Builder gpuMemoryCriticalPercent(int gpuMemoryCriticalPercent) { this.gpuMemoryCriticalPercent = gpuMemoryCriticalPercent; return this; }
         public Builder gpuMemoryKillThresholdPercent(int gpuMemoryKillThresholdPercent) { this.gpuMemoryKillThresholdPercent = gpuMemoryKillThresholdPercent; return this; }
 
+        // Off-heap memory threshold builders
+        public Builder offHeapThresholdPercent(int offHeapThresholdPercent) { this.offHeapThresholdPercent = offHeapThresholdPercent; return this; }
+        public Builder offHeapCriticalPercent(int offHeapCriticalPercent) { this.offHeapCriticalPercent = offHeapCriticalPercent; return this; }
+        public Builder offHeapKillThresholdPercent(int offHeapKillThresholdPercent) { this.offHeapKillThresholdPercent = offHeapKillThresholdPercent; return this; }
+
         public VlmTestSubprocessArgs build() {
             return new VlmTestSubprocessArgs(
                     taskId, filePath, modelId, outputFormat, maxNewTokens,
@@ -258,12 +303,17 @@ public record VlmTestSubprocessArgs(
                     optimizerEnabled, optimizerFp16, clearDecoderCache,
                     tritonEnabled, tritonTf32,
                     dspNoNativeDecode, dspNoFreeze, dspNoAttnOverride, dspNoDirect,
-                    noCublasWorkspace, speculativeTokens,
+                    noCublasWorkspace,
+                    dspCaptureOomMaxRetries, dspCaptureOomRetryInterval,
+                    dspCublasWorkspaceMb, dspGraphMetadataSafetyMb,
+                    dspProactiveEvictBeforeCapture, dspLruEviction, dspCaptureWorkspaceMb,
+                    speculativeTokens,
                     debugDiagnostics, opTiming,
                     maxPages,
                     modelSourceType, modelIdentifier, stagingUrl, stagingApiKey, archivePath,
                     memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent, memoryCheckIntervalMs,
                     gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent,
+                    offHeapThresholdPercent, offHeapCriticalPercent, offHeapKillThresholdPercent,
                     options
             );
         }

@@ -1217,7 +1217,7 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
     }
 
     private static void extractBootInfClasspath(String fatJarPath, Set<String> outputEntries) throws IOException {
-        Path fatJar = Path.of(fatJarPath);
+        Path fatJar = Path.of(fatJarPath).toAbsolutePath();
         Path extractDir = fatJar.getParent().resolve(".boot-inf-extracted");
         Path libDir = extractDir.resolve("lib");
         Path classesDir = extractDir.resolve("classes");

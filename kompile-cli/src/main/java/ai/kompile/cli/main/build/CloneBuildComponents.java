@@ -112,7 +112,8 @@ public class CloneBuildComponents implements Callable<Integer> {
         if(buildDl4j) {
             File dl4jLocation = new File(dl4jDirectory);
             InvocationRequest invocationRequest = new DefaultInvocationRequest();
-            if(dl4jLocation.exists() && forceDl4jClone || dl4jLocation.exists() &&  dl4jLocation.listFiles() == null || dl4jLocation.listFiles() != null &&  dl4jLocation.listFiles().length < 1) {
+            File[] dl4jFiles = dl4jLocation.exists() ? dl4jLocation.listFiles() : null;
+            if(dl4jLocation.exists() && forceDl4jClone || dl4jLocation.exists() && dl4jFiles == null || dl4jFiles != null && dl4jFiles.length < 1) {
                 System.out.println("Forcing deletion of specified dl4j location: " + dl4jLocation);
                 FileUtils.deleteDirectory(dl4jLocation);
             }

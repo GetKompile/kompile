@@ -245,7 +245,7 @@ public class OS {
         return filename.endsWith(fileEndingWith);
       }
     });
-    if (fileList.length > 0) {
+    if (fileList != null && fileList.length > 0) {
       return fileList[0].getAbsolutePath();
     } else {
       return null;

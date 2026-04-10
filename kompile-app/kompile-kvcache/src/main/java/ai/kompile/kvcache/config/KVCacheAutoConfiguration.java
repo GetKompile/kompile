@@ -6,6 +6,8 @@ import ai.kompile.kvcache.service.KVCacheConfigPersistence;
 import ai.kompile.kvcache.service.KVCacheManager;
 import ai.kompile.kvcache.service.KVCachePrefixService;
 import ai.kompile.kvcache.service.KVCacheStatisticsCollector;
+import ai.kompile.kvcache.service.PriorityEvictionPolicy;
+import ai.kompile.kvcache.service.ContentHashPrefixIndex;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,9 +35,21 @@ public class KVCacheAutoConfiguration {
     }
 
     @Bean
+    public PriorityEvictionPolicy priorityEvictionPolicy(KVCacheProperties properties) {
+        return new PriorityEvictionPolicy(properties.getDefaultBlockPriority());
+    }
+
+    @Bean
+    public ContentHashPrefixIndex contentHashPrefixIndex(KVCacheProperties properties) {
+        return new ContentHashPrefixIndex(properties.getBlockSize(), properties.getPrefixHashMaxEntries());
+    }
+
+    @Bean
     public KVCacheManager kvCacheManager(KVCacheProperties properties,
-                                         KVCacheStatisticsCollector statisticsCollector) {
-        return new KVCacheManager(properties, statisticsCollector);
+                                         KVCacheStatisticsCollector statisticsCollector,
+                                         PriorityEvictionPolicy priorityEvictionPolicy,
+                                         ContentHashPrefixIndex contentHashPrefixIndex) {
+        return new KVCacheManager(properties, statisticsCollector, priorityEvictionPolicy, contentHashPrefixIndex);
     }
 
     @Bean

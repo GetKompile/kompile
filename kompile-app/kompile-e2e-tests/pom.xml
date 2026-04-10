@@ -228,9 +228,24 @@
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
       <groupId>org.eclipse.deeplearning4j</groupId>
-      <artifactId>nd4j-native</artifactId>
+      <artifactId>nd4j-cuda-12.9</artifactId>
       <version>${nd4j.version}</version>
-      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-native</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.deeplearning4j</groupId>
+          <artifactId>nd4j-native-preset</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.deeplearning4j</groupId>
+      <artifactId>nd4j-cuda-12.9</artifactId>
+      <version>${nd4j.version}</version>
+      <classifier>linux-x86_64</classifier>
     </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->

@@ -121,6 +121,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
     private volatile Long deviceRoutingMaxDeviceMemory;
     private volatile boolean deviceRoutingEnabled = false;
 
+    // Preemption state - managed by ModelLifecycleManager to prevent auto-restart
+    // during GPU preemption by higher-priority services (e.g., VLM)
+    private volatile boolean preempted = false;
+    private volatile String preemptionReason = null;
+
     /** No-arg for Spring AOT */
     public AnseriniEmbeddingModelImpl() {
         this(DEFAULT_MODEL_IDENTIFIER, DEFAULT_OPTIMAL_BATCH, DEFAULT_MAX_BATCH, null);
@@ -226,6 +231,11 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             return;
         }
         if (modelSource == ModelSource.FAILED) {
+            return;
+        }
+        // If preempted by lifecycle manager, do NOT initialize — wait for resumeFromPreemption()
+        if (preempted) {
+            log.debug("ensureInitialized() skipped — service is preempted: {}", preemptionReason);
             return;
         }
 
@@ -461,6 +471,13 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
             @Override
             public EmbeddingSubprocessLauncher.RestartConfiguration shouldRestart(
                     String taskId, int exitCode, String crashReason, int attemptNumber) {
+                // CRITICAL: If preempted by lifecycle manager, do NOT restart.
+                // The lifecycle manager will call resumeFromPreemption() when ready.
+                if (preempted) {
+                    log.info("Restart suppressed — service is preempted by lifecycle manager: {}", preemptionReason);
+                    return null;
+                }
+
                 // Default restart policy: allow restarts for memory-related failures
                 int maxAttempts = subprocessLauncher != null ? subprocessLauncher.getMaxRestartAttempts() : 3;
 
@@ -837,6 +854,96 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         initialized = false;
     }
 
+    // ========== Preemption support (used by ModelLifecycleManager) ==========
+
+    /**
+     * Suspend this embedding service for GPU preemption by a higher-priority service.
+     *
+     * <p>Sets a preemption flag that prevents auto-restart, then stops the subprocess.
+     * The flag is cleared by {@link #resumeFromPreemption()}.</p>
+     *
+     * @param reason human-readable reason for the preemption
+     * @return true if the subprocess was successfully stopped
+     */
+    public boolean suspendForPreemption(String reason) {
+        synchronized (launcherLock) {
+            this.preempted = true;
+            this.preemptionReason = reason;
+            log.info("PREEMPTION: Suspending embedding subprocess — {}", reason);
+
+            if (subprocessLauncher != null) {
+                try {
+                    subprocessLauncher.stop();
+                    publishEvent(EmbeddingSubprocessEvent.subprocessStopped(this, modelIdentifier));
+                } catch (Exception e) {
+                    log.warn("Error stopping subprocess during preemption: {}", e.getMessage());
+                }
+                subprocessLauncher = null;
+            }
+
+            initialized = false;
+            modelSource = ModelSource.NOT_INITIALIZED;
+            loadingPhase = LoadingPhase.IDLE;
+            loadingMessage = "Preempted: " + reason;
+
+            log.info("PREEMPTION: Embedding subprocess suspended successfully");
+            return true;
+        }
+    }
+
+    /**
+     * Resume this embedding service after preemption ends.
+     * Clears the preemption flag and re-initializes the subprocess.
+     *
+     * @return true if the subprocess was successfully restarted
+     */
+    public boolean resumeFromPreemption() {
+        synchronized (launcherLock) {
+            if (!preempted) {
+                log.info("Resume called but service was not preempted — no-op");
+                return isInitialized();
+            }
+
+            log.info("PREEMPTION: Resuming embedding subprocess (was preempted: {})", preemptionReason);
+            this.preempted = false;
+            this.preemptionReason = null;
+            this.initializationError = null;
+            this.modelSource = ModelSource.NOT_INITIALIZED;
+
+            // Re-initialize — will start subprocess and load model
+            ensureInitialized();
+
+            log.info("PREEMPTION: Resume complete (initialized={})", initialized);
+            return initialized;
+        }
+    }
+
+    /**
+     * Check if this service is currently preempted (suspended by lifecycle manager).
+     * When preempted, the auto-restart policy should NOT restart the subprocess.
+     */
+    public boolean isPreempted() {
+        return preempted;
+    }
+
+    /**
+     * Get the reason for the current preemption, if any.
+     */
+    public String getPreemptionReason() {
+        return preemptionReason;
+    }
+
+    /**
+     * Get the CUDA device ID this embedding subprocess is configured to use.
+     * Returns null if device routing is not enabled (defaults to device 0 in that case).
+     */
+    public Integer getConfiguredCudaDevice() {
+        if (deviceRoutingEnabled && deviceRoutingCudaDevice != null) {
+            return deviceRoutingCudaDevice;
+        }
+        return null; // No explicit device routing — subprocess uses default (typically device 0)
+    }
+
     // ========== Getters and status methods ==========
 
     public String getModelIdentifier() { return modelIdentifier; }
@@ -966,6 +1073,10 @@ public class AnseriniEmbeddingModelImpl implements EmbeddingModel {
         status.put("loadingPhase", this.loadingPhase.name());
         status.put("loadingMessage", this.loadingMessage);
         status.put("subprocessMode", true);  // Indicate subprocess mode
+        status.put("preempted", this.preempted);
+        if (this.preempted) {
+            status.put("preemptionReason", this.preemptionReason);
+        }
 
         if (subprocessLauncher != null) {
             status.put("subprocessRunning", subprocessLauncher.isRunning());

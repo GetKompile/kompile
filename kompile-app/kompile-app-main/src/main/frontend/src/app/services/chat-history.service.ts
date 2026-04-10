@@ -35,6 +35,7 @@ export interface ChatSessionDto {
   createdAt: string;
   updatedAt: string;
   userId?: string;
+  source?: string;
   messages?: ChatMessageDto[];
   messageCount: number;
 }
@@ -72,10 +73,13 @@ export class ChatHistoryService extends BaseService {
   /**
    * Get all sessions (optionally filtered by user).
    */
-  getSessions(userId?: string): Observable<ChatSessionDto[]> {
+  getSessions(userId?: string, source?: string): Observable<ChatSessionDto[]> {
     let params = new HttpParams();
     if (userId) {
       params = params.set('userId', userId);
+    }
+    if (source) {
+      params = params.set('source', source);
     }
     return this.http.get<ChatSessionDto[]>(`${this.chatHistoryUrl}/sessions`, { params });
   }

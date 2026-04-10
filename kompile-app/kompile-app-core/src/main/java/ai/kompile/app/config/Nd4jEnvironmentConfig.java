@@ -154,7 +154,16 @@ public record Nd4jEnvironmentConfig(
         @JsonProperty("tritonTf32") Boolean tritonTf32,                   // nd4j.triton.tf32
         @JsonProperty("cublasDisableWorkspace") Boolean cublasDisableWorkspace, // nd4j.cublas.captureWorkspace=0
         @JsonProperty("dspDiagnostics") String dspDiagnostics,            // nd4j.dsp.diagnostics (e.g. "ALL")
-        @JsonProperty("opTiming") Boolean opTiming                        // nd4j.opTiming
+        @JsonProperty("opTiming") Boolean opTiming,                       // nd4j.opTiming
+
+        // CUDA graph capture OOM retry and memory management (env vars in libnd4j)
+        @JsonProperty("dspCaptureOomMaxRetries") Integer dspCaptureOomMaxRetries,       // ND4J_DSP_CAPTURE_OOM_MAX_RETRIES
+        @JsonProperty("dspCaptureOomRetryInterval") Integer dspCaptureOomRetryInterval, // ND4J_DSP_CAPTURE_OOM_RETRY_INTERVAL
+        @JsonProperty("dspCublasWorkspaceMb") Integer dspCublasWorkspaceMb,             // ND4J_DSP_CUBLAS_WORKSPACE_MB
+        @JsonProperty("dspGraphMetadataSafetyMb") Integer dspGraphMetadataSafetyMb,     // ND4J_DSP_GRAPH_METADATA_SAFETY_MB
+        @JsonProperty("dspProactiveEvictBeforeCapture") Boolean dspProactiveEvictBeforeCapture, // ND4J_DSP_PROACTIVE_EVICT
+        @JsonProperty("dspLruEviction") Boolean dspLruEviction,                         // ND4J_DSP_LRU_EVICTION
+        @JsonProperty("dspCaptureWorkspaceMb") Integer dspCaptureWorkspaceMb            // ND4J_DSP_CAPTURE_WORKSPACE_MB
 ) {
 
     /**
@@ -258,7 +267,15 @@ public record Nd4jEnvironmentConfig(
                 false,  // tritonTf32 - TF32 precision OFF by default
                 false,  // cublasDisableWorkspace - workspace capture ON by default
                 null,   // dspDiagnostics - no diagnostics by default
-                false   // opTiming - op timing OFF by default
+                false,  // opTiming - op timing OFF by default
+                // CUDA graph capture OOM retry defaults
+                null,   // dspCaptureOomMaxRetries - use native default (3)
+                null,   // dspCaptureOomRetryInterval - use native default (4)
+                null,   // dspCublasWorkspaceMb - use native default (256)
+                null,   // dspGraphMetadataSafetyMb - use native default (16)
+                null,   // dspProactiveEvictBeforeCapture - use native default (true)
+                null,   // dspLruEviction - use native default (true)
+                null    // dspCaptureWorkspaceMb - use native default (128)
         );
     }
 
@@ -371,11 +388,34 @@ public record Nd4jEnvironmentConfig(
                 .cublasDisableWorkspace("0".equals(System.getProperty(ND4JSystemProperties.CUBLAS_CAPTURE_WORKSPACE)) ? true : null)
                 .dspDiagnostics(System.getProperty(ND4JSystemProperties.DSP_DIAGNOSTICS))
                 .opTiming(getBoolProp(ND4JSystemProperties.OP_TIMING))
+                // CUDA graph capture OOM retry - read from env vars
+                .dspCaptureOomMaxRetries(getIntEnv("ND4J_DSP_CAPTURE_OOM_MAX_RETRIES"))
+                .dspCaptureOomRetryInterval(getIntEnv("ND4J_DSP_CAPTURE_OOM_RETRY_INTERVAL"))
+                .dspCublasWorkspaceMb(getIntEnv("ND4J_DSP_CUBLAS_WORKSPACE_MB"))
+                .dspGraphMetadataSafetyMb(getIntEnv("ND4J_DSP_GRAPH_METADATA_SAFETY_MB"))
+                .dspProactiveEvictBeforeCapture(getBoolEnv("ND4J_DSP_PROACTIVE_EVICT"))
+                .dspLruEviction(getBoolEnv("ND4J_DSP_LRU_EVICTION"))
+                .dspCaptureWorkspaceMb(getIntEnv("ND4J_DSP_CAPTURE_WORKSPACE_MB"))
                 .build();
     }
 
     private static Boolean getBoolProp(String key) {
         String val = System.getProperty(key);
+        return val != null ? Boolean.parseBoolean(val) : null;
+    }
+
+    private static Integer getIntEnv(String key) {
+        String val = System.getenv(key);
+        if (val == null) val = System.getProperty(key);
+        if (val != null) {
+            try { return Integer.parseInt(val); } catch (NumberFormatException e) { /* ignore */ }
+        }
+        return null;
+    }
+
+    private static Boolean getBoolEnv(String key) {
+        String val = System.getenv(key);
+        if (val == null) val = System.getProperty(key);
         return val != null ? Boolean.parseBoolean(val) : null;
     }
 
@@ -483,7 +523,15 @@ public record Nd4jEnvironmentConfig(
                 other.tritonTf32() != null ? other.tritonTf32() : this.tritonTf32(),
                 other.cublasDisableWorkspace() != null ? other.cublasDisableWorkspace() : this.cublasDisableWorkspace(),
                 other.dspDiagnostics() != null ? other.dspDiagnostics() : this.dspDiagnostics(),
-                other.opTiming() != null ? other.opTiming() : this.opTiming()
+                other.opTiming() != null ? other.opTiming() : this.opTiming(),
+                // CUDA graph capture OOM retry
+                other.dspCaptureOomMaxRetries() != null ? other.dspCaptureOomMaxRetries() : this.dspCaptureOomMaxRetries(),
+                other.dspCaptureOomRetryInterval() != null ? other.dspCaptureOomRetryInterval() : this.dspCaptureOomRetryInterval(),
+                other.dspCublasWorkspaceMb() != null ? other.dspCublasWorkspaceMb() : this.dspCublasWorkspaceMb(),
+                other.dspGraphMetadataSafetyMb() != null ? other.dspGraphMetadataSafetyMb() : this.dspGraphMetadataSafetyMb(),
+                other.dspProactiveEvictBeforeCapture() != null ? other.dspProactiveEvictBeforeCapture() : this.dspProactiveEvictBeforeCapture(),
+                other.dspLruEviction() != null ? other.dspLruEviction() : this.dspLruEviction(),
+                other.dspCaptureWorkspaceMb() != null ? other.dspCaptureWorkspaceMb() : this.dspCaptureWorkspaceMb()
         );
     }
 
@@ -591,6 +639,14 @@ public record Nd4jEnvironmentConfig(
         private Boolean cublasDisableWorkspace;
         private String dspDiagnostics;
         private Boolean opTiming;
+        // CUDA graph capture OOM retry fields
+        private Integer dspCaptureOomMaxRetries;
+        private Integer dspCaptureOomRetryInterval;
+        private Integer dspCublasWorkspaceMb;
+        private Integer dspGraphMetadataSafetyMb;
+        private Boolean dspProactiveEvictBeforeCapture;
+        private Boolean dspLruEviction;
+        private Integer dspCaptureWorkspaceMb;
 
         public Builder maxThreads(Integer maxThreads) { this.maxThreads = maxThreads; return this; }
         public Builder maxMasterThreads(Integer maxMasterThreads) { this.maxMasterThreads = maxMasterThreads; return this; }
@@ -688,6 +744,14 @@ public record Nd4jEnvironmentConfig(
         public Builder cublasDisableWorkspace(Boolean cublasDisableWorkspace) { this.cublasDisableWorkspace = cublasDisableWorkspace; return this; }
         public Builder dspDiagnostics(String dspDiagnostics) { this.dspDiagnostics = dspDiagnostics; return this; }
         public Builder opTiming(Boolean opTiming) { this.opTiming = opTiming; return this; }
+        // CUDA graph capture OOM retry builder methods
+        public Builder dspCaptureOomMaxRetries(Integer dspCaptureOomMaxRetries) { this.dspCaptureOomMaxRetries = dspCaptureOomMaxRetries; return this; }
+        public Builder dspCaptureOomRetryInterval(Integer dspCaptureOomRetryInterval) { this.dspCaptureOomRetryInterval = dspCaptureOomRetryInterval; return this; }
+        public Builder dspCublasWorkspaceMb(Integer dspCublasWorkspaceMb) { this.dspCublasWorkspaceMb = dspCublasWorkspaceMb; return this; }
+        public Builder dspGraphMetadataSafetyMb(Integer dspGraphMetadataSafetyMb) { this.dspGraphMetadataSafetyMb = dspGraphMetadataSafetyMb; return this; }
+        public Builder dspProactiveEvictBeforeCapture(Boolean dspProactiveEvictBeforeCapture) { this.dspProactiveEvictBeforeCapture = dspProactiveEvictBeforeCapture; return this; }
+        public Builder dspLruEviction(Boolean dspLruEviction) { this.dspLruEviction = dspLruEviction; return this; }
+        public Builder dspCaptureWorkspaceMb(Integer dspCaptureWorkspaceMb) { this.dspCaptureWorkspaceMb = dspCaptureWorkspaceMb; return this; }
 
         public Nd4jEnvironmentConfig build() {
             return new Nd4jEnvironmentConfig(
@@ -718,7 +782,11 @@ public record Nd4jEnvironmentConfig(
                     // DSP/optimizer settings
                     optimizerEnabled, optimizerFp16, dspNoFreeze, dspNoNativeDecode,
                     dspNoAttnOverride, dspNoDirect, tritonSkipKernels, tritonTf32,
-                    cublasDisableWorkspace, dspDiagnostics, opTiming
+                    cublasDisableWorkspace, dspDiagnostics, opTiming,
+                    // CUDA graph capture OOM retry
+                    dspCaptureOomMaxRetries, dspCaptureOomRetryInterval,
+                    dspCublasWorkspaceMb, dspGraphMetadataSafetyMb,
+                    dspProactiveEvictBeforeCapture, dspLruEviction, dspCaptureWorkspaceMb
             );
         }
     }

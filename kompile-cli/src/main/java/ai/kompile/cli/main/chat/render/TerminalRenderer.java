@@ -407,6 +407,90 @@ public class TerminalRenderer {
     }
 
     // ========================================================================
+    // Generating spinner (animated waiting indicator during LLM response)
+    // ========================================================================
+
+    /**
+     * Start an animated "Generating..." spinner with terminal title update.
+     * Shows a braille spinner animation on the current line and sets the
+     * terminal tab/title to indicate processing is in progress.
+     *
+     * @param chainInfo optional queue chain info (e.g., " [2/5]")
+     * @return a SpinnerHandle to stop the spinner when the response arrives
+     */
+    public SpinnerHandle startGeneratingSpinner(String chainInfo) {
+        if (chainInfo == null) chainInfo = "";
+        final String chain = chainInfo;
+
+        // Set terminal title to show generating state
+        setTerminalTitle("⏳ Generating..." + (chain.isEmpty() ? "" : " " + chain));
+
+        if (!ansiEnabled) {
+            System.out.println("  Generating..." + chain + "  (Esc to cancel, Ctrl+B to background)");
+            System.out.flush();
+            return new SpinnerHandle(null) {
+                @Override
+                public void stop() {
+                    resetTerminalTitle();
+                }
+            };
+        }
+
+        AtomicBoolean running = new AtomicBoolean(true);
+        Thread spinnerThread = new Thread(() -> {
+            int frame = 0;
+            String[] phases = {"Generating", "Generating.", "Generating..", "Generating..."};
+            while (running.get()) {
+                String spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+                String phase = phases[(frame / 3) % phases.length];
+                System.out.print("\r" + ESC + "2K"
+                        + "  " + yellow(spinner) + " " + DIM + phase + RESET
+                        + chain
+                        + DIM + "  (Esc to cancel, Ctrl+B to background)" + RESET);
+                System.out.flush();
+                frame++;
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        }, "generating-spinner");
+        spinnerThread.setDaemon(true);
+        spinnerThread.start();
+
+        return new SpinnerHandle(running) {
+            @Override
+            public void stop() {
+                super.stop();
+                resetTerminalTitle();
+            }
+        };
+    }
+
+    // ========================================================================
+    // Terminal title management
+    // ========================================================================
+
+    /**
+     * Set the terminal tab/window title using OSC escape sequence.
+     * Works on most modern terminals (xterm, iTerm2, GNOME Terminal, Windows Terminal, etc.)
+     */
+    public void setTerminalTitle(String title) {
+        if (!ansiEnabled) return;
+        // OSC 0 ; title BEL
+        System.out.print("\033]0;" + title + "\007");
+        System.out.flush();
+    }
+
+    /**
+     * Reset the terminal title to the default kompile chat title.
+     */
+    public void resetTerminalTitle() {
+        setTerminalTitle("kompile chat");
+    }
+
+    // ========================================================================
     // Utility methods
     // ========================================================================
 
@@ -477,6 +561,13 @@ public class TerminalRenderer {
 
     public String yellow(String text) {
         return ansiEnabled ? FG_YELLOW + text + RESET : text;
+    }
+
+    /**
+     * Render a warning message in yellow.
+     */
+    public String warn(String text) {
+        return ansiEnabled ? FG_YELLOW + BOLD + text + RESET : text;
     }
 
     public String blue(String text) {

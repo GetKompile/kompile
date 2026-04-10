@@ -184,6 +184,16 @@ public class SubprocessConfigService {
     @Value("${kompile.memory.gpu-kill-threshold-percent:92}")
     private int defaultGpuMemoryKillThresholdPercent;
 
+    // Off-heap (JavaCPP native) memory monitoring defaults
+    @Value("${kompile.memory.offheap-threshold-percent:80}")
+    private int defaultOffHeapThresholdPercent;
+
+    @Value("${kompile.memory.offheap-critical-percent:90}")
+    private int defaultOffHeapCriticalPercent;
+
+    @Value("${kompile.memory.offheap-kill-threshold-percent:95}")
+    private int defaultOffHeapKillThresholdPercent;
+
     // Runtime restart configuration
     private volatile boolean restartEnabled;
     private volatile int maxRestartAttempts;
@@ -202,6 +212,11 @@ public class SubprocessConfigService {
     private volatile int gpuMemoryThresholdPercent;
     private volatile int gpuMemoryCriticalPercent;
     private volatile int gpuMemoryKillThresholdPercent;
+
+    // Off-heap (JavaCPP native) memory monitoring runtime config
+    private volatile int offHeapThresholdPercent;
+    private volatile int offHeapCriticalPercent;
+    private volatile int offHeapKillThresholdPercent;
 
     // Native executable configuration - runtime values
     // Mode: "auto" (detect based on runtime context), "jvm" (always use classpath), "native" (always use native executable)
@@ -297,6 +312,11 @@ public class SubprocessConfigService {
         this.gpuMemoryThresholdPercent = defaultGpuMemoryThresholdPercent;
         this.gpuMemoryCriticalPercent = defaultGpuMemoryCriticalPercent;
         this.gpuMemoryKillThresholdPercent = defaultGpuMemoryKillThresholdPercent;
+
+        // Off-heap memory monitoring defaults
+        this.offHeapThresholdPercent = defaultOffHeapThresholdPercent;
+        this.offHeapCriticalPercent = defaultOffHeapCriticalPercent;
+        this.offHeapKillThresholdPercent = defaultOffHeapKillThresholdPercent;
 
         // Native executable defaults
         this.nativeExecutableMode = normalizeOptionalString(defaultNativeExecutableMode);
@@ -430,6 +450,17 @@ public class SubprocessConfigService {
                 this.gpuMemoryKillThresholdPercent = ((Number) config.get("gpuMemoryKillThresholdPercent")).intValue();
             }
 
+            // Off-heap memory monitoring config
+            if (config.containsKey("offHeapThresholdPercent")) {
+                this.offHeapThresholdPercent = ((Number) config.get("offHeapThresholdPercent")).intValue();
+            }
+            if (config.containsKey("offHeapCriticalPercent")) {
+                this.offHeapCriticalPercent = ((Number) config.get("offHeapCriticalPercent")).intValue();
+            }
+            if (config.containsKey("offHeapKillThresholdPercent")) {
+                this.offHeapKillThresholdPercent = ((Number) config.get("offHeapKillThresholdPercent")).intValue();
+            }
+
             // Native executable config
             if (config.containsKey("nativeExecutableMode")) {
                 Object v = config.get("nativeExecutableMode");
@@ -524,6 +555,11 @@ public class SubprocessConfigService {
             config.put("gpuMemoryThresholdPercent", gpuMemoryThresholdPercent);
             config.put("gpuMemoryCriticalPercent", gpuMemoryCriticalPercent);
             config.put("gpuMemoryKillThresholdPercent", gpuMemoryKillThresholdPercent);
+
+            // Off-heap memory monitoring config
+            config.put("offHeapThresholdPercent", offHeapThresholdPercent);
+            config.put("offHeapCriticalPercent", offHeapCriticalPercent);
+            config.put("offHeapKillThresholdPercent", offHeapKillThresholdPercent);
 
             // Native executable config
             config.put("nativeExecutableMode", nativeExecutableMode);
@@ -670,6 +706,19 @@ public class SubprocessConfigService {
 
     public int getGpuMemoryKillThresholdPercent() {
         return gpuMemoryKillThresholdPercent;
+    }
+
+    // Off-heap memory monitoring getters
+    public int getOffHeapThresholdPercent() {
+        return offHeapThresholdPercent;
+    }
+
+    public int getOffHeapCriticalPercent() {
+        return offHeapCriticalPercent;
+    }
+
+    public int getOffHeapKillThresholdPercent() {
+        return offHeapKillThresholdPercent;
     }
 
     // Native executable configuration getters
@@ -1091,6 +1140,25 @@ public class SubprocessConfigService {
         if (update.subprocessTypeFlag() != null) {
             this.subprocessTypeFlag = update.subprocessTypeFlag().isBlank() ? "--subprocess=" : update.subprocessTypeFlag();
         }
+        // Memory watchdog thresholds
+        if (update.offHeapThresholdPercent() != null) {
+            this.offHeapThresholdPercent = update.offHeapThresholdPercent();
+        }
+        if (update.offHeapCriticalPercent() != null) {
+            this.offHeapCriticalPercent = update.offHeapCriticalPercent();
+        }
+        if (update.offHeapKillThresholdPercent() != null) {
+            this.offHeapKillThresholdPercent = update.offHeapKillThresholdPercent();
+        }
+        if (update.gpuMemoryThresholdPercent() != null) {
+            this.gpuMemoryThresholdPercent = update.gpuMemoryThresholdPercent();
+        }
+        if (update.gpuMemoryCriticalPercent() != null) {
+            this.gpuMemoryCriticalPercent = update.gpuMemoryCriticalPercent();
+        }
+        if (update.gpuMemoryKillThresholdPercent() != null) {
+            this.gpuMemoryKillThresholdPercent = update.gpuMemoryKillThresholdPercent();
+        }
         persistConfig();
         log.info("Updated subprocess configuration: {}", update);
     }
@@ -1141,6 +1209,13 @@ public class SubprocessConfigService {
         this.modelInitExecutablePath = normalizeOptionalString(defaultModelInitExecutablePath);
         this.subprocessTypeFlag = defaultSubprocessTypeFlag != null && !defaultSubprocessTypeFlag.isBlank()
                 ? defaultSubprocessTypeFlag : "--subprocess=";
+        // Memory watchdog thresholds
+        this.offHeapThresholdPercent = defaultOffHeapThresholdPercent;
+        this.offHeapCriticalPercent = defaultOffHeapCriticalPercent;
+        this.offHeapKillThresholdPercent = defaultOffHeapKillThresholdPercent;
+        this.gpuMemoryThresholdPercent = defaultGpuMemoryThresholdPercent;
+        this.gpuMemoryCriticalPercent = defaultGpuMemoryCriticalPercent;
+        this.gpuMemoryKillThresholdPercent = defaultGpuMemoryKillThresholdPercent;
         persistConfig();
         log.info("Reset subprocess configuration to defaults");
     }
@@ -1193,6 +1268,13 @@ public class SubprocessConfigService {
                 shouldUseNativeExecutableMode(),
                 NativeImageInfo.isRunningInNativeImage(),
                 NativeImageInfo.hasClasspath(),
+                // Memory watchdog thresholds
+                offHeapThresholdPercent,
+                offHeapCriticalPercent,
+                offHeapKillThresholdPercent,
+                gpuMemoryThresholdPercent,
+                gpuMemoryCriticalPercent,
+                getGpuMemoryKillThresholdPercent(),
                 // Computed/system info
                 getCallbackBaseUrl(),
                 getActualServerPort(),
@@ -1319,7 +1401,14 @@ public class SubprocessConfigService {
             String vectorPopulationExecutablePath,
             String embeddingExecutablePath,
             String modelInitExecutablePath,
-            String subprocessTypeFlag) {
+            String subprocessTypeFlag,
+            // Memory watchdog thresholds
+            Integer offHeapThresholdPercent,
+            Integer offHeapCriticalPercent,
+            Integer offHeapKillThresholdPercent,
+            Integer gpuMemoryThresholdPercent,
+            Integer gpuMemoryCriticalPercent,
+            Integer gpuMemoryKillThresholdPercent) {
     }
 
     /**
@@ -1370,6 +1459,13 @@ public class SubprocessConfigService {
             boolean resolvedNativeMode,
             boolean runningInNativeImage,
             boolean hasClasspath,
+            // Memory watchdog thresholds
+            int offHeapThresholdPercent,
+            int offHeapCriticalPercent,
+            int offHeapKillThresholdPercent,
+            int gpuMemoryThresholdPercent,
+            int gpuMemoryCriticalPercent,
+            int gpuMemoryKillThresholdPercent,
             // Computed/system info
             String callbackBaseUrl,
             int actualServerPort,

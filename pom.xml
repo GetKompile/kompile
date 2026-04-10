@@ -47,6 +47,7 @@
     <module>kompile-app-cli</module>
     <module>kompile-model-cli</module>
     <module>kompile-agent-cli</module>
+    <module>kompile-component-cli</module>
   </modules>
 
   <properties>
@@ -73,7 +74,7 @@
     <graalvm-buildtools.version>${native-maven-plugin.version}</graalvm-buildtools.version>
     <maven-shade-plugin.version>3.5.1</maven-shade-plugin.version>
 
-    <javacpp.version>1.5.11</javacpp.version>
+    <javacpp.version>1.5.13</javacpp.version>
     <nd4j.version>1.0.0-SNAPSHOT</nd4j.version>
     <nd4j.backend>nd4j-native</nd4j.backend>
 
@@ -609,6 +610,7 @@
         </os>
       </activation>
       <properties>
+        <javacpp.platform>linux-x86_64</javacpp.platform>
         <native.include.pattern>org/bytedeco/.*/linux-x86_64/.*</native.include.pattern>
         <native.exclude.linux.x86></native.exclude.linux.x86>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
@@ -630,6 +632,7 @@
         </os>
       </activation>
       <properties>
+        <javacpp.platform>linux-arm64</javacpp.platform>
         <native.include.pattern>org/bytedeco/.*/linux-arm64/.*</native.include.pattern>
         <native.exclude.linux.arm></native.exclude.linux.arm>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
@@ -650,6 +653,7 @@
         </os>
       </activation>
       <properties>
+        <javacpp.platform>macosx-x86_64</javacpp.platform>
         <native.include.pattern>org/bytedeco/.*/macosx-x86_64/.*</native.include.pattern>
         <native.exclude.macosx></native.exclude.macosx>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
@@ -670,6 +674,7 @@
         </os>
       </activation>
       <properties>
+        <javacpp.platform>macosx-arm64</javacpp.platform>
         <native.include.pattern>org/bytedeco/.*/macosx-arm64/.*</native.include.pattern>
         <native.exclude.macosx></native.exclude.macosx>
         <native.exclude.windows>org/bytedeco/.*/windows-.*</native.exclude.windows>
@@ -690,6 +695,7 @@
         </os>
       </activation>
       <properties>
+        <javacpp.platform>windows-x86_64</javacpp.platform>
         <native.include.pattern>org/bytedeco/.*/windows-x86_64/.*</native.include.pattern>
         <native.exclude.windows></native.exclude.windows>
         <native.exclude.macosx>org/bytedeco/.*/macosx-.*</native.exclude.macosx>

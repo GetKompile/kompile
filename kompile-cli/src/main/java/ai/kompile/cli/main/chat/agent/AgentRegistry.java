@@ -17,6 +17,7 @@
 package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.permission.PermissionService;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
 
 import java.util.*;
 
@@ -27,6 +28,7 @@ import java.util.*;
  */
 public class AgentRegistry {
     private final Map<String, AgentConfig> agents = new LinkedHashMap<>();
+    private final Map<String, RoleConfig> roles = new LinkedHashMap<>();
 
     public AgentRegistry() {
         registerDefaults();
@@ -181,6 +183,81 @@ public class AgentRegistry {
             if (a.isSubagent()) result.add(a);
         }
         return result;
+    }
+
+    /**
+     * Validate that the registry has a healthy set of subagents for delegation.
+     *
+     * @return true if subagent delegation is properly configured
+     */
+    public boolean isSubagentDelegationHealthy() {
+        List<AgentConfig> subagents = getSubagents();
+        // Should have at least the basic subagents
+        return subagents.size() >= 3 && 
+               subagents.stream().anyMatch(a -> "general".equals(a.getName())) &&
+               subagents.stream().anyMatch(a -> a.getName().startsWith("explore-"));
+    }
+
+    /**
+     * Get a summary of subagent availability for user feedback.
+     *
+     * @return formatted string with subagent names and counts
+     */
+    public String getSubagentSummary() {
+        List<AgentConfig> subagents = getSubagents();
+        if (subagents.isEmpty()) {
+            return "No subagents registered";
+        }
+        
+        long customCount = subagents.stream().filter(AgentConfig::isCustom).count();
+        String names = subagents.stream()
+                .map(AgentConfig::getName)
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("");
+        
+        StringBuilder sb = new StringBuilder();
+        sb.append(subagents.size()).append(" subagent(s)");
+        if (customCount > 0) {
+            sb.append(" (").append(customCount).append(" custom)");
+        }
+        sb.append(": ").append(names);
+        return sb.toString();
+    }
+
+    // ========================================================================
+    // Role management
+    // ========================================================================
+
+    /**
+     * Register a role configuration.
+     */
+    public void registerRole(RoleConfig role) {
+        roles.put(role.getName(), role);
+    }
+
+    /**
+     * Get a role by name.
+     */
+    public RoleConfig getRole(String name) {
+        return roles.get(name);
+    }
+
+    /**
+     * Get all registered roles.
+     */
+    public List<RoleConfig> getRoles() {
+        return new ArrayList<>(roles.values());
+    }
+
+    /**
+     * Get an AgentConfig for a role, or null if the role doesn't exist.
+     */
+    public AgentConfig getAgentForRole(String roleName) {
+        RoleConfig role = roles.get(roleName);
+        if (role == null) {
+            return null;
+        }
+        return role.toAgentConfig();
     }
 
     // ========================================================================

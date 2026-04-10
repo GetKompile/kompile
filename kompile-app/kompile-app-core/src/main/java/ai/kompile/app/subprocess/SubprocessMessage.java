@@ -94,7 +94,15 @@ public sealed interface SubprocessMessage
             long uptimeMs, // Time since subprocess started
             double memoryUsagePercent, // Current JVM heap usage percentage
             long heapUsedBytes, // Current heap used in bytes
-            long heapMaxBytes // Maximum heap size in bytes
+            long heapMaxBytes, // Maximum heap size in bytes
+            // Off-heap (JavaCPP native) memory
+            long offHeapUsedBytes, // Current off-heap used in bytes
+            long offHeapMaxBytes, // Maximum off-heap size in bytes (0 if unlimited)
+            double offHeapUsagePercent, // Current off-heap usage percentage
+            // GPU memory (CUDA)
+            long gpuUsedBytes, // Current GPU memory used in bytes
+            long gpuMaxBytes, // Maximum GPU memory in bytes (0 if no GPU)
+            double gpuUsagePercent // Current GPU usage percentage
     ) implements SubprocessMessage {
     }
 
@@ -474,7 +482,61 @@ public sealed interface SubprocessMessage
         long heapUsed = runtime.totalMemory() - runtime.freeMemory();
         long heapMax = runtime.maxMemory();
         double memoryUsage = heapMax > 0 ? (heapUsed * 100.0 / heapMax) : 0;
-        return new Heartbeat(taskId, uptimeMs, memoryUsage, heapUsed, heapMax);
+
+        // Off-heap (JavaCPP) memory
+        long offHeapUsed = 0;
+        long offHeapMax = 0;
+        double offHeapPercent = 0;
+        try {
+            Class<?> pointerClass = Class.forName("org.bytedeco.javacpp.Pointer");
+            offHeapUsed = (Long) pointerClass.getMethod("totalBytes").invoke(null);
+            String maxBytesStr = System.getProperty("org.bytedeco.javacpp.maxbytes");
+            if (maxBytesStr != null && !maxBytesStr.isEmpty()) {
+                offHeapMax = Long.parseLong(maxBytesStr);
+            }
+            if (offHeapMax <= 0) {
+                String maxPhysStr = System.getProperty("org.bytedeco.javacpp.maxphysicalbytes");
+                if (maxPhysStr != null && !maxPhysStr.isEmpty()) {
+                    offHeapMax = Long.parseLong(maxPhysStr);
+                }
+            }
+            // Also check NIO direct buffers
+            for (java.lang.management.BufferPoolMXBean pool :
+                    java.lang.management.ManagementFactory.getPlatformMXBeans(java.lang.management.BufferPoolMXBean.class)) {
+                if ("direct".equals(pool.getName())) {
+                    offHeapUsed = Math.max(offHeapUsed, pool.getMemoryUsed());
+                    break;
+                }
+            }
+            offHeapPercent = offHeapMax > 0 ? (offHeapUsed * 100.0 / offHeapMax) : 0;
+        } catch (Exception e) {
+            // JavaCPP not available, ignore
+        }
+
+        // GPU memory
+        long gpuUsed = 0;
+        long gpuMax = 0;
+        double gpuPercent = 0;
+        try {
+            Class<?> nd4jClass = Class.forName("org.nd4j.linalg.factory.Nd4j");
+            Object backend = nd4jClass.getMethod("getBackend").invoke(null);
+            if (backend != null && backend.getClass().getSimpleName().contains("Cuda")) {
+                Class<?> nativeOpsClass = Class.forName("org.nd4j.nativeblas.NativeOpsHolder");
+                Object holder = nativeOpsClass.getMethod("getInstance").invoke(null);
+                Object nativeOps = holder.getClass().getMethod("getDeviceNativeOps").invoke(holder);
+                long free = (Long) nativeOps.getClass().getMethod("getDeviceFreeMemory", int.class).invoke(nativeOps, 0);
+                long total = (Long) nativeOps.getClass().getMethod("getDeviceTotalMemory", int.class).invoke(nativeOps, 0);
+                gpuMax = total;
+                gpuUsed = total - free;
+                gpuPercent = total > 0 ? (gpuUsed * 100.0 / total) : 0;
+            }
+        } catch (Exception e) {
+            // No GPU or CUDA not available, ignore
+        }
+
+        return new Heartbeat(taskId, uptimeMs, memoryUsage, heapUsed, heapMax,
+                offHeapUsed, offHeapMax, offHeapPercent,
+                gpuUsed, gpuMax, gpuPercent);
     }
 
     /**

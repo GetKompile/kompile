@@ -20,6 +20,7 @@ import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
+import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
 import ai.kompile.cli.main.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -98,6 +99,9 @@ public class ModelInitSubprocessLauncher {
     @Autowired(required = false)
     private DeviceRoutingConfigService deviceRoutingConfigService;
 
+    @Autowired(required = false)
+    private ModelLifecycleManager modelLifecycleManager;
+
     // Active processes
     private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
 
@@ -140,6 +144,9 @@ public class ModelInitSubprocessLauncher {
                     .gpuMemoryThresholdPercent(args.gpuMemoryThresholdPercent())
                     .gpuMemoryCriticalPercent(args.gpuMemoryCriticalPercent())
                     .gpuMemoryKillThresholdPercent(args.gpuMemoryKillThresholdPercent())
+                    .offHeapThresholdPercent(args.offHeapThresholdPercent())
+                    .offHeapCriticalPercent(args.offHeapCriticalPercent())
+                    .offHeapKillThresholdPercent(args.offHeapKillThresholdPercent())
                     .skipValidation(args.skipValidation())
                     .validationTestText(args.validationTestText())
                     .options(args.options())
@@ -229,6 +236,20 @@ public class ModelInitSubprocessLauncher {
         // Start process
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(false); // Keep stderr separate for logging
+
+        // === GPU LIFECYCLE: Acquire GPU resources for this model init job ===
+        boolean gpuAcquired = false;
+        if (modelLifecycleManager != null) {
+            try {
+                modelLifecycleManager.acquireGpuForModelInit(taskId);
+                gpuAcquired = true;
+                logger.info("[model-init-{}] GPU resources acquired for model init", taskId);
+            } catch (IllegalStateException e) {
+                logger.warn("[model-init-{}] Could not acquire GPU for model init (may use CPU fallback): {}",
+                        taskId, e.getMessage());
+            }
+        }
+
         Process process = pb.start();
 
         // Create handle
@@ -280,6 +301,9 @@ public class ModelInitSubprocessLauncher {
             currentStatus = ModelInitStatus.failed(taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER,
                     "Timeout after " + timeoutMinutes + " minutes", true);
 
+            // Release GPU on timeout
+            releaseModelInitGpu(taskId, gpuAcquired);
+
             if (failureListener != null) {
                 failureListener.accept(ModelInitMessage.failed(taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER,
                         "Timeout", "TimeoutException", null, true));
@@ -298,6 +322,9 @@ public class ModelInitSubprocessLauncher {
         } catch (IOException e) {
             logger.debug("Could not delete args file: {}", argsFile);
         }
+
+        // === GPU LIFECYCLE: Release GPU resources after model init completes ===
+        releaseModelInitGpu(taskId, gpuAcquired);
 
         // Wait for result from parsed messages
         if (exitCode == 0) {
@@ -547,15 +574,39 @@ public class ModelInitSubprocessLauncher {
     public void cleanup() {
         logger.info("Shutting down model init subprocess launcher");
 
-        // Cancel all active processes
+        // Cancel all active processes and release GPU holds
         for (SubprocessHandle handle : activeProcesses.values()) {
             try {
                 handle.cancel();
+                // Release GPU hold for this job if held
+                if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.taskId)) {
+                    logger.info("[model-init-{}] Releasing GPU resources during shutdown", handle.taskId);
+                    try {
+                        modelLifecycleManager.releaseGpuForModelInit(handle.taskId);
+                    } catch (Exception e) {
+                        logger.warn("[model-init-{}] Error releasing GPU during shutdown: {}",
+                                handle.taskId, e.getMessage());
+                    }
+                }
             } catch (Exception e) {
                 logger.warn("Error cancelling subprocess: {}", e.getMessage());
             }
         }
         activeProcesses.clear();
+    }
+
+    /**
+     * Release GPU resources for a model init job.
+     */
+    private void releaseModelInitGpu(String taskId, boolean gpuAcquired) {
+        if (gpuAcquired && modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(taskId)) {
+            logger.info("[model-init-{}] Releasing GPU resources for completed/failed model init", taskId);
+            try {
+                modelLifecycleManager.releaseGpuForModelInit(taskId);
+            } catch (Exception e) {
+                logger.warn("[model-init-{}] Error releasing GPU resources: {}", taskId, e.getMessage());
+            }
+        }
     }
 
     /**

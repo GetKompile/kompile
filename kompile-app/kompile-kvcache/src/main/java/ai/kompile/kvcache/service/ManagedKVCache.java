@@ -25,6 +25,14 @@ public class ManagedKVCache implements AutoCloseable {
 
     private final KVCacheStatisticsCollector statsCollector;
 
+    // Priority eviction integration (may be null if not enabled)
+    @Getter
+    private PriorityEvictionPolicy priorityEvictionPolicy;
+
+    // Content-hash prefix index integration (may be null if not enabled)
+    @Getter
+    private ContentHashPrefixIndex contentHashPrefixIndex;
+
     // Only one of these will be non-null based on cache type
     private PagedKVCache pagedCache;
     private EvictablePagedKVCache evictableCache;
@@ -33,14 +41,24 @@ public class ManagedKVCache implements AutoCloseable {
     private PerLayerPagedKVCache perLayerCache;
     private TurboQuantKvCacheManager turboQuantCache;
 
+    // Track tokens appended per sequence for prefix indexing
+    private final Map<Integer, java.util.List<int[]>> sequenceTokenHistory = new HashMap<>();
     private int activeSequenceCount = 0;
 
     public ManagedKVCache(String name, KVCacheConfig config, KVCacheStatisticsCollector statsCollector) {
+        this(name, config, statsCollector, null, null);
+    }
+
+    public ManagedKVCache(String name, KVCacheConfig config, KVCacheStatisticsCollector statsCollector,
+                          PriorityEvictionPolicy priorityEvictionPolicy,
+                          ContentHashPrefixIndex contentHashPrefixIndex) {
         this.name = name;
         this.type = config.getType() != null ? config.getType() : "paged";
         this.createdAt = System.currentTimeMillis();
         this.config = config;
         this.statsCollector = statsCollector;
+        this.priorityEvictionPolicy = priorityEvictionPolicy;
+        this.contentHashPrefixIndex = contentHashPrefixIndex;
 
         int blockSize = config.getBlockSize() != null ? config.getBlockSize() : 64;
         int maxBatch = config.getMaxBatchSize() != null ? config.getMaxBatchSize() : 8;
@@ -90,8 +108,50 @@ public class ManagedKVCache implements AutoCloseable {
         else if (evictableCache != null) evictableCache.append(seqIdx, newKeys, newValues);
         else if (quantizedCache != null) quantizedCache.append(seqIdx, newKeys, newValues);
 
+        // Touch priority tracking on append
+        if (priorityEvictionPolicy != null) {
+            priorityEvictionPolicy.touchBlock(seqIdx);
+        }
+
         statsCollector.recordAppend(name);
         statsCollector.getCounters(name).appendsSinceLastSample.incrementAndGet();
+    }
+
+    /**
+     * Append with token IDs for prefix indexing support.
+     * When a block's worth of tokens accumulates, notifies the ContentHashPrefixIndex.
+     */
+    public void append(int seqIdx, INDArray newKeys, INDArray newValues, int[] tokenIds) {
+        append(seqIdx, newKeys, newValues);
+
+        // Track tokens for content-hash prefix indexing
+        if (contentHashPrefixIndex != null && tokenIds != null) {
+            int blockSize = config.getBlockSize() != null ? config.getBlockSize() : 64;
+            sequenceTokenHistory.computeIfAbsent(seqIdx, k -> new java.util.ArrayList<>());
+            var history = sequenceTokenHistory.get(seqIdx);
+            history.add(tokenIds);
+
+            // Check if we've accumulated a full block
+            int totalTokens = history.stream().mapToInt(arr -> arr.length).sum();
+            if (totalTokens >= blockSize) {
+                // Flatten and notify for each block-sized chunk
+                int[] allTokens = history.stream()
+                        .flatMapToInt(java.util.Arrays::stream)
+                        .toArray();
+                int blocksFilled = totalTokens / blockSize;
+                for (int b = 0; b < blocksFilled; b++) {
+                    int[] blockTokens = java.util.Arrays.copyOfRange(allTokens, b * blockSize, (b + 1) * blockSize);
+                    int blockId = seqIdx * 1000 + b; // synthetic block ID
+                    contentHashPrefixIndex.onBlockFilled(blockId, blockTokens);
+                }
+                // Keep remainder
+                int consumed = blocksFilled * blockSize;
+                history.clear();
+                if (consumed < allTokens.length) {
+                    history.add(java.util.Arrays.copyOfRange(allTokens, consumed, allTokens.length));
+                }
+            }
+        }
     }
 
     public void freeSequence(int seqIdx) {
@@ -99,6 +159,21 @@ public class ManagedKVCache implements AutoCloseable {
         else if (evictableCache != null) evictableCache.freeSequence(seqIdx);
         else if (quantizedCache != null) quantizedCache.freeSequence(seqIdx);
         else if (perLayerCache != null) perLayerCache.freeSequence(seqIdx);
+
+        // Clean up priority tracking
+        if (priorityEvictionPolicy != null) {
+            priorityEvictionPolicy.removeBlock(seqIdx);
+        }
+
+        // Clean up prefix index entries for this sequence
+        if (contentHashPrefixIndex != null) {
+            var history = sequenceTokenHistory.remove(seqIdx);
+            // Free synthetic block IDs (seqIdx * 1000 + blockNum)
+            // We don't track exact block count, so sweep a reasonable range
+            for (int b = 0; b < 256; b++) {
+                contentHashPrefixIndex.onBlockFreed(seqIdx * 1000 + b);
+            }
+        }
 
         statsCollector.recordFree(name);
         if (activeSequenceCount > 0) activeSequenceCount--;

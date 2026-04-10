@@ -440,8 +440,10 @@ public class VlmExecutionService {
             long elapsed = System.currentTimeMillis() - startTime;
             String generatedText = genResult.getText();
 
-            // Reset sessions to free GPU intermediates and schedule auto-unload
-            vlmModel.resetSessions();
+            // Reset sessions to free GPU intermediates and schedule auto-unload.
+            // For decode (invariant shapes), use resetSessionsForDecode() which preserves
+            // staging buffers, slot arrays, CUDA graphs, and cuBLAS workspace.
+            vlmModel.resetSessionsForDecode();
             scheduleAutoUnload();
 
             return VlmGenerateResponse.builder()

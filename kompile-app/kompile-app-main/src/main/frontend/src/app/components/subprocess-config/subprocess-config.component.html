@@ -484,6 +484,71 @@
                   </mat-form-field>
                 </div>
               </div>
+
+              <!-- Memory Watchdog Thresholds -->
+              <h3 class="section-title">
+                <mat-icon>memory</mat-icon>
+                Memory Watchdog Thresholds
+              </h3>
+              <p class="section-description">Configure when subprocesses should gracefully stop, warn, or be killed based on memory usage.</p>
+
+              <!-- Off-Heap (Native) Memory Thresholds -->
+              <h4 class="section-subtitle">Off-Heap (JavaCPP Native) Memory</h4>
+              <div class="config-grid">
+                <div class="config-item">
+                  <label>Graceful Stop (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Threshold</mat-label>
+                    <input matInput type="number" [(ngModel)]="editOffHeapThresholdPercent" [ngModelOptions]="{standalone: true}" min="50" max="99">
+                    <mat-hint>Stop accepting new work at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+                <div class="config-item">
+                  <label>Critical Warning (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Critical</mat-label>
+                    <input matInput type="number" [(ngModel)]="editOffHeapCriticalPercent" [ngModelOptions]="{standalone: true}" min="50" max="99">
+                    <mat-hint>Critical warning at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+                <div class="config-item">
+                  <label>Force Kill (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Kill</mat-label>
+                    <input matInput type="number" [(ngModel)]="editOffHeapKillThresholdPercent" [ngModelOptions]="{standalone: true}" min="50" max="100">
+                    <mat-hint>Force terminate at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
+
+              <!-- GPU Memory Thresholds -->
+              <h4 class="section-subtitle">GPU (CUDA) Memory</h4>
+              <div class="config-grid">
+                <div class="config-item">
+                  <label>Graceful Stop (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Threshold</mat-label>
+                    <input matInput type="number" [(ngModel)]="editGpuMemoryThresholdPercent" [ngModelOptions]="{standalone: true}" min="50" max="99">
+                    <mat-hint>Stop accepting new work at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+                <div class="config-item">
+                  <label>Critical Warning (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Critical</mat-label>
+                    <input matInput type="number" [(ngModel)]="editGpuMemoryCriticalPercent" [ngModelOptions]="{standalone: true}" min="50" max="99">
+                    <mat-hint>Critical warning at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+                <div class="config-item">
+                  <label>Force Kill (%)</label>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Kill</mat-label>
+                    <input matInput type="number" [(ngModel)]="editGpuMemoryKillThresholdPercent" [ngModelOptions]="{standalone: true}" min="50" max="100">
+                    <mat-hint>Force terminate at this usage</mat-hint>
+                  </mat-form-field>
+                </div>
+              </div>
             </mat-card-content>
             <mat-card-actions>
               <button mat-raised-button color="primary" (click)="saveConfiguration()" [disabled]="isSaving">
@@ -1037,6 +1102,39 @@
                     <div class="progress-cell">
                       <mat-progress-bar mode="determinate" [value]="row.progressPercent"></mat-progress-bar>
                       <span class="progress-text">{{ row.progressPercent }}%</span>
+                    </div>
+                  </td>
+                </ng-container>
+
+                <!-- Memory Column -->
+                <ng-container matColumnDef="memory">
+                  <th mat-header-cell *matHeaderCellDef>Memory</th>
+                  <td mat-cell *matCellDef="let row">
+                    <div class="memory-metrics">
+                      <!-- Heap -->
+                      <div class="memory-bar-row" matTooltip="Heap: {{ formatBytes(row.heapUsedBytes) }} / {{ formatBytes(row.heapMaxBytes) }} (peak: {{ row.peakHeapUsagePercent | number:'1.0-0' }}%)">
+                        <span class="memory-label">Heap</span>
+                        <mat-progress-bar mode="determinate" [value]="row.heapUsagePercent" [color]="getMemoryBarColor(row.heapUsagePercent)"></mat-progress-bar>
+                        <span class="memory-pct">{{ row.heapUsagePercent | number:'1.0-0' }}%</span>
+                      </div>
+                      <!-- Off-Heap -->
+                      <div class="memory-bar-row" *ngIf="row.offHeapMaxBytes > 0"
+                           matTooltip="Off-Heap: {{ formatBytes(row.offHeapUsedBytes) }} / {{ formatBytes(row.offHeapMaxBytes) }} (peak: {{ row.peakOffHeapUsagePercent | number:'1.0-0' }}%)">
+                        <span class="memory-label">Native</span>
+                        <mat-progress-bar mode="determinate" [value]="row.offHeapUsagePercent" [color]="getMemoryBarColor(row.offHeapUsagePercent)"></mat-progress-bar>
+                        <span class="memory-pct">{{ row.offHeapUsagePercent | number:'1.0-0' }}%</span>
+                      </div>
+                      <!-- GPU -->
+                      <div class="memory-bar-row" *ngIf="row.gpuMaxBytes > 0"
+                           matTooltip="GPU: {{ formatBytes(row.gpuUsedBytes) }} / {{ formatBytes(row.gpuMaxBytes) }} (peak: {{ row.peakGpuUsagePercent | number:'1.0-0' }}%)">
+                        <span class="memory-label">GPU</span>
+                        <mat-progress-bar mode="determinate" [value]="row.gpuUsagePercent" [color]="getMemoryBarColor(row.gpuUsagePercent)"></mat-progress-bar>
+                        <span class="memory-pct">{{ row.gpuUsagePercent | number:'1.0-0' }}%</span>
+                      </div>
+                      <!-- Show heap-only summary when no off-heap/GPU -->
+                      <div *ngIf="row.offHeapMaxBytes === 0 && row.gpuMaxBytes === 0 && row.heapMaxBytes > 0" class="memory-summary-only">
+                        {{ formatBytes(row.heapUsedBytes) }} / {{ formatBytes(row.heapMaxBytes) }}
+                      </div>
                     </div>
                   </td>
                 </ng-container>
