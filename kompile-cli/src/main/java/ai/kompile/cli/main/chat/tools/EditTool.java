@@ -108,7 +108,12 @@ public class EditTool implements CliTool {
                 String trimmedResult = tryTrimmedMatch(content, oldString, newString, replaceAll);
                 if (trimmedResult != null) {
                     Files.writeString(path, trimmedResult);
-                    String relativePath = context.getWorkingDirectory().relativize(path).toString();
+                    String relativePath;
+                    try {
+                        relativePath = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
+                    } catch (IllegalArgumentException ex) {
+                        relativePath = path.toString();
+                    }
                     return ToolResult.success(relativePath,
                             "Applied edit (trimmed match)",
                             Map.of("path", relativePath, "matchType", "trimmed"));

@@ -343,7 +343,7 @@ public class SessionIndex {
                     node.path("sessionId").asText(""),
                     node.path("source").asText("kompile"),
                     node.path("originalId").asText(""),
-                    node.path("indexedAt").isTextual() ? Instant.parse(node.path("indexedAt").asText("")) : Instant.now(),
+                    node.path("indexedAt").isTextual() && !node.path("indexedAt").asText("").isEmpty() ? Instant.parse(node.path("indexedAt").asText()) : Instant.now(),
                     node.path("messageCount").asInt(0),
                     node.path("title").asText(""),
                     node.path("lastModified").asLong(System.currentTimeMillis())

@@ -295,7 +295,8 @@ public class VlmTestWorkflowController {
                 null, null, null, null, null, // pipeline settings
                 null, null, null, null, null, null, // restart config
                 null, null, null, null, // stall detection
-                null, null, null, null, null, null, null // native exec config
+                null, null, null, null, null, null, null, // native exec config
+                null, null, null, null, null, null // memory watchdog thresholds
         );
         configService.updateConfiguration(configUpdate);
 

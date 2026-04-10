@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * In-memory CRUD service for named prompt templates.
  * Templates use {{variable}} syntax for variable substitution.
  */
-@Service
+@Service("stagingPromptTemplateService")
 public class PromptTemplateService {
 
     private final ConcurrentHashMap<String, PromptTemplate> templates = new ConcurrentHashMap<>();

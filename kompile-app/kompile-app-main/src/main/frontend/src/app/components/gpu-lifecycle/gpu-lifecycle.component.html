@@ -1,0 +1,122 @@
+<div class="gpu-lifecycle-container">
+  <div *ngIf="loading" class="loading-spinner">
+    <mat-spinner diameter="40"></mat-spinner>
+  </div>
+
+  <div *ngIf="!loading">
+    <!-- Device Overview -->
+    <h3 class="section-title">GPU Devices</h3>
+    <div class="device-cards" *ngIf="devices.length > 0">
+      <mat-card *ngFor="let dev of devices" class="device-card">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>memory</mat-icon>
+          <mat-card-title>GPU {{ dev.index }}: {{ dev.name }}</mat-card-title>
+          <mat-card-subtitle>{{ dev.totalMb }} MB total</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="memory-bar">
+            <div class="memory-labels">
+              <span>{{ dev.usedMb }} MB used</span>
+              <span>{{ dev.freeMb }} MB free</span>
+            </div>
+            <mat-progress-bar
+              [mode]="'determinate'"
+              [value]="dev.utilization"
+              [color]="getUtilizationColor(dev.utilization)">
+            </mat-progress-bar>
+            <div class="utilization-label">{{ dev.utilization }}% utilized</div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </div>
+    <div *ngIf="devices.length === 0" class="status-message">
+      No GPU devices detected. Running in CPU-only mode.
+    </div>
+
+    <!-- Active Jobs -->
+    <h3 class="section-title">Active GPU Jobs</h3>
+    <div *ngIf="jobs.length > 0" class="jobs-table">
+      <table mat-table [dataSource]="jobs">
+        <ng-container matColumnDef="jobId">
+          <th mat-header-cell *matHeaderCellDef>Job ID</th>
+          <td mat-cell *matCellDef="let job">{{ job.jobId }}</td>
+        </ng-container>
+        <ng-container matColumnDef="serviceType">
+          <th mat-header-cell *matHeaderCellDef>Service</th>
+          <td mat-cell *matCellDef="let job">{{ job.serviceType }}</td>
+        </ng-container>
+        <ng-container matColumnDef="device">
+          <th mat-header-cell *matHeaderCellDef>Device</th>
+          <td mat-cell *matCellDef="let job">{{ job.device }}</td>
+        </ng-container>
+        <ng-container matColumnDef="heldFor">
+          <th mat-header-cell *matHeaderCellDef>Duration</th>
+          <td mat-cell *matCellDef="let job">{{ formatDuration(job.heldForMs) }}</td>
+        </ng-container>
+        <ng-container matColumnDef="description">
+          <th mat-header-cell *matHeaderCellDef>Description</th>
+          <td mat-cell *matCellDef="let job">{{ job.description }}</td>
+        </ng-container>
+        <ng-container matColumnDef="actions">
+          <th mat-header-cell *matHeaderCellDef></th>
+          <td mat-cell *matCellDef="let job">
+            <button mat-icon-button color="warn"
+                    matTooltip="Force release GPU hold"
+                    (click)="forceRelease(job.jobId)">
+              <mat-icon>cancel</mat-icon>
+            </button>
+          </td>
+        </ng-container>
+        <tr mat-header-row *matHeaderRowDef="jobColumns"></tr>
+        <tr mat-row *matRowDef="let row; columns: jobColumns;"></tr>
+      </table>
+    </div>
+    <div *ngIf="jobs.length === 0" class="status-message">
+      No active GPU jobs.
+    </div>
+
+    <!-- Budget Configuration -->
+    <h3 class="section-title">Memory Budgets</h3>
+    <div class="budget-cards">
+      <mat-card *ngFor="let budget of budgets" class="budget-card">
+        <mat-card-header>
+          <mat-card-title>{{ budget.serviceType }}</mat-card-title>
+          <mat-card-subtitle>
+            {{ budget.hasReservation ? 'Active reservation' : 'No active reservation' }}
+          </mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div *ngIf="!budget.editing" class="budget-display">
+            <div class="budget-field">
+              <span class="field-label">Budget:</span>
+              <span>{{ budget.budgetMb }} MB</span>
+            </div>
+            <div class="budget-field">
+              <span class="field-label">Priority:</span>
+              <span>{{ budget.priority }}</span>
+            </div>
+          </div>
+          <div *ngIf="budget.editing" class="budget-edit">
+            <mat-form-field appearance="outline">
+              <mat-label>Budget (MB)</mat-label>
+              <input matInput type="number" [(ngModel)]="budget.editBudgetMb" min="0">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Priority</mat-label>
+              <input matInput type="number" [(ngModel)]="budget.editPriority" min="0" max="100">
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+        <mat-card-actions align="end">
+          <button *ngIf="!budget.editing" mat-button (click)="budget.editing = true; budget.editBudgetMb = budget.budgetMb; budget.editPriority = budget.priority">
+            <mat-icon>edit</mat-icon> Edit
+          </button>
+          <button *ngIf="budget.editing" mat-button (click)="budget.editing = false">Cancel</button>
+          <button *ngIf="budget.editing" mat-flat-button color="primary" (click)="saveBudget(budget)">
+            <mat-icon>save</mat-icon> Save
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,34 @@
+.vlm-orchestration-container {
+  padding: 16px;
+}
+
+.config-card {
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.config-field {
+  margin-top: 16px;
+}
+
+.config-field mat-form-field {
+  width: 100%;
+}
+
+.toggle-field {
+  margin: 12px 0;
+}
+
+.action-bar {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}

@@ -166,6 +166,10 @@ public class ModelMetadata {
     @JsonProperty("vision_encoder_output_names")
     private java.util.List<String> visionEncoderOutputNames;
 
+    // Memory estimation for admission control
+    @JsonProperty("estimated_memory_bytes")
+    private Long estimatedMemoryBytes;
+
     // Archive provenance
     @JsonProperty("source_archive_id")
     private String sourceArchiveId;

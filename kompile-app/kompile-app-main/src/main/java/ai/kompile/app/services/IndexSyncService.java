@@ -41,8 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Service for synchronizing documents/passages across indexes.
  * Supports auto-sync on query and manual sync triggers.
  */
-@Service
 @Slf4j
+@Service
 public class IndexSyncService {
 
     private final CrossIndexTrackingService trackingService;

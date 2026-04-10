@@ -23,6 +23,7 @@ import ai.kompile.cli.main.chat.agent.SubagentRunner;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.roles.RoleManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
@@ -39,7 +40,7 @@ public class ToolRegistryFactory {
                                        TerminalRenderer renderer,
                                        BackgroundProcessManager processManager) {
         return create(objectMapper, baseUrl, agentRegistry, permissionService,
-                renderer, processManager, null);
+                renderer, processManager, null, null);
     }
 
     /**
@@ -54,6 +55,7 @@ public class ToolRegistryFactory {
      * @param renderer        terminal renderer for output formatting
      * @param processManager  background process manager for process tracking
      * @param chatConfig      LLM config for direct mode (null for server mode)
+     * @param roleManager     role manager for role-based agent configuration (null to skip role tool)
      * @return fully populated ToolRegistry
      */
     public static ToolRegistry create(ObjectMapper objectMapper, String baseUrl,
@@ -61,7 +63,8 @@ public class ToolRegistryFactory {
                                        PermissionService permissionService,
                                        TerminalRenderer renderer,
                                        BackgroundProcessManager processManager,
-                                       ChatConfig chatConfig) {
+                                       ChatConfig chatConfig,
+                                       RoleManager roleManager) {
         ToolRegistry registry = new ToolRegistry(objectMapper);
 
         // File I/O tools
@@ -110,6 +113,11 @@ public class ToolRegistryFactory {
                     baseUrl, registry, permissionService, objectMapper, renderer);
         }
         registry.register(new TaskTool(agentRegistry, subagentRunner));
+
+        // Role management tool (exposed as MCP tool for subagent coordination)
+        if (roleManager != null) {
+            registry.register(new RoleManagerTool(roleManager, objectMapper));
+        }
 
         return registry;
     }

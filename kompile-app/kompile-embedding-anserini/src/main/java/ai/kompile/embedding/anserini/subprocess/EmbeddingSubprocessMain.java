@@ -126,14 +126,15 @@ public class EmbeddingSubprocessMain {
             initializeNd4j();
             sendProgress("INITIALIZING", 40, "ND4J ready", "Native backend initialized");
 
-            // Initialize memory watchdog with default thresholds (GPU monitoring auto-enabled for CUDA)
+            // Initialize memory watchdog with default thresholds (GPU + off-heap monitoring auto-enabled)
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     80, 90, 95,  // Heap thresholds: stop=80%, critical=90%, kill=95%
                     2000,        // Check interval: 2 seconds
-                    75, 85, 92   // GPU thresholds: stop=75%, critical=85%, kill=92%
+                    75, 85, 92,  // GPU thresholds: stop=75%, critical=85%, kill=92%
+                    80, 90, 95   // Off-heap thresholds: stop=80%, critical=90%, kill=95%
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop=80%, critical=90%, kill=95%; GPU stop=75%, critical=85%, kill=92%");
+            logger.info("Memory watchdog started: heap stop=80%, critical=90%, kill=95%; GPU stop=75%, critical=85%, kill=92%; off-heap stop=80%, critical=90%, kill=95%");
 
             // Configure model source from system properties (passed from main process)
             // MUST happen AFTER ND4J init since registry may use ND4J
@@ -519,6 +520,21 @@ public class EmbeddingSubprocessMain {
                 line = line.trim();
                 if (line.isEmpty()) {
                     continue;
+                }
+
+                // Check watchdog before processing each command
+                if (memoryWatchdog != null) {
+                    if (memoryWatchdog.shouldKill()) {
+                        logger.error("Memory watchdog kill threshold exceeded - terminating command loop");
+                        sendError(null, "Memory kill threshold exceeded - subprocess terminating",
+                                "MemoryKillThreshold", currentPhase);
+                        System.exit(137);
+                    } else if (memoryWatchdog.shouldStop()) {
+                        logger.warn("Memory watchdog stop threshold exceeded - rejecting command");
+                        sendError(null, "Memory threshold exceeded - subprocess cannot process more commands",
+                                "MemoryThreshold", currentPhase);
+                        continue;
+                    }
                 }
 
                 try {

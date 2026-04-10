@@ -991,4 +991,253 @@ public class Nd4jEnvironmentController {
         ));
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * Update SameDiff graph optimizer / DSP (decode-side processing) framework settings.
+     * Controls graph optimization, FP16 conversion, and kernel execution modes.
+     */
+    @PostMapping("/framework")
+    public ResponseEntity<Map<String, Object>> updateFrameworkSettings(
+            @RequestParam(required = false) Boolean optimizerEnabled,
+            @RequestParam(required = false) Boolean optimizerFp16,
+            @RequestParam(required = false) Boolean dspNoFreeze,
+            @RequestParam(required = false) Boolean dspNoNativeDecode,
+            @RequestParam(required = false) Boolean dspNoAttnOverride,
+            @RequestParam(required = false) Boolean dspNoDirect,
+            @RequestParam(required = false) Boolean tritonSkipKernels,
+            @RequestParam(required = false) Boolean tritonTf32,
+            @RequestParam(required = false) Boolean cublasDisableWorkspace,
+            @RequestParam(required = false) String dspDiagnostics,
+            @RequestParam(required = false) Boolean opTiming) {
+
+        log.info("Updating SameDiff framework settings: optimizerEnabled={}, optimizerFp16={}, dspNoFreeze={}, " +
+                        "dspNoNativeDecode={}, dspNoAttnOverride={}, dspNoDirect={}, tritonSkipKernels={}, " +
+                        "tritonTf32={}, cublasDisableWorkspace={}, dspDiagnostics={}, opTiming={}",
+                optimizerEnabled, optimizerFp16, dspNoFreeze, dspNoNativeDecode, dspNoAttnOverride,
+                dspNoDirect, tritonSkipKernels, tritonTf32, cublasDisableWorkspace, dspDiagnostics, opTiming);
+
+        Nd4jEnvironmentConfig update = Nd4jEnvironmentConfig.builder()
+                .optimizerEnabled(optimizerEnabled)
+                .optimizerFp16(optimizerFp16)
+                .dspNoFreeze(dspNoFreeze)
+                .dspNoNativeDecode(dspNoNativeDecode)
+                .dspNoAttnOverride(dspNoAttnOverride)
+                .dspNoDirect(dspNoDirect)
+                .tritonSkipKernels(tritonSkipKernels)
+                .tritonTf32(tritonTf32)
+                .cublasDisableWorkspace(cublasDisableWorkspace)
+                .dspDiagnostics(dspDiagnostics)
+                .opTiming(opTiming)
+                .build();
+
+        Nd4jEnvironmentConfig newConfig = configService.updateConfiguration(update);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("optimizerEnabled", newConfig.optimizerEnabled());
+        response.put("optimizerFp16", newConfig.optimizerFp16());
+        response.put("dspNoFreeze", newConfig.dspNoFreeze());
+        response.put("dspNoNativeDecode", newConfig.dspNoNativeDecode());
+        response.put("dspNoAttnOverride", newConfig.dspNoAttnOverride());
+        response.put("dspNoDirect", newConfig.dspNoDirect());
+        response.put("tritonSkipKernels", newConfig.tritonSkipKernels());
+        response.put("tritonTf32", newConfig.tritonTf32());
+        response.put("cublasDisableWorkspace", newConfig.cublasDisableWorkspace());
+        response.put("dspDiagnostics", newConfig.dspDiagnostics());
+        response.put("opTiming", newConfig.opTiming());
+
+        // Add warnings for potentially impactful settings
+        if (Boolean.FALSE.equals(newConfig.optimizerEnabled())) {
+            response.put("warning", "Graph optimizer disabled - performance may be significantly impacted");
+        }
+        if (Boolean.TRUE.equals(newConfig.dspDiagnostics())) {
+            response.put("info", "DSP diagnostics enabled - verbose output will be generated");
+        }
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Get current SameDiff graph optimizer / DSP framework settings.
+     * Returns both configuration toggles and live framework subsystem status from Nd4j.framework API.
+     */
+    @GetMapping("/framework")
+    public ResponseEntity<Map<String, Object>> getFrameworkSettings() {
+        Nd4jEnvironmentConfig actual = configService.getActualConfiguration();
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("optimizerEnabled", actual.optimizerEnabled());
+        response.put("optimizerFp16", actual.optimizerFp16());
+        response.put("dspNoFreeze", actual.dspNoFreeze());
+        response.put("dspNoNativeDecode", actual.dspNoNativeDecode());
+        response.put("dspNoAttnOverride", actual.dspNoAttnOverride());
+        response.put("dspNoDirect", actual.dspNoDirect());
+        response.put("tritonSkipKernels", actual.tritonSkipKernels());
+        response.put("tritonTf32", actual.tritonTf32());
+        response.put("cublasDisableWorkspace", actual.cublasDisableWorkspace());
+        response.put("dspDiagnostics", actual.dspDiagnostics());
+        response.put("opTiming", actual.opTiming());
+
+        Map<String, String> descriptions = new HashMap<>();
+        descriptions.put("optimizerEnabled", "Enable SameDiff graph optimizer for improved performance");
+        descriptions.put("optimizerFp16", "Convert weights to FP16 to reduce VRAM usage");
+        descriptions.put("dspNoFreeze", "Disable graph freezing (false = freeze enabled)");
+        descriptions.put("dspNoNativeDecode", "Disable native decode inputs (false = native decode enabled)");
+        descriptions.put("dspNoAttnOverride", "Disable attention override (false = override enabled)");
+        descriptions.put("dspNoDirect", "Disable direct mode (false = direct mode enabled)");
+        descriptions.put("tritonSkipKernels", "Skip Triton kernels (false = Triton kernels enabled)");
+        descriptions.put("tritonTf32", "Enable TF32 precision for Triton kernels");
+        descriptions.put("cublasDisableWorkspace", "Disable cuBLAS workspace capture (true = disabled)");
+        descriptions.put("dspDiagnostics", "Enable DSP diagnostics (e.g. 'ALL' for verbose output)");
+        descriptions.put("opTiming", "Enable operation timing for performance analysis");
+
+        response.put("description", descriptions);
+        response.put("isCudaBackend", !org.nd4j.linalg.factory.Nd4j.getEnvironment().isCPU());
+
+        // === Nd4j.framework subsystem status ===
+        try {
+            var framework = org.nd4j.linalg.factory.Nd4j.framework;
+
+            // Execution subsystem
+            Map<String, Object> execution = new HashMap<>();
+            try {
+                var execEnv = framework.execution().environment();
+                execution.put("dspEnabled", execEnv.isDspEnabled());
+                execution.put("summary", execEnv.getSummary());
+            } catch (Exception e) {
+                execution.put("error", e.getMessage());
+            }
+
+            // DSP diagnostics subsystem
+            Map<String, Object> dsp = new HashMap<>();
+            try {
+                var dspSub = framework.execution().dsp();
+                dsp.put("enabledCategories", dspSub.getEnabledCategories());
+                dsp.put("planReport", dspSub.getPlanReport());
+            } catch (Exception e) {
+                dsp.put("error", e.getMessage());
+            }
+
+            // Memory subsystem
+            Map<String, Object> memory = new HashMap<>();
+            try {
+                var memStats = framework.memory().stats();
+                memory.put("heapUsedBytes", memStats.getHeapUsedBytes());
+                memory.put("heapMaxBytes", memStats.getHeapMaxBytes());
+                var memMgr = framework.memory().manager();
+                memory.put("gcFrequency", memMgr.getGcFrequency());
+                memory.put("managerType", memMgr.getType());
+            } catch (Exception e) {
+                memory.put("error", e.getMessage());
+            }
+
+            // Profiling subsystem
+            Map<String, Object> profiling = new HashMap<>();
+            try {
+                profiling.put("enabled", framework.profiling().isEnabled());
+                var profilingEnv = framework.profiling().environment();
+                profiling.put("frequency", profilingEnv.getProfilingFrequency());
+            } catch (Exception e) {
+                profiling.put("error", e.getMessage());
+            }
+
+            // Lifecycle subsystem
+            Map<String, Object> lifecycle = new HashMap<>();
+            try {
+                lifecycle.put("totalCreated", framework.lifecycle().totalCreated());
+                lifecycle.put("totalDestroyed", framework.lifecycle().totalDestroyed());
+                lifecycle.put("liveCount", framework.lifecycle().liveCount());
+            } catch (Exception e) {
+                lifecycle.put("error", e.getMessage());
+            }
+
+            // Device subsystem
+            Map<String, Object> device = new HashMap<>();
+            try {
+                var deviceInfo = framework.device().info();
+                device.put("count", deviceInfo.count());
+                device.put("hasGpu", deviceInfo.hasGpu());
+                device.put("multiDevice", deviceInfo.isMultiDevice());
+                device.put("summaries", deviceInfo.getAllSummaries());
+            } catch (Exception e) {
+                device.put("error", e.getMessage());
+            }
+
+            // Workspace subsystem
+            Map<String, Object> workspaces = new HashMap<>();
+            try {
+                var wsEnv = framework.workspaces().environment();
+                workspaces.put("defaultSize", wsEnv.getDefaultWorkspaceSize());
+                workspaces.put("initialSize", wsEnv.getWorkspaceInitialSize());
+                workspaces.put("learningEnabled", wsEnv.isWorkspaceLearningEnabled());
+                workspaces.put("debugMode", wsEnv.getWorkspaceDebugMode());
+            } catch (Exception e) {
+                workspaces.put("error", e.getMessage());
+            }
+
+            // Constant cache subsystem
+            Map<String, Object> constants = new HashMap<>();
+            try {
+                constants.put("cachedMb", framework.constants().getCachedMb());
+                constants.put("tadCacheEntries", framework.constants().getTadCacheEntries());
+            } catch (Exception e) {
+                constants.put("error", e.getMessage());
+            }
+
+            Map<String, Object> subsystems = new HashMap<>();
+            subsystems.put("execution", execution);
+            subsystems.put("dsp", dsp);
+            subsystems.put("memory", memory);
+            subsystems.put("profiling", profiling);
+            subsystems.put("lifecycle", lifecycle);
+            subsystems.put("device", device);
+            subsystems.put("workspaces", workspaces);
+            subsystems.put("constants", constants);
+            response.put("subsystems", subsystems);
+
+        } catch (Exception e) {
+            log.debug("Could not read Nd4j.framework subsystem status: {}", e.getMessage());
+            response.put("subsystems", Map.of("error", "Framework API not available: " + e.getMessage()));
+        }
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Apply a framework preset configuration.
+     * Available presets: performance, debug, minimal, balanced
+     */
+    @PostMapping("/framework/preset/{presetName}")
+    public ResponseEntity<Map<String, Object>> applyFrameworkPreset(@PathVariable String presetName) {
+        log.info("Applying SameDiff framework preset: {}", presetName);
+
+        try {
+            Nd4jEnvironmentConfig newConfig = configService.applyFrameworkPreset(presetName);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("status", "success");
+            response.put("preset", presetName);
+            response.put("message", "Framework preset '" + presetName + "' applied and persisted");
+            response.put("config", Map.ofEntries(
+                    Map.entry("optimizerEnabled", newConfig.optimizerEnabled()),
+                    Map.entry("optimizerFp16", newConfig.optimizerFp16()),
+                    Map.entry("dspNoFreeze", newConfig.dspNoFreeze()),
+                    Map.entry("dspNoNativeDecode", newConfig.dspNoNativeDecode()),
+                    Map.entry("dspNoAttnOverride", newConfig.dspNoAttnOverride()),
+                    Map.entry("dspNoDirect", newConfig.dspNoDirect()),
+                    Map.entry("tritonSkipKernels", newConfig.tritonSkipKernels()),
+                    Map.entry("tritonTf32", newConfig.tritonTf32()),
+                    Map.entry("cublasDisableWorkspace", newConfig.cublasDisableWorkspace()),
+                    Map.entry("dspDiagnostics", newConfig.dspDiagnostics()),
+                    Map.entry("opTiming", newConfig.opTiming())
+            ));
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("status", "error");
+            error.put("message", e.getMessage());
+            error.put("availablePresets", List.of("performance", "debug", "minimal", "balanced"));
+            return ResponseEntity.badRequest().body(error);
+        }
+    }
 }

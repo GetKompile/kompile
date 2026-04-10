@@ -68,6 +68,10 @@ public record VectorPopulationSubprocessArgs(
         int gpuMemoryThresholdPercent,        // GPU graceful stop (default 75%)
         int gpuMemoryCriticalPercent,         // GPU critical warning (default 85%)
         int gpuMemoryKillThresholdPercent,    // GPU hard kill (default 92%)
+        // Off-heap (JavaCPP native) memory thresholds
+        int offHeapThresholdPercent,          // Off-heap graceful stop (default 80%)
+        int offHeapCriticalPercent,           // Off-heap critical warning (default 90%)
+        int offHeapKillThresholdPercent,      // Off-heap hard kill (default 95%)
         Map<String, String> options           // Additional options
 ) {
     // Default constants for memory thresholds
@@ -79,6 +83,10 @@ public record VectorPopulationSubprocessArgs(
     public static final int DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT = 75;
     public static final int DEFAULT_GPU_MEMORY_CRITICAL_PERCENT = 85;
     public static final int DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT = 92;
+    // Off-heap threshold defaults
+    public static final int DEFAULT_OFF_HEAP_THRESHOLD_PERCENT = 80;
+    public static final int DEFAULT_OFF_HEAP_CRITICAL_PERCENT = 90;
+    public static final int DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT = 95;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public VectorPopulationSubprocessArgs {
@@ -99,6 +107,10 @@ public record VectorPopulationSubprocessArgs(
         if (gpuMemoryThresholdPercent <= 0) gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         if (gpuMemoryCriticalPercent <= 0) gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         if (gpuMemoryKillThresholdPercent < 0) gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        // Off-heap memory thresholds defaults
+        if (offHeapThresholdPercent <= 0) offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+        if (offHeapCriticalPercent <= 0) offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+        if (offHeapKillThresholdPercent < 0) offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
     }
 
     /**
@@ -151,6 +163,10 @@ public record VectorPopulationSubprocessArgs(
         private int gpuMemoryThresholdPercent = DEFAULT_GPU_MEMORY_THRESHOLD_PERCENT;
         private int gpuMemoryCriticalPercent = DEFAULT_GPU_MEMORY_CRITICAL_PERCENT;
         private int gpuMemoryKillThresholdPercent = DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
+        // Off-heap memory thresholds
+        private int offHeapThresholdPercent = DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+        private int offHeapCriticalPercent = DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+        private int offHeapKillThresholdPercent = DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
         private Map<String, String> options = Map.of();
 
         public Builder taskId(String taskId) {
@@ -283,6 +299,21 @@ public record VectorPopulationSubprocessArgs(
             return this;
         }
 
+        public Builder offHeapThresholdPercent(int offHeapThresholdPercent) {
+            this.offHeapThresholdPercent = offHeapThresholdPercent;
+            return this;
+        }
+
+        public Builder offHeapCriticalPercent(int offHeapCriticalPercent) {
+            this.offHeapCriticalPercent = offHeapCriticalPercent;
+            return this;
+        }
+
+        public Builder offHeapKillThresholdPercent(int offHeapKillThresholdPercent) {
+            this.offHeapKillThresholdPercent = offHeapKillThresholdPercent;
+            return this;
+        }
+
         public VectorPopulationSubprocessArgs build() {
             return new VectorPopulationSubprocessArgs(
                     taskId,
@@ -310,6 +341,9 @@ public record VectorPopulationSubprocessArgs(
                     gpuMemoryThresholdPercent,
                     gpuMemoryCriticalPercent,
                     gpuMemoryKillThresholdPercent,
+                    offHeapThresholdPercent,
+                    offHeapCriticalPercent,
+                    offHeapKillThresholdPercent,
                     options
             );
         }

@@ -88,7 +88,7 @@ public class VlmTestSubprocessMain {
             currentArgs = vlmArgs;
             logger.info("Loaded VLM test args for task: {}", vlmArgs.taskId());
 
-            // Initialize and start memory watchdog with GPU thresholds
+            // Initialize and start memory watchdog with GPU + off-heap thresholds
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     vlmArgs.memoryThresholdPercent(),
                     vlmArgs.memoryCriticalPercent(),
@@ -96,16 +96,22 @@ public class VlmTestSubprocessMain {
                     vlmArgs.memoryCheckIntervalMs(),
                     vlmArgs.gpuMemoryThresholdPercent(),
                     vlmArgs.gpuMemoryCriticalPercent(),
-                    vlmArgs.gpuMemoryKillThresholdPercent()
+                    vlmArgs.gpuMemoryKillThresholdPercent(),
+                    vlmArgs.offHeapThresholdPercent(),
+                    vlmArgs.offHeapCriticalPercent(),
+                    vlmArgs.offHeapKillThresholdPercent()
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}% off-heap stop={}%, critical={}%, kill={}%",
                     vlmArgs.memoryThresholdPercent(),
                     vlmArgs.memoryCriticalPercent(),
                     vlmArgs.memoryKillThresholdPercent(),
                     vlmArgs.gpuMemoryThresholdPercent(),
                     vlmArgs.gpuMemoryCriticalPercent(),
-                    vlmArgs.gpuMemoryKillThresholdPercent());
+                    vlmArgs.gpuMemoryKillThresholdPercent(),
+                    vlmArgs.offHeapThresholdPercent(),
+                    vlmArgs.offHeapCriticalPercent(),
+                    vlmArgs.offHeapKillThresholdPercent());
 
             reporter = new SubprocessProgressReporter(vlmArgs.taskId(), originalStdout);
             reporter.startHeartbeat();
@@ -114,6 +120,9 @@ public class VlmTestSubprocessMain {
             reporter.reportProgress("INIT", 5, "ND4J", "Initializing ND4J environment");
             logger.info("Initializing ND4J environment...");
             initializeNd4j(vlmArgs);
+
+            // Check watchdog after ND4J init
+            checkWatchdogOrExit(memoryWatchdog, reporter, "ND4J initialization");
 
             // Record start heap
             long startHeapUsed = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
@@ -132,6 +141,9 @@ public class VlmTestSubprocessMain {
                 long modelLoadTime = System.currentTimeMillis() - modelLoadStart;
 
                 reporter.reportProgress("INIT", 20, "Ready", "VLM pipeline ready");
+
+                // Check watchdog after model loading (heavy memory operation)
+                checkWatchdogOrExit(memoryWatchdog, reporter, "VLM model loading");
 
                 // Process file
                 File inputFile = new File(vlmArgs.filePath());
@@ -358,6 +370,31 @@ public class VlmTestSubprocessMain {
         System.exit(exitCode);
     }
 
+    /**
+     * Check memory watchdog and exit gracefully if stop/kill threshold is exceeded.
+     */
+    private static void checkWatchdogOrExit(SubprocessMemoryWatchdog watchdog,
+                                             SubprocessProgressReporter reporter, String phase) {
+        if (watchdog == null) return;
+        if (watchdog.shouldKill()) {
+            logger.error("Memory watchdog kill threshold exceeded after {}", phase);
+            if (reporter != null) {
+                reporter.reportFailed("VLM_PROCESSING",
+                        "Memory kill threshold exceeded after " + phase,
+                        "MemoryKillThreshold", null);
+            }
+            System.exit(137);
+        } else if (watchdog.shouldStop()) {
+            logger.warn("Memory watchdog stop threshold exceeded after {} - aborting", phase);
+            if (reporter != null) {
+                reporter.reportFailed("VLM_PROCESSING",
+                        "Memory threshold exceeded after " + phase + " - aborting to prevent OOM",
+                        "MemoryThreshold", null);
+            }
+            System.exit(1);
+        }
+    }
+
     private static void initializeNd4j(VlmTestSubprocessArgs vlmArgs) throws Exception {
         logger.info("Initializing ND4J backend and environment...");
 
@@ -394,7 +431,6 @@ public class VlmTestSubprocessMain {
         if (NativeOpsHolder.getInstance().getDeviceNativeOps().isTritonAvailable()) {
             logger.info("Triton available — applying optimal LLM config (graph capture, fusion, TF32)");
             Nd4j.getEnvironment().applyOptimalLLMConfig();
-            Nd4j.getEnvironment().setTritonTf32Enabled(true);
             // Set graph execution mode to TRITON so auto-compiled DSP plans use Triton kernels
             setPropertyIfAbsent(ND4JSystemProperties.DSP_GRAPH_EXECUTION_MODE, "TRITON");
         } else {
@@ -416,7 +452,7 @@ public class VlmTestSubprocessMain {
 
         logger.info("ND4J config: optimizer={}, fp16={}, graphExecMode={}, tritonSkip={}, tritonTf32={}, dspNoNativeDecode={}, " +
                         "dspNoFreeze={}, dspNoAttnOverride={}, dspNoDirect={}, cublasWorkspace={}, " +
-                        "speculativeTokens={}, diagnostics={}, opTiming={}",
+                        "speculativeTokens={}, diagnostics={}, opTiming={}, nonP2pBudgetFraction={}, pinnedHostLimitMB={}",
                 System.getProperty(ND4JSystemProperties.OPTIMIZER_ENABLED, "unset"),
                 System.getProperty(ND4JSystemProperties.OPTIMIZER_FP16, "unset"),
                 System.getProperty(ND4JSystemProperties.DSP_GRAPH_EXECUTION_MODE, "unset"),
@@ -429,7 +465,9 @@ public class VlmTestSubprocessMain {
                 System.getProperty(ND4JSystemProperties.CUBLAS_CAPTURE_WORKSPACE, "unset"),
                 vlmArgs.speculativeTokens(),
                 System.getProperty(ND4JSystemProperties.DSP_DIAGNOSTICS, "unset"),
-                System.getProperty(ND4JSystemProperties.OP_TIMING, "unset"));
+                System.getProperty(ND4JSystemProperties.OP_TIMING, "unset"),
+                System.getProperty(ND4JSystemProperties.DSP_NON_P2P_BUDGET_FRACTION, "0.0"),
+                Nd4j.getEnvironment().cudaPinnedHostLimit());
 
         // Handle clearDecoderCache - delete cached .sdz files to force fresh optimizer pass
         if (Boolean.TRUE.equals(vlmArgs.clearDecoderCache())) {
@@ -518,6 +556,54 @@ public class VlmTestSubprocessMain {
         if (Boolean.TRUE.equals(vlmArgs.noCublasWorkspace())) {
             System.setProperty(ND4JSystemProperties.CUBLAS_CAPTURE_WORKSPACE, "0");
         }
+        // CUDA graph capture OOM retry / memory management — set as system properties
+        // which will be applied to native Environment via setters after ND4J init
+        // (see applyDspCaptureConfig below)
+        if (vlmArgs.dspCaptureOomMaxRetries() != null) {
+            System.setProperty("ND4J_DSP_CAPTURE_OOM_MAX_RETRIES", vlmArgs.dspCaptureOomMaxRetries().toString());
+        }
+        if (vlmArgs.dspCaptureOomRetryInterval() != null) {
+            System.setProperty("ND4J_DSP_CAPTURE_OOM_RETRY_INTERVAL", vlmArgs.dspCaptureOomRetryInterval().toString());
+        }
+        if (vlmArgs.dspCublasWorkspaceMb() != null) {
+            System.setProperty("ND4J_DSP_CUBLAS_WORKSPACE_MB", vlmArgs.dspCublasWorkspaceMb().toString());
+        }
+        if (vlmArgs.dspGraphMetadataSafetyMb() != null) {
+            System.setProperty("ND4J_DSP_GRAPH_METADATA_SAFETY_MB", vlmArgs.dspGraphMetadataSafetyMb().toString());
+        }
+        if (vlmArgs.dspProactiveEvictBeforeCapture() != null) {
+            System.setProperty("ND4J_DSP_PROACTIVE_EVICT", vlmArgs.dspProactiveEvictBeforeCapture() ? "1" : "0");
+        }
+        if (vlmArgs.dspLruEviction() != null) {
+            System.setProperty("ND4J_DSP_LRU_EVICTION", vlmArgs.dspLruEviction() ? "1" : "0");
+        }
+        if (vlmArgs.dspCaptureWorkspaceMb() != null) {
+            System.setProperty("ND4J_DSP_CAPTURE_WORKSPACE_MB", vlmArgs.dspCaptureWorkspaceMb().toString());
+        }
+        // Trim GPU memory pool more frequently for VLM (default=50, too high for 50-token generation)
+        System.setProperty(ND4JSystemProperties.DSP_TRIM_INTERVAL, "5");
+
+        // Multi-GPU compute for non-P2P devices: cross-device op execution requires
+        // D→H→D input migration in the native DSP executor. The migration infrastructure
+        // is in place (platformMigrateSegmentInputs) but needs further testing with
+        // edge cases (constants, scalars, views). For now, keep all compute on primary GPU
+        // and rely on the allocateFailover cascade (trim→peer→pinned host) for overflow.
+        // TODO: Enable nonP2pBudgetFraction once cross-device migration is fully tested
+        // setPropertyIfAbsent(ND4JSystemProperties.DSP_NON_P2P_BUDGET_FRACTION, "0.3");
+
+        // Increase pinned host memory limit for failover allocations.
+        // Default is 8 GB which is insufficient when decoder intermediates spill to host.
+        // The VLM decoder with 24 layers and 2K+ token sequence needs ~14 GB for a forward
+        // pass. When pool fills up, allocateFailover cascades: trim pool → try peer devices
+        // (none available without P2P) → fall back to pinned host memory. Previous tests
+        // showed 8.6 GB pinned host usage, exceeding the 8 GB default limit.
+        try {
+            Nd4j.getEnvironment().setCudaPinnedHostLimit(16384); // 16 GB in MB
+            logger.info("Set CUDA pinned host memory limit to 16 GB for VLM subprocess");
+        } catch (Exception e) {
+            logger.warn("Failed to set pinned host limit: {}", e.getMessage());
+        }
+
         if (Boolean.TRUE.equals(vlmArgs.debugDiagnostics())) {
             System.setProperty(ND4JSystemProperties.DSP_DIAGNOSTICS, "ALL");
         }

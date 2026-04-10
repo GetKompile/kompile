@@ -165,7 +165,7 @@ public class IngestSubprocessMain {
             reporter = new SubprocessProgressReporter(subprocessArgs.taskId(), originalStdout);
             httpCallback = new HttpIngestCallback(subprocessArgs.callbackBaseUrl());
 
-            // Initialize and start memory watchdog with GPU thresholds
+            // Initialize and start memory watchdog with GPU + off-heap thresholds
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
@@ -173,16 +173,22 @@ public class IngestSubprocessMain {
                     subprocessArgs.memoryCheckIntervalMs(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent()
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent()
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}% off-heap stop={}%, critical={}%, kill={}%",
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
                     subprocessArgs.memoryKillThresholdPercent(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent());
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent());
 
             // Start heartbeat immediately
             reporter.startHeartbeat();
@@ -190,6 +196,9 @@ public class IngestSubprocessMain {
             // Initialize ND4J BEFORE Spring context
             logger.info("Initializing ND4J environment...");
             initializeNd4j(subprocessArgs.nd4jConfigJson());
+
+            // Check watchdog after ND4J init
+            checkWatchdogOrExit(memoryWatchdog, reporter, "ND4J initialization");
 
             // Configure model source BEFORE Spring context (so AnseriniEncoderFactory uses
             // correct source)
@@ -212,6 +221,9 @@ public class IngestSubprocessMain {
                 // Execute the pipeline
                 logger.info("Starting ingest pipeline for file: {}", subprocessArgs.filePath());
                 IngestPipelineRunner.PipelineResult result = runner.execute(subprocessArgs, reporter, httpCallback);
+
+                // Check watchdog after pipeline execution completes
+                checkWatchdogOrExit(memoryWatchdog, reporter, "pipeline execution");
 
                 // CRITICAL: Flush any pending batched commits before reporting completion
                 // With batch commit optimization, some documents may be buffered but not yet
@@ -379,6 +391,31 @@ public class IngestSubprocessMain {
         }
 
         System.exit(exitCode);
+    }
+
+    /**
+     * Check memory watchdog and exit gracefully if stop/kill threshold is exceeded.
+     */
+    private static void checkWatchdogOrExit(SubprocessMemoryWatchdog watchdog,
+                                             SubprocessProgressReporter reporter, String phase) {
+        if (watchdog == null) return;
+        if (watchdog.shouldKill()) {
+            logger.error("Memory watchdog kill threshold exceeded after {}", phase);
+            if (reporter != null) {
+                reporter.reportFailed("EMBEDDING",
+                        "Memory kill threshold exceeded after " + phase,
+                        "MemoryKillThreshold", null);
+            }
+            System.exit(137);
+        } else if (watchdog.shouldStop()) {
+            logger.warn("Memory watchdog stop threshold exceeded after {} - aborting", phase);
+            if (reporter != null) {
+                reporter.reportFailed("EMBEDDING",
+                        "Memory threshold exceeded after " + phase + " - aborting to prevent OOM",
+                        "MemoryThreshold", null);
+            }
+            System.exit(1);
+        }
     }
 
     /**

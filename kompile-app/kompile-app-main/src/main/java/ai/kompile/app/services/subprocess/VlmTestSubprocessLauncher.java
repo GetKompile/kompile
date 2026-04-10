@@ -18,6 +18,8 @@ package ai.kompile.app.services.subprocess;
 
 import ai.kompile.app.config.Nd4jEnvironmentConfig;
 import ai.kompile.app.config.SubprocessExecutableConfig;
+import ai.kompile.app.services.GpuResourceManager;
+import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessMessage;
@@ -75,6 +77,9 @@ public class VlmTestSubprocessLauncher {
 
     @Autowired(required = false)
     private SimpMessagingTemplate messagingTemplate;
+
+    @Autowired(required = false)
+    private ModelLifecycleManager modelLifecycleManager;
 
     private final Map<String, VlmTestHandle> activeTests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> logSequenceCounters = new ConcurrentHashMap<>();
@@ -154,7 +159,27 @@ public class VlmTestSubprocessLauncher {
     private void runTest(String taskId, String filePath, String modelId, String outputFormat,
                           Map<String, String> options, CompletableFuture<VlmTestResult> future) {
         Process process = null;
+        boolean gpuAcquired = false;
         try {
+            // === GPU LIFECYCLE: Acquire GPU resources, evicting lower-priority services ===
+            if (modelLifecycleManager != null) {
+                logger.info("[vlm-test-{}] Acquiring GPU resources via ModelLifecycleManager (will evict embedding if needed)", taskId);
+                sendWebSocketUpdate(taskId, "RUNNING", 0, "GPU_ACQUIRE", "Acquiring GPU resources...", null);
+                try {
+                    modelLifecycleManager.acquireGpuForVlm(taskId);
+                    gpuAcquired = true;
+                    logger.info("[vlm-test-{}] GPU resources acquired successfully", taskId);
+                    sendWebSocketUpdate(taskId, "RUNNING", 0, "GPU_ACQUIRE", "GPU resources acquired", null);
+                } catch (IllegalStateException e) {
+                    logger.error("[vlm-test-{}] Failed to acquire GPU resources: {}", taskId, e.getMessage());
+                    sendWebSocketUpdate(taskId, "FAILED", 0, "GPU_ACQUIRE", "Failed to acquire GPU: " + e.getMessage(), null);
+                    future.complete(new VlmTestResult(taskId, filePath, "FAILED"));
+                    return;
+                }
+            } else {
+                logger.warn("[vlm-test-{}] ModelLifecycleManager not available — launching VLM without GPU coordination", taskId);
+            }
+
             // Capture ND4J config from the live parent process
             String nd4jConfigJson = captureNd4jConfig();
 
@@ -226,6 +251,28 @@ public class VlmTestSubprocessLauncher {
                 if (options.containsKey("noCublasWorkspace")) {
                     argsBuilder.noCublasWorkspace(Boolean.parseBoolean(options.get("noCublasWorkspace")));
                 }
+                // CUDA graph capture OOM retry / memory management
+                if (options.containsKey("dspCaptureOomMaxRetries")) {
+                    argsBuilder.dspCaptureOomMaxRetries(Integer.parseInt(options.get("dspCaptureOomMaxRetries")));
+                }
+                if (options.containsKey("dspCaptureOomRetryInterval")) {
+                    argsBuilder.dspCaptureOomRetryInterval(Integer.parseInt(options.get("dspCaptureOomRetryInterval")));
+                }
+                if (options.containsKey("dspCublasWorkspaceMb")) {
+                    argsBuilder.dspCublasWorkspaceMb(Integer.parseInt(options.get("dspCublasWorkspaceMb")));
+                }
+                if (options.containsKey("dspGraphMetadataSafetyMb")) {
+                    argsBuilder.dspGraphMetadataSafetyMb(Integer.parseInt(options.get("dspGraphMetadataSafetyMb")));
+                }
+                if (options.containsKey("dspProactiveEvictBeforeCapture")) {
+                    argsBuilder.dspProactiveEvictBeforeCapture(Boolean.parseBoolean(options.get("dspProactiveEvictBeforeCapture")));
+                }
+                if (options.containsKey("dspLruEviction")) {
+                    argsBuilder.dspLruEviction(Boolean.parseBoolean(options.get("dspLruEviction")));
+                }
+                if (options.containsKey("dspCaptureWorkspaceMb")) {
+                    argsBuilder.dspCaptureWorkspaceMb(Integer.parseInt(options.get("dspCaptureWorkspaceMb")));
+                }
                 // Speculative decoding
                 if (options.containsKey("speculativeTokens")) {
                     argsBuilder.speculativeTokens(Integer.parseInt(options.get("speculativeTokens")));
@@ -254,6 +301,14 @@ public class VlmTestSubprocessLauncher {
                     .gpuMemoryKillThresholdPercent(
                             subprocessConfigService != null ? subprocessConfigService.getGpuMemoryKillThresholdPercent() : VlmTestSubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT);
 
+            // Set off-heap memory thresholds from config service
+            argsBuilder.offHeapThresholdPercent(
+                    subprocessConfigService != null ? subprocessConfigService.getOffHeapThresholdPercent() : VlmTestSubprocessArgs.DEFAULT_OFF_HEAP_THRESHOLD_PERCENT)
+                    .offHeapCriticalPercent(
+                            subprocessConfigService != null ? subprocessConfigService.getOffHeapCriticalPercent() : VlmTestSubprocessArgs.DEFAULT_OFF_HEAP_CRITICAL_PERCENT)
+                    .offHeapKillThresholdPercent(
+                            subprocessConfigService != null ? subprocessConfigService.getOffHeapKillThresholdPercent() : VlmTestSubprocessArgs.DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT);
+
             VlmTestSubprocessArgs args = argsBuilder.build();
 
             // Write args to temp file
@@ -273,24 +328,44 @@ public class VlmTestSubprocessLauncher {
             // Propagate ND4J environment variables to subprocess
             propagateNd4jEnvironment(pb.environment());
 
-            // Set CUDA pinned host memory limit if configured
+            // Set CUDA pinned host memory limit for allocateFailover.
+            // Default 8 GB is too low for VLM decoders (24 layers, 2K+ seq) which need
+            // ~14 GB for a forward pass. When GPU pool fills, allocateFailover cascades to
+            // pinned host memory. Default to 16 GB to provide headroom.
             int cudaPinnedLimitMb = args.cudaPinnedHostLimitMb();
             if (cudaPinnedLimitMb <= 0 && subprocessConfigService != null) {
                 cudaPinnedLimitMb = subprocessConfigService.getVlmCudaPinnedHostLimitMb();
             }
-            if (cudaPinnedLimitMb > 0) {
-                long limitBytes = (long) cudaPinnedLimitMb * 1024L * 1024L;
-                pb.environment().put("SD_CUDA_PINNED_HOST_LIMIT", String.valueOf(limitBytes));
-                logger.info("Set SD_CUDA_PINNED_HOST_LIMIT={}  ({}MB) for VLM subprocess {}",
-                        limitBytes, cudaPinnedLimitMb, taskId);
+            if (cudaPinnedLimitMb <= 0) {
+                cudaPinnedLimitMb = 16384; // 16 GB default for VLM
             }
+            // SD_CUDA_PINNED_HOST_LIMIT is in MB (not bytes) per CudaMemoryPool.cu line 94
+            pb.environment().put("SD_CUDA_PINNED_HOST_LIMIT", String.valueOf(cudaPinnedLimitMb));
+            logger.info("Set SD_CUDA_PINNED_HOST_LIMIT={} MB for VLM subprocess {}",
+                    cudaPinnedLimitMb, taskId);
 
-            // Restrict GPU visibility for the subprocess to avoid competing with other processes
+            // DSP diagnostics are off by default — enable via debugDiagnostics=true in args.
+            // IMPORTANT: The EXECUTE category forces cudaStreamSynchronize after every graph
+            // replay (328 syncs/step), causing ~33x slowdown (2.7 vs 86+ tok/s). Only enable
+            // when explicitly requested for debugging.
+
+            // Propagate CUDA graph capture OOM retry / memory management settings
+            propagateDspCaptureConfig(pb.environment(), args);
+
+            // Allow explicit GPU restriction via runtime option or config property.
+            // Do NOT auto-restrict: the multi-device framework (DeviceMemoryManager,
+            // DynamicShapePlan.assignDevices()) needs visibility of all GPUs to distribute
+            // decoder ops across devices and avoid OOM on a single GPU. CUDA context
+            // overhead on secondary devices is minimal (~300MB) compared to the benefit
+            // of multi-GPU execution for large models.
             String effectiveCudaDevices = (options != null && options.containsKey("cudaDevices"))
                     ? options.get("cudaDevices") : cudaVisibleDevices;
             if (effectiveCudaDevices != null && !effectiveCudaDevices.isBlank()) {
+                pb.environment().put("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
                 pb.environment().put("CUDA_VISIBLE_DEVICES", effectiveCudaDevices);
-                logger.info("Set CUDA_VISIBLE_DEVICES={} for VLM subprocess {}", effectiveCudaDevices, taskId);
+                logger.info("Set CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={} for VLM subprocess {}", effectiveCudaDevices, taskId);
+            } else {
+                logger.info("VLM subprocess {} will see all GPUs (multi-device framework enabled)", taskId);
             }
 
             process = pb.start();
@@ -381,6 +456,17 @@ public class VlmTestSubprocessLauncher {
             }
             activeTests.remove(taskId);
             logSequenceCounters.remove(taskId);
+
+            // === GPU LIFECYCLE: Release GPU resources and restore evicted services ===
+            if (gpuAcquired && modelLifecycleManager != null) {
+                logger.info("[vlm-test-{}] Releasing GPU resources via ModelLifecycleManager (will restore embedding)", taskId);
+                try {
+                    modelLifecycleManager.releaseGpuForVlm(taskId);
+                    logger.info("[vlm-test-{}] GPU resources released, evicted services being restored", taskId);
+                } catch (Exception e) {
+                    logger.error("[vlm-test-{}] Error releasing GPU resources: {}", taskId, e.getMessage(), e);
+                }
+            }
         }
     }
 
@@ -688,7 +774,7 @@ public class VlmTestSubprocessLauncher {
      * into a temp directory, returning the extracted paths for use as classpath entries.
      */
     private void extractBootInfClasspath(String fatJarPath, Set<String> outputEntries) throws IOException {
-        Path fatJar = Path.of(fatJarPath);
+        Path fatJar = Path.of(fatJarPath).toAbsolutePath();
         // Create extraction directory next to the fat JAR
         Path extractDir = fatJar.getParent().resolve(".boot-inf-extracted");
         Path libDir = extractDir.resolve("lib");
@@ -771,9 +857,73 @@ public class VlmTestSubprocessLauncher {
     }
 
     /**
+     * Query nvidia-smi to find the GPU with the most free memory.
+     * Returns the GPU index as a string, or null if nvidia-smi is unavailable.
+     */
+    private String selectBestGpuViaNvidiaSmi() {
+        try {
+            Process proc = new ProcessBuilder("nvidia-smi",
+                    "--query-gpu=index,memory.free", "--format=csv,noheader,nounits")
+                    .redirectErrorStream(true)
+                    .start();
+
+            String output;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                output = reader.lines().collect(java.util.stream.Collectors.joining("\n"));
+            }
+
+            if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                proc.destroyForcibly();
+                return null;
+            }
+            if (proc.exitValue() != 0) {
+                return null;
+            }
+
+            int bestIdx = -1;
+            long bestFree = -1;
+            for (String line : output.split("\n")) {
+                line = line.trim();
+                if (line.isEmpty()) continue;
+                String[] parts = line.split(",\\s*");
+                if (parts.length >= 2) {
+                    int idx = Integer.parseInt(parts[0].trim());
+                    long freeMiB = Long.parseLong(parts[1].trim());
+                    logger.debug("nvidia-smi: GPU {} has {} MiB free", idx, freeMiB);
+                    if (freeMiB > bestFree) {
+                        bestFree = freeMiB;
+                        bestIdx = idx;
+                    }
+                }
+            }
+            return bestIdx >= 0 ? String.valueOf(bestIdx) : null;
+        } catch (Exception e) {
+            logger.debug("nvidia-smi query failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Propagate ND4J-related environment variables from the parent process to the subprocess.
      * Reuses the same pattern as SubprocessIngestLauncher.propagateNd4jEnvironment().
      */
+    private void propagateDspCaptureConfig(Map<String, String> env, VlmTestSubprocessArgs args) {
+        if (args.dspCaptureOomMaxRetries() != null)
+            env.put("ND4J_DSP_CAPTURE_OOM_MAX_RETRIES", args.dspCaptureOomMaxRetries().toString());
+        if (args.dspCaptureOomRetryInterval() != null)
+            env.put("ND4J_DSP_CAPTURE_OOM_RETRY_INTERVAL", args.dspCaptureOomRetryInterval().toString());
+        if (args.dspCublasWorkspaceMb() != null)
+            env.put("ND4J_DSP_CUBLAS_WORKSPACE_MB", args.dspCublasWorkspaceMb().toString());
+        if (args.dspGraphMetadataSafetyMb() != null)
+            env.put("ND4J_DSP_GRAPH_METADATA_SAFETY_MB", args.dspGraphMetadataSafetyMb().toString());
+        if (args.dspProactiveEvictBeforeCapture() != null)
+            env.put("ND4J_DSP_PROACTIVE_EVICT", args.dspProactiveEvictBeforeCapture() ? "1" : "0");
+        if (args.dspLruEviction() != null)
+            env.put("ND4J_DSP_LRU_EVICTION", args.dspLruEviction() ? "1" : "0");
+        if (args.dspCaptureWorkspaceMb() != null)
+            env.put("ND4J_DSP_CAPTURE_WORKSPACE_MB", args.dspCaptureWorkspaceMb().toString());
+    }
+
     private void propagateNd4jEnvironment(Map<String, String> env) {
         List<String> nd4jEnvVars = List.of(
                 "ND4J_BACKEND", "ND4J_DATA_BUFFER_OPS", "ND4J_RESOURCES_DIR", "ND4J_ALLOW_FALLBACK",

@@ -424,26 +424,47 @@ public abstract class SameDiffEncoder<RETURN_TYPE> implements AutoCloseable {
 
             // Now run the actual model inference using encodeFromTokenized
             // We need to acquire the lock since this may run concurrently with warmup
-            encodeLock.lock();
-            try {
-                Object result = encodeFromTokenized(testText, encoding);
-
-                // Check if encoding returned null (indicates failure)
-                if (result == null) {
-                    throw new ModelValidationException(modelIdentifier,
-                            "Model returned null embedding - inference failed silently");
+            // Retry once - SameDiff's first inference after ND4J initialization may fail
+            // due to internal session/workspace state not yet being ready
+            int maxAttempts = 2;
+            Object result = null;
+            Exception lastException = null;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                encodeLock.lock();
+                try {
+                    result = encodeFromTokenized(testText, encoding);
+                    lastException = null;
+                } catch (Exception e) {
+                    lastException = e;
+                    LOG.warn("[{}] Validation attempt {} threw exception: {}", modelIdentifier, attempt, e.getMessage());
+                } finally {
+                    encodeLock.unlock();
                 }
 
-                // For float[] results, check for zero-magnitude vectors
-                if (result instanceof float[] floatResult) {
-                    validateFloatEmbedding(floatResult);
+                if (result != null) {
+                    break;
                 }
-                // For other result types (e.g., sparse encoders), skip magnitude check
-                // but validate non-null was sufficient
 
-            } finally {
-                encodeLock.unlock();
+                if (attempt < maxAttempts) {
+                    LOG.warn("[{}] Validation attempt {} returned null - retrying inference", modelIdentifier, attempt);
+                }
             }
+
+            // Check if encoding returned null after all attempts
+            if (result == null) {
+                String msg = "Model returned null embedding - inference failed after " + maxAttempts + " attempts";
+                if (lastException != null) {
+                    msg += ": " + lastException.getMessage();
+                }
+                throw new ModelValidationException(modelIdentifier, msg, lastException);
+            }
+
+            // For float[] results, check for zero-magnitude vectors
+            if (result instanceof float[] floatResult) {
+                validateFloatEmbedding(floatResult);
+            }
+            // For other result types (e.g., sparse encoders), skip magnitude check
+            // but validate non-null was sufficient
 
             long elapsed = System.currentTimeMillis() - startTime;
             LOG.info("[{}] Model validation PASSED in {}ms - model produces valid embeddings",

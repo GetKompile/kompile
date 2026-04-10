@@ -60,11 +60,16 @@ public class ChatHistoryController {
      * Get all sessions for a user.
      */
     @GetMapping("/sessions")
-    public ResponseEntity<List<ChatSessionDto>> getSessions(@RequestParam(name = "userId", required = false) String userId) {
-        log.debug("Getting sessions for user: {}", userId);
+    public ResponseEntity<List<ChatSessionDto>> getSessions(
+        @RequestParam(name = "userId", required = false) String userId,
+        @RequestParam(name = "source", required = false) String source
+    ) {
+        log.debug("Getting sessions for user: {}, source: {}", userId, source);
         List<ChatSession> sessions;
 
-        if (userId != null && !userId.isEmpty()) {
+        if (source != null && !source.isEmpty()) {
+            sessions = chatHistoryService.getSessionsBySource(source);
+        } else if (userId != null && !userId.isEmpty()) {
             sessions = chatHistoryService.getUserSessions(userId);
         } else {
             sessions = chatHistoryService.getRecentSessions(100);

@@ -18,6 +18,9 @@ package ai.kompile.app.tools;
 
 import ai.kompile.kvcache.service.KVCacheCheckpointService;
 import ai.kompile.kvcache.service.KVCacheManager;
+import ai.kompile.kvcache.service.KVCachePrefixService;
+import ai.kompile.kvcache.service.PriorityEvictionPolicy;
+import ai.kompile.kvcache.service.ContentHashPrefixIndex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -33,13 +36,19 @@ public class KVCacheTool {
 
     private final KVCacheManager kvCacheManager;
     private final KVCacheCheckpointService checkpointService;
+    private final PriorityEvictionPolicy priorityEvictionPolicy;
+    private final ContentHashPrefixIndex contentHashPrefixIndex;
 
     @Autowired
     public KVCacheTool(
             @Autowired(required = false) KVCacheManager kvCacheManager,
-            @Autowired(required = false) KVCacheCheckpointService checkpointService) {
+            @Autowired(required = false) KVCacheCheckpointService checkpointService,
+            @Autowired(required = false) PriorityEvictionPolicy priorityEvictionPolicy,
+            @Autowired(required = false) ContentHashPrefixIndex contentHashPrefixIndex) {
         this.kvCacheManager = kvCacheManager;
         this.checkpointService = checkpointService;
+        this.priorityEvictionPolicy = priorityEvictionPolicy;
+        this.contentHashPrefixIndex = contentHashPrefixIndex;
         logger.info("KVCacheTool initialized");
     }
 
@@ -165,6 +174,64 @@ public class KVCacheTool {
             return result;
         } catch (Exception e) {
             logger.error("Error listing checkpoints: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", e.getMessage());
+        }
+    }
+
+    // ==================== Priority Eviction Tools ====================
+
+    public record SetKVBlockPriorityInput(Integer blockId, Integer priority) {}
+    public record GetKVEvictionOrderInput(Integer numBlocks) {}
+
+    @Tool(name = "set_kv_block_priority",
+            description = "Sets priority for a KV cache block. Higher priority blocks are evicted last. Standard tiers: SYSTEM_PROMPT=90, CACHED_PREFIX=70, USER_CONTEXT=50, EVICTABLE=10.")
+    public Map<String, Object> setKVBlockPriority(SetKVBlockPriorityInput input) {
+        try {
+            if (priorityEvictionPolicy == null) return Map.of("status", "error", "error", "PriorityEvictionPolicy not available (is priority eviction enabled?)");
+            if (input.blockId() == null || input.priority() == null)
+                return Map.of("status", "error", "error", "blockId and priority are required");
+            priorityEvictionPolicy.setPriority(input.blockId(), input.priority());
+            return Map.of("status", "success", "blockId", input.blockId(), "priority", input.priority());
+        } catch (Exception e) {
+            logger.error("Error setting block priority: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", e.getMessage());
+        }
+    }
+
+    @Tool(name = "get_kv_eviction_order",
+            description = "Gets the current KV cache eviction order based on block priorities. Shows which blocks would be evicted first.")
+    public Map<String, Object> getKVEvictionOrder(GetKVEvictionOrderInput input) {
+        try {
+            if (priorityEvictionPolicy == null) return Map.of("status", "error", "error", "PriorityEvictionPolicy not available");
+            int numBlocks = input.numBlocks() != null ? input.numBlocks() : 10;
+            List<Integer> evictionOrder = priorityEvictionPolicy.getEvictionOrder(numBlocks);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("evictionOrder", evictionOrder);
+            result.put("totalTrackedBlocks", priorityEvictionPolicy.size());
+            result.put("tierCounts", priorityEvictionPolicy.getTierCounts());
+            return result;
+        } catch (Exception e) {
+            logger.error("Error getting eviction order: {}", e.getMessage(), e);
+            return Map.of("status", "error", "error", e.getMessage());
+        }
+    }
+
+    // ==================== Prefix Hash Index Tools ====================
+
+    public record GetPrefixIndexStatsInput() {}
+
+    @Tool(name = "get_prefix_index_stats",
+            description = "Gets content-hash prefix index statistics including size, hit rate, and cache efficiency.")
+    public Map<String, Object> getPrefixIndexStats(GetPrefixIndexStatsInput input) {
+        try {
+            if (contentHashPrefixIndex == null) return Map.of("status", "error", "error", "ContentHashPrefixIndex not available (is prefix hashing enabled?)");
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.putAll(contentHashPrefixIndex.getStats());
+            return result;
+        } catch (Exception e) {
+            logger.error("Error getting prefix index stats: {}", e.getMessage(), e);
             return Map.of("status", "error", "error", e.getMessage());
         }
     }

@@ -30,7 +30,7 @@
     <description>Pipeline step for executing ONNX models using Bytedeco's ONNX Runtime bindings.</description>
 
     <properties>
-        <bytedeco.version>1.5.11</bytedeco.version>
+        <bytedeco.version>1.5.13</bytedeco.version>
         <onnxruntime.javacpp.version>1.20.0-${bytedeco.version}</onnxruntime.javacpp.version>
     </properties>
     <dependencies>

@@ -1,2 +1,5 @@
 ai.kompile.pipelines.steps.samediff.SameDiffRunnerFactory
 ai.kompile.pipelines.steps.samediff.llm.SameDiffLanguageModelStepRunnerFactory
+ai.kompile.pipelines.steps.samediff.llm.SameDiffEmbedTokensStepRunnerFactory
+ai.kompile.pipelines.steps.samediff.llm.SameDiffLLMTokenizerStepRunnerFactory
+ai.kompile.pipelines.steps.samediff.llm.SameDiffTokenDecodeStepRunnerFactory

@@ -40,6 +40,11 @@
             <artifactId>kompile-pipelines-framework-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-runtime</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <dependency>
             <groupId>org.eclipse.deeplearning4j</groupId>

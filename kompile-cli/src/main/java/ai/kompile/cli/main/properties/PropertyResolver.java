@@ -54,17 +54,22 @@ public class PropertyResolver {
         //resolve from environment
         if(strip.startsWith("env.")) {
             strip = strip.substring(3);
-            finalValue.append(System.getenv(strip));
+            String envVal = System.getenv(strip);
+            finalValue.append(envVal != null ? envVal : "");
         }
         else  {
             //resolve from JVM property
             String value = System.getProperty(strip);
+            if(value == null) {
+                finalValue.append(valueString);
+                return;
+            }
             //also a variable,resolve recursively
             if(value.contains("${")) {
                appendPropertyValue(finalValue,valueString);
 
             } else {
-                finalValue.append(System.getProperty(strip));
+                finalValue.append(value);
             }
 
         }

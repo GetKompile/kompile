@@ -135,7 +135,12 @@ public class ReadTool implements CliTool {
                     "truncated", truncated
             );
 
-            String title = context.getWorkingDirectory().relativize(path).toString();
+            String title;
+            try {
+                title = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
+            } catch (IllegalArgumentException ex) {
+                title = path.toString();
+            }
             return ToolResult.success(title, sb.toString(), meta);
 
         } catch (IOException e) {

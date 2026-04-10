@@ -6271,3 +6271,28 @@ export interface ToolPermissionInfo {
   resolvedPermission: PermissionLevel;
   hasOverride: boolean;
 }
+
+// Passthrough Chat interfaces
+export interface PassthroughOptions {
+  agentName: string;
+  skipPermissions: boolean;
+  workingDirectory?: string;
+  sessionName?: string;
+  injectMcpTools: boolean;
+}
+
+export interface PassthroughMessage {
+  role: 'USER' | 'ASSISTANT';
+  content: string;
+  timestamp: string;
+}
+
+export interface PassthroughSessionStatus {
+  sessionId: string;
+  agentName: string;
+  alive: boolean;
+  active: boolean;
+  messageCount: number;
+  startedAt: string;
+  uptimeSeconds: number;
+}

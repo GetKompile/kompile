@@ -77,4 +77,24 @@ public class ChatHistoryProperties {
      * Enable H2 console for debugging.
      */
     private boolean h2ConsoleEnabled = false;
+
+    /**
+     * Path to CLI conversations directory. Defaults to ~/.kompile/conversations.
+     */
+    private String cliConversationsPath;
+
+    /**
+     * Enable CLI transcript sync features.
+     */
+    private boolean cliSyncEnabled = true;
+
+    /**
+     * Interval in milliseconds between CLI transcript sync runs. Default 5 minutes.
+     */
+    private long cliSyncIntervalMs = 300000;
+
+    /**
+     * Maximum number of sessions to import per source per sync cycle.
+     */
+    private int cliSyncBatchSize = 50;
 }

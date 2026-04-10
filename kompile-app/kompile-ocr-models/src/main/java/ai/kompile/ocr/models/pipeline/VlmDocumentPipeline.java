@@ -111,6 +111,16 @@ public class VlmDocumentPipeline implements OcrPipeline {
     // DocTags parser from samediff-vlm
     private DocTagsParser docTagsParser = new DocTagsParser();
 
+    // VLM orchestration settings (wired externally by kompile-app-main)
+    private boolean releaseEncoderAfterEncoding = true;
+    private int encoderDeviceId = -1;
+    private int decoderDeviceId = -1;
+    private boolean tritonCacheEnabled = true;
+    private boolean tritonAutoImport = true;
+    private boolean tritonAutoExport = true;
+    private Runnable tritonCacheImporter;
+    private Runnable tritonCacheExporter;
+
     @Autowired
     public VlmDocumentPipeline(@Autowired(required = false) KompileModelManager modelManager,
                                 @Autowired(required = false) RegistryService registryService,
@@ -170,6 +180,52 @@ public class VlmDocumentPipeline implements OcrPipeline {
      */
     public void setEmbedTokensPatches(List<SameDiffGraphPatch> patches) {
         this.embedTokensPatches = new ArrayList<>(patches);
+    }
+
+    public String getModelId() {
+        return modelId;
+    }
+
+    // --- VLM orchestration setters (wired by kompile-app-main VlmOrchestrationConfigService) ---
+
+    public void setReleaseEncoderAfterEncoding(boolean release) {
+        this.releaseEncoderAfterEncoding = release;
+    }
+
+    public void setEncoderDeviceId(int deviceId) {
+        this.encoderDeviceId = deviceId;
+    }
+
+    public void setDecoderDeviceId(int deviceId) {
+        this.decoderDeviceId = deviceId;
+    }
+
+    public void setTritonCacheEnabled(boolean enabled) {
+        this.tritonCacheEnabled = enabled;
+    }
+
+    public void setTritonAutoImport(boolean autoImport) {
+        this.tritonAutoImport = autoImport;
+    }
+
+    public void setTritonAutoExport(boolean autoExport) {
+        this.tritonAutoExport = autoExport;
+    }
+
+    /**
+     * Set a callback that imports the Triton cache for the current model.
+     * Provided by the Triton cache service in kompile-app-main.
+     */
+    public void setTritonCacheImporter(Runnable importer) {
+        this.tritonCacheImporter = importer;
+    }
+
+    /**
+     * Set a callback that exports the Triton cache for the current model.
+     * Provided by the Triton cache service in kompile-app-main.
+     */
+    public void setTritonCacheExporter(Runnable exporter) {
+        this.tritonCacheExporter = exporter;
     }
 
     @Override
@@ -428,149 +484,233 @@ public class VlmDocumentPipeline implements OcrPipeline {
             logger.info("Processing {} pages with streaming tiled generation (tileSize={})",
                     pagesToProcess.size(), tileSize);
 
+            // Import Triton cache before decode loop if enabled
+            if (tritonCacheEnabled && tritonAutoImport && tritonCacheImporter != null) {
+                try {
+                    logger.info("Auto-importing Triton cache before decode loop");
+                    tritonCacheImporter.run();
+                } catch (Exception e) {
+                    logger.warn("Triton cache auto-import failed: {}", e.getMessage());
+                }
+            }
+
+            boolean tritonExportDone = false;
+
             // Stream pages one at a time: render, encode, generate, parse, free, next page
+            int failedPages = 0;
             for (int i = 0; i < pagesToProcess.size(); i++) {
                 int pageNum = pagesToProcess.get(i);
 
-                if (progressCallback != null) {
-                    progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Rendering page"));
+                try {
+                    if (progressCallback != null) {
+                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Rendering page"));
+                    }
+
+                    BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, config.getPdfRenderDpi());
+                    ImageTiler.SplitImageResult splitResult = ImageTiler.splitImageForVLM(pageImage, tileSize);
+                    pageImage = null; // Allow GC of rendered image
+
+                    logger.debug("Page {}: split into {} tiles ({}x{} grid)",
+                            pageNum, splitResult.getTileCount(), splitResult.numCols, splitResult.numRows);
+
+                    if (progressCallback != null) {
+                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages,
+                                "Generating tokens (" + splitResult.getTileCount() + " tiles)"));
+                    }
+
+                    long pageStartTime = System.currentTimeMillis();
+
+                    // Process single page through generatePagesTiled
+                    GenerationResult[] pageGenResults = vlm.generatePagesTiled(
+                            java.util.Collections.singletonList(splitResult),
+                            prompt,
+                            samplingConfig.getMaxNewTokens(),
+                            samplingConfig.isDoSample(),
+                            samplingConfig.getTemperature(),
+                            tileSize
+                    );
+
+                    // Free split result frames immediately after generation
+                    splitResult = null;
+
+                    // Reset all inference sessions to free GPU memory before next page.
+                    // For decode (invariant shapes), use resetSessionsForDecode() which preserves
+                    // staging buffers, slot arrays, CUDA graphs, and cuBLAS workspace.
+                    vlm.resetSessionsForDecode();
+
+                    // Export Triton cache after first successful decode (JIT compilation happens on first run)
+                    if (!tritonExportDone && tritonCacheEnabled && tritonAutoExport && tritonCacheExporter != null) {
+                        try {
+                            logger.info("Auto-exporting Triton cache after first decode");
+                            tritonCacheExporter.run();
+                            tritonExportDone = true;
+                        } catch (Exception e) {
+                            logger.warn("Triton cache auto-export failed: {}", e.getMessage());
+                            tritonExportDone = true; // Don't retry on failure
+                        }
+                    }
+
+                    long generateTimeMs = System.currentTimeMillis() - pageStartTime;
+
+                    GenerationResult genResult = pageGenResults[0];
+                    String generatedText = genResult.getText();
+                    int generatedTokens = genResult.getGeneratedTokenCount();
+                    int promptTokens = genResult.getPromptTokenCount();
+                    double tokensPerSecond = generatedTokens > 0 ? (generatedTokens * 1000.0) / Math.max(generateTimeMs, 1) : 0;
+                    // Use per-page timing from result if available
+                    if (genResult.getGenerationTimeMs() > 0) {
+                        generateTimeMs = genResult.getGenerationTimeMs();
+                        tokensPerSecond = genResult.getTokensPerSecond();
+                    }
+
+                    logger.info("Page {}/{}: {} tokens in {}ms ({} tok/s), model {}",
+                            pageNum, totalPages, generatedTokens, generateTimeMs,
+                            String.format("%.1f", tokensPerSecond), modelId);
+
+                    if (progressCallback != null) {
+                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Parsing output"));
+                    }
+
+                    String plainText;
+                    List<StructuredTable> tables = new ArrayList<>();
+
+                    switch (config.getVlmOutputFormat()) {
+                        case DOCTAGS:
+                            DocumentStructure docStructure = docTagsParser.parse(generatedText);
+                            plainText = docStructure.getFullText();
+                            tables = extractTablesFromDocStructure(docStructure);
+                            break;
+                        case MARKDOWN:
+                            DocumentStructure parsed = docTagsParser.parse(generatedText);
+                            plainText = docTagsParser.toMarkdown(parsed);
+                            tables = extractTablesFromDocStructure(parsed);
+                            break;
+                        case FLORENCE2:
+                            DocumentStructure florenceDoc = docTagsParser.parse(generatedText);
+                            plainText = docTagsParser.extractPlainText(generatedText);
+                            tables = extractTablesFromDocStructure(florenceDoc);
+                            break;
+                        case DONUT:
+                            DocumentStructure donutDoc = docTagsParser.parse(generatedText);
+                            plainText = docTagsParser.extractPlainText(generatedText);
+                            tables = extractTablesFromDocStructure(donutDoc);
+                            break;
+                        case PLAIN_TEXT:
+                            plainText = docTagsParser.extractPlainText(generatedText);
+                            break;
+                        case JSON:
+                            plainText = generatedText;
+                            break;
+                        case TEXT:
+                        default:
+                            plainText = docTagsParser.extractPlainText(generatedText);
+                            break;
+                    }
+
+                    DocumentComplexity complexity = DocumentComplexity.SIMPLE;
+                    if (!tables.isEmpty()) {
+                        complexity = DocumentComplexity.TABLES;
+                    } else if (generatedText.contains("<figure>") || generatedText.contains("<formula>")) {
+                        complexity = DocumentComplexity.MIXED;
+                    }
+
+                    AuditTrail audit = AuditTrail.forPage(pdfFile.getAbsolutePath(), pageNum);
+                    audit.addModelResult(ModelResult.success(
+                            modelId, OcrModelType.LAYOUT_MODEL, generateTimeMs,
+                            generatedText.length(), 1.0));
+                    audit.complete();
+
+                    int tileCount = pageGenResults[0].getGeneratedTokenCount() > 0 ?
+                            (int) Math.ceil(generatedTokens / 64.0) : 0;
+
+                    ParsedDocument pageResult = ParsedDocument.builder()
+                            .id(UUID.randomUUID().toString())
+                            .sourceId(pdfFile.getAbsolutePath())
+                            .pageNumber(pageNum)
+                            .totalPages(totalPages)
+                            .documentType(DocumentType.SCANNED)
+                            .complexity(complexity)
+                            .text(plainText)
+                            .tables(tables)
+                            .auditTrail(config.isIncludeAuditTrail() ? audit : null)
+                            .success(true)
+                            .processingTimeMs(generateTimeMs)
+                            .metadata(Map.of(
+                                    "vlmModel", modelId,
+                                    "outputFormat", config.getVlmOutputFormat().name(),
+                                    "rawOutput", generatedText,
+                                    "generatedTokens", generatedTokens,
+                                    "promptTokens", promptTokens,
+                                    "tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0,
+                                    "generateTimeMs", generateTimeMs,
+                                    "tiledProcessing", true,
+                                    "tileCount", tileCount
+                            ))
+                            .build();
+
+                    results.add(pageResult);
+
+                    if (progressCallback != null) {
+                        String vlmModelName = config.getVlmModelId() != null ? config.getVlmModelId() : modelId;
+                        progressCallback.accept(PipelineProgress.vlmPageCompleted(
+                                pageNum, totalPages, generatedTokens, promptTokens,
+                                tokensPerSecond, generateTimeMs, vlmModelName));
+                    }
+                } catch (Exception pageEx) {
+                    failedPages++;
+                    logger.error("Page {}/{} failed: {}. Continuing with remaining pages.",
+                            pageNum, totalPages, pageEx.getMessage(), pageEx);
+
+                    // Reset sessions to free GPU memory from the failed page
+                    try {
+                        vlm.resetSessionsForDecode();
+                    } catch (Exception resetEx) {
+                        logger.warn("Failed to reset sessions after page {} error: {}", pageNum, resetEx.getMessage());
+                    }
+
+                    // Record a failed result for this page so it's tracked in output
+                    ParsedDocument failedResult = ParsedDocument.builder()
+                            .id(UUID.randomUUID().toString())
+                            .sourceId(pdfFile.getAbsolutePath())
+                            .pageNumber(pageNum)
+                            .totalPages(totalPages)
+                            .documentType(DocumentType.SCANNED)
+                            .complexity(DocumentComplexity.SIMPLE)
+                            .text("")
+                            .tables(new ArrayList<>())
+                            .success(false)
+                            .processingTimeMs(0)
+                            .metadata(Map.of(
+                                    "vlmModel", modelId,
+                                    "error", pageEx.getMessage() != null ? pageEx.getMessage() : pageEx.getClass().getName(),
+                                    "errorType", pageEx.getClass().getSimpleName()
+                            ))
+                            .build();
+                    results.add(failedResult);
+
+                    if (progressCallback != null) {
+                        progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages,
+                                "Page failed: " + pageEx.getMessage()));
+                    }
                 }
+            }
 
-                BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, config.getPdfRenderDpi());
-                ImageTiler.SplitImageResult splitResult = ImageTiler.splitImageForVLM(pageImage, tileSize);
-                pageImage = null; // Allow GC of rendered image
+            if (failedPages > 0) {
+                logger.warn("VLM processing completed with {}/{} pages failed", failedPages, pagesToProcess.size());
+            }
 
-                logger.debug("Page {}: split into {} tiles ({}x{} grid)",
-                        pageNum, splitResult.getTileCount(), splitResult.numCols, splitResult.numRows);
-
-                if (progressCallback != null) {
-                    progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages,
-                            "Generating tokens (" + splitResult.getTileCount() + " tiles)"));
-                }
-
-                long pageStartTime = System.currentTimeMillis();
-
-                // Process single page through generatePagesTiled
-                GenerationResult[] pageGenResults = vlm.generatePagesTiled(
-                        java.util.Collections.singletonList(splitResult),
-                        prompt,
-                        samplingConfig.getMaxNewTokens(),
-                        samplingConfig.isDoSample(),
-                        samplingConfig.getTemperature(),
-                        tileSize
-                );
-
-                // Free split result frames immediately after generation
-                splitResult = null;
-
-                // Reset all inference sessions to free GPU memory before next page
-                vlm.resetSessions();
-
-                long generateTimeMs = System.currentTimeMillis() - pageStartTime;
-
-                GenerationResult genResult = pageGenResults[0];
-                String generatedText = genResult.getText();
-                int generatedTokens = genResult.getGeneratedTokenCount();
-                int promptTokens = genResult.getPromptTokenCount();
-                double tokensPerSecond = generatedTokens > 0 ? (generatedTokens * 1000.0) / Math.max(generateTimeMs, 1) : 0;
-                // Use per-page timing from result if available
-                if (genResult.getGenerationTimeMs() > 0) {
-                    generateTimeMs = genResult.getGenerationTimeMs();
-                    tokensPerSecond = genResult.getTokensPerSecond();
-                }
-
-                logger.info("Page {}/{}: {} tokens in {}ms ({} tok/s), model {}",
-                        pageNum, totalPages, generatedTokens, generateTimeMs,
-                        String.format("%.1f", tokensPerSecond), modelId);
-
-                if (progressCallback != null) {
-                    progressCallback.accept(PipelineProgress.vlmStep(pageNum, totalPages, "Parsing output"));
-                }
-
-                String plainText;
-                List<StructuredTable> tables = new ArrayList<>();
-
-                switch (config.getVlmOutputFormat()) {
-                    case DOCTAGS:
-                        DocumentStructure docStructure = docTagsParser.parse(generatedText);
-                        plainText = docStructure.getFullText();
-                        tables = extractTablesFromDocStructure(docStructure);
-                        break;
-                    case MARKDOWN:
-                        DocumentStructure parsed = docTagsParser.parse(generatedText);
-                        plainText = docTagsParser.toMarkdown(parsed);
-                        tables = extractTablesFromDocStructure(parsed);
-                        break;
-                    case FLORENCE2:
-                        DocumentStructure florenceDoc = docTagsParser.parse(generatedText);
-                        plainText = docTagsParser.extractPlainText(generatedText);
-                        tables = extractTablesFromDocStructure(florenceDoc);
-                        break;
-                    case DONUT:
-                        DocumentStructure donutDoc = docTagsParser.parse(generatedText);
-                        plainText = docTagsParser.extractPlainText(generatedText);
-                        tables = extractTablesFromDocStructure(donutDoc);
-                        break;
-                    case PLAIN_TEXT:
-                        plainText = docTagsParser.extractPlainText(generatedText);
-                        break;
-                    case JSON:
-                        plainText = generatedText;
-                        break;
-                    case TEXT:
-                    default:
-                        plainText = docTagsParser.extractPlainText(generatedText);
-                        break;
-                }
-
-                DocumentComplexity complexity = DocumentComplexity.SIMPLE;
-                if (!tables.isEmpty()) {
-                    complexity = DocumentComplexity.TABLES;
-                } else if (generatedText.contains("<figure>") || generatedText.contains("<formula>")) {
-                    complexity = DocumentComplexity.MIXED;
-                }
-
-                AuditTrail audit = AuditTrail.forPage(pdfFile.getAbsolutePath(), pageNum);
-                audit.addModelResult(ModelResult.success(
-                        modelId, OcrModelType.LAYOUT_MODEL, generateTimeMs,
-                        generatedText.length(), 1.0));
-                audit.complete();
-
-                int tileCount = pageGenResults[0].getGeneratedTokenCount() > 0 ?
-                        (int) Math.ceil(generatedTokens / 64.0) : 0;
-
-                ParsedDocument pageResult = ParsedDocument.builder()
-                        .id(UUID.randomUUID().toString())
-                        .sourceId(pdfFile.getAbsolutePath())
-                        .pageNumber(pageNum)
-                        .totalPages(totalPages)
-                        .documentType(DocumentType.SCANNED)
-                        .complexity(complexity)
-                        .text(plainText)
-                        .tables(tables)
-                        .auditTrail(config.isIncludeAuditTrail() ? audit : null)
-                        .success(true)
-                        .processingTimeMs(generateTimeMs)
-                        .metadata(Map.of(
-                                "vlmModel", modelId,
-                                "outputFormat", config.getVlmOutputFormat().name(),
-                                "rawOutput", generatedText,
-                                "generatedTokens", generatedTokens,
-                                "promptTokens", promptTokens,
-                                "tokensPerSecond", Math.round(tokensPerSecond * 100.0) / 100.0,
-                                "generateTimeMs", generateTimeMs,
-                                "tiledProcessing", true,
-                                "tileCount", tileCount
-                        ))
-                        .build();
-
-                results.add(pageResult);
-
-                if (progressCallback != null) {
-                    String vlmModelName = config.getVlmModelId() != null ? config.getVlmModelId() : modelId;
-                    progressCallback.accept(PipelineProgress.vlmPageCompleted(
-                            pageNum, totalPages, generatedTokens, promptTokens,
-                            tokensPerSecond, generateTimeMs, vlmModelName));
+            // Release vision encoder GPU memory after all pages are encoded
+            if (releaseEncoderAfterEncoding && vlm != null && vlm.getVisionEncoder() != null) {
+                try {
+                    long beforeFree = getGpuFreeMemory();
+                    logger.info("Releasing vision encoder to free GPU memory...");
+                    vlm.getVisionEncoder().close();
+                    long afterFree = getGpuFreeMemory();
+                    long freedMb = (afterFree - beforeFree) / (1024 * 1024);
+                    logger.info("Vision encoder released. GPU memory freed: ~{}MB (before: {}MB free, after: {}MB free)",
+                            freedMb, beforeFree / (1024 * 1024), afterFree / (1024 * 1024));
+                } catch (Exception e) {
+                    logger.warn("Failed to release vision encoder: {}", e.getMessage());
                 }
             }
 
@@ -831,6 +971,19 @@ public class VlmDocumentPipeline implements OcrPipeline {
         // Conservative default: allows VLM prompts (~2000 tokens) + generation headroom
         logger.info("Using default maxKvLen=4096 (GPU memory not detected)");
         return 4096;
+    }
+
+    /**
+     * Get GPU free memory for the current device.
+     * Returns 0 if not available (e.g., CPU-only mode).
+     */
+    private long getGpuFreeMemory() {
+        try {
+            return org.nd4j.nativeblas.NativeOpsHolder.getInstance()
+                    .getDeviceNativeOps().getDeviceFreeMemory(0);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /**
@@ -1532,13 +1685,6 @@ public class VlmDocumentPipeline implements OcrPipeline {
         }
 
         return Nd4j.create(data, new int[]{1, 3, h, w}, 'c');
-    }
-
-    /**
-     * Gets the currently loaded model ID.
-     */
-    public String getModelId() {
-        return modelId;
     }
 
     /**

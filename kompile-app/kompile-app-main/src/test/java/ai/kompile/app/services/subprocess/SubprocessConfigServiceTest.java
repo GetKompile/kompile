@@ -329,7 +329,8 @@ class SubprocessConfigServiceTest {
                     null, null, null, null, null,
                     null, null, null, null, null, null,
                     null, null, null, null,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null,
+                    null, null, null, null, null, null);
 
             service.updateConfiguration(update);
 
@@ -349,7 +350,8 @@ class SubprocessConfigServiceTest {
                     null, null, null, null, null,
                     null, null, null, null, null, null,
                     null, null, null, null,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null,
+                    null, null, null, null, null, null);
 
             service.updateConfiguration(update);
 

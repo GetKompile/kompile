@@ -29,4 +29,13 @@ public class KVCacheProperties {
     private int maxCheckpoints = 16;
     private String checkpointDir = System.getProperty("user.home") + "/.kompile/kvcache/checkpoints";
     private int statsWindowSeconds = 300;
+
+    // Priority-based eviction
+    private boolean priorityEvictionEnabled = false;
+    private int defaultBlockPriority = 50;
+    private int systemPromptPriority = 90;
+
+    // Content-hash prefix indexing
+    private boolean prefixHashEnabled = true;
+    private int prefixHashMaxEntries = 4096;
 }

@@ -21,21 +21,45 @@ public class KVCachePrefixService {
 
     private final KVCacheProperties properties;
     private RadixPrefixCache prefixCache;
+    private ContentHashPrefixIndex contentHashPrefixIndex;
     private final AtomicLong totalLookups = new AtomicLong();
     private final AtomicLong totalHits = new AtomicLong();
 
     public KVCachePrefixService(KVCacheProperties properties) {
+        this(properties, null);
+    }
+
+    public KVCachePrefixService(KVCacheProperties properties, ContentHashPrefixIndex contentHashPrefixIndex) {
         this.properties = properties;
+        this.contentHashPrefixIndex = contentHashPrefixIndex;
         int blockSize = properties.getBlockSize();
         int maxEntries = properties.getPrefixCacheMaxEntries();
         // Estimate bytes per block: 2 * numKvHeads * headDim * blockSize * 4
         long bytesPerBlock = 2L * properties.getNumKvHeads() * properties.getHeadDim() * blockSize * 4;
         this.prefixCache = new RadixPrefixCache(blockSize, maxEntries, bytesPerBlock);
-        log.info("KVCachePrefixService initialized (maxEntries={}, blockSize={})", maxEntries, blockSize);
+        log.info("KVCachePrefixService initialized (maxEntries={}, blockSize={}, hashIndex={})",
+                maxEntries, blockSize, contentHashPrefixIndex != null);
+    }
+
+    public void setContentHashPrefixIndex(ContentHashPrefixIndex index) {
+        this.contentHashPrefixIndex = index;
     }
 
     public PrefixLookupResult lookup(int[] tokenIds) {
         totalLookups.incrementAndGet();
+
+        // Check content-hash index first for O(1) prefix match
+        if (contentHashPrefixIndex != null) {
+            ContentHashPrefixIndex.PrefixMatchResult hashResult = contentHashPrefixIndex.findCachedPrefix(tokenIds);
+            if (hashResult.hasMatch()) {
+                totalHits.incrementAndGet();
+                log.debug("Content-hash prefix match: {} tokens matched ({} blocks)",
+                        hashResult.matchedTokens(), hashResult.matchedBlockIds().length);
+                // Convert to PrefixLookupResult format
+                return prefixCache.lookup(tokenIds); // Fall through to radix for full result
+            }
+        }
+
         PrefixLookupResult result = prefixCache.lookup(tokenIds);
         if (result.hasMatch()) {
             totalHits.incrementAndGet();
@@ -45,6 +69,15 @@ public class KVCachePrefixService {
 
     public void register(int[] tokenIds, int[] blockIds) {
         prefixCache.register(tokenIds, blockIds);
+
+        // Also index block content hashes for cross-request matching
+        if (contentHashPrefixIndex != null && tokenIds != null && blockIds != null) {
+            int blockSize = properties.getBlockSize();
+            for (int i = 0; i < blockIds.length && (i + 1) * blockSize <= tokenIds.length; i++) {
+                int[] blockTokens = Arrays.copyOfRange(tokenIds, i * blockSize, (i + 1) * blockSize);
+                contentHashPrefixIndex.onBlockFilled(blockIds[i], blockTokens);
+            }
+        }
     }
 
     public PrefixCacheStats getStats() {

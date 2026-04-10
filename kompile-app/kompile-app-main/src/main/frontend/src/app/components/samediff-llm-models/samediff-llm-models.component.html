@@ -1,0 +1,424 @@
+<!--
+  Copyright 2025 Kompile Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<div class="samediff-llm-container">
+  <div class="header">
+    <h1>
+      <mat-icon>psychology</mat-icon>
+      SameDiff LLM Pipeline Manager
+    </h1>
+    <div class="header-actions">
+      <button mat-button color="primary" (click)="refreshData()">
+        <mat-icon>refresh</mat-icon>
+        Refresh
+      </button>
+      <button mat-raised-button color="accent" (click)="togglePipelineBuilder()">
+        <mat-icon>add_circle</mat-icon>
+        New Pipeline
+      </button>
+    </div>
+  </div>
+
+  <!-- Tab Navigation -->
+  <div class="tab-nav">
+    <button mat-button [class.active]="activeTab === 'models'" (click)="setActiveTab('models')">
+      <mat-icon>memory</mat-icon> Models
+    </button>
+    <button mat-button [class.active]="activeTab === 'pipelines'" (click)="setActiveTab('pipelines')">
+      <mat-icon>flowchart</mat-icon> Pipelines
+    </button>
+    <button mat-button [class.active]="activeTab === 'config'" (click)="setActiveTab('config')">
+      <mat-icon>settings</mat-icon> Configuration
+    </button>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar" *ngIf="serviceStatus">
+    <div class="status-item">
+      <mat-icon>storage</mat-icon>
+      <span>Cached Models: {{ getCachedModelCount() }} / {{ getTotalModelCount() }}</span>
+    </div>
+    <div class="status-item" *ngIf="registryStats">
+      <mat-icon>hub</mat-icon>
+      <span>Pipelines: {{ registryStats.totalPipelines }} ({{ registryStats.builtinPipelines }} builtin)</span>
+    </div>
+    <div class="status-item" *ngIf="registryStats">
+      <mat-icon>layers</mat-icon>
+      <span>Stages: {{ registryStats.totalStages }}</span>
+    </div>
+    <div class="status-item" *ngIf="serviceStatus.activeDownloads && serviceStatus.activeDownloads.length > 0">
+      <mat-icon>downloading</mat-icon>
+      <span>Active Downloads: {{ serviceStatus.activeDownloads.length }}</span>
+    </div>
+  </div>
+
+  <!-- Loading Indicator -->
+  <div class="loading" *ngIf="isLoading">
+    <mat-spinner diameter="40"></mat-spinner>
+    <p>Loading model sets...</p>
+  </div>
+
+  <!-- ==================== MODELS TAB ==================== -->
+  <div *ngIf="activeTab === 'models' && !isLoading">
+
+    <!-- Model Sets Grid -->
+    <div class="model-sets-grid">
+      <mat-card class="model-set-card" *ngFor="let modelSet of modelSets"
+                [class.expanded]="isSetExpanded(modelSet.setId)"
+                [class.cached]="isModelSetCached(modelSet.setId)">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>{{ getModelSetIcon(modelSet.setId) }}</mat-icon>
+          <mat-card-title>{{ modelSet.displayName }}</mat-card-title>
+          <mat-card-subtitle>{{ modelSet.architecture }} | {{ formatModelSize(modelSet.hiddenSize) }}</mat-card-subtitle>
+        </mat-card-header>
+
+        <mat-card-content>
+          <p class="description">{{ modelSet.description }}</p>
+
+          <div class="specs">
+            <div class="spec-item">
+              <span class="spec-label">Vocab Size:</span>
+              <span class="spec-value">{{ modelSet.vocabSize | number }}</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Layers:</span>
+              <span class="spec-value">{{ modelSet.numLayers }}</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Heads:</span>
+              <span class="spec-value">{{ modelSet.numHeads }}</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Context:</span>
+              <span class="spec-value">{{ modelSet.contextLength | number }}</span>
+            </div>
+          </div>
+
+          <!-- Components -->
+          <div class="components" *ngIf="isSetExpanded(modelSet.setId)">
+            <h4>Components</h4>
+            <div class="component-list">
+              <div class="component-item" *ngFor="let component of modelSet.components">
+                <mat-icon>{{ getComponentStageIcon(component.role) }}</mat-icon>
+                <span class="component-name">{{ component.role }}</span>
+                <span class="component-file">{{ component.fileName }}</span>
+              </div>
+            </div>
+          </div>
+        </mat-card-content>
+
+        <mat-card-actions align="end">
+          <button mat-button (click)="toggleSetExpansion(modelSet.setId)">
+            {{ isSetExpanded(modelSet.setId) ? 'Show Less' : 'Show More' }}
+          </button>
+
+          <button mat-button color="primary" *ngIf="!isModelSetCached(modelSet.setId) && !isDownloading(modelSet.setId)"
+                  (click)="downloadModelSet(modelSet.setId)">
+            <mat-icon>download</mat-icon>
+            Download
+          </button>
+
+          <button mat-button color="warn" *ngIf="isModelSetCached(modelSet.setId)"
+                  (click)="deleteModelSet(modelSet.setId)">
+            <mat-icon>delete</mat-icon>
+            Delete
+          </button>
+
+          <div class="download-progress" *ngIf="isDownloading(modelSet.setId)">
+            <mat-progress-bar mode="determinate" [value]="getDownloadProgress()"></mat-progress-bar>
+            <span class="progress-text">{{ getDownloadProgress() | number:'1.0-0' }}%</span>
+          </div>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  </div>
+
+  <!-- ==================== PIPELINES TAB ==================== -->
+  <div *ngIf="activeTab === 'pipelines' && !isLoading">
+
+    <!-- Pipeline Definitions List -->
+    <div class="section-header">
+      <h2>
+        <mat-icon>hub</mat-icon>
+        Pipeline Definitions
+      </h2>
+      <button mat-raised-button color="primary" (click)="openConfigPipelineEditor()">
+        <mat-icon>add</mat-icon>
+        New Pipeline Definition
+      </button>
+    </div>
+
+    <div class="pipelines-grid">
+      <mat-card class="pipeline-card" *ngFor="let pipeline of configPipelines"
+                [class.selected]="selectedConfigPipelineId === pipeline.pipelineId"
+                (click)="selectConfigPipeline(pipeline.pipelineId)">
+        <mat-card-header>
+          <mat-icon mat-card-avatar>{{ pipeline.isBuiltin ? 'lock' : 'edit' }}</mat-icon>
+          <mat-card-title>{{ pipeline.displayName || pipeline.pipelineId }}</mat-card-title>
+          <mat-card-subtitle>{{ pipeline.pipelineType }} | {{ pipeline.stageCount }} stages</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <p>{{ pipeline.description }}</p>
+          <div class="pipeline-meta">
+            <mat-chip *ngIf="pipeline.isBuiltin">Builtin</mat-chip>
+            <mat-chip *ngIf="!pipeline.isBuiltin" color="accent">Custom</mat-chip>
+            <mat-chip *ngIf="pipeline.modelSetId">{{ pipeline.modelSetId }}</mat-chip>
+          </div>
+        </mat-card-content>
+        <mat-card-actions align="end" *ngIf="!pipeline.isBuiltin">
+          <button mat-button color="warn" (click)="deleteConfigPipeline(pipeline.pipelineId); $event.stopPropagation()">
+            <mat-icon>delete</mat-icon>
+            Delete
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+
+    <!-- Selected Pipeline Detail -->
+    <div class="pipeline-detail" *ngIf="selectedConfigPipeline">
+      <h3>Pipeline Detail: {{ selectedConfigPipeline.pipelineId }}</h3>
+      <div class="detail-grid">
+        <div class="detail-item">
+          <strong>Type:</strong> {{ selectedConfigPipeline.pipelineType }}
+        </div>
+        <div class="detail-item">
+          <strong>Model Set:</strong> {{ selectedConfigPipeline.modelSetId || 'None' }}
+        </div>
+        <div class="detail-item">
+          <strong>Enabled:</strong> {{ selectedConfigPipeline.enabled }}
+        </div>
+        <div class="detail-item">
+          <strong>Created:</strong> {{ selectedConfigPipeline.createdAt }}
+        </div>
+      </div>
+
+      <h4>Stages</h4>
+      <div class="stage-list" *ngIf="selectedConfigPipeline.stages && selectedConfigPipeline.stages.length > 0">
+        <div class="stage-item" *ngFor="let stage of selectedConfigPipeline.stages; let i = index">
+          <span class="stage-order">{{ i + 1 }}</span>
+          <span class="stage-id">{{ stage.stageId }}</span>
+          <mat-chip *ngIf="stage.enabled" color="primary" class="stage-chip">Enabled</mat-chip>
+          <mat-chip *ngIf="!stage.enabled" class="stage-chip">Disabled</mat-chip>
+        </div>
+      </div>
+
+      <h4 *ngIf="selectedConfigPipeline.defaultParameters">Default Parameters</h4>
+      <pre class="params-json" *ngIf="selectedConfigPipeline.defaultParameters">{{ selectedConfigPipeline.defaultParameters | json }}</pre>
+    </div>
+
+    <!-- Pipeline Stages Reference -->
+    <div class="stages-reference">
+      <h2>
+        <mat-icon>layers</mat-icon>
+        Available Stages
+      </h2>
+      <div class="stages-grid">
+        <mat-card class="stage-card" *ngFor="let stage of configStages">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>{{ getPipelineStageIcon(stage) }}</mat-icon>
+            <mat-card-title>{{ stage.displayName }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p><strong>Input:</strong> {{ stage.inputDescription }}</p>
+            <p><strong>Output:</strong> {{ stage.outputDescription }}</p>
+            <mat-chip *ngIf="stage.requiresModel" color="accent">Requires Model</mat-chip>
+            <mat-chip *ngIf="stage.isBuiltin">Builtin</mat-chip>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== CONFIG TAB ==================== -->
+  <div *ngIf="activeTab === 'config' && !isLoading">
+
+    <!-- Registry Stats -->
+    <div class="registry-stats" *ngIf="registryStats">
+      <h2>
+        <mat-icon>analytics</mat-icon>
+        Registry Statistics
+      </h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value">{{ registryStats.totalPipelines }}</div>
+          <div class="stat-label">Total Pipelines</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ registryStats.builtinPipelines }}</div>
+          <div class="stat-label">Builtin Pipelines</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ registryStats.customPipelines }}</div>
+          <div class="stat-label">Custom Pipelines</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ registryStats.totalStages }}</div>
+          <div class="stat-label">Total Stages</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ registryStats.customModelSets }}</div>
+          <div class="stat-label">Custom Model Sets</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ getCachedModelCount() }}</div>
+          <div class="stat-label">Cached Models</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generation Presets -->
+    <div class="presets-section">
+      <h2>
+        <mat-icon>bookmark</mat-icon>
+        Generation Presets
+      </h2>
+      <div class="presets-grid">
+        <mat-card class="preset-card" *ngFor="let preset of generationPresets">
+          <mat-card-header>
+            <mat-icon mat-card-avatar>{{ getPresetIcon(preset.id) }}</mat-icon>
+            <mat-card-title>{{ preset.name }}</mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <p>{{ preset.description }}</p>
+            <div class="preset-specs">
+              <span>Max Tokens: {{ preset.maxNewTokens }}</span>
+              <span>Temp: {{ preset.temperature }}</span>
+              <span>Top-K: {{ preset.topK }}</span>
+              <span>Top-P: {{ preset.topP }}</span>
+              <span>Strategy: {{ preset.samplingStrategy }}</span>
+              <span *ngIf="preset.enableToolCalling">Tools: Enabled</span>
+            </div>
+          </mat-card-content>
+          <mat-card-actions align="end">
+            <button mat-button color="primary" (click)="ensurePresetModels(preset.id)">
+              Apply Preset
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      </div>
+    </div>
+
+    <!-- Service Status -->
+    <div class="service-status" *ngIf="serviceStatus">
+      <h2>
+        <mat-icon>info</mat-icon>
+        Service Status
+      </h2>
+      <pre class="status-json">{{ serviceStatus | json }}</pre>
+    </div>
+  </div>
+
+  <!-- Pipeline Builder Dialog (shared across tabs) -->
+  <div class="pipeline-builder" *ngIf="showPipelineBuilder">
+    <mat-card>
+      <mat-card-header>
+        <mat-card-title>Create New Pipeline</mat-card-title>
+        <button mat-icon-button (click)="togglePipelineBuilder()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <form>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Pipeline ID</mat-label>
+            <input matInput [(ngModel)]="newPipelineId" name="pipelineId" placeholder="my-llm-pipeline">
+            <mat-hint>Unique identifier for your pipeline</mat-hint>
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Model Set</mat-label>
+            <mat-select [(ngModel)]="selectedModelSetId" name="modelSetId">
+              <mat-option *ngFor="let modelSet of modelSets" [value]="modelSet.setId"
+                          [disabled]="!isModelSetCached(modelSet.setId)">
+                {{ modelSet.displayName }}
+                <span *ngIf="!isModelSetCached(modelSet.setId)"> (Not downloaded)</span>
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+          <div class="slider-group">
+            <mat-slider min="64" max="2048" step="64" thumbLabel>
+              <input matSliderThumb [(ngModel)]="maxNewTokens" name="maxNewTokens">
+            </mat-slider>
+            <span>Max Tokens: {{ maxNewTokens }}</span>
+          </div>
+          <div class="slider-group">
+            <mat-slider min="0.1" max="2.0" step="0.1" thumbLabel>
+              <input matSliderThumb [(ngModel)]="temperature" name="temperature">
+            </mat-slider>
+            <span>Temperature: {{ temperature }}</span>
+          </div>
+          <div class="slider-group">
+            <mat-slider min="1" max="100" step="1" thumbLabel>
+              <input matSliderThumb [(ngModel)]="topK" name="topK">
+            </mat-slider>
+            <span>Top K: {{ topK }}</span>
+          </div>
+          <mat-checkbox [(ngModel)]="enableToolCalling" name="enableToolCalling">
+            Enable Tool Calling
+          </mat-checkbox>
+        </form>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button mat-button (click)="togglePipelineBuilder()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="createPipeline()">
+          <mat-icon>check</mat-icon> Create Pipeline
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+
+  <!-- Config Pipeline Editor Dialog -->
+  <div class="pipeline-builder" *ngIf="showConfigPipelineEditor">
+    <mat-card>
+      <mat-card-header>
+        <mat-card-title>{{ editingConfigPipeline.pipelineId ? 'Edit' : 'New' }} Pipeline Definition</mat-card-title>
+        <button mat-icon-button (click)="closeConfigPipelineEditor()">
+          <mat-icon>close</mat-icon>
+        </button>
+      </mat-card-header>
+      <mat-card-content>
+        <form>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Pipeline ID</mat-label>
+            <input matInput [(ngModel)]="editingConfigPipeline.pipelineId" name="configPipelineId">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Display Name</mat-label>
+            <input matInput [(ngModel)]="editingConfigPipeline.displayName" name="configDisplayName">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description</mat-label>
+            <textarea matInput [(ngModel)]="editingConfigPipeline.description" name="configDescription" rows="3"></textarea>
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Model Set ID</mat-label>
+            <mat-select [(ngModel)]="editingConfigPipeline.modelSetId" name="configModelSetId">
+              <mat-option value="">None</mat-option>
+              <mat-option *ngFor="let modelSet of modelSets" [value]="modelSet.setId">
+                {{ modelSet.displayName }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+        </form>
+      </mat-card-content>
+      <mat-card-actions align="end">
+        <button mat-button (click)="closeConfigPipelineEditor()">Cancel</button>
+        <button mat-raised-button color="primary" (click)="saveConfigPipeline()">
+          <mat-icon>save</mat-icon> Save
+        </button>
+      </mat-card-actions>
+    </mat-card>
+  </div>
+</div>

@@ -114,6 +114,7 @@ public class BackgroundProcessManager {
     private final AtomicInteger counter = new AtomicInteger(0);
     private final ExecutorService ioExecutor;
     private volatile ExitCallback exitCallback;
+    private final Thread shutdownHook;
 
     /**
      * Default retention for completed process entries (1 hour).
@@ -132,14 +133,15 @@ public class BackgroundProcessManager {
         });
 
         // Register shutdown hook to kill all running processes
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        this.shutdownHook = new Thread(() -> {
             for (ProcessEntry entry : processes.values()) {
                 if (entry.isRunning() && entry.process != null && entry.process.isAlive()) {
                     killProcess(entry);
                 }
             }
             ioExecutor.shutdownNow();
-        }, "bg-proc-manager-shutdown"));
+        }, "bg-proc-manager-shutdown-" + sessionId);
+        Runtime.getRuntime().addShutdownHook(this.shutdownHook);
     }
 
     /**
@@ -436,5 +438,27 @@ public class BackgroundProcessManager {
      */
     public String getSessionId() {
         return sessionId;
+    }
+
+    /**
+     * Shuts down this manager: kills all running processes, shuts down the I/O executor,
+     * and removes the JVM shutdown hook to prevent accumulation across multiple sessions.
+     * Should be called when the chat session ends.
+     */
+    public void close() {
+        // Kill all running processes
+        for (ProcessEntry entry : processes.values()) {
+            if (entry.isRunning() && entry.process != null && entry.process.isAlive()) {
+                killProcess(entry);
+            }
+        }
+        ioExecutor.shutdownNow();
+
+        // Remove shutdown hook to prevent leak
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException e) {
+            // JVM is already shutting down — hook can't be removed, which is fine
+        }
     }
 }

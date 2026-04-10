@@ -163,6 +163,7 @@ public class PermissionService {
                 // Fallback for non-console environments
                 byte[] buf = new byte[64];
                 int len = System.in.read(buf);
+                if (len <= 0) return PermissionResult.DENIED;
                 input = new String(buf, 0, len).trim();
             } catch (Exception e) {
                 return PermissionResult.DENIED;

@@ -26,9 +26,10 @@ import ai.kompile.app.ingest.domain.IngestEvent;
 import ai.kompile.app.ingest.service.IndexingJobHistoryService;
 import ai.kompile.app.ingest.service.IngestEventService;
 import ai.kompile.app.services.AppIndexConfigService;
-import ai.kompile.app.services.IngestProgressTracker;
 import ai.kompile.app.config.DeviceRoutingConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
+import ai.kompile.app.services.IngestProgressTracker;
+import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessArgs;
@@ -114,6 +115,9 @@ public class SubprocessIngestLauncher {
     private final AppIndexConfigService appIndexConfigService;
     private final IngestConfiguration ingestConfiguration;
     private final ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private ModelLifecycleManager modelLifecycleManager;
 
     // Active subprocess tracking
     private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
@@ -332,9 +336,21 @@ public class SubprocessIngestLauncher {
                     ? subprocessConfigService.getGpuMemoryKillThresholdPercent()
                     : SubprocessArgs.DEFAULT_GPU_MEMORY_KILL_THRESHOLD_PERCENT;
 
-            logger.debug("Subprocess memory thresholds: heap stop={}%, critical={}%, kill={}%; GPU stop={}%, critical={}%, kill={}",
+            // Get off-heap memory thresholds from SubprocessConfigService (or use defaults)
+            int offHeapThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapThresholdPercent()
+                    : SubprocessArgs.DEFAULT_OFF_HEAP_THRESHOLD_PERCENT;
+            int offHeapCriticalPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapCriticalPercent()
+                    : SubprocessArgs.DEFAULT_OFF_HEAP_CRITICAL_PERCENT;
+            int offHeapKillThresholdPercent = subprocessConfigService != null
+                    ? subprocessConfigService.getOffHeapKillThresholdPercent()
+                    : SubprocessArgs.DEFAULT_OFF_HEAP_KILL_THRESHOLD_PERCENT;
+
+            logger.debug("Subprocess memory thresholds: heap stop={}%, critical={}%, kill={}%; GPU stop={}%, critical={}%, kill={}%; off-heap stop={}%, critical={}%, kill={}%",
                     memoryThresholdPercent, memoryCriticalPercent, memoryKillThresholdPercent,
-                    gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent);
+                    gpuMemoryThresholdPercent, gpuMemoryCriticalPercent, gpuMemoryKillThresholdPercent,
+                    offHeapThresholdPercent, offHeapCriticalPercent, offHeapKillThresholdPercent);
 
             // Resolve paths from active FactSheet via AppIndexConfigService
             String resolvedVectorPath = null;
@@ -400,6 +416,9 @@ public class SubprocessIngestLauncher {
                     .gpuMemoryThresholdPercent(gpuMemoryThresholdPercent)
                     .gpuMemoryCriticalPercent(gpuMemoryCriticalPercent)
                     .gpuMemoryKillThresholdPercent(gpuMemoryKillThresholdPercent)
+                    .offHeapThresholdPercent(offHeapThresholdPercent)
+                    .offHeapCriticalPercent(offHeapCriticalPercent)
+                    .offHeapKillThresholdPercent(offHeapKillThresholdPercent)
                     .options(effectiveOptions)
                     .build();
 
@@ -435,6 +454,18 @@ public class SubprocessIngestLauncher {
                 processBuilder.environment().put("MKL_NUM_THREADS", String.valueOf(recoverySettings.getOmpThreads()));
                 processBuilder.environment().put("OPENBLAS_NUM_THREADS", String.valueOf(recoverySettings.getOmpThreads()));
                 logger.info("Applied adaptive thread settings: OMP_NUM_THREADS={}", recoverySettings.getOmpThreads());
+            }
+
+            // === GPU LIFECYCLE: Acquire GPU resources for this ingest job ===
+            if (modelLifecycleManager != null) {
+                try {
+                    modelLifecycleManager.acquireGpuForIngest(taskId, fileName);
+                    logger.info("[ingest-{}] GPU resources acquired for ingest job", taskId);
+                } catch (IllegalStateException e) {
+                    logger.warn("[ingest-{}] Could not acquire GPU for ingest (may use CPU fallback): {}",
+                            taskId, e.getMessage());
+                    // Don't fail the ingest — it may be able to run on CPU or with reduced GPU
+                }
             }
 
             Process process = processBuilder.start();
@@ -1180,9 +1211,12 @@ public class SubprocessIngestLauncher {
                 // Forward phase transition to UI
                 forwardPhaseTransition(handle, transition);
             } else if (message instanceof SubprocessMessage.Heartbeat heartbeat) {
-                handle.updateHeartbeat();
-                logger.debug("Task {} heartbeat: uptime={}ms, memory={}%",
-                        handle.getTaskId(), heartbeat.uptimeMs(), heartbeat.memoryUsagePercent());
+                handle.updateMemoryFromHeartbeat(heartbeat);
+                logger.debug("Task {} heartbeat: uptime={}ms, heap={}%, offHeap={}%, gpu={}%",
+                        handle.getTaskId(), heartbeat.uptimeMs(),
+                        String.format("%.1f", heartbeat.memoryUsagePercent()),
+                        String.format("%.1f", heartbeat.offHeapUsagePercent()),
+                        String.format("%.1f", heartbeat.gpuUsagePercent()));
             } else if (message instanceof SubprocessMessage.Completed completed) {
                 logger.info("Task {} completed: {} docs, {} chunks indexed",
                         handle.getTaskId(), completed.documentsLoaded(), completed.documentsIndexed());
@@ -2350,6 +2384,16 @@ public class SubprocessIngestLauncher {
         // Remove worker status tracking for this task
         taskWorkerStatuses.remove(handle.getTaskId());
 
+        // === GPU LIFECYCLE: Release GPU resources for this ingest job ===
+        if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
+            logger.info("[ingest-{}] Releasing GPU resources for completed/failed ingest job", handle.getTaskId());
+            try {
+                modelLifecycleManager.releaseGpuForIngest(handle.getTaskId());
+            } catch (Exception e) {
+                logger.warn("[ingest-{}] Error releasing GPU resources: {}", handle.getTaskId(), e.getMessage());
+            }
+        }
+
         // Delete args file
         Path argsFile = handle.getArgsFile();
         if (argsFile != null && Files.exists(argsFile)) {
@@ -2575,6 +2619,16 @@ public class SubprocessIngestLauncher {
             if (handle.isAlive()) {
                 logger.info("Cancelling subprocess: {}", handle.getTaskId());
                 handle.cancel();
+            }
+
+            // Release GPU hold for this job if held
+            if (modelLifecycleManager != null && modelLifecycleManager.hasJobGpuHold(handle.getTaskId())) {
+                logger.info("[ingest-{}] Releasing GPU resources during shutdown", handle.getTaskId());
+                try {
+                    modelLifecycleManager.releaseGpuForIngest(handle.getTaskId());
+                } catch (Exception e) {
+                    logger.warn("[ingest-{}] Error releasing GPU during shutdown: {}", handle.getTaskId(), e.getMessage());
+                }
             }
         }
 

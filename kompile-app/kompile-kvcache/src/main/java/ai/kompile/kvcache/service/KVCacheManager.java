@@ -18,11 +18,21 @@ public class KVCacheManager {
 
     private final KVCacheProperties properties;
     private final KVCacheStatisticsCollector statsCollector;
+    private final PriorityEvictionPolicy priorityEvictionPolicy;
+    private final ContentHashPrefixIndex contentHashPrefixIndex;
     private final ConcurrentHashMap<String, ManagedKVCache> caches = new ConcurrentHashMap<>();
 
     public KVCacheManager(KVCacheProperties properties, KVCacheStatisticsCollector statsCollector) {
+        this(properties, statsCollector, null, null);
+    }
+
+    public KVCacheManager(KVCacheProperties properties, KVCacheStatisticsCollector statsCollector,
+                          PriorityEvictionPolicy priorityEvictionPolicy,
+                          ContentHashPrefixIndex contentHashPrefixIndex) {
         this.properties = properties;
         this.statsCollector = statsCollector;
+        this.priorityEvictionPolicy = priorityEvictionPolicy;
+        this.contentHashPrefixIndex = contentHashPrefixIndex;
         log.info("KVCacheManager initialized (enabled={}, defaultType={}, blockSize={}, maxBatchSize={})",
                 properties.isEnabled(), properties.getDefaultType(), properties.getBlockSize(), properties.getMaxBatchSize());
     }
@@ -58,7 +68,9 @@ public class KVCacheManager {
                 .diskOffloadPath(config.getDiskOffloadPath() != null ? config.getDiskOffloadPath() : properties.getDiskOffloadPath())
                 .build();
 
-        ManagedKVCache cache = new ManagedKVCache(name, resolved, statsCollector);
+        ManagedKVCache cache = new ManagedKVCache(name, resolved, statsCollector,
+                properties.isPriorityEvictionEnabled() ? priorityEvictionPolicy : null,
+                properties.isPrefixHashEnabled() ? contentHashPrefixIndex : null);
         caches.put(name, cache);
         log.info("Created KV cache '{}' (type={}, blocks={})", name, resolved.getType(), cache.getTotalBlocks());
         return cache;

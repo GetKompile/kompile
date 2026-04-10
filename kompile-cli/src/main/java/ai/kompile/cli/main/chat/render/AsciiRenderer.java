@@ -942,6 +942,35 @@ public class AsciiRenderer {
         return panel("kompile chat", body.toString(), ROUNDED, "cyan");
     }
 
+    /**
+     * Render welcome panel with mode selection options (chat, passthrough, resume).
+     * Shown when first opening the chat TUI to merge all three tools.
+     */
+    public String welcomePanelWithModes(String sessionId, String agent, boolean ragEnabled, boolean localMode) {
+        StringBuilder body = new StringBuilder();
+        body.append(term.dim("Session: ")).append(sessionId).append("\n");
+        body.append(term.dim("Agent:   ")).append(term.cyan(agent)).append("\n");
+        if (!localMode) {
+            body.append(term.dim("RAG:     ")).append(ragEnabled ? term.green("enabled") : term.dim("disabled")).append("\n");
+        } else {
+            body.append(term.dim("Mode:    ")).append(term.cyan("local")).append("\n");
+        }
+        body.append("\n");
+        body.append(term.bold("Quick Start")).append("\n");
+        body.append("\n");
+        body.append("  ").append(term.cyan("1")).append(". ").append(term.bold("Chat")).append(" — Start chatting immediately\n");
+        body.append("     ").append(term.dim("Type a message or use /help for commands")).append("\n");
+        body.append("\n");
+        body.append("  ").append(term.cyan("2")).append(". ").append(term.bold("Passthrough")).append(" — Launch external CLI agent\n");
+        body.append("     ").append(term.dim("Type /passthrough or /mode passthrough")).append("\n");
+        body.append("\n");
+        body.append("  ").append(term.cyan("3")).append(". ").append(term.bold("Resume")).append(" — Browse & resume past conversations\n");
+        body.append("     ").append(term.dim("Type /resume to open the resume browser")).append("\n");
+        body.append("\n");
+        body.append(term.dim("Type a message to start chatting, or /help for all commands."));
+        return panel("kompile chat", body.toString(), ROUNDED, "cyan");
+    }
+
     // ========================================================================
     // Utility methods
     // ========================================================================

@@ -71,7 +71,8 @@ public class AgentDelegationTool {
             Boolean skipPermissions,
             Integer timeoutSeconds,
             Integer ragMaxResults,
-            Double ragSimilarityThreshold
+            Double ragSimilarityThreshold,
+            List<String> agentArgs
     ) {}
 
     public record DelegateTaskAsyncInput(
@@ -84,7 +85,8 @@ public class AgentDelegationTool {
             Boolean skipPermissions,
             Integer timeoutSeconds,
             Integer ragMaxResults,
-            Double ragSimilarityThreshold
+            Double ragSimilarityThreshold,
+            List<String> agentArgs
     ) {}
 
     public record GetDelegationResultInput(String delegationId, Boolean blocking) {}
@@ -106,6 +108,7 @@ public class AgentDelegationTool {
                     "The delegated agent runs as a subprocess with optional RAG context and MCP tool access. " +
                     "Specify agentName (use list_agents to see available), message (the task/prompt), " +
                     "and optionally workingDirectory, enableRag, timeoutSeconds (default 300). " +
+                    "Use agentArgs to pass extra CLI flags to the underlying agent command (e.g. ['--model', 'opus', '--max-turns', '5']). " +
                     "This call blocks until the agent completes. For non-blocking, use delegate_task_async.")
     public Map<String, Object> delegateTask(DelegateTaskInput input) {
         if (input.message() == null || input.message().trim().isEmpty()) {
@@ -138,7 +141,8 @@ public class AgentDelegationTool {
 
         AgentChatRequest request = buildRequest(agentName, input.message(), input.workingDirectory(),
                 input.enableRag(), input.enableGraphRag(), input.injectMcpTools(),
-                input.skipPermissions(), timeoutSeconds, input.ragMaxResults(), input.ragSimilarityThreshold());
+                input.skipPermissions(), timeoutSeconds, input.ragMaxResults(), input.ragSimilarityThreshold(),
+                input.agentArgs());
 
         long startTime = System.currentTimeMillis();
         AgentChatService.SyncChatResult chatResult = agentChatService.executeChatSync(request, timeoutSeconds);
@@ -156,7 +160,8 @@ public class AgentDelegationTool {
     @Tool(name = "delegate_task_async",
             description = "Delegates a task to another AI agent asynchronously (non-blocking). Returns a delegationId immediately. " +
                     "Use get_delegation_result to poll for or wait for the result. " +
-                    "Useful when you want to delegate tasks to multiple agents in parallel.")
+                    "Useful when you want to delegate tasks to multiple agents in parallel. " +
+                    "Use agentArgs to pass extra CLI flags to the underlying agent command.")
     public Map<String, Object> delegateTaskAsync(DelegateTaskAsyncInput input) {
         if (input.message() == null || input.message().trim().isEmpty()) {
             return Map.of("status", "error", "error", "Message/task description cannot be empty");
@@ -185,7 +190,8 @@ public class AgentDelegationTool {
 
         AgentChatRequest request = buildRequest(agentName, input.message(), input.workingDirectory(),
                 input.enableRag(), input.enableGraphRag(), input.injectMcpTools(),
-                input.skipPermissions(), timeoutSeconds, input.ragMaxResults(), input.ragSimilarityThreshold());
+                input.skipPermissions(), timeoutSeconds, input.ragMaxResults(), input.ragSimilarityThreshold(),
+                input.agentArgs());
 
         long startTime = System.currentTimeMillis();
 
@@ -363,7 +369,8 @@ public class AgentDelegationTool {
     private AgentChatRequest buildRequest(String agentName, String message, String workingDirectory,
                                            Boolean enableRag, Boolean enableGraphRag, Boolean injectMcpTools,
                                            Boolean skipPermissions, int timeoutSeconds,
-                                           Integer ragMaxResults, Double ragSimilarityThreshold) {
+                                           Integer ragMaxResults, Double ragSimilarityThreshold,
+                                           List<String> agentArgs) {
         AgentChatRequest request = new AgentChatRequest();
         request.setMessage(message);
         request.setAgentName(agentName);
@@ -375,6 +382,7 @@ public class AgentDelegationTool {
         request.setTimeoutSeconds(timeoutSeconds);
         if (ragMaxResults != null) request.setRagMaxResults(ragMaxResults);
         if (ragSimilarityThreshold != null) request.setRagSimilarityThreshold(ragSimilarityThreshold);
+        if (agentArgs != null && !agentArgs.isEmpty()) request.setAgentArgs(agentArgs);
         return request;
     }
 

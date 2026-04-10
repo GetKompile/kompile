@@ -1,0 +1,74 @@
+.triton-cache-container {
+  padding: 16px;
+}
+
+.status-card,
+.actions-card {
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.stat-value {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.87);
+  word-break: break-all;
+}
+
+.export-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.model-id-field {
+  flex: 1;
+}
+
+.section-title {
+  margin: 24px 0 12px 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.87);
+}
+
+.bundles-table {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.bundles-table table {
+  width: 100%;
+}
+
+.status-message {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}

@@ -105,7 +105,12 @@ public class PatchTool implements CliTool {
                 }
 
                 int exitCode = process.exitValue();
-                String relativePath = context.getWorkingDirectory().relativize(path).toString();
+                String relativePath;
+                try {
+                    relativePath = context.getWorkingDirectory().toAbsolutePath().relativize(path.toAbsolutePath()).toString();
+                } catch (IllegalArgumentException ex) {
+                    relativePath = path.toString();
+                }
 
                 if (exitCode == 0) {
                     return ToolResult.success(relativePath,

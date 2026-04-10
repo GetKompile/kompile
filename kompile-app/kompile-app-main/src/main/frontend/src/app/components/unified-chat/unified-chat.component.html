@@ -26,23 +26,48 @@
     </div>
 
     <div class="history-sidebar-content">
-      <!-- Search/Filter -->
+
+      <!-- Search + Source Filter -->
       <div class="history-search">
         <input type="text" class="search-input" placeholder="Search chats..." [(ngModel)]="chatSearchQuery" [ngModelOptions]="{standalone: true}">
         <span class="search-icon">🔍</span>
       </div>
 
+      <!-- Source Filter Dropdown -->
+      <div class="source-filter-row">
+        <select class="source-filter-select" [(ngModel)]="sourceFilter" [ngModelOptions]="{standalone: true}"
+          (change)="onSourceFilterChange(sourceFilter)">
+          <option value="all">All Sources</option>
+          <option value="app">App Only</option>
+          <option value="kompile">Kompile CLI</option>
+          <option value="claude-code">Claude Code</option>
+          <option value="opencode">OpenCode</option>
+          <option value="codex">Codex</option>
+          <option value="qwen">Qwen</option>
+        </select>
+        <button class="refresh-sync-btn" (click)="loadSyncedSessions()" title="Refresh synced sessions"
+          [disabled]="syncedSessionsLoading">
+          {{ syncedSessionsLoading ? '...' : '↻' }}
+        </button>
+      </div>
+
       <!-- Chat List -->
       <div class="chat-list">
         <!-- Current Chat (if exists and has messages) -->
-        <div class="chat-item current" *ngIf="currentSession && (currentSession.messages?.length || 0) > 0"
+        <div class="chat-item current" *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && (sourceFilter === 'all' || sourceFilter === 'app' || currentSession.source === sourceFilter)"
           [class.editing]="editingSessionId === currentSession.id">
 
           <div class="chat-item-content" *ngIf="editingSessionId !== currentSession.id"
-            (click)="loadSession(currentSession)">
+            (click)="currentSession.synced ? loadSyncedSession(currentSession) : loadSession(currentSession)">
             <span class="chat-icon">💬</span>
             <div class="chat-details">
-              <span class="chat-name">{{ currentSession.name || 'Current Chat' }}</span>
+              <span class="chat-name">
+                {{ currentSession.name || 'Current Chat' }}
+                <span class="source-badge-inline" *ngIf="currentSession.source"
+                  [style.background-color]="getSourceColor(currentSession.source)">
+                  {{ getSourceDisplayName(currentSession.source) }}
+                </span>
+              </span>
               <span class="chat-meta">{{ currentSession.messages.length || 0 }} messages</span>
             </div>
           </div>
@@ -63,23 +88,33 @@
 
         <!-- Divider -->
         <div class="chat-list-divider"
-          *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && getFilteredSessions().length > 0">
+          *ngIf="currentSession && (currentSession.messages?.length || 0) > 0 && getAllSessions().length > 0">
           <span>Previous</span>
         </div>
 
-        <!-- Previous Chats -->
-        <div class="chat-item" *ngFor="let session of getFilteredSessions()"
+        <!-- All Sessions (local + synced) -->
+        <div class="chat-item" *ngFor="let session of getAllSessions()"
           [class.active]="session.id === currentSession?.id" [class.archived]="session.archived"
-          [class.editing]="editingSessionId === session.id">
+          [class.editing]="editingSessionId === session.id" [class.synced]="session.synced">
 
-          <div class="chat-item-content" *ngIf="editingSessionId !== session.id" (click)="loadSession(session)">
-            <span class="chat-icon">{{ session.archived ? '📦' : '💬' }}</span>
+          <div class="chat-item-content" *ngIf="editingSessionId !== session.id"
+            (click)="session.synced ? loadSyncedSession(session) : loadSession(session)">
+            <span class="cli-source-dot" *ngIf="session.source"
+              [style.background-color]="getSourceColor(session.source)"
+              [title]="getSourceDisplayName(session.source)"></span>
+            <span class="chat-icon" *ngIf="!session.source">{{ session.archived ? '📦' : '💬' }}</span>
             <div class="chat-details">
-              <span class="chat-name">{{ session.name || 'Unnamed Chat' }}</span>
-              <span class="chat-meta">
-                {{ session.messages.length || 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+              <span class="chat-name">
+                {{ session.name || 'Unnamed Chat' }}
+                <span class="source-badge-inline" *ngIf="session.source"
+                  [style.background-color]="getSourceColor(session.source)">
+                  {{ getSourceDisplayName(session.source) }}
+                </span>
               </span>
-              <span class="chat-preview" *ngIf="getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
+              <span class="chat-meta">
+                {{ session.messages?.length || 0 }} msgs · {{ formatSessionDate(session.updatedAt) }}
+              </span>
+              <span class="chat-preview" *ngIf="!session.synced && getSessionPreview(session)">{{ getSessionPreview(session) }}</span>
             </div>
           </div>
 
@@ -91,7 +126,7 @@
             <button class="edit-action-btn cancel" (click)="cancelEditSessionName()" title="Cancel">✕</button>
           </div>
 
-          <div class="chat-item-actions" *ngIf="editingSessionId !== session.id">
+          <div class="chat-item-actions" *ngIf="editingSessionId !== session.id && !session.synced">
             <button class="chat-action-btn" (click)="startEditSessionName(session); $event.stopPropagation()"
               title="Rename">✏️</button>
             <button class="chat-action-btn" [matMenuTriggerFor]="folderMenu" (click)="$event.stopPropagation()"
@@ -113,12 +148,17 @@
           </div>
         </div>
 
+        <!-- Loading indicator for synced sessions -->
+        <div class="cli-loading" *ngIf="syncedSessionsLoading">
+          <span>Syncing conversations...</span>
+        </div>
+
         <!-- Empty State -->
         <div class="chat-list-empty"
-          *ngIf="getFilteredSessions().length === 0 && (!currentSession || (currentSession.messages?.length || 0) === 0)">
+          *ngIf="getAllSessions().length === 0 && (!currentSession || (currentSession.messages?.length || 0) === 0) && !syncedSessionsLoading">
           <span class="empty-icon">💭</span>
           <span class="empty-text">No chats yet</span>
-          <span class="empty-hint">Start a new conversation</span>
+          <span class="empty-hint">Start a new conversation or wait for CLI sync</span>
         </div>
       </div>
 
@@ -127,7 +167,101 @@
         <button class="footer-btn" (click)="toggleShowArchived()" [class.active]="showArchivedChats">
           {{ showArchivedChats ? '📦 Hide Archived' : '📦 Show Archived' }}
         </button>
+        <button class="footer-btn" (click)="switchSidebarTab('cli')" title="Browse raw CLI transcripts">
+          CLI Browser
+        </button>
+        <button class="footer-btn" (click)="exportCurrentSession()" *ngIf="currentSession && messages.length > 0"
+          title="Export current session to CLI transcript">
+          Export to CLI
+        </button>
       </div>
+
+      <!-- ═══ CLI BROWSER (secondary, for force-refresh) ═══ -->
+      <ng-container *ngIf="sidebarTab === 'cli'">
+      <div class="cli-browser-overlay">
+        <div class="cli-browser-header">
+          <span>CLI Transcript Browser</span>
+          <button class="cli-browser-close" (click)="switchSidebarTab('app')">✕</button>
+        </div>
+
+        <!-- Source Filter -->
+        <div class="cli-source-filter">
+          <select class="cli-source-select" [(ngModel)]="cliSourceFilter" [ngModelOptions]="{standalone: true}"
+            (change)="onCliSourceFilterChange(cliSourceFilter)">
+            <option value="all">All Sources</option>
+            <option value="kompile">Kompile CLI</option>
+            <option value="claude-code">Claude Code</option>
+            <option value="opencode">OpenCode</option>
+            <option value="codex">Codex</option>
+            <option value="qwen">Qwen</option>
+          </select>
+        </div>
+
+        <!-- CLI Session List -->
+        <div class="chat-list" *ngIf="!cliPreview">
+          <div class="cli-loading" *ngIf="cliLoading">
+            <span>Loading conversations...</span>
+          </div>
+
+          <div class="chat-item cli-session" *ngFor="let session of cliSessions"
+            (click)="previewCliSession(session)">
+            <div class="chat-item-content">
+              <span class="cli-source-dot" [style.background-color]="getSourceColor(session.source)"
+                [title]="getSourceDisplayName(session.source)"></span>
+              <div class="chat-details">
+                <span class="chat-name">{{ session.title || '(no title)' }}</span>
+                <span class="chat-meta">
+                  {{ getSourceDisplayName(session.source) }} · {{ session.messageCount }} msgs · {{ formatCliDate(session.lastModified) }}
+                </span>
+              </div>
+            </div>
+            <div class="chat-item-actions">
+              <button class="chat-action-btn import-btn"
+                (click)="importCliSession(session); $event.stopPropagation()"
+                [disabled]="cliImporting === session.sessionId"
+                title="Import into app">
+                {{ cliImporting === session.sessionId ? '...' : 'Import' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="chat-list-empty" *ngIf="!cliLoading && cliSessions.length === 0">
+            <span class="empty-icon">📂</span>
+            <span class="empty-text">No CLI conversations found</span>
+          </div>
+        </div>
+
+        <!-- CLI Preview Panel -->
+        <div class="cli-preview-panel" *ngIf="cliPreview">
+          <div class="cli-preview-header">
+            <button class="cli-preview-back" (click)="closeCliPreview()">Back</button>
+            <span class="cli-preview-title">{{ cliPreview.title }}</span>
+            <span class="cli-source-badge small" [style.background-color]="getSourceColor(cliPreview.source)">
+              {{ getSourceDisplayName(cliPreview.source) }}
+            </span>
+          </div>
+          <div class="cli-preview-actions">
+            <button class="import-btn" (click)="importCliSession({sessionId: cliPreview.sessionId, source: cliPreview.source, title: cliPreview.title, agent: cliPreview.agent, messageCount: cliPreview.turns.length, lastModified: 0})">
+              Import to App
+            </button>
+            <button class="load-btn" (click)="loadCliTranscriptIntoChat(cliPreview)">
+              Load in Chat
+            </button>
+          </div>
+          <div class="cli-preview-messages" *ngIf="!cliPreviewLoading">
+            <div class="cli-preview-turn" *ngFor="let turn of cliPreview.turns"
+              [class.user]="turn.role === 'user'" [class.assistant]="turn.role === 'assistant'">
+              <span class="cli-turn-role">{{ turn.role === 'user' ? 'You' : 'Assistant' }}</span>
+              <div class="cli-turn-content">{{ turn.content }}</div>
+            </div>
+          </div>
+          <div class="cli-loading" *ngIf="cliPreviewLoading">
+            <span>Loading transcript...</span>
+          </div>
+        </div>
+      </div>
+      </ng-container>
+
     </div>
 
     <!-- Collapse Toggle -->

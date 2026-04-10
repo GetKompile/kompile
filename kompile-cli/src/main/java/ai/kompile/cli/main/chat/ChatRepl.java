@@ -18,13 +18,19 @@ package ai.kompile.cli.main.chat;
 
 import ai.kompile.cli.common.KompileHome;
 import ai.kompile.cli.common.mcp.McpSseClient;
-import ai.kompile.cli.main.chat.agent.*;;
+import ai.kompile.cli.main.chat.agent.*;
 import ai.kompile.cli.main.chat.config.ChatConfig;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.config.SetupWizard;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
+import ai.kompile.cli.main.chat.roles.RoleManager;
+import ai.kompile.cli.main.chat.roles.RoleWizard;
+import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
+import ai.kompile.cli.main.chat.skill.SkillConfig;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
 import ai.kompile.cli.main.chat.tools.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +41,8 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.EndOfFileException;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.keymap.KeyMap;
+import org.jline.reader.impl.LineReaderImpl;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -48,6 +56,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -78,14 +87,38 @@ public class ChatRepl {
     // Tool & agent system
     private final ToolRegistry toolRegistry;
     private final AgentRegistry agentRegistry;
+    private final SkillRegistry skillRegistry;
+    private final RoleManager roleManager;
     private final PermissionService permissionService;
     private final AgenticChatLoop agenticLoop;
+    private final BackgroundProcessManager processManager;
     private final TerminalRenderer renderer;
     private final AsciiRenderer ascii;
 
     // Mode
     private final boolean localMode;
     private ChatConfig chatConfig; // non-null in local mode
+
+    // Message queue for queued chats
+    private final MessageQueue messageQueue;
+    
+    // Flag to track if LLM is currently processing a response
+    private volatile boolean llmBusy = false;
+
+    // Cancel signal for interrupting in-progress LLM operations
+    private final AtomicBoolean cancelSignal = new AtomicBoolean(false);
+
+    // Background task manager for Ctrl+B job control
+    private final BackgroundTaskManager backgroundTaskManager;
+    
+    // Auto-dequeue enabled flag
+    private boolean autoDequeueEnabled = true;
+
+    // Session metrics tracking
+    private final ChatSessionMetrics sessionMetrics;
+
+    // Animated generating spinner handle (active during LLM processing)
+    private volatile TerminalRenderer.SpinnerHandle generatingSpinner;
 
     /**
      * Server mode constructor.
@@ -156,13 +189,27 @@ public class ChatRepl {
             agentRegistry.register(custom);
         }
 
+        // Initialize skill registry with built-in and custom skills
+        this.skillRegistry = new SkillRegistry();
+        CustomSkillLoader customSkillLoader = new CustomSkillLoader(workDir);
+        Map<String, SkillConfig> customSkills = customSkillLoader.loadAll();
+        for (SkillConfig custom : customSkills.values()) {
+            skillRegistry.register(custom);
+        }
+
+        // Initialize role manager with built-in and custom roles
+        this.roleManager = new RoleManager(workDir);
+        for (RoleConfig role : roleManager.getAllRoles()) {
+            agentRegistry.registerRole(role);
+        }
+
         // Create background process manager for this session
-        BackgroundProcessManager processManager = new BackgroundProcessManager(sessionId);
+        this.processManager = new BackgroundProcessManager(sessionId);
 
         this.toolRegistry = ToolRegistryFactory.create(
                 objectMapper, baseUrl != null ? baseUrl : "", agentRegistry,
                 permissionService, renderer, processManager,
-                localMode ? chatConfig : null);
+                localMode ? chatConfig : null, roleManager);
 
         // Create DirectLlmClient for local mode
         DirectLlmClient directClient = null;
@@ -173,11 +220,35 @@ public class ChatRepl {
         this.agenticLoop = new AgenticChatLoop(
                 baseUrl, objectMapper, toolRegistry, permissionService,
                 agentRegistry, workDir, directClient, processManager);
+
+        // Initialize message queue for queued chats
+        this.messageQueue = new MessageQueue(sessionId);
+
+        // Initialize background task manager
+        this.backgroundTaskManager = new BackgroundTaskManager();
+
+        // Initialize session metrics
+        this.sessionMetrics = new ChatSessionMetrics(sessionId);
+        if (localMode && chatConfig != null) {
+            sessionMetrics.setProvider(chatConfig.getProvider());
+            sessionMetrics.setModel(chatConfig.getModel());
+        }
+        sessionMetrics.setAgentName(agentName);
+        sessionMetrics.setRagEnabled(ragEnabled);
+
+        // Wire metrics into agentic loop
+        this.agenticLoop.setSessionMetrics(sessionMetrics);
+
+        // Wire cancel signal into agentic loop
+        this.agenticLoop.setCancelSignal(cancelSignal);
     }
 
     public void run() throws Exception {
         // Restore previous conversation if resuming
         restoreSession();
+
+        // Set initial terminal title
+        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
 
         // Open transcript file for writing
         chatHistory.open(baseUrl != null ? baseUrl : "(local)", agentName, ragEnabled);
@@ -201,15 +272,67 @@ public class ChatRepl {
 
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)
-                .completer(new ChatCompleter(() -> cachedTools))
+                .completer(new ChatCompleter(() -> cachedTools, () -> skillRegistry.names()))
                 .variable(LineReader.HISTORY_FILE, historyFile)
                 .build();
 
         reader.getHistory().load();
 
-        // Print welcome banner
+        // Bind Ctrl+B to background current task
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("background-task"),
+            KeyMap.ctrl('B')
+        );
+
+        ((LineReaderImpl) reader).setVariable("background-task", new org.jline.reader.Widget() {
+            @Override
+            public boolean apply() {
+                if (llmBusy && backgroundTaskManager.getCurrentTask() != null) {
+                    backgroundTaskManager.requestBackground();
+                    sessionMetrics.recordTaskBackgrounded();
+                    BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+                    int queueSize = messageQueue.size();
+                    System.out.println();
+                    System.out.println(renderer.yellow("  ◐ Task backgrounded") + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
+                    if (queueSize > 0) {
+                        System.out.println(renderer.dim("    " + queueSize + " queued message(s) will auto-send when complete"));
+                    } else {
+                        System.out.println(renderer.dim("    Response will complete in background"));
+                    }
+                    System.out.println(renderer.dim("    Use /jobs to check status"));
+                    System.out.println();
+                    System.out.flush();
+                }
+                return true;
+            }
+        });
+
+        // Bind cancel key (default: Escape) to cancel in-progress operations
+        String cancelKeyBinding = resolveCancelKeyBinding();
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("cancel-operation"),
+            cancelKeyBinding
+        );
+
+        ((LineReaderImpl) reader).setVariable("cancel-operation", new org.jline.reader.Widget() {
+            @Override
+            public boolean apply() {
+                if (llmBusy) {
+                    cancelSignal.set(true);
+                    BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.getCurrentTask();
+                    System.out.println();
+                    System.out.println(renderer.yellow("  ⊘ Cancelling...") + renderer.dim(" [" + (task != null ? task.getId() : "?") + "]"));
+                    System.out.println(renderer.dim("    Current operation will stop at next safe point"));
+                    System.out.println();
+                    System.out.flush();
+                }
+                return true;
+            }
+        });
+
+        // Print welcome banner with mode options
         if (localMode) {
-            System.out.println(ascii.welcomePanel(sessionId, localAgentName, false));
+            System.out.println(ascii.welcomePanelWithModes(sessionId, localAgentName, false, true));
             System.out.println();
             String provider = chatConfig != null ? chatConfig.getProvider() : "unknown";
             String model = chatConfig != null ? chatConfig.getModel() : "unknown";
@@ -217,7 +340,7 @@ public class ChatRepl {
             System.out.println(renderer.dim("  All messages use the agentic tool loop with local tools."));
             System.out.println(renderer.dim("  Type /help for commands, /setup to reconfigure."));
         } else {
-            System.out.println(ascii.welcomePanel(sessionId, agentName, ragEnabled));
+            System.out.println(ascii.welcomePanelWithModes(sessionId, agentName, ragEnabled, false));
         }
 
         // Show AGENTS.md status
@@ -250,7 +373,9 @@ public class ChatRepl {
             while (true) {
                 String line;
                 try {
-                    line = reader.readLine("kompile> ");
+                    // Show queue indicator in prompt if there are queued messages
+                    String prompt = buildPrompt();
+                    line = reader.readLine(prompt);
                 } catch (UserInterruptException e) {
                     continue;
                 } catch (EndOfFileException e) {
@@ -273,10 +398,28 @@ public class ChatRepl {
             }
         } finally {
             reader.getHistory().save();
-            chatHistory.close();
-        }
 
-        System.out.println("Goodbye. Transcript saved to " + chatHistory.getTranscriptFile());
+            // Log session summary to transcript and save metrics
+            printSessionSummary();
+            chatHistory.close();
+
+            // Save metrics JSON alongside transcript
+            Path metricsFile = chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json");
+            sessionMetrics.saveToFile(metricsFile, objectMapper);
+
+            // Clean up background process manager to prevent shutdown hook leak
+            processManager.close();
+
+            // Properly clean up JLine terminal state
+            try {
+                // Clear screen before closing terminal to ensure clean exit
+                terminal.writer().print("\033[2J");
+                terminal.writer().flush();
+                terminal.close();
+            } catch (Exception e) {
+                // Ignore cleanup errors - terminal may already be in bad state
+            }
+        }
     }
 
     /**
@@ -316,8 +459,48 @@ public class ChatRepl {
                 System.out.println(renderer.dim("  Restored " + turns.size() + " turns to context."));
             }
 
+            // Validate and report subagent availability on resume
+            validateAndReportSubagentAvailability();
+
         } catch (Exception e) {
             System.err.println("Warning: Could not restore session: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Validate that subagent delegation is properly configured and report
+     * availability to the user when resuming a session.
+     */
+    private void validateAndReportSubagentAvailability() {
+        try {
+            // Check if TaskTool is registered
+            CliTool taskTool = toolRegistry.get("task");
+            if (taskTool == null) {
+                System.out.println(renderer.warn("  ⚠ Subagent delegation (task tool) not available"));
+                return;
+            }
+
+            // Validate TaskTool health
+            if (taskTool instanceof TaskTool) {
+                TaskTool task = (TaskTool) taskTool;
+                if (!task.isHealthy()) {
+                    System.out.println(renderer.warn("  ⚠ Subagent delegation tool is not properly configured"));
+                    return;
+                }
+            }
+
+            // Check subagent registry health
+            if (!agentRegistry.isSubagentDelegationHealthy()) {
+                System.out.println(renderer.warn("  ⚠ Subagent registry may not be properly configured"));
+            }
+
+            // Report subagent availability
+            String summary = agentRegistry.getSubagentSummary();
+            System.out.println(renderer.dim("  ✓ Subagent delegation enabled: " + summary));
+
+        } catch (Exception e) {
+            // Non-fatal - subagents are optional, but log the issue
+            System.out.println(renderer.dim("  ⚠ Subagent validation skipped: " + e.getMessage()));
         }
     }
 
@@ -348,6 +531,10 @@ public class ChatRepl {
                 } else {
                     listTools();
                 }
+                return true;
+
+            case "/subagents":
+                listSubagents();
                 return true;
 
             case "/local-tools":
@@ -472,7 +659,100 @@ public class ChatRepl {
                 showTodos();
                 return true;
 
+            // Queue management commands
+            case "/queue":
+                enqueueMessage(rest);
+                return true;
+
+            case "/queues":
+                listQueuedMessages();
+                return true;
+
+            case "/queue-send":
+                if (rest.isBlank()) {
+                    sendNextQueuedMessage();
+                } else {
+                    sendQueuedMessageById(rest.trim());
+                }
+                return true;
+
+            case "/queue-send-all":
+                sendAllQueuedMessages();
+                return true;
+
+            case "/queue-remove":
+                removeQueuedMessage(rest.trim());
+                return true;
+
+            case "/queue-clear":
+                clearQueuedMessages();
+                return true;
+
+            case "/queue-status":
+                showQueueStatus();
+                return true;
+
+            // Background task management commands
+            case "/jobs":
+                listBackgroundTasks();
+                return true;
+
+            case "/jobs-remove":
+                removeBackgroundTask(rest.trim());
+                return true;
+
+            case "/jobs-clear":
+                clearCompletedBackgroundTasks();
+                return true;
+
+            case "/auto-dequeue":
+                toggleAutoDequeue();
+                return true;
+
+            case "/stats":
+                printSessionSummary();
+                return true;
+
+            case "/passthrough":
+                launchPassthroughMode(rest.trim());
+                return true;
+
+            case "/resume":
+                launchResumeTool(rest.trim());
+                return true;
+
+            case "/mode":
+                handleModeSwitch(rest.trim());
+                return true;
+
+            case "/menu":
+                showMainMenu();
+                return true;
+
+            case "/skills":
+                listSkills();
+                return true;
+
+            case "/roles":
+                manageRoles();
+                return true;
+
+            case "/role":
+                if (rest.isBlank()) {
+                    showCurrentRole();
+                } else {
+                    assignRole(rest.trim());
+                }
+                return true;
+
             default:
+                // Check if it's a skill invocation (e.g. /commit, /review)
+                String skillName = cmd.substring(1); // strip leading /
+                SkillConfig skill = skillRegistry.get(skillName);
+                if (skill != null) {
+                    executeSkill(skill, rest);
+                    return true;
+                }
                 System.out.println("Unknown command: " + cmd + ". Type /help for available commands.");
                 return true;
         }
@@ -483,6 +763,28 @@ public class ChatRepl {
     // ========================================================================
 
     private void handleChatMessage(String message) {
+        // Auto-queue message if LLM is busy
+        if (llmBusy) {
+            MessageQueue.QueuedMessage msg = messageQueue.enqueue(message);
+            sessionMetrics.recordMessageQueued();
+            int queueSize = messageQueue.size();
+            System.out.println();
+            System.out.println(renderer.yellow("  ⏳ Queued ") + renderer.dim("(" + queueSize + " pending)"));
+            System.out.println(renderer.dim("     → ") + truncate(message, 60));
+            if (autoDequeueEnabled) {
+                System.out.println(renderer.dim("     Will auto-send when current task completes"));
+            } else {
+                System.out.println(renderer.dim("     Use /queue-send to send manually"));
+            }
+            System.out.println();
+            chatHistory.logUserMessage("(queued) " + message);
+            return;
+        }
+
+        // Reset cancel signal for this new message
+        cancelSignal.set(false);
+
+        sessionMetrics.recordUserTurn(message);
         chatHistory.logUserMessage(message);
 
         if (localMode) {
@@ -504,14 +806,28 @@ public class ChatRepl {
         }
 
         System.out.println();
+        llmBusy = true;
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + truncate(message, 50));
+        printGeneratingIndicator();
+        agenticLoop.setOnFirstOutput(this::stopGeneratingSpinner);
+        long turnStart = System.currentTimeMillis();
+
         try {
             String response = agenticLoop.chat(
                     enrichedMessage, sessionId, localAgentName, agentName, false);
 
+            stopGeneratingSpinner();
+            long turnDuration = System.currentTimeMillis() - turnStart;
             System.out.println("\n");
-            chatHistory.logAgentResponse(localAgentName, response, 0);
+            chatHistory.logAgentResponse(localAgentName, response, turnDuration);
+            task.appendOutput(response);
+            sessionMetrics.recordAssistantTurn(response, turnDuration);
+            completeTaskWithAutoDequeue();
         } catch (Exception e) {
+            stopGeneratingSpinner();
             System.err.println("\nError in chat: " + e.getMessage());
+            task.setError(e);
+            completeTaskWithAutoDequeue();
         }
     }
 
@@ -525,6 +841,9 @@ public class ChatRepl {
             }
         }
 
+        llmBusy = true;
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("LLM response: " + truncate(message, 50));
+        printGeneratingIndicator();
         try {
             ObjectNode args = objectMapper.createObjectNode();
             args.put("sessionId", sessionId);
@@ -534,6 +853,7 @@ public class ChatRepl {
             args.put("similarityThreshold", 0.5);
 
             String rawResponse = mcpClient.callTool("send_chat_message", args);
+            stopGeneratingSpinner();
 
             try {
                 JsonNode json = objectMapper.readTree(rawResponse);
@@ -550,19 +870,23 @@ public class ChatRepl {
 
                 if (docsRetrieved > 0) {
                     System.out.printf("  [%d docs retrieved, %dms]%n", docsRetrieved, timeMs);
+                    sessionMetrics.recordRagQuery(docsRetrieved);
                 }
                 System.out.println();
 
-                chatHistory.logAssistantMessage(
-                        answer != null ? answer : rawResponse,
-                        docsRetrieved, timeMs);
+                String finalAnswer = answer != null ? answer : rawResponse;
+                sessionMetrics.recordAssistantTurn(finalAnswer, timeMs);
+                chatHistory.logAssistantMessage(finalAnswer, docsRetrieved, timeMs);
             } catch (Exception e) {
                 System.out.println("\n" + rawResponse + "\n");
                 chatHistory.logAssistantMessage(rawResponse, 0, 0);
             }
         } catch (Exception e) {
+            stopGeneratingSpinner();
             System.err.println("Error sending message: " + e.getMessage());
+            task.setError(e);
         }
+        completeTaskWithAutoDequeue();
     }
 
     // ========================================================================
@@ -587,6 +911,9 @@ public class ChatRepl {
             }
         }
 
+        llmBusy = true;
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Streaming LLM response: " + truncate(message, 40));
+        printGeneratingIndicator();
         try {
             ObjectNode request = objectMapper.createObjectNode();
             request.put("message", enrichedMessage);
@@ -614,10 +941,12 @@ public class ChatRepl {
                     httpRequest, HttpResponse.BodyHandlers.ofInputStream());
 
             if (response.statusCode() != 200) {
+                stopGeneratingSpinner();
                 System.err.println("Agent stream failed: HTTP " + response.statusCode());
                 return;
             }
 
+            stopGeneratingSpinner();
             System.out.println();
 
             // Accumulate full response for transcript
@@ -630,6 +959,11 @@ public class ChatRepl {
                 String line;
 
                 while ((line = reader.readLine()) != null) {
+                    if (cancelSignal.get()) {
+                        System.out.println("\n" + renderer.yellow("  ⊘ Cancelled"));
+                        fullResponse.append("\n[Cancelled by user]");
+                        break;
+                    }
                     if (line.startsWith("event:")) {
                         eventType = line.substring(6).trim();
                     } else if (line.startsWith("data:")) {
@@ -644,11 +978,17 @@ public class ChatRepl {
 
             System.out.println("\n");
 
-            chatHistory.logAgentResponse(agentName, fullResponse.toString(), durationMs[0]);
+            String responseText = fullResponse.toString();
+            chatHistory.logAgentResponse(agentName, responseText, durationMs[0]);
+            task.appendOutput(responseText);
+            sessionMetrics.recordAssistantTurn(responseText, durationMs[0]);
 
         } catch (Exception e) {
+            stopGeneratingSpinner();
             System.err.println("\nError in agent stream: " + e.getMessage());
+            task.setError(e);
         }
+        completeTaskWithAutoDequeue();
     }
 
     // ========================================================================
@@ -678,16 +1018,28 @@ public class ChatRepl {
 
         System.out.println();
 
+        llmBusy = true;
+        BackgroundTaskManager.BackgroundTask task = backgroundTaskManager.startTask("Agentic chat: " + truncate(message, 40));
+        printGeneratingIndicator();
+        agenticLoop.setOnFirstOutput(this::stopGeneratingSpinner);
+        long turnStart = System.currentTimeMillis();
         try {
             String response = agenticLoop.chat(
                     enrichedMessage, sessionId, localAgentName, agentName, ragEnabled);
 
+            stopGeneratingSpinner();
+            long turnDuration = System.currentTimeMillis() - turnStart;
             System.out.println("\n");
-            chatHistory.logAgentResponse(localAgentName, response, 0);
+            chatHistory.logAgentResponse(localAgentName, response, turnDuration);
+            task.appendOutput(response);
+            sessionMetrics.recordAssistantTurn(response, turnDuration);
 
         } catch (Exception e) {
+            stopGeneratingSpinner();
             System.err.println("\nError in agentic chat: " + e.getMessage());
+            task.setError(e);
         }
+        completeTaskWithAutoDequeue();
     }
 
     private void handleStreamEvent(String eventType, String data,
@@ -776,19 +1128,48 @@ public class ChatRepl {
             body.append(renderer.bold(renderer.cyan("Tools & Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/tools")).append("              List local CLI tools\n");
             body.append("  ").append(renderer.cyan("/tool")).append(" name [json]   Invoke a tool directly\n");
+            body.append("  ").append(renderer.cyan("/subagents")).append("          List available subagents for delegation\n");
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
             body.append("\n");
-            body.append(renderer.bold(renderer.cyan("Session"))).append("\n");
-            body.append("  ").append(renderer.cyan("/history")).append("            Show conversation transcript\n");
-            body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
-            body.append("  ").append(renderer.cyan("/config")).append("             Show LLM configuration\n");
+            body.append(renderer.bold(renderer.cyan("Navigation"))).append("\n");
+            body.append("  ").append(renderer.cyan("/menu")).append("               Main menu (chat, passthrough, resume, setup)\n");
+            body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
+            body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
+            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough)\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
-            body.append("  ").append(renderer.cyan("/status")).append("             Session info\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
+            body.append("  ").append(renderer.cyan("/queue <text>")).append("       Add a message to the queue\n");
+            body.append("  ").append(renderer.cyan("/queues")).append("               List queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-send")).append("           Send the next queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-send <id>")).append("      Send a specific queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-send-all")).append("       Send all queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-remove <id>")).append("    Remove a message from the queue\n");
+            body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Background Tasks & Cancel"))).append("\n");
+            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
+            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
+            body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
+            body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
+            body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Skills"))).append("\n");
+            body.append("  ").append(renderer.cyan("/skills")).append("             List all available skills\n");
+            body.append("  ").append(renderer.cyan("/<skill> [args]")).append("     Run a skill (e.g. /commit, /review, /fix)\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Roles"))).append("\n");
+            body.append("  ").append(renderer.cyan("/roles")).append("              Open role management wizard\n");
+            body.append("  ").append(renderer.cyan("/role")).append("               Show current active role\n");
+            body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
+            body.append("  ").append(renderer.cyan("/stats")).append("              Session statistics (tokens, timing, tools)\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
         } else {
@@ -817,6 +1198,11 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
+            body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
+            body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
+            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough)\n");
+            body.append("\n");
             body.append(renderer.bold(renderer.cyan("RAG & Server Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/rag")).append(" on|off         Toggle RAG retrieval\n");
             body.append("  ").append(renderer.cyan("/agents")).append("             List server agents\n");
@@ -824,10 +1210,37 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/tools")).append("              List MCP tools\n");
             body.append("  ").append(renderer.cyan("/tool")).append(" <name> [json] Invoke MCP tool\n");
             body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Skills"))).append("\n");
+            body.append("  ").append(renderer.cyan("/skills")).append("             List all available skills\n");
+            body.append("  ").append(renderer.cyan("/<skill> [args]")).append("     Run a skill (e.g. /commit, /review, /fix)\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Roles"))).append("\n");
+            body.append("  ").append(renderer.cyan("/roles")).append("              Open role management wizard\n");
+            body.append("  ").append(renderer.cyan("/role")).append("               Show current active role\n");
+            body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
+            body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/status")).append("             Connection and session info\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
             body.append("  ").append(renderer.cyan("/quit")).append("               Exit the chat");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
+            body.append("  ").append(renderer.cyan("/queue <text>")).append("       Add a message to the queue\n");
+            body.append("  ").append(renderer.cyan("/queues")).append("               List queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-send")).append("           Send the next queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-send <id>")).append("      Send a specific queued message\n");
+            body.append("  ").append(renderer.cyan("/queue-send-all")).append("       Send all queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-remove <id>")).append("    Remove a message from the queue\n");
+            body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
+            body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
+            body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Background Tasks & Cancel"))).append("\n");
+            body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
+            body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
+            body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
+            body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
+            body.append("  ").append(renderer.cyan("/auto-dequeue")).append("       Toggle auto-send queued messages\n");
         }
 
         System.out.println(ascii.panel("Help", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
@@ -914,6 +1327,45 @@ public class ChatRepl {
         }
     }
 
+    /**
+     * List available subagents for delegation via the task tool.
+     */
+    private void listSubagents() {
+        List<AgentConfig> subagents = agentRegistry.getSubagents();
+        
+        if (subagents.isEmpty()) {
+            System.out.println(renderer.yellow("  No subagents available for delegation."));
+            System.out.println(renderer.dim("  Subagents can be added in ~/.kompile/agents/ or .kompile/agents/"));
+            return;
+        }
+
+        java.util.List<String> headers = java.util.List.of("Agent", "Description", "Steps", "Model");
+        java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+        
+        for (AgentConfig subagent : subagents) {
+            String desc = subagent.getDescription();
+            if (desc != null && desc.length() > 50) {
+                desc = desc.substring(0, 47) + "...";
+            }
+            String model = subagent.getModelHint() != null ? subagent.getModelHint() : "default";
+            String customTag = subagent.isCustom() ? " [custom]" : "";
+            
+            rows.add(java.util.List.of(
+                subagent.getName() + customTag,
+                desc != null ? desc : "",
+                String.valueOf(subagent.getMaxSteps()),
+                model
+            ));
+        }
+
+        String title = "Available Subagents (" + subagents.size() + ")";
+        System.out.println(ascii.sectionHeader(title));
+        System.out.println(ascii.table(headers, rows));
+        System.out.println();
+        System.out.println(renderer.dim("  Use in chat: \"task an explore-deep to analyze the codebase\""));
+        System.out.println(renderer.dim("  Or via /task tool: delegate specific subtasks to specialized agents"));
+    }
+
     private void invokeLocalTool(String rest) {
         if (rest.isBlank()) {
             System.out.println("Usage: /tool <tool_name> [json_arguments]");
@@ -996,6 +1448,134 @@ public class ChatRepl {
         localAgentName = name.trim();
         chatHistory.logSystem("Switched local agent to: " + localAgentName);
         System.out.println("Switched local agent to: " + localAgentName);
+    }
+
+    // ========================================================================
+    // Skill execution
+    // ========================================================================
+
+    private void executeSkill(SkillConfig skill, String args) {
+        String expandedPrompt = skill.expandTemplate(args);
+        String taggedPrompt = "<skill name=\"" + skill.getName() + "\">\n" + expandedPrompt + "\n</skill>";
+        chatHistory.logSystem("Executing skill: /" + skill.getName() + (args.isBlank() ? "" : " " + args));
+        handleChatMessage(taggedPrompt);
+    }
+
+    private void listSkills() {
+        List<String> categories = skillRegistry.categories();
+        List<String> headers = List.of("Skill", "Category", "Description", "Type");
+        List<List<String>> rows = new java.util.ArrayList<>();
+
+        for (String category : categories) {
+            for (SkillConfig skill : skillRegistry.getByCategory(category)) {
+                String type = skill.isBuiltIn() ? renderer.dim("built-in") : renderer.cyan("custom");
+                rows.add(List.of("/" + skill.getName(), category, skill.getDescription(), type));
+            }
+        }
+
+        System.out.println(ascii.sectionHeader("Skills"));
+        System.out.println(ascii.table(headers, rows));
+        System.out.println();
+        System.out.println(renderer.dim("  Usage: /<skill> [args]  (e.g. /commit -m \"fix auth bug\")"));
+        System.out.println(renderer.dim("  Custom skills: ~/.kompile/skills/ or .kompile/skills/"));
+    }
+
+    // ========================================================================
+    // Role management
+    // ========================================================================
+
+    /**
+     * Assign a role at startup (before REPL loop starts).
+     * Called by ChatCommand when --role or --roles is used.
+     */
+    public void assignRoleAtStartup(String roleName) {
+        RoleConfig role = roleManager.setActiveRole(roleName);
+        if (role == null) {
+            System.out.println(renderer.yellow("  Warning: Role not found: ") + roleName);
+            System.out.println(renderer.dim("  Continuing with default agent"));
+            System.out.println();
+            return;
+        }
+
+        // Update the agent name to reflect the role
+        String oldAgentName = agentName;
+        agentName = role.getName();
+        
+        // Update the agentic loop with the role's agent config
+        AgentConfig roleAgentConfig = role.toAgentConfig();
+        agenticLoop.setAgentConfig(roleAgentConfig);
+
+        System.out.println();
+        System.out.println(renderer.green("  ✓ Role assigned: ") + renderer.cyan(role.getName()));
+        System.out.println("  " + role.getDisplayName() + renderer.dim(" - " + role.getDescription()));
+        System.out.println();
+        System.out.println(renderer.dim("  Agent set to " + agentName + " (was " + oldAgentName + ")"));
+        System.out.println(renderer.dim("  Use /roles to change"));
+        System.out.println();
+
+        // Track in metrics
+        sessionMetrics.setAgentName(agentName);
+        sessionMetrics.setActiveRole(role.getName());
+    }
+
+    private void manageRoles() {
+        RoleWizard wizard = new RoleWizard(roleManager);
+        wizard.run();
+    }
+
+    private void showCurrentRole() {
+        String activeRole = roleManager.getActiveRoleName();
+        System.out.println();
+        System.out.println(ascii.sectionHeader("Current Role"));
+        System.out.println();
+        
+        if (activeRole == null) {
+            System.out.println("  No role currently active");
+            System.out.println("  Using default agent: " + renderer.cyan(agentName));
+        } else {
+            RoleConfig role = roleManager.getRole(activeRole);
+            if (role != null) {
+                System.out.println("  Role: " + renderer.cyan(role.getName()));
+                System.out.println("  Display Name: " + role.getDisplayName());
+                System.out.println("  Category: " + role.getCategory());
+                System.out.println("  Description: " + role.getDescription());
+                System.out.println();
+                System.out.println(renderer.dim("  Use /role <name> to switch roles"));
+                System.out.println(renderer.dim("  Use /roles to manage roles"));
+            }
+        }
+        System.out.println();
+    }
+
+    private void assignRole(String roleName) {
+        RoleConfig role = roleManager.setActiveRole(roleName);
+        if (role == null) {
+            System.out.println();
+            System.out.println(renderer.yellow("  Role not found: ") + roleName);
+            System.out.println(renderer.dim("  Use /roles to see available roles"));
+            System.out.println();
+            return;
+        }
+
+        // Update the agent name to reflect the role
+        String oldAgentName = agentName;
+        agentName = role.getName();
+        
+        // Update the agentic loop with the role's agent config
+        AgentConfig roleAgentConfig = role.toAgentConfig();
+        agenticLoop.setAgentConfig(roleAgentConfig);
+
+        System.out.println();
+        System.out.println(renderer.green("  ✓ Role assigned: ") + renderer.cyan(role.getName()));
+        System.out.println("  " + role.getDisplayName() + renderer.dim(" - " + role.getDescription()));
+        System.out.println();
+        System.out.println(renderer.dim("  Agent changed from " + oldAgentName + " to " + agentName));
+        System.out.println(renderer.dim("  The agent will now use this role's system prompt"));
+        System.out.println();
+
+        // Track in metrics
+        sessionMetrics.setAgentName(agentName);
+        sessionMetrics.setActiveRole(role.getName());
     }
 
     private void handlePermissions(String rest) {
@@ -1533,5 +2113,756 @@ public class ChatRepl {
     private static String truncate(String s, int maxLen) {
         if (s == null) return "";
         return s.length() <= maxLen ? s : s.substring(0, maxLen - 3) + "...";
+    }
+
+    /**
+     * Resolves the cancel key binding string for JLine from the chat config.
+     * Supports: ESCAPE (default), Ctrl+<letter> (e.g., "Ctrl+Q"), or raw key strings.
+     */
+    private String resolveCancelKeyBinding() {
+        String key = "ESCAPE";
+        if (chatConfig != null && chatConfig.getCancelKey() != null && !chatConfig.getCancelKey().isBlank()) {
+            key = chatConfig.getCancelKey().trim().toUpperCase();
+        }
+
+        if ("ESCAPE".equals(key) || "ESC".equals(key)) {
+            return "\033";
+        }
+
+        // Support Ctrl+<letter> format
+        if (key.startsWith("CTRL+") && key.length() == 6) {
+            char letter = key.charAt(5);
+            return KeyMap.ctrl(Character.toUpperCase(letter));
+        }
+
+        // Fallback to escape
+        return "\033";
+    }
+
+    /**
+     * Builds the prompt string with queue indicator and notifications.
+     */
+    private String buildPrompt() {
+        // Check for completed backgrounded task notifications
+        List<BackgroundTaskManager.BackgroundTask> notifications = backgroundTaskManager.drainNotifications();
+        if (!notifications.isEmpty()) {
+            for (BackgroundTaskManager.BackgroundTask task : notifications) {
+                System.out.println();
+                System.out.println(renderer.green("  ✓ Backgrounded task completed") + renderer.dim(" [" + task.getId() + "] " + task.getElapsedTime()));
+                String desc = task.getDescription();
+                if (desc.length() > 60) desc = desc.substring(0, 57) + "...";
+                System.out.println(renderer.dim("    " + desc));
+                if (task.getOutput() != null && !task.getOutput().isEmpty()) {
+                    String preview = task.getOutput().replaceAll("\\s+", " ").trim();
+                    if (preview.length() > 70) preview = preview.substring(0, 67) + "...";
+                    System.out.println(renderer.dim("    → " + preview));
+                }
+            }
+            System.out.println();
+        }
+
+        StringBuilder prompt = new StringBuilder("kompile");
+
+        // Show queue count
+        if (!messageQueue.isEmpty()) {
+            int queueSize = messageQueue.size();
+            prompt.append(renderer.green("["))
+                  .append(renderer.yellow(String.valueOf(queueSize)))
+                  .append(renderer.green("]"));
+        }
+
+        // Show queue chain progress
+        if (backgroundTaskManager.isInQueueChain()) {
+            int current = backgroundTaskManager.getQueueChainCurrent();
+            int total = backgroundTaskManager.getQueueChainTotal();
+            prompt.append(renderer.dim("(" + current + "/" + total + ")"));
+        }
+
+        prompt.append("> ");
+        return prompt.toString();
+    }
+
+    /**
+     * Starts the animated "Generating..." spinner with terminal title update.
+     * Call {@link #stopGeneratingSpinner()} when the response starts arriving.
+     */
+    private void printGeneratingIndicator() {
+        String chainInfo = "";
+        if (backgroundTaskManager.isInQueueChain()) {
+            int current = backgroundTaskManager.getQueueChainCurrent();
+            int total = backgroundTaskManager.getQueueChainTotal();
+            chainInfo = renderer.dim(" [" + current + "/" + total + "]");
+        }
+        stopGeneratingSpinner(); // stop any previous spinner
+        generatingSpinner = renderer.startGeneratingSpinner(chainInfo);
+    }
+
+    /**
+     * Stops the animated generating spinner and clears the line.
+     */
+    private void stopGeneratingSpinner() {
+        TerminalRenderer.SpinnerHandle spinner = generatingSpinner;
+        if (spinner != null) {
+            spinner.stop();
+            generatingSpinner = null;
+        }
+    }
+
+    // ========================================================================
+    // Message Queue Management
+    // ========================================================================
+
+    /**
+     * Adds a message to the queue.
+     *
+     * @param content the message content
+     */
+    private void enqueueMessage(String content) {
+        if (content.isBlank()) {
+            System.out.println("Usage: /queue <message>");
+            System.out.println("Adds a message to the queue to be sent later.");
+            return;
+        }
+
+        MessageQueue.QueuedMessage msg = messageQueue.enqueue(content);
+        System.out.println(renderer.green("Message queued [") + msg.getId() + renderer.green("]"));
+        System.out.println(renderer.dim("  Use /queues to view, /queue-send to send now, /queue-remove <id> to cancel"));
+        System.out.println();
+    }
+
+    /**
+     * Lists all queued messages.
+     */
+    private void listQueuedMessages() {
+        if (messageQueue.isEmpty()) {
+            System.out.println(renderer.cyan("Queue is empty"));
+            return;
+        }
+
+        StringBuilder body = new StringBuilder();
+        body.append(renderer.bold(renderer.cyan("Queued Messages"))).append("\n\n");
+
+        List<MessageQueue.QueuedMessage> messages = messageQueue.getAll();
+        for (int i = 0; i < messages.size(); i++) {
+            MessageQueue.QueuedMessage msg = messages.get(i);
+            body.append(renderer.bold(String.valueOf(i + 1)))
+                .append(". [")
+                .append(renderer.cyan(msg.getId()))
+                .append("] ")
+                .append(truncate(msg.getContent(), 70))
+                .append("\n");
+        }
+
+        body.append("\n").append(renderer.dim("Total: ")).append(messages.size()).append(" message(s)");
+        System.out.println(ascii.panel("Message Queue", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+        System.out.println(renderer.dim("Commands:"));
+        System.out.println(renderer.dim("  /queue-send [id]     Send the next message (or specific ID)"));
+        System.out.println(renderer.dim("  /queue-send-all      Send all queued messages"));
+        System.out.println(renderer.dim("  /queue-remove <id>   Remove a message from the queue"));
+        System.out.println(renderer.dim("  /queue-clear         Clear all queued messages"));
+        System.out.println();
+    }
+
+    /**
+     * Sends the next queued message immediately.
+     */
+    private void sendNextQueuedMessage() {
+        MessageQueue.QueuedMessage msg = messageQueue.peek();
+        if (msg == null) {
+            System.out.println(renderer.yellow("Queue is empty"));
+            return;
+        }
+
+        System.out.println(renderer.cyan("Sending queued message [") + msg.getId() + renderer.cyan("]"));
+        messageQueue.dequeue();
+        handleChatMessage(msg.getContent());
+    }
+
+    /**
+     * Sends a specific queued message by ID.
+     *
+     * @param id the message ID
+     */
+    private void sendQueuedMessageById(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /queue-send <id>");
+            return;
+        }
+
+        MessageQueue.QueuedMessage msg = messageQueue.get(id);
+        if (msg == null) {
+            System.out.println(renderer.red("Message not found: ") + id);
+            return;
+        }
+
+        System.out.println(renderer.cyan("Sending queued message [") + id + renderer.cyan("]"));
+        messageQueue.remove(id);
+        handleChatMessage(msg.getContent());
+    }
+
+    /**
+     * Sends all queued messages in order.
+     */
+    private void sendAllQueuedMessages() {
+        if (messageQueue.isEmpty()) {
+            System.out.println(renderer.yellow("Queue is empty"));
+            return;
+        }
+
+        int total = messageQueue.size();
+        backgroundTaskManager.startQueueChain(total);
+        System.out.println(renderer.cyan("Sending all " + total + " queued messages..."));
+        System.out.println();
+
+        int count = 0;
+        while (!messageQueue.isEmpty()) {
+            count++;
+            backgroundTaskManager.advanceQueueChain();
+            MessageQueue.QueuedMessage msg = messageQueue.dequeue();
+            System.out.println(renderer.dim("→ [" + count + "/" + total + "] Sending: ") + truncate(msg.getContent(), 55));
+            handleChatMessage(msg.getContent());
+        }
+
+        backgroundTaskManager.endQueueChain();
+        System.out.println(renderer.green("✓ All " + total + " queued messages sent"));
+    }
+
+    /**
+     * Removes a message from the queue by ID.
+     *
+     * @param id the message ID
+     */
+    private void removeQueuedMessage(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /queue-remove <id>");
+            return;
+        }
+
+        if (messageQueue.remove(id)) {
+            System.out.println(renderer.green("Removed message [") + id + renderer.green("]"));
+        } else {
+            System.out.println(renderer.red("Message not found: ") + id);
+        }
+    }
+
+    /**
+     * Clears all queued messages.
+     */
+    private void clearQueuedMessages() {
+        messageQueue.clear();
+        System.out.println(renderer.green("Queue cleared"));
+    }
+
+    /**
+     * Shows the queue status.
+     */
+    private void showQueueStatus() {
+        System.out.println(messageQueue.getStatus());
+    }
+
+    // ========================================================================
+    // Background Task Management
+    // ========================================================================
+
+    /**
+     * Lists all background tasks with comprehensive status.
+     */
+    private void listBackgroundTasks() {
+        StringBuilder body = new StringBuilder();
+
+        // Active tasks section
+        List<BackgroundTaskManager.BackgroundTask> active = backgroundTaskManager.getActiveTasks();
+        if (!active.isEmpty()) {
+            body.append(renderer.bold(renderer.cyan("Active"))).append("\n");
+            for (BackgroundTaskManager.BackgroundTask task : active) {
+                body.append("  ").append(task.getStatusIcon())
+                    .append(" [").append(renderer.cyan(task.getId())).append("] ")
+                    .append(task.getDescription())
+                    .append(renderer.dim(" (" + task.getElapsedTime() + ")"))
+                    .append("\n");
+            }
+        }
+
+        // Completed/failed tasks section
+        List<BackgroundTaskManager.BackgroundTask> completed = backgroundTaskManager.getCompletedTasks();
+        if (!completed.isEmpty()) {
+            if (!active.isEmpty()) body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Recent"))).append("\n");
+            int start = Math.max(0, completed.size() - 8);
+            for (int i = start; i < completed.size(); i++) {
+                BackgroundTaskManager.BackgroundTask task = completed.get(i);
+                String icon = task.getStatus() == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.COMPLETED
+                        ? renderer.green(task.getStatusIcon()) : renderer.red(task.getStatusIcon());
+                body.append("  ").append(icon)
+                    .append(" [").append(renderer.dim(task.getId())).append("] ")
+                    .append(task.getDescription())
+                    .append(renderer.dim(" (" + task.getElapsedTime() + ")"));
+                if (task.getError() != null) {
+                    body.append(renderer.red(" — " + task.getError().getMessage()));
+                }
+                body.append("\n");
+                // Output preview for completed tasks
+                if (task.getStatus() == BackgroundTaskManager.BackgroundTask.BackgroundTaskStatus.COMPLETED
+                        && task.getOutput() != null && !task.getOutput().isEmpty()) {
+                    String preview = task.getOutput().replaceAll("\\s+", " ").trim();
+                    if (preview.length() > 70) preview = preview.substring(0, 67) + "...";
+                    body.append(renderer.dim("       " + preview)).append("\n");
+                }
+            }
+        }
+
+        if (active.isEmpty() && completed.isEmpty()) {
+            body.append(renderer.dim("  No background tasks")).append("\n");
+        }
+
+        // Queue section
+        body.append("\n");
+        if (!messageQueue.isEmpty()) {
+            body.append(renderer.bold(renderer.cyan("Queue"))).append(renderer.dim(" (" + messageQueue.size() + " pending)")).append("\n");
+            List<MessageQueue.QueuedMessage> messages = messageQueue.getAll();
+            for (int i = 0; i < Math.min(messages.size(), 5); i++) {
+                MessageQueue.QueuedMessage msg = messages.get(i);
+                String prefix = i == 0 ? renderer.yellow("  → ") : renderer.dim("  " + (i + 1) + ". ");
+                body.append(prefix).append(truncate(msg.getContent(), 60)).append("\n");
+            }
+            if (messages.size() > 5) {
+                body.append(renderer.dim("  ... and " + (messages.size() - 5) + " more")).append("\n");
+            }
+            body.append("\n");
+            if (autoDequeueEnabled) {
+                body.append(renderer.green("  ✓ Auto-dequeue ON")).append(renderer.dim(" — messages send automatically")).append("\n");
+            } else {
+                body.append(renderer.yellow("  ○ Auto-dequeue OFF")).append(renderer.dim(" — use /queue-send to send manually")).append("\n");
+            }
+        } else {
+            body.append(renderer.dim("  Queue empty")).append("\n");
+        }
+
+        // Queue chain progress
+        if (backgroundTaskManager.isInQueueChain()) {
+            body.append(renderer.dim("  Processing " + backgroundTaskManager.getQueueChainCurrent()
+                    + "/" + backgroundTaskManager.getQueueChainTotal())).append("\n");
+        }
+
+        System.out.println(ascii.panel("Jobs & Queue", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+        System.out.println(renderer.dim("  Escape              Cancel in-progress operation"));
+        System.out.println(renderer.dim("  Ctrl+B              Background current task"));
+        System.out.println(renderer.dim("  /jobs-remove <id>   Remove a completed task"));
+        System.out.println(renderer.dim("  /jobs-clear         Clear all completed tasks"));
+        System.out.println(renderer.dim("  /auto-dequeue       Toggle auto-send queued messages"));
+        System.out.println();
+    }
+
+    /**
+     * Removes a background task by ID.
+     *
+     * @param id the task ID
+     */
+    private void removeBackgroundTask(String id) {
+        if (id.isBlank()) {
+            System.out.println("Usage: /jobs-remove <id>");
+            return;
+        }
+
+        if (backgroundTaskManager.removeTask(id)) {
+            System.out.println(renderer.green("Removed task [") + id + renderer.green("]"));
+        } else {
+            System.out.println(renderer.red("Task not found or still running: ") + id);
+        }
+    }
+
+    /**
+     * Clears all completed background tasks.
+     */
+    private void clearCompletedBackgroundTasks() {
+        backgroundTaskManager.clearCompletedTasks();
+        System.out.println(renderer.green("Cleared completed tasks"));
+    }
+    
+    /**
+     * Toggles auto-dequeue on/off.
+     */
+    private void toggleAutoDequeue() {
+        autoDequeueEnabled = !autoDequeueEnabled;
+        if (autoDequeueEnabled) {
+            System.out.println(renderer.green("✓ Auto-dequeue enabled"));
+            System.out.println(renderer.dim("  Queued messages will send automatically when tasks complete"));
+            if (!messageQueue.isEmpty()) {
+                System.out.println(renderer.dim("  " + messageQueue.size() + " message(s) in queue"));
+            }
+        } else {
+            System.out.println(renderer.yellow("○ Auto-dequeue disabled"));
+            System.out.println(renderer.dim("  Use /queue-send to manually send queued messages"));
+            if (!messageQueue.isEmpty()) {
+                System.out.println(renderer.dim("  " + messageQueue.size() + " message(s) waiting in queue"));
+            }
+        }
+        System.out.println();
+    }
+    
+    /**
+     * Completes the current task and auto-dequeues next message if available.
+     * Tracks queue chain progress for "Processing 2/5" indicators.
+     */
+    private void completeTaskWithAutoDequeue() {
+        backgroundTaskManager.completeCurrentTask();
+        llmBusy = false;
+        renderer.setTerminalTitle("kompile chat" + (localMode ? " (local)" : " — " + agentName));
+
+        // Auto-dequeue next message if enabled and queue is not empty
+        if (autoDequeueEnabled && !messageQueue.isEmpty()) {
+            MessageQueue.QueuedMessage nextMsg = messageQueue.peek();
+            if (nextMsg != null) {
+                // Start chain tracking if not already in a chain
+                if (!backgroundTaskManager.isInQueueChain()) {
+                    backgroundTaskManager.startQueueChain(messageQueue.size());
+                }
+                backgroundTaskManager.advanceQueueChain();
+
+                int current = backgroundTaskManager.getQueueChainCurrent();
+                int total = backgroundTaskManager.getQueueChainTotal();
+                int remaining = messageQueue.size() - 1;
+
+                System.out.println();
+                System.out.println(renderer.green("  ✓ Complete ") + renderer.dim("→ sending next (" + current + "/" + total + ")"));
+                System.out.println(renderer.dim("     → ") + truncate(nextMsg.getContent(), 60));
+                if (remaining > 0) {
+                    System.out.println(renderer.dim("     (" + remaining + " more queued)"));
+                }
+                System.out.println();
+                messageQueue.dequeue();
+                sessionMetrics.recordMessageAutoDequeued();
+                // Small delay for clean transition
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                handleChatMessage(nextMsg.getContent());
+                return;
+            }
+        }
+
+        // End queue chain if we're done
+        if (backgroundTaskManager.isInQueueChain()) {
+            int total = backgroundTaskManager.getQueueChainTotal();
+            backgroundTaskManager.endQueueChain();
+            System.out.println();
+            System.out.println(renderer.green("  ✓ All " + total + " queued messages processed"));
+            System.out.println();
+        }
+    }
+
+    // ========================================================================
+    // Session Summary & Stats
+    // ========================================================================
+
+    /**
+     * Prints comprehensive session summary on exit.
+     * Inspired by Claude Code /cost, Codex CLI stats, and Aider session metrics.
+     */
+    private void printSessionSummary() {
+        java.time.Duration duration = sessionMetrics.getSessionDuration();
+        StringBuilder body = new StringBuilder();
+
+        // Session info
+        body.append(renderer.bold("Session")).append("\n");
+        body.append("  ID:        ").append(sessionId).append("\n");
+        body.append("  Duration:  ").append(sessionMetrics.formatDuration(duration)).append("\n");
+        if (localMode && chatConfig != null) {
+            body.append("  Provider:  ").append(chatConfig.getProvider()).append("/").append(chatConfig.getModel()).append("\n");
+        }
+        body.append("  Agent:     ").append(agentName);
+        if (localMode) body.append(" (local)");
+        body.append("\n");
+        body.append("  RAG:       ").append(ragEnabled ? "enabled" : "disabled").append("\n");
+
+        // Conversation
+        body.append("\n").append(renderer.bold("Conversation")).append("\n");
+        body.append("  Turns:     ").append(sessionMetrics.getUserTurns()).append(" user, ")
+            .append(sessionMetrics.getAssistantTurns()).append(" assistant");
+        if (sessionMetrics.getUserTurns() + sessionMetrics.getAssistantTurns() > 0) {
+            body.append(" (").append(sessionMetrics.getTotalTurns()).append(" total)");
+        }
+        body.append("\n");
+
+        if (sessionMetrics.getApiCalls() > 0) {
+            body.append("  API calls: ").append(sessionMetrics.getApiCalls()).append("\n");
+            body.append("  Avg time:  ").append(Math.round(sessionMetrics.getAvgResponseTimeMs())).append("ms per response\n");
+        }
+
+        // Tokens
+        body.append("\n").append(renderer.bold("Tokens")).append("\n");
+        if (sessionMetrics.hasActualTokenCounts()) {
+            body.append("  Input:     ").append(formatNumber(sessionMetrics.getInputTokens())).append("\n");
+            body.append("  Output:    ").append(formatNumber(sessionMetrics.getOutputTokens())).append("\n");
+            body.append("  Total:     ").append(formatNumber(sessionMetrics.getTotalTokens())).append("\n");
+            if (sessionMetrics.getCacheReadTokens() > 0) {
+                body.append("  Cache hit: ").append(formatNumber(sessionMetrics.getCacheReadTokens())).append("\n");
+            }
+            if (sessionMetrics.getCacheCreationTokens() > 0) {
+                body.append("  Cache new: ").append(formatNumber(sessionMetrics.getCacheCreationTokens())).append("\n");
+            }
+        } else {
+            long estInput = sessionMetrics.getEstimatedInputTokens();
+            long estOutput = sessionMetrics.getEstimatedOutputTokens();
+            body.append("  ~Input:    ").append(formatNumber(estInput)).append(" (estimated)\n");
+            body.append("  ~Output:   ").append(formatNumber(estOutput)).append(" (estimated)\n");
+            body.append("  ~Total:    ").append(formatNumber(estInput + estOutput)).append(" (estimated)\n");
+        }
+
+        // Tools
+        if (sessionMetrics.getTotalToolCalls() > 0) {
+            body.append("\n").append(renderer.bold("Tools")).append("\n");
+            body.append("  Total:     ").append(sessionMetrics.getTotalToolCalls()).append(" calls");
+            if (sessionMetrics.getTotalToolErrors() > 0) {
+                body.append(" (").append(sessionMetrics.getTotalToolErrors()).append(" errors)");
+            }
+            body.append("\n");
+
+            // Top tools breakdown
+            List<Map.Entry<String, Integer>> topTools = sessionMetrics.getTopTools(8);
+            for (Map.Entry<String, Integer> entry : topTools) {
+                body.append("  ").append(String.format("%-12s", entry.getKey()))
+                    .append(" ").append(entry.getValue()).append("\n");
+            }
+        }
+
+        // Agentic
+        if (sessionMetrics.getAgenticSteps() > 0) {
+            body.append("\n").append(renderer.bold("Agentic")).append("\n");
+            body.append("  Steps:     ").append(sessionMetrics.getAgenticSteps()).append("\n");
+            if (sessionMetrics.getCompactionEvents() > 0) {
+                body.append("  Compacts:  ").append(sessionMetrics.getCompactionEvents()).append("\n");
+            }
+        }
+
+        // RAG
+        if (sessionMetrics.getRagQueries() > 0) {
+            body.append("\n").append(renderer.bold("RAG")).append("\n");
+            body.append("  Queries:   ").append(sessionMetrics.getRagQueries()).append("\n");
+            body.append("  Docs:      ").append(sessionMetrics.getDocumentsRetrieved()).append(" retrieved\n");
+        }
+
+        // Queue
+        if (sessionMetrics.getMessagesQueued() > 0 || sessionMetrics.getTasksBackgrounded() > 0) {
+            body.append("\n").append(renderer.bold("Queue & Background")).append("\n");
+            if (sessionMetrics.getMessagesQueued() > 0) {
+                body.append("  Queued:    ").append(sessionMetrics.getMessagesQueued()).append(" messages\n");
+            }
+            if (sessionMetrics.getMessagesAutoDequeued() > 0) {
+                body.append("  Auto-sent: ").append(sessionMetrics.getMessagesAutoDequeued()).append("\n");
+            }
+            if (sessionMetrics.getTasksBackgrounded() > 0) {
+                body.append("  Bgnd:      ").append(sessionMetrics.getTasksBackgrounded()).append(" tasks\n");
+            }
+        }
+
+        // Files
+        body.append("\n").append(renderer.bold("Files")).append("\n");
+        body.append("  Transcript: ").append(chatHistory.getTranscriptFile()).append("\n");
+        body.append("  Metrics:    ").append(chatHistory.getTranscriptFile().resolveSibling(sessionId + ".metrics.json")).append("\n");
+        body.append("  Resume:     kompile chat --resume ").append(sessionId).append("\n");
+
+        System.out.println();
+        System.out.println(ascii.panel("Session Summary", body.toString(), AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+
+        // Also log summary to transcript
+        chatHistory.logSystem("Session ended — " + sessionMetrics.formatDuration(duration) +
+                ", " + sessionMetrics.getTotalTurns() + " turns" +
+                (sessionMetrics.hasActualTokenCounts() ?
+                        ", " + formatNumber(sessionMetrics.getTotalTokens()) + " tokens" :
+                        ", ~" + formatNumber(sessionMetrics.getEstimatedInputTokens() + sessionMetrics.getEstimatedOutputTokens()) + " est. tokens") +
+                (sessionMetrics.getTotalToolCalls() > 0 ? ", " + sessionMetrics.getTotalToolCalls() + " tool calls" : ""));
+    }
+
+    private String formatNumber(long n) {
+        if (n < 1000) return String.valueOf(n);
+        return String.format("%,d", n);
+    }
+
+    // ── Main menu ─────────────────────────────────────────────────────────────
+
+    /**
+     * Show a quick menu to switch between modes from within chat.
+     */
+    private void showMainMenu() {
+        System.out.println();
+        System.out.println(ascii.panel("Kompile Main Menu",
+                "  1. Chat        - Continue this conversation\n" +
+                "  2. Passthrough - Launch external CLI agent (Claude, Codex, Qwen, etc.)\n" +
+                "  3. Resume      - Browse & resume past conversations\n" +
+                "  4. Setup       - Reconfigure LLM provider settings\n" +
+                "  5. Back        - Return to chat",
+                AsciiRenderer.ROUNDED, "cyan"));
+        System.out.println();
+        System.out.print("  Select [1-5]: ");
+        System.out.flush();
+
+        // Read single key
+        try {
+            java.io.InputStream in = System.in;
+            int b = in.read();
+            while (b != -1) {
+                if (b == '\n' || b == '\r') break;
+                if (b == '1') {
+                    System.out.println("1");
+                    System.out.println("  " + renderer.dim("Continuing chat session..."));
+                    return;
+                } else if (b == '2') {
+                    System.out.println("2");
+                    launchPassthroughMode("");
+                    return;
+                } else if (b == '3') {
+                    System.out.println("3");
+                    launchResumeTool("");
+                    return;
+                } else if (b == '4') {
+                    System.out.println("4");
+                    runSetup();
+                    return;
+                } else if (b == '5' || b == 'q' || b == 27) {
+                    System.out.println(b == 5 ? "5" : "q");
+                    return;
+                }
+                b = in.read();
+            }
+        } catch (Exception e) {
+            System.err.println("Menu error: " + e.getMessage());
+        }
+    }
+
+    // ========================================================================
+    // Passthrough and Resume integration
+    // ========================================================================
+
+    /**
+     * Launch passthrough mode from within the chat REPL.
+     * Delegates to PassthroughCommand to launch an external CLI agent.
+     */
+    private void launchPassthroughMode(String agentArg) {
+        try {
+            String agent = agentArg != null && !agentArg.isBlank() ? agentArg : 
+                          (chatConfig != null ? chatConfig.getPassthroughAgent() : "claude");
+            
+            System.out.println();
+            System.out.println(renderer.dim("  Launching passthrough mode with agent: " + agent));
+            System.out.println(renderer.dim("  The agent will take control of the terminal."));
+            System.out.println(renderer.dim("  Return to chat when the agent session ends."));
+            System.out.println();
+            
+            // Create and configure PassthroughCommand
+            PassthroughCommand passthrough = new PassthroughCommand();
+            passthrough.agent = agent;
+            passthrough.workingDir = System.getProperty("user.dir");
+            passthrough.skipPermissions = true;
+            passthrough.injectTools = !localMode;
+            if (!localMode && baseUrl != null) {
+                passthrough.kompileUrl = baseUrl;
+            }
+            
+            // Execute passthrough
+            int exitCode = passthrough.call();
+
+            // Clean up terminal state after passthrough returns
+            System.out.print("\033[0m"); // reset colors
+            System.out.print("\033[?25h"); // show cursor
+            System.out.println();
+
+            System.out.println();
+            System.out.println(renderer.green("  ✓ Passthrough session ended (exit code: " + exitCode + ")"));
+            System.out.println(renderer.dim("  Returned to chat session: " + sessionId));
+            System.out.println();
+            
+            // Log to transcript
+            chatHistory.logSystem("Passthrough session with " + agent + " ended (exit: " + exitCode + ")");
+        } catch (Exception e) {
+            System.err.println("Error launching passthrough: " + e.getMessage());
+            chatHistory.logSystem("Failed to launch passthrough: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Launch resume tool from within the chat REPL.
+     * Delegates to ResumeTool for browsing and resuming conversations.
+     */
+    private void launchResumeTool(String args) {
+        try {
+            System.out.println();
+            System.out.println(renderer.dim("  Launching resume tool..."));
+            System.out.println(renderer.dim("  Browse, search, and resume past conversations."));
+            System.out.println(renderer.dim("  Return to chat when done."));
+            System.out.println();
+            
+            // Create and execute ResumeTool
+            ResumeTool resumeTool = new ResumeTool();
+            
+            // Launch interactive browser (args are handled within the tool)
+            resumeTool.runInteractiveBrowser();
+
+            // Clean up terminal state after resume tool returns
+            System.out.print("\033[0m"); // reset colors
+            System.out.print("\033[?25h"); // show cursor
+            System.out.println();
+
+            System.out.println();
+            System.out.println(renderer.green("  ✓ Resume session ended"));
+            System.out.println(renderer.dim("  Returned to chat session: " + sessionId));
+            System.out.println();
+            
+            // Log to transcript
+            chatHistory.logSystem("Resume tool session ended");
+        } catch (Exception e) {
+            System.err.println("Error launching resume tool: " + e.getMessage());
+            chatHistory.logSystem("Failed to launch resume tool: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Handle mode switching from within the chat REPL.
+     * Allows switching between standard and passthrough modes.
+     */
+    private void handleModeSwitch(String mode) {
+        if (mode == null || mode.isBlank()) {
+            String currentMode = localMode ? "local" : 
+                                (chatConfig != null && "passthrough".equals(chatConfig.getChatMode()) ? "passthrough" : "standard");
+            System.out.println("Current mode: " + renderer.bold(currentMode));
+            System.out.println("Usage: /mode <standard|passthrough|local>");
+            return;
+        }
+        
+        String normalizedMode = mode.toLowerCase().trim();
+        
+        switch (normalizedMode) {
+            case "passthrough":
+                System.out.println("Switching to passthrough mode...");
+                System.out.println("Use " + renderer.cyan("/passthrough") + " to launch an external agent.");
+                chatHistory.logSystem("Mode switched to: passthrough");
+                break;
+                
+            case "standard":
+            case "normal":
+                System.out.println("Switching to standard mode...");
+                System.out.println("Use " + renderer.cyan("/resume") + " to browse past conversations.");
+                chatHistory.logSystem("Mode switched to: standard");
+                break;
+                
+            case "local":
+                if (!localMode) {
+                    System.out.println(renderer.yellow("  Note: Already in server mode."));
+                    System.out.println("  Local mode requires restarting the chat.");
+                } else {
+                    System.out.println("Already in local mode.");
+                }
+                break;
+                
+            default:
+                System.out.println("Unknown mode: " + renderer.bold(mode));
+                System.out.println("Available modes: standard, passthrough, local");
+                break;
+        }
     }
 }

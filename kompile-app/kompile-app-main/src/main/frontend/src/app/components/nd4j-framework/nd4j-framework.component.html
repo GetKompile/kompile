@@ -1,0 +1,542 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  -->
+
+<div class="nd4j-framework-container" [class.modal-mode]="isModal">
+  <!-- Header -->
+  <div class="nd4j-framework-header">
+    <div class="header-title">
+      <mat-icon class="header-icon">dns</mat-icon>
+      <div>
+        <h2>ND4J Framework Settings</h2>
+        <p class="subtitle">SameDiff graph optimizer, DSP configuration, and framework subsystem status</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button mat-icon-button (click)="loadFrameworkSettings()" [disabled]="loading" matTooltip="Refresh">
+        <mat-icon>refresh</mat-icon>
+      </button>
+      <button mat-icon-button (click)="close()" *ngIf="isModal" matTooltip="Close">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div class="loading-container" *ngIf="loading">
+    <mat-spinner diameter="48"></mat-spinner>
+    <span>Loading framework settings...</span>
+  </div>
+
+  <!-- Error State -->
+  <div class="error-container" *ngIf="error && !loading">
+    <mat-icon>error_outline</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadFrameworkSettings()">Retry</button>
+  </div>
+
+  <!-- Configuration Content -->
+  <div class="config-content" *ngIf="!loading && !error">
+    <!-- Quick Presets -->
+    <mat-card class="preset-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>quick_reference</mat-icon>
+          Framework Presets
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <div class="preset-buttons">
+          <button mat-stroked-button (click)="applyPreset('performance')" matTooltip="Maximum performance - all optimizations enabled">
+            <mat-icon>rocket_launch</mat-icon>
+            Performance
+          </button>
+          <button mat-stroked-button (click)="applyPreset('balanced')" matTooltip="Balanced configuration for development">
+            <mat-icon>balance</mat-icon>
+            Balanced
+          </button>
+          <button mat-stroked-button (click)="applyPreset('debug')" matTooltip="Debug mode - FP32, no Triton, diagnostics enabled">
+            <mat-icon>bug_report</mat-icon>
+            Debug
+          </button>
+          <button mat-stroked-button (click)="applyPreset('minimal')" matTooltip="Minimal configuration - optimizer disabled">
+            <mat-icon>remove</mat-icon>
+            Minimal
+          </button>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Backend Info -->
+    <mat-card class="info-card">
+      <mat-card-content>
+        <div class="info-row">
+          <mat-icon [class.cuda]="isCudaBackend">memory</mat-icon>
+          <span class="info-label">Backend:</span>
+          <span class="info-value">{{ isCudaBackend ? 'CUDA (GPU)' : 'CPU' }}</span>
+        </div>
+        <div class="info-note" *ngIf="!isCudaBackend">
+          <mat-icon>info</mat-icon>
+          <span>Some optimizations (Triton, TF32, cuBLAS) are only available on CUDA backend</span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <!-- Core Optimization Settings -->
+    <mat-expansion-panel expanded>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>tune</mat-icon>
+          Core Optimization
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ settings.optimizerEnabled ? 'Optimizer Active' : 'Optimizer Disabled' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Graph Optimizer</span>
+            <span class="setting-description">Enable SameDiff graph optimizer for improved performance</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.optimizerEnabled" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('optimizerEnabled', $event.checked)">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">FP16 Optimization</span>
+            <span class="setting-description">Convert weights to FP16 to reduce VRAM usage (halves memory)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.optimizerFp16" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('optimizerFp16', $event.checked)">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Operation Timing</span>
+            <span class="setting-description">Enable operation timing for performance analysis</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.opTiming" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('opTiming', $event.checked)">
+            </mat-slide-toggle>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- DSP (Decode-Side Processing) Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>settings_input_component</mat-icon>
+          DSP Settings
+        </mat-panel-title>
+        <mat-panel-description>
+          Decode-side processing configuration
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Graph Freezing</span>
+            <span class="setting-description">Freeze computation graph for optimization (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.dspNoFreeze" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('dspNoFreeze', $event.checked)">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.dspNoFreeze ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Native Decode Inputs</span>
+            <span class="setting-description">Use native decode operations (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.dspNoNativeDecode" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('dspNoNativeDecode', $event.checked)">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.dspNoNativeDecode ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Attention Override</span>
+            <span class="setting-description">Override attention mechanism (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.dspNoAttnOverride" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('dspNoAttnOverride', $event.checked)">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.dspNoAttnOverride ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Direct Mode</span>
+            <span class="setting-description">Direct execution mode (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.dspNoDirect" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('dspNoDirect', $event.checked)">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.dspNoDirect ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Triton Kernel Settings -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>precision_manufacturing</mat-icon>
+          Triton Kernels
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ isCudaBackend ? 'GPU kernel execution' : 'Not available on CPU' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Triton Kernels</span>
+            <span class="setting-description">Use Triton compiled kernels (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.tritonSkipKernels" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('tritonSkipKernels', $event.checked)"
+                              [disabled]="!isCudaBackend">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.tritonSkipKernels ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">TF32 Precision</span>
+            <span class="setting-description">Enable TF32 precision for faster computation on Ampere+ GPUs</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.tritonTf32" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('tritonTf32', $event.checked)"
+                              [disabled]="!isCudaBackend">
+            </mat-slide-toggle>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">cuBLAS Workspace</span>
+            <span class="setting-description">Workspace capture for cuBLAS (disabled = enabled)</span>
+          </div>
+          <div class="setting-control">
+            <mat-slide-toggle [(ngModel)]="settings.cublasDisableWorkspace" [ngModelOptions]="{standalone: true}"
+                              (change)="updateSetting('cublasDisableWorkspace', $event.checked)"
+                              [disabled]="!isCudaBackend">
+            </mat-slide-toggle>
+            <span class="toggle-status">{{ settings.cublasDisableWorkspace ? 'Disabled' : 'Enabled' }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Diagnostics -->
+    <mat-expansion-panel>
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>troubleshoot</mat-icon>
+          Diagnostics
+        </mat-panel-title>
+        <mat-panel-description>
+          {{ settings.dspDiagnostics ? 'Diagnostics Active' : 'No Diagnostics' }}
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="setting-group">
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">DSP Diagnostics</span>
+            <span class="setting-description">Enable diagnostic output (e.g. 'ALL' for verbose)</span>
+          </div>
+          <div class="setting-control diagnostic-input">
+            <mat-form-field appearance="outline" class="diagnostic-field">
+              <input matInput [(ngModel)]="settings.dspDiagnostics" [ngModelOptions]="{standalone: true}"
+                     placeholder="Enter diagnostic level (e.g. ALL)"
+                     (change)="updateDspDiagnostics()">
+            </mat-form-field>
+            <button mat-button color="primary" (click)="updateDspDiagnostics()" [disabled]="loading">
+              Apply
+            </button>
+          </div>
+        </div>
+
+        <div class="diagnostic-presets">
+          <button mat-stroked-button (click)="settings.dspDiagnostics = ''; updateDspDiagnostics()">
+            None
+          </button>
+          <button mat-stroked-button (click)="settings.dspDiagnostics = 'ALL'; updateDspDiagnostics()">
+            ALL
+          </button>
+          <button mat-stroked-button (click)="settings.dspDiagnostics = 'EXECUTE,TIMING'; updateDspDiagnostics()">
+            Execute+Timing
+          </button>
+          <button mat-stroked-button (click)="settings.dspDiagnostics = 'MEMORY,BACKEND'; updateDspDiagnostics()">
+            Memory+Backend
+          </button>
+        </div>
+
+        <div class="memory-info-note" *ngIf="settings.dspDiagnostics">
+          <mat-icon>warning</mat-icon>
+          <span>Diagnostics enabled - verbose output will be generated</span>
+        </div>
+
+        <!-- DSP Subsystem Status -->
+        <div class="subsystem-detail" *ngIf="subsystems.dsp && !subsystems.dsp.error">
+          <mat-divider></mat-divider>
+          <div class="subsystem-row" *ngIf="subsystems.dsp.enabledCategories?.length">
+            <span class="subsystem-label">Active Categories:</span>
+            <span class="subsystem-value">{{ subsystems.dsp.enabledCategories?.join(', ') || 'None' }}</span>
+          </div>
+        </div>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Framework Subsystem Status -->
+    <mat-expansion-panel *ngIf="subsystems && !subsystems.error">
+      <mat-expansion-panel-header>
+        <mat-panel-title>
+          <mat-icon>dashboard</mat-icon>
+          Framework Subsystems
+        </mat-panel-title>
+        <mat-panel-description>
+          Live status from Nd4j.framework API
+        </mat-panel-description>
+      </mat-expansion-panel-header>
+
+      <div class="subsystem-grid">
+        <!-- Execution -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.execution">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>play_circle</mat-icon>
+              Execution
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.execution.error" class="subsystem-error">{{ subsystems.execution.error }}</div>
+            <ng-container *ngIf="!subsystems.execution.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">DSP Enabled:</span>
+                <span class="subsystem-value" [class.active]="subsystems.execution.dspEnabled">
+                  {{ subsystems.execution.dspEnabled ? 'Yes' : 'No' }}
+                </span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Memory -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.memory">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>memory</mat-icon>
+              Memory
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.memory.error" class="subsystem-error">{{ subsystems.memory.error }}</div>
+            <ng-container *ngIf="!subsystems.memory.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Heap Used:</span>
+                <span class="subsystem-value">{{ formatBytes(subsystems.memory.heapUsedBytes) }} / {{ formatBytes(subsystems.memory.heapMaxBytes) }} ({{ getHeapPercent() }}%)</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Manager:</span>
+                <span class="subsystem-value">{{ subsystems.memory.managerType || 'N/A' }}</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">GC Frequency:</span>
+                <span class="subsystem-value">{{ subsystems.memory.gcFrequency ?? 'N/A' }}</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Profiling -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.profiling">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>speed</mat-icon>
+              Profiling
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.profiling.error" class="subsystem-error">{{ subsystems.profiling.error }}</div>
+            <ng-container *ngIf="!subsystems.profiling.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Enabled:</span>
+                <span class="subsystem-value" [class.active]="subsystems.profiling.enabled">
+                  {{ subsystems.profiling.enabled ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Frequency:</span>
+                <span class="subsystem-value">{{ subsystems.profiling.frequency ?? 'N/A' }} Hz</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Lifecycle -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.lifecycle">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>recycling</mat-icon>
+              Lifecycle
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.lifecycle.error" class="subsystem-error">{{ subsystems.lifecycle.error }}</div>
+            <ng-container *ngIf="!subsystems.lifecycle.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Arrays Created:</span>
+                <span class="subsystem-value">{{ subsystems.lifecycle.totalCreated?.toLocaleString() ?? 'N/A' }}</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Arrays Destroyed:</span>
+                <span class="subsystem-value">{{ subsystems.lifecycle.totalDestroyed?.toLocaleString() ?? 'N/A' }}</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Live Arrays:</span>
+                <span class="subsystem-value">{{ subsystems.lifecycle.liveCount?.toLocaleString() ?? 'N/A' }}</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Device -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.device">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>developer_board</mat-icon>
+              Devices
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.device.error" class="subsystem-error">{{ subsystems.device.error }}</div>
+            <ng-container *ngIf="!subsystems.device.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Device Count:</span>
+                <span class="subsystem-value">{{ subsystems.device.count ?? 'N/A' }}</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Has GPU:</span>
+                <span class="subsystem-value" [class.active]="subsystems.device.hasGpu">
+                  {{ subsystems.device.hasGpu ? 'Yes' : 'No' }}
+                </span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Multi-Device:</span>
+                <span class="subsystem-value">{{ subsystems.device.multiDevice ? 'Yes' : 'No' }}</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Workspaces -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.workspaces">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>workspaces</mat-icon>
+              Workspaces
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.workspaces.error" class="subsystem-error">{{ subsystems.workspaces.error }}</div>
+            <ng-container *ngIf="!subsystems.workspaces.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Default Size:</span>
+                <span class="subsystem-value">{{ formatBytes(subsystems.workspaces.defaultSize) }}</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Learning:</span>
+                <span class="subsystem-value" [class.active]="subsystems.workspaces.learningEnabled">
+                  {{ subsystems.workspaces.learningEnabled ? 'Enabled' : 'Disabled' }}
+                </span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">Debug Mode:</span>
+                <span class="subsystem-value">{{ subsystems.workspaces.debugMode || 'DISABLED' }}</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+
+        <!-- Constants Cache -->
+        <mat-card class="subsystem-card" *ngIf="subsystems.constants">
+          <mat-card-header>
+            <mat-card-title>
+              <mat-icon>storage</mat-icon>
+              Constant Cache
+            </mat-card-title>
+          </mat-card-header>
+          <mat-card-content>
+            <div *ngIf="subsystems.constants.error" class="subsystem-error">{{ subsystems.constants.error }}</div>
+            <ng-container *ngIf="!subsystems.constants.error">
+              <div class="subsystem-row">
+                <span class="subsystem-label">Cached:</span>
+                <span class="subsystem-value">{{ subsystems.constants.cachedMb?.toFixed(1) ?? 'N/A' }} MB</span>
+              </div>
+              <div class="subsystem-row">
+                <span class="subsystem-label">TAD Cache Entries:</span>
+                <span class="subsystem-value">{{ subsystems.constants.tadCacheEntries?.toLocaleString() ?? 'N/A' }}</span>
+              </div>
+            </ng-container>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-expansion-panel>
+
+    <!-- Help & Information -->
+    <mat-card class="help-card">
+      <mat-card-header>
+        <mat-card-title>
+          <mat-icon>help_outline</mat-icon>
+          About Framework Settings
+        </mat-card-title>
+      </mat-card-header>
+      <mat-card-content>
+        <p>
+          The ND4J Framework settings control the SameDiff graph optimizer and DSP (decode-side processing)
+          configuration. These settings affect how neural network graphs are optimized and executed.
+        </p>
+        <ul>
+          <li><strong>Performance Preset:</strong> Maximum performance with all optimizations enabled</li>
+          <li><strong>Balanced Preset:</strong> Good balance of performance and debuggability</li>
+          <li><strong>Debug Preset:</strong> FP32 precision, no Triton, diagnostics enabled for troubleshooting</li>
+          <li><strong>Minimal Preset:</strong> All optimizations disabled for baseline testing</li>
+        </ul>
+        <p class="note">
+          <mat-icon>info</mat-icon>
+          Changes are applied immediately via system properties and the Nd4j.framework API. Settings are persisted to disk.
+        </p>
+      </mat-card-content>
+    </mat-card>
+  </div>
+</div>

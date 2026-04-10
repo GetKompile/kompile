@@ -52,6 +52,9 @@ public class AgentChatRequest {
     // Folder context - inject file paths from folder into prompt
     private String folderId;
 
+    // Extra CLI arguments to pass through to the underlying agent command
+    private List<String> agentArgs;
+
     // Timeout configuration (in seconds, 0 = no timeout)
     private int timeoutSeconds = 300; // Default 5 minutes
 
@@ -198,6 +201,14 @@ public class AgentChatRequest {
 
     public void setFolderId(String folderId) {
         this.folderId = folderId;
+    }
+
+    public List<String> getAgentArgs() {
+        return agentArgs;
+    }
+
+    public void setAgentArgs(List<String> agentArgs) {
+        this.agentArgs = agentArgs;
     }
 
     public int getTimeoutSeconds() {

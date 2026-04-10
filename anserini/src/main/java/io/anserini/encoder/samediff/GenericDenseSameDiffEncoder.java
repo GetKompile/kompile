@@ -424,7 +424,11 @@ public class GenericDenseSameDiffEncoder extends SameDiffEncoder<float[]> {
                 return null;
             }
             LOG.error("[{}] Error during GenericDense encoding for query: '{}'", this.modelIdentifier, query, e);
-            return null;
+            // Propagate the exception so callers (especially validation) can see the root cause
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException) e;
+            }
+            throw new RuntimeException("Encoding failed for model " + this.modelIdentifier + ": " + e.getMessage(), e);
         } finally {
             // CRITICAL: Close all input arrays to prevent off-heap memory leaks
             // These are created fresh on every encode() call and must be released

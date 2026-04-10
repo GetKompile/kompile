@@ -20,6 +20,7 @@ import { MatTabChangeEvent, MatTabGroup } from '@angular/material/tabs';
 import { MatDialog } from '@angular/material/dialog';
 import { SystemDiagnosticsComponent } from '../system-diagnostics/system-diagnostics.component';
 import { Nd4jEnvironmentComponent } from '../nd4j-environment/nd4j-environment.component';
+import { Nd4jFrameworkComponent } from '../nd4j-framework/nd4j-framework.component';
 
 @Component({
   standalone: false,
@@ -101,6 +102,15 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
       maxWidth: '95vw',
       maxHeight: '90vh',
       panelClass: 'nd4j-environment-dialog'
+    });
+  }
+
+  openNd4jFrameworkDialog(): void {
+    this.dialog.open(Nd4jFrameworkComponent, {
+      width: '800px',
+      maxWidth: '95vw',
+      maxHeight: '90vh',
+      panelClass: 'nd4j-framework-dialog'
     });
   }
 

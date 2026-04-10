@@ -360,8 +360,8 @@ public class ChatHistory {
                 }
             }
             props.setProperty(sessionId + ".created", TIMESTAMP_FMT.format(Instant.now()));
-            props.setProperty(sessionId + ".server", serverUrl);
-            props.setProperty(sessionId + ".agent", agentName);
+            props.setProperty(sessionId + ".server", serverUrl != null ? serverUrl : "local");
+            props.setProperty(sessionId + ".agent", agentName != null ? agentName : "unknown");
             try (Writer w = new FileWriter(indexFile.toFile(), StandardCharsets.UTF_8)) {
                 props.store(w, "Kompile chat conversation index");
             }

@@ -235,6 +235,166 @@ class AgentChatServiceBuildCommandTest {
     }
 
     // =========================================================================
+    // Agent args pass-through
+    // =========================================================================
+
+    @Nested
+    @DisplayName("agentArgs pass-through")
+    class AgentArgsPassthrough {
+
+        private AgentProvider claude;
+
+        @BeforeEach
+        void setUp() {
+            claude = createAgent("claude-cli", "claude", "--dangerously-skip-permissions");
+        }
+
+        @Test
+        @DisplayName("should append agentArgs after agent default args")
+        void appendsAgentArgs() throws Exception {
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(List.of("--model", "opus", "--max-turns", "5"));
+            List<String> command = invokeBuildCommand(claude, request, "hello");
+
+            // agentArgs should be present in the command
+            assertTrue(command.contains("--model"), "Command should contain --model: " + command);
+            assertTrue(command.contains("opus"), "Command should contain opus: " + command);
+            assertTrue(command.contains("--max-turns"), "Command should contain --max-turns: " + command);
+            assertTrue(command.contains("5"), "Command should contain 5: " + command);
+
+            // agentArgs should appear before -p (prompt flag)
+            int modelIdx = command.indexOf("--model");
+            int promptIdx = command.indexOf("-p");
+            assertTrue(modelIdx < promptIdx,
+                    "agentArgs (--model at " + modelIdx + ") should come before -p at " + promptIdx + ": " + command);
+        }
+
+        @Test
+        @DisplayName("should work correctly with null agentArgs")
+        void nullAgentArgs() throws Exception {
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(null);
+            List<String> command = invokeBuildCommand(claude, request, "hello");
+
+            // Should still produce a valid command
+            assertTrue(command.contains("claude"), "Command should start with claude");
+            assertTrue(command.contains("-p"), "Command should contain -p flag");
+            assertTrue(command.contains("hello"), "Command should contain prompt");
+        }
+
+        @Test
+        @DisplayName("should work correctly with empty agentArgs")
+        void emptyAgentArgs() throws Exception {
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(List.of());
+            List<String> command = invokeBuildCommand(claude, request, "hello");
+
+            // Same as no extra args
+            assertTrue(command.contains("claude"));
+            assertTrue(command.contains("-p"));
+            assertTrue(command.contains("hello"));
+        }
+
+        @Test
+        @DisplayName("agentArgs should appear after skip-permissions flag")
+        void agentArgsAfterSkipPermissions() throws Exception {
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(List.of("--verbose"));
+            List<String> command = invokeBuildCommand(claude, request, "hello");
+
+            int skipIdx = command.indexOf("--dangerously-skip-permissions");
+            int verboseIdx = command.indexOf("--verbose");
+            assertTrue(skipIdx < verboseIdx,
+                    "Skip permissions flag should come before agentArgs: " + command);
+        }
+
+        @Test
+        @DisplayName("should preserve agentArgs ordering")
+        void preservesOrdering() throws Exception {
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(List.of("--first", "a", "--second", "b"));
+            List<String> command = invokeBuildCommand(claude, request, "hello");
+
+            int firstIdx = command.indexOf("--first");
+            int aIdx = command.indexOf("a");
+            int secondIdx = command.indexOf("--second");
+            int bIdx = command.indexOf("b");
+
+            assertTrue(firstIdx < aIdx && aIdx < secondIdx && secondIdx < bIdx,
+                    "agentArgs should preserve ordering: " + command);
+        }
+
+        @Test
+        @DisplayName("should work with Codex agent and agentArgs")
+        void codexWithAgentArgs() throws Exception {
+            AgentProvider codex = createAgent("codex-cli", "codex", "--full-auto");
+            AgentChatRequest request = createRequest(true);
+            request.setAgentArgs(List.of("--model", "o4-mini"));
+            List<String> command = invokeBuildCommand(codex, request, "hello");
+
+            assertTrue(command.contains("--full-auto"), "Should contain skip flag");
+            assertTrue(command.contains("--model"), "Should contain agentArgs --model");
+            assertTrue(command.contains("o4-mini"), "Should contain agentArgs value");
+            assertTrue(command.contains("-p"), "Should contain prompt flag");
+        }
+
+        @Test
+        @DisplayName("should work with Gemini agent and agentArgs")
+        void geminiWithAgentArgs() throws Exception {
+            AgentProvider gemini = createAgent("gemini-cli", "gemini", "--yolo");
+            AgentChatRequest request = createRequest(true);
+            request.setWorkingDirectory(System.getProperty("java.io.tmpdir"));
+            request.setAgentArgs(List.of("--sandbox"));
+            List<String> command = invokeBuildCommand(gemini, request, "hello");
+
+            assertTrue(command.contains("--yolo"), "Should contain skip flag");
+            assertTrue(command.contains("--sandbox"), "Should contain agentArgs --sandbox");
+        }
+    }
+
+    // =========================================================================
+    // buildInteractiveCommand agentArgs (used by passthrough)
+    // =========================================================================
+
+    @Nested
+    @DisplayName("buildInteractiveCommand agentArgs")
+    class InteractiveCommandAgentArgs {
+
+        @Test
+        @DisplayName("should include agentArgs in interactive command")
+        void includesAgentArgs() {
+            AgentProvider claude = createAgent("claude-cli", "claude", "--dangerously-skip-permissions");
+            List<String> command = service.buildInteractiveCommand(
+                    claude, true, false, List.of("--model", "sonnet"));
+
+            assertTrue(command.contains("--model"), "Should contain --model: " + command);
+            assertTrue(command.contains("sonnet"), "Should contain sonnet: " + command);
+            assertFalse(command.contains("-p"), "Interactive command should not contain -p");
+        }
+
+        @Test
+        @DisplayName("should work with null agentArgs in interactive command")
+        void nullAgentArgs() {
+            AgentProvider claude = createAgent("claude-cli", "claude", "--dangerously-skip-permissions");
+            List<String> command = service.buildInteractiveCommand(claude, true, false, null);
+
+            assertTrue(command.contains("claude"));
+            assertTrue(command.contains("--dangerously-skip-permissions"));
+            assertFalse(command.contains("-p"));
+        }
+
+        @Test
+        @DisplayName("3-arg overload should behave same as 4-arg with null")
+        void threeArgOverload() {
+            AgentProvider claude = createAgent("claude-cli", "claude", "--dangerously-skip-permissions");
+            List<String> with3 = service.buildInteractiveCommand(claude, true, false);
+            List<String> with4 = service.buildInteractiveCommand(claude, true, false, null);
+
+            assertEquals(with3, with4, "3-arg and 4-arg with null should produce same command");
+        }
+    }
+
+    // =========================================================================
     // Default AgentChatRequest
     // =========================================================================
 
@@ -248,6 +408,14 @@ class AgentChatServiceBuildCommandTest {
             AgentChatRequest request = new AgentChatRequest();
             assertTrue(request.isSkipPermissions(),
                     "Default skipPermissions should be true for backward compatibility");
+        }
+
+        @Test
+        @DisplayName("agentArgs should default to null")
+        void defaultAgentArgsIsNull() {
+            AgentChatRequest request = new AgentChatRequest();
+            assertNull(request.getAgentArgs(),
+                    "Default agentArgs should be null");
         }
     }
 }

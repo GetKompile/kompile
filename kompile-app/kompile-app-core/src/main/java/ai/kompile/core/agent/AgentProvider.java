@@ -51,6 +51,9 @@ public class AgentProvider {
     private double temperature = 0.7;
     private int maxTokens = 4096;
 
+    // Interactive mode configuration
+    private String interactivePromptPattern; // Regex pattern to detect when agent is waiting for input
+
     // MCP Server configuration
     private boolean mcpSupported;
     private String mcpServerFlag;           // e.g., "--mcp-server" for Claude
@@ -128,6 +131,11 @@ public class AgentProvider {
 
         public Builder description(String description) {
             provider.description = description;
+            return this;
+        }
+
+        public Builder interactivePromptPattern(String pattern) {
+            provider.interactivePromptPattern = pattern;
             return this;
         }
 
@@ -319,6 +327,14 @@ public class AgentProvider {
 
     public void setHelpOutput(String helpOutput) {
         this.helpOutput = helpOutput;
+    }
+
+    public String getInteractivePromptPattern() {
+        return interactivePromptPattern;
+    }
+
+    public void setInteractivePromptPattern(String interactivePromptPattern) {
+        this.interactivePromptPattern = interactivePromptPattern;
     }
 
     public AgentType getAgentType() {

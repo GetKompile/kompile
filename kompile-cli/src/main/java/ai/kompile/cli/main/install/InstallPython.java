@@ -37,7 +37,8 @@ public class InstallPython implements Callable<Integer> {
     @Override
     public Integer call() throws Exception {
         File pythonDir = Info.pythonDirectory();
-        if(pythonDir.exists() && pythonDir.list().length > 0) {
+        String[] pythonDirContents = pythonDir.exists() ? pythonDir.list() : null;
+        if(pythonDirContents != null && pythonDirContents.length > 0) {
             System.out.println("Python already installed. Skipping. If there is a problem with your install, please call ./kompile uninstall python");
             return 0;
         }

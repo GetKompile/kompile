@@ -49,9 +49,9 @@
             <mat-card-content>
               <p *ngIf="server.description">{{ server.description }}</p>
               <div class="stats">
-                <span class="stat"><mat-icon>build</mat-icon> {{ server.tools?.length || 0 }} tools</span>
-                <span class="stat"><mat-icon>storage</mat-icon> {{ server.resources?.length || 0 }} resources</span>
-                <span class="stat"><mat-icon>chat</mat-icon> {{ server.prompts?.length || 0 }} prompts</span>
+                <span class="stat"><mat-icon>build</mat-icon> {{ server.tools.length || 0 }} tools</span>
+                <span class="stat"><mat-icon>storage</mat-icon> {{ server.resources.length || 0 }} resources</span>
+                <span class="stat"><mat-icon>chat</mat-icon> {{ server.prompts.length || 0 }} prompts</span>
               </div>
             </mat-card-content>
 
@@ -205,7 +205,7 @@
             <mat-card-header>
               <mat-icon mat-card-avatar>chat</mat-icon>
               <mat-card-title>{{ prompt.name }}</mat-card-title>
-              <mat-card-subtitle>{{ prompt.messages?.length || 0 }} messages, {{ prompt.arguments?.length || 0 }} arguments</mat-card-subtitle>
+              <mat-card-subtitle>{{ prompt.messages.length || 0 }} messages, {{ prompt.arguments.length || 0 }} arguments</mat-card-subtitle>
             </mat-card-header>
 
             <mat-card-content>

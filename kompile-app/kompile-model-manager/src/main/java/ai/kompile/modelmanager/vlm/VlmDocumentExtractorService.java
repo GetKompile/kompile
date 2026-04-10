@@ -243,11 +243,112 @@ public class VlmDocumentExtractorService {
      * @param config extraction configuration
      * @return list of page extraction results
      */
+    /**
+     * Extract content from a PDF file by rendering each page and processing with VLM.
+     * Requires PDFBox to be on the classpath (available when kompile-loader-pdf-extended is included).
+     *
+     * @param pdfFile the PDF file
+     * @param config extraction configuration
+     * @return list of page extraction results
+     */
     public List<PageExtractionResult> extractDocument(File pdfFile, VlmExtractionConfig config) {
-        // This would integrate with PDFBox
-        throw new UnsupportedOperationException(
-            "Direct PDF extraction requires PDFBox integration. " +
-            "Use extractPage(BufferedImage, config) with pre-rendered pages.");
+        return extractDocument(pdfFile, config, null);
+    }
+
+    /**
+     * Extract content from a PDF file with progress tracking.
+     *
+     * @param pdfFile the PDF file
+     * @param config extraction configuration
+     * @param progressCallback progress updates (phase, percent)
+     * @return list of page extraction results
+     */
+    public List<PageExtractionResult> extractDocument(File pdfFile, VlmExtractionConfig config,
+                                                       BiConsumer<String, Double> progressCallback) {
+        Objects.requireNonNull(pdfFile, "PDF file cannot be null");
+        if (!pdfFile.exists() || !pdfFile.isFile()) {
+            throw new IllegalArgumentException("PDF file not found: " + pdfFile.getAbsolutePath());
+        }
+
+        List<PageExtractionResult> results = new ArrayList<>();
+
+        try {
+            // Use reflection to avoid hard dependency on PDFBox
+            // PDFBox classes: org.apache.pdfbox.pdmodel.PDDocument, org.apache.pdfbox.rendering.PDFRenderer
+            Class<?> pdDocumentClass = Class.forName("org.apache.pdfbox.pdmodel.PDDocument");
+            Class<?> pdfRendererClass = Class.forName("org.apache.pdfbox.rendering.PDFRenderer");
+
+            // PDDocument.load(File)
+            Object pdDocument = pdDocumentClass.getMethod("load", File.class).invoke(null, pdfFile);
+
+            try {
+                // Get page count
+                int pageCount = (int) pdDocumentClass.getMethod("getNumberOfPages").invoke(pdDocument);
+                log.info("Processing PDF: {} ({} pages)", pdfFile.getName(), pageCount);
+
+                // Create PDFRenderer
+                Object renderer = pdfRendererClass.getConstructor(pdDocumentClass).newInstance(pdDocument);
+
+                // Get DPI from config or use default
+                float dpi = config.getRenderDpi() > 0 ? config.getRenderDpi() : 150.0f;
+
+                for (int page = 0; page < pageCount; page++) {
+                    final int currentPage = page;
+                    if (Thread.currentThread().isInterrupted()) {
+                        log.info("PDF extraction interrupted at page {}/{}", currentPage + 1, pageCount);
+                        break;
+                    }
+
+                    if (progressCallback != null) {
+                        progressCallback.accept("Rendering page " + (currentPage + 1) + "/" + pageCount,
+                                (double) currentPage / pageCount);
+                    }
+
+                    try {
+                        // PDFRenderer.renderImageWithDPI(int, float)
+                        BufferedImage pageImage = (BufferedImage) pdfRendererClass
+                                .getMethod("renderImageWithDPI", int.class, float.class)
+                                .invoke(renderer, currentPage, dpi);
+
+                        PageExtractionResult result = extractPage(pageImage, config,
+                                (phase, pct) -> {
+                                    if (progressCallback != null) {
+                                        double overallProgress = ((double) currentPage + pct) / pageCount;
+                                        progressCallback.accept(phase + " (page " + (currentPage + 1) + ")", overallProgress);
+                                    }
+                                });
+
+                        results.add(result);
+
+                    } catch (Exception e) {
+                        log.warn("Failed to extract page {}: {}", currentPage + 1, e.getMessage());
+                        // Add an error result for this page
+                        results.add(createErrorResult("Page " + (currentPage + 1) + " extraction failed: " + e.getMessage()));
+                    }
+                }
+            } finally {
+                // PDDocument.close()
+                pdDocumentClass.getMethod("close").invoke(pdDocument);
+            }
+
+        } catch (ClassNotFoundException e) {
+            throw new UnsupportedOperationException(
+                    "PDFBox is required for direct PDF extraction. " +
+                    "Add kompile-loader-pdf-extended to your dependencies, " +
+                    "or use extractPage(BufferedImage, config) with pre-rendered pages.");
+        } catch (Exception e) {
+            throw new RuntimeException("Error processing PDF: " + pdfFile.getAbsolutePath(), e);
+        }
+
+        if (progressCallback != null) {
+            progressCallback.accept("Complete", 1.0);
+        }
+
+        return results;
+    }
+
+    private PageExtractionResult createErrorResult(String errorMessage) {
+        return new PageExtractionResult(VlmContentExtractor.VlmExtractionOutput.failed(errorMessage));
     }
 
     private VlmContentExtractor getOrCreateExtractor(VlmExtractionConfig config) {

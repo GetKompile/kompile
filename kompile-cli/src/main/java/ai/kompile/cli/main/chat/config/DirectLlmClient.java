@@ -30,6 +30,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Direct LLM client that calls provider APIs without requiring a kompile-app server.
@@ -43,6 +44,7 @@ public class DirectLlmClient {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final List<ObjectNode> conversationHistory;
+    private volatile AtomicBoolean cancelSignal;
 
     public DirectLlmClient(ChatConfig config, ObjectMapper objectMapper) {
         this.config = config;
@@ -51,6 +53,18 @@ public class DirectLlmClient {
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
         this.conversationHistory = new ArrayList<>();
+    }
+
+    /**
+     * Sets the cancel signal that can be used to interrupt streaming.
+     */
+    public void setCancelSignal(AtomicBoolean cancelSignal) {
+        this.cancelSignal = cancelSignal;
+    }
+
+    private boolean isCancelled() {
+        AtomicBoolean signal = this.cancelSignal;
+        return signal != null && signal.get();
     }
 
     /**
@@ -98,6 +112,11 @@ public class DirectLlmClient {
             request.put("model", config.getModel());
             request.set("messages", messages);
             request.put("stream", true);
+
+            // Request token usage in streamed response
+            ObjectNode streamOptions = objectMapper.createObjectNode();
+            streamOptions.put("include_usage", true);
+            request.set("stream_options", streamOptions);
 
             if (toolDefs != null && toolDefs.size() > 0) {
                 ArrayNode openAiTools = convertToolDefsToOpenAi(toolDefs);
@@ -237,6 +256,10 @@ public class DirectLlmClient {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (isCancelled()) {
+                    result.cancelled = true;
+                    break;
+                }
                 if (!line.startsWith("data: ")) continue;
                 String data = line.substring(6).trim();
                 if ("[DONE]".equals(data)) break;
@@ -272,6 +295,13 @@ public class DirectLlmClient {
                             String args = tcDelta.path("function").path("arguments").asText(null);
                             if (args != null) acc.arguments.append(args);
                         }
+                    }
+
+                    // Extract token usage if present (final chunk in OpenAI streaming)
+                    JsonNode usageNode = chunk.path("usage");
+                    if (!usageNode.isMissingNode()) {
+                        result.inputTokens = usageNode.path("prompt_tokens").asLong(0);
+                        result.outputTokens = usageNode.path("completion_tokens").asLong(0);
                     }
 
                     // Check for finish_reason
@@ -482,6 +512,10 @@ public class DirectLlmClient {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (isCancelled()) {
+                    result.cancelled = true;
+                    break;
+                }
                 if (!line.startsWith("data: ")) continue;
                 String data = line.substring(6).trim();
 
@@ -490,6 +524,17 @@ public class DirectLlmClient {
                     String type = event.path("type").asText("");
 
                     switch (type) {
+                        case "message_start": {
+                            // Anthropic sends input token count in message_start
+                            JsonNode msgUsage = event.path("message").path("usage");
+                            if (!msgUsage.isMissingNode()) {
+                                result.inputTokens = msgUsage.path("input_tokens").asLong(0);
+                                result.cacheReadTokens = msgUsage.path("cache_read_input_tokens").asLong(0);
+                                result.cacheCreationTokens = msgUsage.path("cache_creation_input_tokens").asLong(0);
+                            }
+                            break;
+                        }
+
                         case "content_block_start": {
                             JsonNode contentBlock = event.path("content_block");
                             String blockType = contentBlock.path("type").asText("");
@@ -536,9 +581,16 @@ public class DirectLlmClient {
                         }
 
                         case "message_stop":
-                        case "message_delta":
-                            // Done
                             break;
+
+                        case "message_delta": {
+                            // Anthropic sends output token count in message_delta
+                            JsonNode deltaUsage = event.path("usage");
+                            if (!deltaUsage.isMissingNode()) {
+                                result.outputTokens = deltaUsage.path("output_tokens").asLong(0);
+                            }
+                            break;
+                        }
 
                         case "error": {
                             String msg = event.path("error").path("message").asText(data);
@@ -579,6 +631,12 @@ public class DirectLlmClient {
     public static class StreamResult {
         public String text = "";
         public List<ToolCallOutput> toolCalls = new ArrayList<>();
+        public boolean cancelled = false;
+        // Token usage from API response (when available)
+        public long inputTokens = 0;
+        public long outputTokens = 0;
+        public long cacheReadTokens = 0;
+        public long cacheCreationTokens = 0;
     }
 
     public static class ToolCallOutput {

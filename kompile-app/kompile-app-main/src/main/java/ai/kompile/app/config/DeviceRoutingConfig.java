@@ -40,6 +40,9 @@ public record DeviceRoutingConfig(
     public static final String SERVICE_VECTOR_POPULATION = "vectorPopulation";
     public static final String SERVICE_INGEST = "ingest";
     public static final String SERVICE_MODEL_INIT = "modelInit";
+    public static final String SERVICE_VLM = "vlm";
+    public static final String SERVICE_VLM_ENCODER = "vlmEncoder";
+    public static final String SERVICE_VLM_DECODER = "vlmDecoder";
 
     /**
      * Per-service device configuration overlay.

@@ -122,7 +122,7 @@ public class VectorPopulationSubprocessMain {
             currentArgs = subprocessArgs; // Set for embedding model access
             logger.info("Loaded vector population args for task: {}", subprocessArgs.taskId());
 
-            // Create and start memory watchdog with GPU thresholds
+            // Create and start memory watchdog with GPU + off-heap thresholds
             memoryWatchdog = new SubprocessMemoryWatchdog(
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
@@ -130,16 +130,22 @@ public class VectorPopulationSubprocessMain {
                     subprocessArgs.memoryCheckIntervalMs(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent()
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent()
             );
             memoryWatchdog.start();
-            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}",
+            logger.info("Memory watchdog started: heap stop={}%, critical={}%, kill={}% GPU stop={}%, critical={}%, kill={}% off-heap stop={}%, critical={}%, kill={}%",
                     subprocessArgs.memoryThresholdPercent(),
                     subprocessArgs.memoryCriticalPercent(),
                     subprocessArgs.memoryKillThresholdPercent(),
                     subprocessArgs.gpuMemoryThresholdPercent(),
                     subprocessArgs.gpuMemoryCriticalPercent(),
-                    subprocessArgs.gpuMemoryKillThresholdPercent());
+                    subprocessArgs.gpuMemoryKillThresholdPercent(),
+                    subprocessArgs.offHeapThresholdPercent(),
+                    subprocessArgs.offHeapCriticalPercent(),
+                    subprocessArgs.offHeapKillThresholdPercent());
 
             // Initialize progress reporter and HTTP callback FIRST so we can report progress during setup
             reporter = new SubprocessProgressReporter(subprocessArgs.taskId(), originalStdout);
@@ -163,6 +169,9 @@ public class VectorPopulationSubprocessMain {
             logger.info("Initializing ND4J environment...");
             initializeNd4j(subprocessArgs.nd4jConfigJson());
             reporter.reportProgress("INITIALIZING", 15, "ND4J Ready", "ND4J initialized", null);
+
+            // Check watchdog after ND4J init
+            checkWatchdogOrExit(memoryWatchdog, reporter, "ND4J initialization");
 
             // Notify main app that we're starting
             if (httpCallback != null) {
@@ -218,6 +227,9 @@ public class VectorPopulationSubprocessMain {
                     embeddingModelDimension = dims;
                     reporter.reportProgress("INITIALIZING", 45, "Ready", "Embedding model ready: dimensions=" + dims, null);
                 }
+
+                // Check watchdog after model loading (heavy memory operation)
+                checkWatchdogOrExit(memoryWatchdog, reporter, "embedding model loading");
 
                 // Log full feature set
                 logSubprocessFeatures(context, subprocessArgs, reporter, embeddingModel, indexerService);
@@ -298,6 +310,9 @@ public class VectorPopulationSubprocessMain {
 
                 logger.info("Loaded {} documents from Lucene index (skipped {} already indexed)",
                         documents.size(), skippedCount);
+
+                // Check watchdog after loading all documents into memory
+                checkWatchdogOrExit(memoryWatchdog, reporter, "document loading");
 
                 // Create and execute pipeline (skip chunking - documents already chunked)
                 logger.info("Starting embedding and indexing pipeline...");
@@ -843,6 +858,31 @@ public class VectorPopulationSubprocessMain {
                 null,                    // resumedFromIndexedCount
                 null                     // isResumedRun
         );
+    }
+
+    /**
+     * Check memory watchdog and exit gracefully if stop/kill threshold is exceeded.
+     */
+    private static void checkWatchdogOrExit(SubprocessMemoryWatchdog watchdog,
+                                             SubprocessProgressReporter reporter, String phase) {
+        if (watchdog == null) return;
+        if (watchdog.shouldKill()) {
+            logger.error("Memory watchdog kill threshold exceeded after {}", phase);
+            if (reporter != null) {
+                reporter.reportFailed("EMBEDDING",
+                        "Memory kill threshold exceeded after " + phase,
+                        "MemoryKillThreshold", null);
+            }
+            System.exit(137);
+        } else if (watchdog.shouldStop()) {
+            logger.warn("Memory watchdog stop threshold exceeded after {} - aborting", phase);
+            if (reporter != null) {
+                reporter.reportFailed("EMBEDDING",
+                        "Memory threshold exceeded after " + phase + " - aborting to prevent OOM",
+                        "MemoryThreshold", null);
+            }
+            System.exit(1);
+        }
     }
 
     /**

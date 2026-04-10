@@ -387,6 +387,14 @@ public class SubprocessExecutableConfig {
             command.add("-Dfile.encoding=UTF-8");
             command.add("-Dorg.bytedeco.javacpp.pathsFirst=true");
             command.add("-Dorg.bytedeco.javacpp.logger.debug=false");
+            // Disable JavaCPP pointer GC — critical for ND4J CUDA performance.
+            // Without this, JavaCPP's deallocator thread creates massive GC pressure
+            // (1M+ collection events observed). ND4J manages its own memory via pools.
+            command.add("-Dorg.bytedeco.javacpp.nopointergc=true");
+
+            // DSP performance flags (cublasTf32, batchedGemm, tritonTf32, etc.) are applied
+            // natively via Nd4j.getEnvironment().applyOptimalLLMConfig() inside the subprocess
+            // after ND4J loads. JVM system properties do NOT reach the C++ native layer.
 
             // Off-heap memory (JavaCPP) - includes pinned host memory shared with VRAM
             long offHeapBytes = (long) heapMb * 1024 * 1024 * offHeapMultiplier;

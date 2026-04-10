@@ -1,0 +1,126 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<div class="passthrough-container">
+  <!-- Header: Agent selection and connection controls -->
+  <div class="passthrough-header">
+    <div class="header-controls">
+      <mat-form-field appearance="outline" class="agent-select">
+        <mat-label>Agent</mat-label>
+        <mat-select [(ngModel)]="selectedAgent" [disabled]="connected">
+          <mat-option *ngFor="let agent of agents" [value]="agent.name">
+            {{ agent.displayName }}
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="working-dir-input">
+        <mat-label>Working Directory</mat-label>
+        <input matInput [(ngModel)]="workingDirectory" [disabled]="connected"
+               placeholder="/path/to/project">
+      </mat-form-field>
+
+      <mat-slide-toggle [(ngModel)]="skipPermissions" [disabled]="connected"
+                        matTooltip="Skip agent permission prompts">
+        Auto-approve
+      </mat-slide-toggle>
+
+      <mat-slide-toggle [(ngModel)]="injectMcpTools" [disabled]="connected"
+                        matTooltip="Give the agent access to kompile tools (RAG search, Graph RAG, document indexing, etc.) via MCP">
+        Kompile Tools
+      </mat-slide-toggle>
+    </div>
+
+    <div class="header-actions">
+      <button mat-raised-button *ngIf="!connected" color="primary"
+              [disabled]="!selectedAgent" (click)="connect()">
+        <mat-icon>play_arrow</mat-icon>
+        Connect
+      </button>
+      <button mat-raised-button *ngIf="connected" color="warn" (click)="disconnect()">
+        <mat-icon>stop</mat-icon>
+        Disconnect
+      </button>
+    </div>
+  </div>
+
+  <!-- Error banner -->
+  <div class="error-banner" *ngIf="errorMessage">
+    <mat-icon>error</mat-icon>
+    <span>{{ errorMessage }}</span>
+    <button mat-icon-button (click)="errorMessage = ''">
+      <mat-icon>close</mat-icon>
+    </button>
+  </div>
+
+  <!-- Message area -->
+  <div class="message-area" #messageArea>
+    <div *ngIf="!connected && messages.length === 0" class="empty-state">
+      <mat-icon class="empty-icon">terminal</mat-icon>
+      <p>Select an agent and click Connect to start an interactive passthrough session.</p>
+      <p class="empty-hint">Messages are sent directly to the CLI agent's stdin, and responses are streamed back in real time.</p>
+    </div>
+
+    <div *ngFor="let msg of messages" class="message"
+         [class.user-message]="msg.role === 'USER'"
+         [class.assistant-message]="msg.role === 'ASSISTANT'">
+      <div class="message-header">
+        <span class="role-label">{{ msg.role === 'USER' ? 'You' : selectedAgent }}</span>
+        <span class="timestamp">{{ msg.timestamp | date:'HH:mm:ss' }}</span>
+      </div>
+      <div class="message-content">
+        <pre>{{ msg.content }}</pre>
+      </div>
+    </div>
+
+    <!-- Streaming content -->
+    <div *ngIf="streamingContent" class="message assistant-message streaming">
+      <div class="message-header">
+        <span class="role-label">{{ selectedAgent }}</span>
+        <mat-spinner diameter="14" class="streaming-indicator"></mat-spinner>
+      </div>
+      <div class="message-content">
+        <pre>{{ streamingContent }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Input area -->
+  <div class="input-area" *ngIf="connected">
+    <mat-form-field appearance="outline" class="input-field">
+      <textarea matInput [(ngModel)]="userInput"
+                (keydown)="onKeyDown($event)"
+                [disabled]="!agentReady"
+                placeholder="Type a message..."
+                rows="2"
+                cdkTextareaAutosize
+                cdkAutosizeMinRows="1"
+                cdkAutosizeMaxRows="6"
+                #inputArea></textarea>
+    </mat-form-field>
+    <button mat-fab color="primary" (click)="sendMessage()"
+            [disabled]="!agentReady || !userInput.trim()"
+            matTooltip="Send message">
+      <mat-icon>send</mat-icon>
+    </button>
+  </div>
+
+  <!-- Waiting indicator -->
+  <div class="waiting-indicator" *ngIf="connected && !agentReady">
+    <mat-spinner diameter="20"></mat-spinner>
+    <span>Agent is processing...</span>
+  </div>
+</div>

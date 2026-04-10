@@ -102,7 +102,12 @@ public class ListTool implements CliTool {
 
             entries.sort(String::compareTo);
 
-            String title = context.getWorkingDirectory().relativize(dir).toString();
+            String title;
+            try {
+                title = context.getWorkingDirectory().toAbsolutePath().relativize(dir.toAbsolutePath()).toString();
+            } catch (IllegalArgumentException e) {
+                title = dir.toString();
+            }
             if (title.isEmpty()) title = ".";
 
             StringBuilder sb = new StringBuilder();

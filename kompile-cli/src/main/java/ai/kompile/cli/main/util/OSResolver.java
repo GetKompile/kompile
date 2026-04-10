@@ -17,12 +17,18 @@
 package ai.kompile.cli.main.util;
 
 import org.jetbrains.annotations.NotNull;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
 
 public class OSResolver {
 
     private static final String OS_NAME = System.getProperty("os.name", "generic").toLowerCase(Locale.ROOT);
     private static final String OS_ARCH = System.getProperty("os.arch", "generic").toLowerCase(Locale.ROOT);
+    private static volatile String cachedDistro = null;
 
     public static boolean isMac() {
         return OS_NAME.contains("mac") || OS_NAME.contains("darwin");
@@ -50,41 +56,65 @@ public class OSResolver {
         if (isWindows()) {
             return "windows";
         } else if (isMac()) {
-            return "mac"; // Consistent with "macosx" often used by JavaCPP
+            return "mac";
         } else if (isLinux()) {
-            // Use the more specific getDistro() for Linux variants
-            // The original ai.kompile.cli.main.util.OS.OS.getPlatformName() is not available here.
-            // We'd need a way to get detailed platform name if that OS class is not used.
-            // For now, let's assume a simpler Linux detection or that the old OS.OS class is available.
-            // If OS.OS is not available, this part needs a new way to get distro info (e.g. reading /etc/os-release)
-            // For simplicity here, we'll just return "linux".
-            // To replicate original behavior, the calling context would need to provide the platformName.
-            // String platformName = System.getProperty("os.name").toLowerCase(Locale.ROOT); // Fallback
-            // return getDistro(platformName);
-            return "linux"; // Simplified for now, as getDistro() relied on an external OS.OS
+            return getLinuxDistro();
         } else {
-            return "unknown"; // Or a more generic identifier
+            return "unknown";
         }
     }
 
-    // This method would ideally use a robust way to get Linux distribution info
-    // if the original OS.OS.getPlatformName() is not used/available.
-    // For now, it's a placeholder if we can't access the original OS class.
+    /**
+     * Detects the Linux distribution by reading /etc/os-release.
+     * Falls back to "linux" if the file is not available.
+     */
     @NotNull
-    private static String getDistro(String platformNameInput) {
-        String platformName = platformNameInput.toLowerCase(Locale.ROOT);
-        if (isRhelVariant(platformName)) {
-            return "rhel";
-        } else if (platformName.contains("debian")) {
-            return "debian";
-        } else if (platformName.contains("ubuntu")) {
-            return "ubuntu";
-        } else if (platformName.contains("arch")) {
-            return "arch";
-        } else if (platformName.contains("linux")) { // Generic Linux if no specific distro matched
-            return "linux";
-        } else {
-            return "generic-os"; // Fallback for non-Linux or very unknown Linux
+    private static String getLinuxDistro() {
+        if (cachedDistro != null) {
+            return cachedDistro;
+        }
+
+        String distro = detectLinuxDistro();
+        cachedDistro = distro;
+        return distro;
+    }
+
+    @NotNull
+    private static String detectLinuxDistro() {
+        Path osRelease = Path.of("/etc/os-release");
+        if (Files.exists(osRelease)) {
+            try (BufferedReader reader = Files.newBufferedReader(osRelease)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("ID=")) {
+                        String id = line.substring(3).replace("\"", "").trim().toLowerCase(Locale.ROOT);
+                        return mapDistroId(id);
+                    }
+                }
+            } catch (IOException e) {
+                // Fall through to fallback
+            }
+        }
+
+        // Fallback: check for distro-specific files
+        if (Files.exists(Path.of("/etc/redhat-release"))) return "rhel";
+        if (Files.exists(Path.of("/etc/debian_version"))) return "debian";
+
+        return "linux";
+    }
+
+    @NotNull
+    private static String mapDistroId(String id) {
+        if (isRhelVariant(id)) return "rhel";
+        switch (id) {
+            case "ubuntu":   return "ubuntu";
+            case "debian":   return "debian";
+            case "arch":
+            case "manjaro":  return "arch";
+            case "opensuse":
+            case "sles":     return "suse";
+            case "alpine":   return "alpine";
+            default:         return id.isEmpty() ? "linux" : id;
         }
     }
 

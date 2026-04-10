@@ -95,4 +95,14 @@ public interface ChatSessionRepository extends JpaRepository<ChatSession, Long> 
      * Find sessions without a fact sheet (legacy/unscoped sessions).
      */
     List<ChatSession> findByFactSheetIdIsNullOrderByUpdatedAtDesc();
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SOURCE-BASED QUERIES
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    List<ChatSession> findBySourceOrderByUpdatedAtDesc(String source);
+
+    List<ChatSession> findBySourceInOrderByUpdatedAtDesc(java.util.Collection<String> sources);
+
+    boolean existsBySessionIdAndSource(String sessionId, String source);
 }

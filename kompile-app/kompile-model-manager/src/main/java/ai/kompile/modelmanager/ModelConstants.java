@@ -186,7 +186,7 @@ public class ModelConstants {
     }
 
     // Anserini Encoder Models - UPDATED WITH NEW MODELS AND TOKENIZER METADATA
-    private static final String KOMPILE_MODEL_BASE_URL = "https://github.com/GetKompile/kompile/releases/download/opennlp/";
+    public static final String KOMPILE_MODEL_BASE_URL = "https://github.com/GetKompile/kompile/releases/download/opennlp/";
     private static final Map<String, ModelDescriptor> ANSERINI_ENCODER_MODEL_DESCRIPTORS;
     private static final Map<String, ModelDescriptor> ANSERINI_ENCODER_VOCAB_DESCRIPTORS;
 
@@ -336,6 +336,132 @@ public class ModelConstants {
 
         ANSERINI_ENCODER_MODEL_DESCRIPTORS = Collections.unmodifiableMap(encoderModels);
         ANSERINI_ENCODER_VOCAB_DESCRIPTORS = Collections.unmodifiableMap(vocabModels);
+    }
+
+    // SameDiff LLM Pipeline Models - Modular multi-model pipeline support
+    // These models support the SameDiff LLM pipeline framework with separate components:
+    // - embed_tokens: Token embedding layer
+    // - decoder: Autoregressive decoder
+    // - tokenizer: Tokenizer configuration
+    //
+    // Source models for conversion:
+    // - SmolLM-135M-Instruct: https://huggingface.co/HuggingFaceTB/SmolLM-135M-Instruct
+    // - SmolLM-360M-Instruct: https://huggingface.co/HuggingFaceTB/SmolLM-360M-Instruct
+    // - Phi-2: https://huggingface.co/microsoft/phi-2
+    //
+    private static final Map<String, SameDiffLLMModelDescriptor> SAMEDIFF_LLM_MODEL_DESCRIPTORS;
+
+    static {
+        Map<String, SameDiffLLMModelDescriptor> samediffLlmModels = new HashMap<>();
+
+        // SmolLM-135M-Instruct - Small efficient model for edge deployment
+        samediffLlmModels.put("smollm-135m-instruct", new SameDiffLLMModelDescriptor(
+                "smollm-135m-instruct",
+                "SmolLM 135M Instruct",
+                "https://huggingface.co/HuggingFaceTB/SmolLM-135M-Instruct",
+                "samediff-llm/smollm-135m-instruct",
+                Map.ofEntries(
+                        Map.entry("description", "SmolLM 135M Instruct - Small efficient language model"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "causal_lm"),
+                        Map.entry("architecture", "smollm"),
+                        Map.entry("vocab_size", 49152),
+                        Map.entry("hidden_size", 576),
+                        Map.entry("num_layers", 30),
+                        Map.entry("num_heads", 9),
+                        Map.entry("num_kv_heads", 6),
+                        Map.entry("head_dim", 64),
+                        Map.entry("max_position_embeddings", 2048),
+                        Map.entry("embed_tokens_file", "embed_tokens.fb"),
+                        Map.entry("decoder_file", "decoder.fb"),
+                        Map.entry("tokenizer_file", "tokenizer.json"),
+                        Map.entry("eos_token_id", 2),
+                        Map.entry("pad_token_id", 0),
+                        Map.entry("huggingface_repo", "HuggingFaceTB/SmolLM-135M-Instruct")
+                )
+        ));
+
+        // SmolLM-360M-Instruct - Medium size with better quality
+        samediffLlmModels.put("smollm-360m-instruct", new SameDiffLLMModelDescriptor(
+                "smollm-360m-instruct",
+                "SmolLM 360M Instruct",
+                "https://huggingface.co/HuggingFaceTB/SmolLM-360M-Instruct",
+                "samediff-llm/smollm-360m-instruct",
+                Map.ofEntries(
+                        Map.entry("description", "SmolLM 360M Instruct - Medium size language model"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "causal_lm"),
+                        Map.entry("architecture", "smollm"),
+                        Map.entry("vocab_size", 49152),
+                        Map.entry("hidden_size", 960),
+                        Map.entry("num_layers", 32),
+                        Map.entry("num_heads", 15),
+                        Map.entry("num_kv_heads", 10),
+                        Map.entry("head_dim", 64),
+                        Map.entry("max_position_embeddings", 2048),
+                        Map.entry("embed_tokens_file", "embed_tokens.fb"),
+                        Map.entry("decoder_file", "decoder.fb"),
+                        Map.entry("tokenizer_file", "tokenizer.json"),
+                        Map.entry("eos_token_id", 2),
+                        Map.entry("pad_token_id", 0),
+                        Map.entry("huggingface_repo", "HuggingFaceTB/SmolLM-360M-Instruct")
+                )
+        ));
+
+        // Phi-2 - Microsoft's compact general-purpose model
+        samediffLlmModels.put("phi-2", new SameDiffLLMModelDescriptor(
+                "phi-2",
+                "Phi-2",
+                "https://huggingface.co/microsoft/phi-2",
+                "samediff-llm/phi-2",
+                Map.ofEntries(
+                        Map.entry("description", "Phi-2 - Microsoft compact general-purpose model"),
+                        Map.entry("framework", "samediff"),
+                        Map.entry("model_type", "causal_lm"),
+                        Map.entry("architecture", "phi"),
+                        Map.entry("vocab_size", 50257),
+                        Map.entry("hidden_size", 2560),
+                        Map.entry("num_layers", 32),
+                        Map.entry("num_heads", 32),
+                        Map.entry("num_kv_heads", 32),
+                        Map.entry("head_dim", 80),
+                        Map.entry("max_position_embeddings", 2048),
+                        Map.entry("embed_tokens_file", "embed_tokens.fb"),
+                        Map.entry("decoder_file", "decoder.fb"),
+                        Map.entry("tokenizer_file", "tokenizer.json"),
+                        Map.entry("eos_token_id", 50256),
+                        Map.entry("pad_token_id", 50256),
+                        Map.entry("huggingface_repo", "microsoft/phi-2")
+                )
+        ));
+
+        SAMEDIFF_LLM_MODEL_DESCRIPTORS = Collections.unmodifiableMap(samediffLlmModels);
+    }
+
+    /**
+     * Get a SameDiff LLM model descriptor by model ID.
+     * @param modelId Model ID (e.g., "smollm-135m-instruct")
+     * @return Model descriptor or null if not found
+     */
+    public static SameDiffLLMModelDescriptor getSameDiffLLMModelDescriptor(String modelId) {
+        return SAMEDIFF_LLM_MODEL_DESCRIPTORS.get(modelId);
+    }
+
+    /**
+     * Get all SameDiff LLM model descriptors.
+     * @return Map of model ID to descriptor
+     */
+    public static Map<String, SameDiffLLMModelDescriptor> getAllSameDiffLLMModelDescriptors() {
+        return SAMEDIFF_LLM_MODEL_DESCRIPTORS;
+    }
+
+    /**
+     * Check if a SameDiff LLM model is supported.
+     * @param modelId Model ID to check
+     * @return true if supported
+     */
+    public static boolean isSameDiffLLMModelSupported(String modelId) {
+        return SAMEDIFF_LLM_MODEL_DESCRIPTORS.containsKey(modelId);
     }
 
     // Cross-Encoder Reranking Models - SameDiff format (.sdz)
@@ -927,6 +1053,106 @@ public class ModelConstants {
                     ", displayName='" + displayName + '\'' +
                     ", framework='" + getFramework() + '\'' +
                     ", modelFile='" + getModelFile() + '\'' +
+                    '}';
+        }
+    }
+
+    /**
+     * Descriptor for SameDiff LLM models with modular pipeline components.
+     */
+    public static class SameDiffLLMModelDescriptor {
+        private final String modelId;
+        private final String displayName;
+        private final String huggingFaceRepo;
+        private final String cacheSubpath;
+        private final Map<String, Object> metadata;
+
+        public SameDiffLLMModelDescriptor(String modelId, String displayName, String huggingFaceRepo,
+                                          String cacheSubpath, Map<String, Object> metadata) {
+            this.modelId = modelId;
+            this.displayName = displayName;
+            this.huggingFaceRepo = huggingFaceRepo;
+            this.cacheSubpath = cacheSubpath;
+            this.metadata = metadata != null ? metadata : Collections.emptyMap();
+        }
+
+        public String getModelId() { return modelId; }
+        public String getDisplayName() { return displayName; }
+        public String getHuggingFaceRepo() { return huggingFaceRepo; }
+        public String getCacheSubpath() { return cacheSubpath; }
+        public Map<String, Object> getMetadata() { return metadata; }
+
+        public String getDescription() {
+            return (String) metadata.get("description");
+        }
+
+        public String getArchitecture() {
+            return (String) metadata.get("architecture");
+        }
+
+        public Integer getVocabSize() {
+            Object val = metadata.get("vocab_size");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getHiddenSize() {
+            Object val = metadata.get("hidden_size");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getNumLayers() {
+            Object val = metadata.get("num_layers");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getNumHeads() {
+            Object val = metadata.get("num_heads");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getNumKvHeads() {
+            Object val = metadata.get("num_kv_heads");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getHeadDim() {
+            Object val = metadata.get("head_dim");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getMaxPositionEmbeddings() {
+            Object val = metadata.get("max_position_embeddings");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public String getEmbedTokensFile() {
+            return (String) metadata.get("embed_tokens_file");
+        }
+
+        public String getDecoderFile() {
+            return (String) metadata.get("decoder_file");
+        }
+
+        public String getTokenizerFile() {
+            return (String) metadata.get("tokenizer_file");
+        }
+
+        public Integer getEosTokenId() {
+            Object val = metadata.get("eos_token_id");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        public Integer getPadTokenId() {
+            Object val = metadata.get("pad_token_id");
+            return val instanceof Number ? ((Number) val).intValue() : null;
+        }
+
+        @Override
+        public String toString() {
+            return "SameDiffLLMModelDescriptor{" +
+                    "modelId='" + modelId + '\'' +
+                    ", displayName='" + displayName + '\'' +
+                    ", architecture='" + getArchitecture() + '\'' +
                     '}';
         }
     }

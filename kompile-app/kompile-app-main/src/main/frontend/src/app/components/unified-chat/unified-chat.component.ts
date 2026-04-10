@@ -29,6 +29,7 @@ import { LocalAgentChatService } from '../../services/local-agent-chat.service';
 import { AgentService } from '../../services/agent.service';
 import { ChatStorageService } from '../../services/chat-storage.service';
 import { ChatHistoryService, ChatMessageDto } from '../../services/chat-history.service';
+import { CliTranscriptService, CliSessionSummary, CliTranscriptDetail, CliSourceInfo } from '../../services/cli-transcript.service';
 import { FolderService } from '../../services/folder.service';
 import { ModelContextService } from '../../services/model-context.service';
 
@@ -104,6 +105,8 @@ interface ChatSession {
   archived?: boolean;
   agentName?: string;
   conversationId?: string; // For RAG conversation tracking
+  source?: string; // Source badge: kompile, claude-code, opencode, codex, qwen
+  synced?: boolean; // True if loaded from backend (not localStorage)
 }
 
 @Component({
@@ -299,6 +302,24 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   foldersLoading: boolean = false;
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // CLI TRANSCRIPT INTEGRATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  sidebarTab: 'app' | 'cli' = 'app';
+  cliSessions: CliSessionSummary[] = [];
+  cliSourceFilter: string = 'all';
+  cliSources: { [source: string]: CliSourceInfo } = {};
+  cliLoading: boolean = false;
+  cliImporting: string | null = null; // sessionId being imported
+  cliPreview: CliTranscriptDetail | null = null;
+  cliPreviewLoading: boolean = false;
+
+  // Unified sidebar: synced sessions from backend
+  syncedSessions: ChatSession[] = [];
+  sourceFilter: string = 'all'; // Filter for unified sidebar
+  syncedSessionsLoading: boolean = false;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // SUBSCRIPTIONS
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -315,6 +336,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private agentService: AgentService,
     private storageService: ChatStorageService,
     private chatHistoryService: ChatHistoryService,
+    private cliTranscriptService: CliTranscriptService,
     private folderService: FolderService,
     private modelContextService: ModelContextService,
     private http: HttpClient,
@@ -497,6 +519,112 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.sessions = [];
       }
     }
+
+    // Also load synced sessions from backend
+    this.loadSyncedSessions();
+  }
+
+  loadSyncedSessions(): void {
+    this.syncedSessionsLoading = true;
+    this.chatHistoryService.getSessions().subscribe({
+      next: (backendSessions) => {
+        this.syncedSessions = backendSessions
+          .filter(s => s.source) // Only sessions with a source (synced from CLI)
+          .map(s => ({
+            id: s.sessionId,
+            name: s.title || 'Imported Chat',
+            messages: [],
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            source: s.source,
+            synced: true
+          }));
+        this.syncedSessionsLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.syncedSessions = [];
+        this.syncedSessionsLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  getAllSessions(): ChatSession[] {
+    // Merge local sessions (with messages) with synced sessions
+    let local = this.sessions.filter(s => s.messages && s.messages.length > 0);
+    let all = [...local, ...this.syncedSessions];
+
+    // Source filter
+    if (this.sourceFilter && this.sourceFilter !== 'all') {
+      if (this.sourceFilter === 'app') {
+        all = all.filter(s => !s.source);
+      } else {
+        all = all.filter(s => s.source === this.sourceFilter);
+      }
+    }
+
+    // Archived filter
+    if (!this.showArchivedChats) {
+      all = all.filter(s => !s.archived);
+    }
+
+    // Search filter
+    if (this.chatSearchQuery.trim()) {
+      const query = this.chatSearchQuery.toLowerCase();
+      all = all.filter(s =>
+        (s.name || '').toLowerCase().includes(query) ||
+        (s.messages && s.messages.some(m => m.content.toLowerCase().includes(query)))
+      );
+    }
+
+    // Exclude current session
+    if (this.currentSession) {
+      all = all.filter(s => s.id !== this.currentSession!.id);
+    }
+
+    // Sort by updatedAt descending
+    all.sort((a, b) => {
+      const dateA = new Date(a.updatedAt).getTime();
+      const dateB = new Date(b.updatedAt).getTime();
+      return dateB - dateA;
+    });
+
+    return all;
+  }
+
+  onSourceFilterChange(source: string): void {
+    this.sourceFilter = source;
+    this.cdr.markForCheck();
+  }
+
+  loadSyncedSession(session: ChatSession): void {
+    if (!session.synced) {
+      this.loadSession(session);
+      return;
+    }
+
+    // Load messages from backend for synced sessions
+    this.chatHistoryService.getSessionMessages(session.id).subscribe({
+      next: (msgs) => {
+        const messages: UnifiedMessage[] = msgs.map(m => ({
+          id: 'synced-' + (m.id || Math.random().toString(36).substring(2)),
+          dbId: m.id,
+          role: m.role === 'USER' ? 'user' as const : m.role === 'ASSISTANT' ? 'assistant' as const : 'system' as const,
+          content: m.content,
+          timestamp: new Date(m.createdAt || Date.now())
+        }));
+
+        session.messages = messages;
+        this.currentSession = session;
+        this.messages = messages;
+        this.shouldScrollToBottom = true;
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        console.error('Failed to load synced session:', err);
+      }
+    });
   }
 
   private saveSessions(): void {
@@ -1439,6 +1567,196 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   clearFolderSelection(): void {
     this.selectedFolder = null;
     this.folderService.clearSelection();
+    this.cdr.markForCheck();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // CLI TRANSCRIPT INTEGRATION
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  switchSidebarTab(tab: 'app' | 'cli'): void {
+    this.sidebarTab = tab;
+    if (tab === 'cli' && this.cliSessions.length === 0) {
+      this.loadCliSessions();
+      this.loadCliSources();
+    }
+    this.cdr.markForCheck();
+  }
+
+  loadCliSources(): void {
+    this.cliTranscriptService.discoverSources().subscribe({
+      next: (sources) => {
+        this.cliSources = sources;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.cliSources = {};
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  loadCliSessions(): void {
+    this.cliLoading = true;
+    this.cdr.markForCheck();
+
+    this.cliTranscriptService.listSessions(this.cliSourceFilter).subscribe({
+      next: (sessions) => {
+        this.cliSessions = sessions;
+        this.cliLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.cliSessions = [];
+        this.cliLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  onCliSourceFilterChange(source: string): void {
+    this.cliSourceFilter = source;
+    this.loadCliSessions();
+  }
+
+  previewCliSession(session: CliSessionSummary): void {
+    this.cliPreviewLoading = true;
+    this.cliPreview = null;
+    this.cdr.markForCheck();
+
+    this.cliTranscriptService.getTranscript(session.sessionId, session.source).subscribe({
+      next: (detail) => {
+        this.cliPreview = detail;
+        this.cliPreviewLoading = false;
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.cliPreviewLoading = false;
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  importCliSession(session: CliSessionSummary): void {
+    this.cliImporting = session.sessionId;
+    this.cdr.markForCheck();
+
+    this.cliTranscriptService.importTranscript(session.sessionId, session.source).subscribe({
+      next: (imported) => {
+        this.cliImporting = null;
+        // Load the imported session into the main chat
+        this.loadCliSessions(); // Refresh CLI list
+        // Switch to app tab to see the imported session
+        this.sidebarTab = 'app';
+        this.loadSessions();
+        this.cdr.markForCheck();
+      },
+      error: (err) => {
+        this.cliImporting = null;
+        const errorMsg = err?.error?.error || 'Import failed';
+        console.error('CLI import failed:', errorMsg);
+        this.cdr.markForCheck();
+      }
+    });
+  }
+
+  loadCliTranscriptIntoChat(detail: CliTranscriptDetail): void {
+    // Create a new session from the CLI transcript
+    this.newChat();
+    if (this.currentSession) {
+      this.currentSession.name = detail.title || 'Imported: ' + detail.source;
+    }
+
+    // Load turns as messages
+    for (const turn of detail.turns) {
+      const msg: UnifiedMessage = {
+        id: 'cli-' + Math.random().toString(36).substring(2),
+        role: turn.role === 'user' ? 'user' : 'assistant',
+        content: turn.content,
+        timestamp: new Date()
+      };
+      this.messages.push(msg);
+    }
+
+    this.sidebarTab = 'app';
+    this.shouldScrollToBottom = true;
+    this.cdr.markForCheck();
+  }
+
+  exportCurrentSession(): void {
+    if (!this.currentSession) return;
+
+    // Try to find a backend session ID. If the current session is stored in the backend, use that.
+    // Otherwise, we need to save it first.
+    const sessionId = this.currentSession.id;
+
+    // Save current messages to backend first, then export
+    this.chatHistoryService.createSession(this.currentSession.name || 'Exported Chat').subscribe({
+      next: (created) => {
+        // Add all messages
+        const addMessages = this.messages.map(msg =>
+          this.chatHistoryService.addMessage(created.sessionId, {
+            role: msg.role === 'user' ? 'USER' : msg.role === 'assistant' ? 'ASSISTANT' : 'SYSTEM',
+            content: msg.content
+          }).toPromise()
+        );
+
+        Promise.all(addMessages).then(() => {
+          // Now export
+          this.cliTranscriptService.exportSession(created.sessionId).subscribe({
+            next: (result) => {
+              console.log('Exported to:', result.transcriptPath);
+              this.cdr.markForCheck();
+            },
+            error: (err) => {
+              console.error('Export failed:', err);
+            }
+          });
+        });
+      },
+      error: (err) => {
+        console.error('Failed to save session for export:', err);
+      }
+    });
+  }
+
+  getSourceDisplayName(source: string): string {
+    switch (source) {
+      case 'kompile': return 'Kompile';
+      case 'claude-code': return 'Claude';
+      case 'opencode': return 'OpenCode';
+      case 'codex': return 'Codex';
+      case 'qwen': return 'Qwen';
+      default: return source;
+    }
+  }
+
+  getSourceColor(source: string): string {
+    switch (source) {
+      case 'kompile': return '#4CAF50';
+      case 'claude-code': return '#D97706';
+      case 'opencode': return '#2196F3';
+      case 'codex': return '#9C27B0';
+      case 'qwen': return '#F44336';
+      default: return '#757575';
+    }
+  }
+
+  formatCliDate(timestamp: number): string {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return diffDays + 'd ago';
+    return date.toLocaleDateString();
+  }
+
+  closeCliPreview(): void {
+    this.cliPreview = null;
     this.cdr.markForCheck();
   }
 

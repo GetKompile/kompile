@@ -16,296 +16,160 @@
 
 package ai.kompile.cli.main.install;
 
+import ai.kompile.cli.main.Info;
+import ai.kompile.cli.main.util.OSResolver;
 import picocli.CommandLine;
 
 import java.io.File;
+import java.util.*;
 import java.util.concurrent.Callable;
-@CommandLine.Command(name = "native-tools",mixinStandardHelpOptions = false,description = "Installs native tools like cmake, make, gcc for used with compiling c++ tools.")
+
+@CommandLine.Command(name = "native-tools", mixinStandardHelpOptions = false,
+        description = "Installs native tools like cmake, make, gcc for use with compiling C++ tools.")
 public class NativeToolsCompilation implements Callable<Integer> {
 
-    @CommandLine.Option(names = {"--platform"},description = "Platform to install tools for. Can specify more than once for different toolsets.",required = true)
+    private static final String CMAKE_VERSION = "3.25.0";
+    private static final String CMAKE_URL_BASE = "https://github.com/Kitware/CMake/releases/download/v" + CMAKE_VERSION;
+
+    @CommandLine.Option(names = {"--platform"}, description = "Platform to install tools for (e.g., linux-x86_64, linux-arm64, macosx-arm64).", required = true)
     private String[] platforms;
 
-    /*
-    TODO; each module should have a download url, command to install/extract directory
-    file name when downloading.
-    Implementation is as follows:
-    1. Each dependency's properties can be specified in the following format: module.property.
-    2. If no properties are found, load the dependency from module.dependency.properties.
-    3. Ensure to load an optional modulename.dependencies as a CSV from the file if the property is found.
-    This will mean checking for the dependencies if they are installed and then if not potentially installing them.
+    @CommandLine.Option(names = {"--cmake"}, defaultValue = "true", negatable = true,
+            description = "Install cmake (default: true)")
+    private boolean installCmake;
 
-     */
-    /**
-     *
-     * @param downloadUrl
-     * @param fileName
-     * @param directory
-     * @throws Exception
-     */
-    private void downloadAndExtract(String downloadUrl,String fileName,String directory) throws Exception {
-        //TODO: potentially add versions to allow users to control which version is used
-
-        File archive = InstallMain.downloadAndLoadFrom(downloadUrl,fileName,false);
-        ArchiveUtils.unzipFileTo(archive.getAbsolutePath(),directory,true);
-    }
-
-    private void runCmakeInstall() {
-        // curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-        //                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
-    }
-
+    @CommandLine.Option(names = {"--force"}, defaultValue = "false",
+            description = "Force re-download even if tools already exist")
+    private boolean force;
 
     @Override
     public Integer call() throws Exception {
-        /**
-         * Managed tools:
-         * cmake
-         * make
-         * cross compilation tools
-         * gcc
-         * ncc?
-         * various cuda installs
-         * Current idea:
-         * put all under .kompile directory and auto set paths for compilation.
-         * Set PATH to .kompile then run build.
-         *
-         *
-         * Another idea:
-         * software suites: dedicated versions of cmake, make,gcc, cross compilation per configuration.
-         * Configurations would be per classifier and download specific versions of software based on
-         * the needed outputs. Only covers linux for now.
-         * User would call something like:
-         * ./kompile install native-tools --platform=linux-x86_64 --platform=linux-arm64 --platform=android-arm64 ...
-         *
-         * Then for building, the CLI would default to the managed environment rather than whatever is on the OS.
-         */
-      /*
-       64 bit
+        File nativeToolsDir = new File(Info.homeDirectory(), "native-tools");
+        if (!nativeToolsDir.exists() && !nativeToolsDir.mkdirs()) {
+            System.err.println("Failed to create native tools directory: " + nativeToolsDir.getAbsolutePath());
+            return 1;
+        }
 
+        System.out.println("Installing native tools for platforms: " + Arrays.toString(platforms));
+        System.out.println("Install directory: " + nativeToolsDir.getAbsolutePath());
+        System.out.println();
 
-       FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git cmake wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
+        int failures = 0;
+        for (String platform : platforms) {
+            System.out.println("=== Platform: " + platform + " ===");
 
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN cd deeplearning4j && mkdir openblas_home  && \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-arm64.jar && \
-        unzip openblas-0.3.19-1.5.7-android-arm64.jar
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/arm64-v8a
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV NDK_VERSION=r21d
-        ENV CURRENT_TARGET=android-arm64
-        ENV LIBND4J_CLASSIFIER=android-arm64
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j && ./libnd4j/pi_build.sh*/
+            try {
+                if (installCmake) {
+                    installCmakeForPlatform(platform, nativeToolsDir);
+                }
+            } catch (Exception e) {
+                System.err.println("Failed to install tools for platform " + platform + ": " + e.getMessage());
+                failures++;
+            }
 
+            System.out.println();
+        }
 
+        if (failures > 0) {
+            System.err.println(failures + " platform(s) failed to install.");
+            return 1;
+        }
 
-      /*
-      32 bit
+        System.out.println("Native tools installation complete.");
+        System.out.println("Tools are available at: " + nativeToolsDir.getAbsolutePath());
+        System.out.println();
+        printPathInstructions(nativeToolsDir);
+        return 0;
+    }
 
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
+    private void installCmakeForPlatform(String platform, File nativeToolsDir) throws Exception {
+        File platformDir = new File(nativeToolsDir, platform);
+        File cmakeDir = new File(platformDir, "cmake");
 
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
-        RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-arm.jar && \
-        unzip openblas-0.3.19-1.5.7-android-arm.jar
+        if (cmakeDir.exists() && !force) {
+            System.out.println("  cmake: already installed (use --force to re-download)");
+            return;
+        }
 
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/armeabi-v7a
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV NDK_VERSION=r21d
-        ENV CURRENT_TARGET=android-arm
-        ENV LIBND4J_CLASSIFIER=android-arm
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
+        String downloadUrl = getCmakeDownloadUrl(platform);
+        if (downloadUrl == null) {
+            System.err.println("  cmake: no prebuilt binary available for " + platform);
+            System.err.println("         Build from source: download cmake-" + CMAKE_VERSION + ".tar.gz and run ./configure && make");
+            return;
+        }
 
+        System.out.println("  cmake: downloading from " + downloadUrl);
+        String fileName = "cmake-" + CMAKE_VERSION + "-" + platform + getArchiveExtension(platform);
 
-              /*
-      x86 32 bit
+        File archive = InstallMain.downloadAndLoadFrom(downloadUrl, fileName, force);
+        if (archive == null) {
+            throw new RuntimeException("Failed to download cmake archive");
+        }
 
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
+        if (!platformDir.exists() && !platformDir.mkdirs()) {
+            throw new RuntimeException("Failed to create platform directory: " + platformDir);
+        }
 
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
-        RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-x86.jar && \
-        unzip openblas-0.3.19-1.5.7-android-x86.jar
+        System.out.println("  cmake: extracting...");
+        if (fileName.endsWith(".zip")) {
+            ArchiveUtils.unzipFileTo(archive.getAbsolutePath(), platformDir.getAbsolutePath(), true);
+        } else {
+            // For tar.gz, use system tar
+            ProcessBuilder pb = new ProcessBuilder("tar", "xzf", archive.getAbsolutePath(), "-C", platformDir.getAbsolutePath());
+            pb.inheritIO();
+            Process p = pb.start();
+            int exitCode = p.waitFor();
+            if (exitCode != 0) {
+                throw new RuntimeException("tar extraction failed with exit code: " + exitCode);
+            }
+        }
 
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/x86
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV NDK_VERSION=r21d
-        ENV CURRENT_TARGET=android-x86
-        ENV LIBND4J_CLASSIFIER=android-x86
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
+        // Rename extracted directory to "cmake" for consistent path
+        File[] extracted = platformDir.listFiles((dir, name) -> name.startsWith("cmake-"));
+        if (extracted != null && extracted.length > 0 && !cmakeDir.exists()) {
+            if (!extracted[0].renameTo(cmakeDir)) {
+                System.err.println("  Warning: could not rename " + extracted[0].getName() + " to cmake");
+            }
+        }
 
-               /*
-      android x86 64 bit
+        System.out.println("  cmake: installed to " + cmakeDir.getAbsolutePath());
+    }
 
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
+    private String getCmakeDownloadUrl(String platform) {
+        // Map platform string to cmake download URL
+        switch (platform.toLowerCase()) {
+            case "linux-x86_64":
+                return CMAKE_URL_BASE + "/cmake-" + CMAKE_VERSION + "-linux-x86_64.tar.gz";
+            case "linux-arm64":
+            case "linux-aarch64":
+                return CMAKE_URL_BASE + "/cmake-" + CMAKE_VERSION + "-linux-aarch64.tar.gz";
+            case "macosx-x86_64":
+            case "macos-x86_64":
+                return CMAKE_URL_BASE + "/cmake-" + CMAKE_VERSION + "-macos-universal.tar.gz";
+            case "macosx-arm64":
+            case "macos-arm64":
+                return CMAKE_URL_BASE + "/cmake-" + CMAKE_VERSION + "-macos-universal.tar.gz";
+            case "windows-x86_64":
+                return CMAKE_URL_BASE + "/cmake-" + CMAKE_VERSION + "-windows-x86_64.zip";
+            default:
+                return null;
+        }
+    }
 
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
-        RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-android-x86_64.jar && \
-        unzip openblas-0.3.19-1.5.7-android-x86_64.jar
+    private String getArchiveExtension(String platform) {
+        if (platform.toLowerCase().startsWith("windows")) {
+            return ".zip";
+        }
+        return ".tar.gz";
+    }
 
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/x86_64
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV NDK_VERSION=r21d
-        ENV CURRENT_TARGET=android-x86_64
-        ENV LIBND4J_CLASSIFIER=android-x86_64
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
-
-
-
-               /*
-      linux 32 arm bit
-
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
-
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
-        RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-linux-armhf.jar && \
-        unzip openblas-0.3.19-1.5.7-linux-armhf.jar
-
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/linux-armhf
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV CURRENT_TARGET=linux-armhf
-        ENV LIBND4J_CLASSIFIER=linux-armhf
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
-
-
-
-
-          /*
-      linux 64 arm bit
-
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
-
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-        RUN wget  https://dlcdn.apache.org/maven/maven-3/3.8.6/binaries/apache-maven-3.8.6-bin.tar.gz && tar xvf apache-maven-3.8.6-bin.tar.gz && mv apache-maven-3.8.6 /root/mvn
-        RUN cd /root && git clone https://github.com/deeplearning4j/deeplearning4j
-        RUN cd /root/deeplearning4j && mkdir openblas_home  && cd openblas_home &&  \
-        wget https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.19-1.5.7/openblas-0.3.19-1.5.7-linux-arm64.jar && \
-        unzip openblas-0.3.19-1.5.7-linux-arm64.jar
-
-        ENV OPENBLAS_PATH=/root/deeplearning4j/openblas_home/lib/linux-arm64
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV CURRENT_TARGET=linux-arm64
-        ENV LIBND4J_CLASSIFIER=linux-arm64
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
-
-
-
-
-          /*
-      linux jetson nano arm bit
-
-      FROM ubuntu:18.04
-        RUN apt-get update && apt-get -yq  install git  wget unzip openjdk-11-jdk curl python3
-        RUN    apt-get -yq  update && apt-get install -y build-essential unzip libssl-dev  && \
-        curl -fsSL http://cmake.org/files/v3.19/cmake-3.19.0.tar.gz | tar xz && cd cmake-3.19.0 && \
-                              ./configure --prefix=/opt/cmake && make -j2 && make install && cd .. && rm -r cmake-3.19.0
-
-        RUN    curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz \
-                                   | tar xz && \
-        cd protobuf-3.8.0 && \
-                                   ./configure --prefix=/opt/protobuf && \
-        make -j2 && \
-        make install && \
-        cd .. && \
-        rm -rf protobuf-3.8.0
-
-
-        ENV BUILD_USING_MAVEN=1
-        ENV PATH=/root/mvn/bin:/opt/protobuf/bin:/opt/cmake/bin:${PATH}
-        ENV CUDA_VER=10.2
-        ENV CURRENT_TARGET=jetson-arm64
-        ENV LIBND4J_CLASSIFIER=linux-arm64
-        ENV MODULES="-Dlibnd4j.operations='softmax;add,matmul' -Dlibnd4j.datatypes=float -Dlibnd4j.lto=ON"
-        RUN cd /root/deeplearning4j/libnd4j && ./pi_build.sh*/
-
-
-        return null;
+    private void printPathInstructions(File nativeToolsDir) {
+        System.out.println("To use installed tools, add them to your PATH:");
+        for (String platform : platforms) {
+            File cmakeBin = new File(nativeToolsDir, platform + "/cmake/bin");
+            if (cmakeBin.exists()) {
+                System.out.println("  export PATH=" + cmakeBin.getAbsolutePath() + ":$PATH");
+            }
+        }
     }
 }

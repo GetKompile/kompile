@@ -63,6 +63,22 @@ public class SubprocessHandle {
     private volatile int progressPercent = 0;
     private volatile String lastMessage = "";
 
+    // Memory tracking from heartbeats
+    private volatile double heapUsagePercent = 0;
+    private volatile long heapUsedBytes = 0;
+    private volatile long heapMaxBytes = 0;
+    private volatile double offHeapUsagePercent = 0;
+    private volatile long offHeapUsedBytes = 0;
+    private volatile long offHeapMaxBytes = 0;
+    private volatile double gpuUsagePercent = 0;
+    private volatile long gpuUsedBytes = 0;
+    private volatile long gpuMaxBytes = 0;
+
+    // Peak memory tracking
+    private volatile double peakHeapUsagePercent = 0;
+    private volatile double peakOffHeapUsagePercent = 0;
+    private volatile double peakGpuUsagePercent = 0;
+
     /**
      * Create a new subprocess handle.
      *
@@ -148,6 +164,26 @@ public class SubprocessHandle {
      */
     public void updateHeartbeat() {
         this.lastHeartbeat = Instant.now();
+    }
+
+    /**
+     * Update memory metrics from a heartbeat message.
+     */
+    public void updateMemoryFromHeartbeat(SubprocessMessage.Heartbeat heartbeat) {
+        this.lastHeartbeat = Instant.now();
+        this.heapUsagePercent = heartbeat.memoryUsagePercent();
+        this.heapUsedBytes = heartbeat.heapUsedBytes();
+        this.heapMaxBytes = heartbeat.heapMaxBytes();
+        this.offHeapUsagePercent = heartbeat.offHeapUsagePercent();
+        this.offHeapUsedBytes = heartbeat.offHeapUsedBytes();
+        this.offHeapMaxBytes = heartbeat.offHeapMaxBytes();
+        this.gpuUsagePercent = heartbeat.gpuUsagePercent();
+        this.gpuUsedBytes = heartbeat.gpuUsedBytes();
+        this.gpuMaxBytes = heartbeat.gpuMaxBytes();
+        // Track peaks
+        this.peakHeapUsagePercent = Math.max(this.peakHeapUsagePercent, heartbeat.memoryUsagePercent());
+        this.peakOffHeapUsagePercent = Math.max(this.peakOffHeapUsagePercent, heartbeat.offHeapUsagePercent());
+        this.peakGpuUsagePercent = Math.max(this.peakGpuUsagePercent, heartbeat.gpuUsagePercent());
     }
 
     /**
@@ -333,7 +369,19 @@ public class SubprocessHandle {
             lastMessage,
             startTime,
             lastHeartbeat,
-            getElapsedTime()
+            getElapsedTime(),
+            heapUsagePercent,
+            heapUsedBytes,
+            heapMaxBytes,
+            offHeapUsagePercent,
+            offHeapUsedBytes,
+            offHeapMaxBytes,
+            gpuUsagePercent,
+            gpuUsedBytes,
+            gpuMaxBytes,
+            peakHeapUsagePercent,
+            peakOffHeapUsagePercent,
+            peakGpuUsagePercent
         );
     }
 
@@ -352,7 +400,21 @@ public class SubprocessHandle {
         String lastMessage,
         Instant startTime,
         Instant lastHeartbeat,
-        Duration elapsedTime
+        Duration elapsedTime,
+        // Memory metrics
+        double heapUsagePercent,
+        long heapUsedBytes,
+        long heapMaxBytes,
+        double offHeapUsagePercent,
+        long offHeapUsedBytes,
+        long offHeapMaxBytes,
+        double gpuUsagePercent,
+        long gpuUsedBytes,
+        long gpuMaxBytes,
+        // Peak memory
+        double peakHeapUsagePercent,
+        double peakOffHeapUsagePercent,
+        double peakGpuUsagePercent
     ) {}
 
     /**

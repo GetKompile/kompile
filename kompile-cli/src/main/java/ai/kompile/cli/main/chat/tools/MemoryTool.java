@@ -440,7 +440,8 @@ public class MemoryTool implements CliTool {
 
     private String sanitizeFileName(String name) {
         // Prevent directory traversal
-        name = Paths.get(name).getFileName().toString();
+        Path fileName = Paths.get(name).getFileName();
+        name = fileName != null ? fileName.toString() : name;
         // Ensure it ends with .md
         if (!name.endsWith(".md")) {
             name = name + ".md";
