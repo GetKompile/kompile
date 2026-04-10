@@ -58,9 +58,9 @@ public class RoleManagerTool implements CliTool {
 
     @Override
     public String description() {
-        return "Manage chat roles. Supports operations: list_roles, get_role, create_role, update_role, delete_role, assign_role. " +
-               "Roles are agent personas with system prompts that define how the agent behaves. " +
-               "Use list_roles to see available roles, assign_role to activate a role for the current agent.";
+        return "Manage chat roles. Supports operations: list_roles, get_role, create_role, update_role, delete_role, assign_role, get_agent_role. " +
+               "Roles are agent personas with system prompts that define how the agent behaviors. " +
+               "Use list_roles to see available roles, assign_role to activate a role for the current agent or assign to a specific agent.";
     }
 
     @Override
@@ -81,7 +81,8 @@ public class RoleManagerTool implements CliTool {
                 .add("create_role")
                 .add("update_role")
                 .add("delete_role")
-                .add("assign_role"));
+                .add("assign_role")
+                .add("get_agent_role"));
         actionNode.put("description", "The role management action to perform");
         properties.set("action", actionNode);
 
@@ -90,6 +91,12 @@ public class RoleManagerTool implements CliTool {
         nameNode.put("type", "string");
         nameNode.put("description", "Role name (required for get_role, update_role, delete_role, assign_role)");
         properties.set("name", nameNode);
+
+        // agent (optional, for assign_role)
+        ObjectNode agentNode = objectMapper.createObjectNode();
+        agentNode.put("type", "string");
+        agentNode.put("description", "Agent to assign role to (e.g., 'claude', 'gemini', 'qwen'). If omitted, assigns to the current session.");
+        properties.set("agent", agentNode);
 
         // display_name (for create_role, update_role)
         ObjectNode displayNameNode = objectMapper.createObjectNode();
@@ -121,7 +128,7 @@ public class RoleManagerTool implements CliTool {
 
     @Override
     public String permissionKey() {
-        return "read"; // Role management is read-only by default, write ops require explicit permission
+        return "write"; // Role management includes write operations (create, update, delete, assign)
     }
 
     @Override
@@ -136,6 +143,7 @@ public class RoleManagerTool implements CliTool {
                 case "update_role" -> updateRole(params);
                 case "delete_role" -> deleteRole(params);
                 case "assign_role" -> assignRole(params);
+                case "get_agent_role" -> getAgentRole(params);
                 default -> errorResult("Unknown action: " + action + ". Valid actions: list_roles, get_role, create_role, update_role, delete_role, assign_role");
             };
         } catch (IllegalArgumentException e) {
@@ -277,21 +285,64 @@ public class RoleManagerTool implements CliTool {
         }
     }
 
+    private static final java.util.Set<String> VALID_AGENTS = java.util.Set.of(
+            "claude", "qwen", "codex", "gemini", "opencode"
+    );
+
     private ToolResult assignRole(JsonNode params) {
         String name = params.path("name").asText("");
         if (name.isBlank()) {
             return errorResult("Parameter 'name' is required for assign_role");
         }
 
-        RoleConfig role = roleManager.setActiveRole(name);
+        RoleConfig role = roleManager.getRole(name);
         if (role == null) {
             return errorResult("Role not found: " + name);
         }
 
+        String agent = params.path("agent").asText("");
+        if (!agent.isBlank()) {
+            // Validate agent name before assignment
+            String normalizedAgent = agent.toLowerCase().trim();
+            if (!VALID_AGENTS.contains(normalizedAgent)) {
+                return errorResult("Unknown agent: '" + agent + "'. Valid agents are: " + VALID_AGENTS);
+            }
+            // Assign role to a specific agent
+            roleManager.setAgentRole(normalizedAgent, name);
+            return ToolResult.success("Role '" + name + "' assigned to agent '" + normalizedAgent + "'.\n" +
+                    "  Display Name: " + role.getDisplayName() + "\n" +
+                    "  Description: " + role.getDescription() + "\n\n" +
+                    "This agent will use this role's system prompt when spawned as a subagent.");
+        }
+
+        // Assign to current session
+        roleManager.setActiveRole(name);
         return ToolResult.success("Role activated: " + role.getName() + "\n" +
                 "  Display Name: " + role.getDisplayName() + "\n" +
                 "  Description: " + role.getDescription() + "\n\n" +
                 "The agent will now use this role's system prompt for future interactions.");
+    }
+
+    private ToolResult getAgentRole(JsonNode params) {
+        String agent = params.path("agent").asText("");
+        if (agent.isBlank()) {
+            return errorResult("Parameter 'agent' is required for get_agent_role");
+        }
+
+        String roleName = roleManager.getAgentRole(agent);
+        if (roleName == null) {
+            return ToolResult.success("No role assigned to agent '" + agent + "'");
+        }
+
+        RoleConfig role = roleManager.getRole(roleName);
+        if (role == null) {
+            return ToolResult.success("Agent '" + agent + "' has role '" + roleName + "' (role config not found)");
+        }
+
+        return ToolResult.success("Agent '" + agent + "' has role: " + role.getName() + "\n" +
+                "  Display Name: " + role.getDisplayName() + "\n" +
+                "  Description: " + role.getDescription() + "\n\n" +
+                "System Prompt:\n" + role.getSystemPrompt());
     }
 
     private static ToolResult errorResult(String message) {

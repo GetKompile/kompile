@@ -30,6 +30,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.EndOfFileException;
 import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
@@ -225,6 +226,8 @@ public class ResumeTool implements CliTool {
             if (index >= 0 && index < filteredConversations.size()) {
                 return filteredConversations.get(index).sessionId();
             }
+            // Index out of range — return null to signal invalid selection
+            return null;
         } catch (NumberFormatException e) {
             // Not a number, treat as raw session ID
         }
@@ -251,6 +254,12 @@ public class ResumeTool implements CliTool {
                 String input;
                 try {
                     input = lineReader.readLine("Command (h for help, q to quit): ");
+                } catch (UserInterruptException e) {
+                    // Ctrl+C pressed - treat as quit
+                    input = "q";
+                } catch (EndOfFileException e) {
+                    // EOF (Ctrl+D) - treat as quit
+                    input = "q";
                 } catch (Exception e) {
                     // Terminal error, ask again
                     try { Thread.sleep(500); } catch (InterruptedException ie) {}
@@ -302,6 +311,18 @@ public class ResumeTool implements CliTool {
 
             return ToolResult.success("Resume tool exited.");
         } catch (Exception e) {
+            // Ensure terminal is cleaned up on exception to prevent resource leak
+            try {
+                terminal.writer().print("\033[2J");
+                terminal.writer().flush();
+                terminal.writer().print("\033[0m");
+                terminal.writer().print("\033[?25h");
+                terminal.writer().println();
+                terminal.writer().flush();
+                terminal.close();
+            } catch (Exception closeError) {
+                // Ignore cleanup errors
+            }
             return ToolResult.error("Interactive browser error: " + e.getMessage());
         }
     }
@@ -310,98 +331,128 @@ public class ResumeTool implements CliTool {
      * Process a single command from the user.
      */
     private void processCommand(String input) {
-        String[] parts = input.trim().split("\\s+", 2);
-        String command = parts[0].toLowerCase();
-        String rest = parts.length > 1 ? parts[1] : "";
+        try {
+            String[] parts = input.trim().split("\\s+", 2);
+            String command = parts[0].toLowerCase();
+            String rest = parts.length > 1 ? parts[1] : "";
 
-        // Quick switch: just a number = switch agent tab
-        if (command.matches("\\d+")) {
-            switchTab(command);
-            return;
-        }
+            // Quick switch: just a number = switch agent tab
+            if (command.matches("\\d+")) {
+                switchTab(command);
+                return;
+            }
 
-        switch (command) {
-            case "h":
-            case "help":
-                showHelp();
-                break;
-            case "tab":
-            case "t":
-                if (!rest.isEmpty()) {
-                    switchTab(rest.trim());
-                }
-                break;
-            case "search":
-            case "s":
-                if (!rest.isEmpty()) {
-                    searchQuery = rest;
-                    currentPage = 0;
-                    refreshView();
-                }
-                break;
-            case "filter":
-            case "f":
-                if (!rest.isEmpty()) {
-                    handleFilter(rest.trim());
-                }
-                break;
-            case "view":
-            case "v":
-                if (!rest.isEmpty()) {
-                    viewConversation(resolveSessionId(rest.trim()));
-                }
-                break;
-            case "migrate":
-            case "m":
-                if (!rest.isEmpty()) {
-                    migrateConversation(resolveSessionId(rest.trim()));
-                }
-                break;
-            case "resume":
-            case "r":
-                if (!rest.isEmpty()) {
-                    resumeConversation(resolveSessionId(rest.trim()));
-                }
-                break;
-            case "next":
-            case "n":
-                nextPage();
-                break;
-            case "prev":
-            case "p":
-                prevPage();
-                break;
-            case "page":
-                if (!rest.isEmpty()) {
-                    goToPage(rest.trim());
-                }
-                break;
-            case "sort":
-                if (!rest.isEmpty()) {
-                    handleSort(rest.trim());
-                }
-                break;
-            case "clear":
-            case "c":
-                clearFilters();
-                break;
-            case "back":
-            case "b":
-            case "menu":
-            case "setup":
-                terminal.writer().println();
-                terminal.writer().println(GREEN + "  Returning to main menu..." + RESET);
-                terminal.writer().println(DIM + "  Use: kompile chat (to start chat), kompile chat --setup (to reconfigure)" + RESET);
-                terminal.writer().println();
+            switch (command) {
+                case "h":
+                case "help":
+                    showHelp();
+                    break;
+                case "tab":
+                case "t":
+                    if (!rest.isEmpty()) {
+                        switchTab(rest.trim());
+                    }
+                    break;
+                case "search":
+                case "s":
+                    if (!rest.isEmpty()) {
+                        searchQuery = rest;
+                        currentPage = 0;
+                        refreshView();
+                    }
+                    break;
+                case "filter":
+                case "f":
+                    if (!rest.isEmpty()) {
+                        handleFilter(rest.trim());
+                    }
+                    break;
+                case "view":
+                case "v":
+                    if (!rest.isEmpty()) {
+                        String sid = resolveSessionId(rest.trim());
+                        if (sid == null) {
+                            terminal.writer().println(RED + "Invalid selection — number out of range." + RESET);
+                            terminal.writer().flush();
+                        } else {
+                            viewConversation(sid);
+                        }
+                    }
+                    break;
+                case "migrate":
+                case "m":
+                    if (!rest.isEmpty()) {
+                        String sid = resolveSessionId(rest.trim());
+                        if (sid == null) {
+                            terminal.writer().println(RED + "Invalid selection — number out of range." + RESET);
+                            terminal.writer().flush();
+                        } else {
+                            migrateConversation(sid);
+                        }
+                    }
+                    break;
+                case "resume":
+                case "r":
+                    if (!rest.isEmpty()) {
+                        String sid = resolveSessionId(rest.trim());
+                        if (sid == null) {
+                            terminal.writer().println(RED + "Invalid selection — number out of range." + RESET);
+                            terminal.writer().flush();
+                        } else {
+                            resumeConversation(sid, filterAgent);
+                        }
+                    }
+                    break;
+                case "next":
+                case "n":
+                    nextPage();
+                    break;
+                case "prev":
+                case "p":
+                    prevPage();
+                    break;
+                case "page":
+                    if (!rest.isEmpty()) {
+                        goToPage(rest.trim());
+                    }
+                    break;
+                case "sort":
+                    if (!rest.isEmpty()) {
+                        handleSort(rest.trim());
+                    }
+                    break;
+                case "clear":
+                case "c":
+                    clearFilters();
+                    break;
+                case "back":
+                case "b":
+                case "menu":
+                case "setup":
+                    terminal.writer().println();
+                    terminal.writer().println(GREEN + "  Returning to main menu..." + RESET);
+                    terminal.writer().println(DIM + "  Use: kompile chat (to start chat), kompile chat --setup (to reconfigure)" + RESET);
+                    terminal.writer().println();
+                    terminal.writer().flush();
+                    try { Thread.sleep(1000); } catch (InterruptedException e) {}
+                    break;
+                case "":
+                    break;
+                default:
+                    terminal.writer().println(RED + "Unknown command: " + command + RESET);
+                    terminal.writer().flush();
+                    break;
+            }
+        } catch (UserInterruptException e) {
+            // User pressed Ctrl+C - treat as quit signal, handled by caller
+        } catch (Exception e) {
+            // Don't let command errors crash the interactive browser
+            try {
+                terminal.writer().println(RED + "Command error: " + e.getMessage() + RESET);
                 terminal.writer().flush();
-                try { Thread.sleep(1000); } catch (InterruptedException e) {}
-                break;
-            case "":
-                break;
-            default:
-                terminal.writer().println(RED + "Unknown command: " + command + RESET);
-                terminal.writer().flush();
-                break;
+            } catch (Exception ignored) {
+                // Terminal may be in bad state after subprocess exit
+            }
         }
     }
 
@@ -1312,7 +1363,7 @@ public class ResumeTool implements CliTool {
      * Resume a conversation with a designated agent via native session injection.
      * Shows a simple menu first: Resume, Migrate, or View.
      */
-    private void resumeConversation(String sessionId) {
+    private void resumeConversation(String sessionId, String selectedAgent) {
         try {
             // Find the conversation summary to get the source, and lazily load title
             String convoSource = "external";
@@ -1380,9 +1431,11 @@ public class ResumeTool implements CliTool {
             terminal.writer().println();
 
             if (choice.trim().equals("1")) {
-                // Option 1: Resume normally - use same agent
-                String agent = determineAgentFromSource(conversation.source());
-                terminal.writer().println(CYAN + "Resuming with " + agent + " (same agent)..." + RESET);
+                // Option 1: Resume normally - use the agent selected in the menu
+                String agent = (selectedAgent != null && !selectedAgent.isBlank())
+                        ? selectedAgent
+                        : determineAgentFromSource(conversation.source());
+                terminal.writer().println(CYAN + "Resuming with " + agent + "..." + RESET);
                 launchAgentWithSession(conversation, agent);
                 return;
             }
@@ -1402,9 +1455,14 @@ public class ResumeTool implements CliTool {
             terminal.writer().println(YELLOW + "Invalid choice. Returning to main list." + RESET);
             terminal.writer().flush();
             try { Thread.sleep(1000); } catch (InterruptedException e) {}
+        } catch (UserInterruptException e) {
+            // User pressed Ctrl+C - return to main list quietly
         } catch (Exception e) {
-            terminal.writer().println(RED + "Error resuming conversation: " + e.getMessage() + RESET);
-            e.printStackTrace(terminal.writer());
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            try {
+                terminal.writer().println(RED + "Error resuming conversation: " + msg + RESET);
+                terminal.writer().flush();
+            } catch (Exception ignored) {}
         }
     }
 
@@ -1510,12 +1568,16 @@ public class ResumeTool implements CliTool {
             newTerminal.writer().println(DIM + "Press Enter to continue..." + RESET);
             newTerminal.writer().flush();
             newLineReader.readLine();
+        } catch (UserInterruptException e) {
+            // User pressed Ctrl+C to quit the agent - exit cleanly
+            if (terminalClosed) {
+                restoreTerminalAfterLaunchFailure();
+            }
         } catch (Exception e) {
             String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             boolean restored = !terminalClosed || restoreTerminalAfterLaunchFailure();
             if (restored) {
                 terminal.writer().println(RED + "Error launching agent: " + errorMsg + RESET);
-                e.printStackTrace(terminal.writer());
                 terminal.writer().println(DIM + "Press Enter to continue..." + RESET);
                 terminal.writer().flush();
                 try {
@@ -1525,7 +1587,6 @@ public class ResumeTool implements CliTool {
                 }
             } else {
                 System.err.println("Error launching agent: " + errorMsg);
-                e.printStackTrace(System.err);
             }
         }
     }
@@ -1739,6 +1800,10 @@ public class ResumeTool implements CliTool {
 
     /**
      * Run resume with parameters.
+     * <p>
+     * In MCP stdio context, we cannot launch an interactive process since stdout
+     * is the JSON-RPC pipe. Instead, we export the conversation as structured JSON
+     * so the calling agent can incorporate it into its context.
      */
     private ToolResult runResume(JsonNode params) {
         String sessionId = params.has("session_id") ? params.get("session_id").asText() : "";
@@ -1751,14 +1816,27 @@ public class ResumeTool implements CliTool {
         try {
             LoadedConversation conversation = loadConversation(sessionId);
 
+            // Export conversation turns as structured JSON
+            List<ChatHistory.Turn> turns = conversation.turns();
+            String conversationJson = ConversationFormatter.format(turns, "openai");
+
             ObjectMapper om = new ObjectMapper();
             ObjectNode result = om.createObjectNode();
             result.put("session_id", sessionId);
-            result.put("agent", agent);
+            result.put("target_agent", agent);
             result.put("source", conversation.source());
-            result.put("message_count", conversation.turns().size());
-            result.put("message", "Ready to resume with agent: " + agent);
-            return ToolResult.success("Resume ready", result.toString());
+            result.put("message_count", turns.size());
+            result.put("conversation_history", conversationJson);
+
+            // Include per-turn metadata for richer context injection
+            var turnsArray = result.putArray("turns");
+            for (ChatHistory.Turn turn : turns) {
+                ObjectNode turnNode = turnsArray.addObject();
+                turnNode.put("role", turn.role());
+                turnNode.put("content", turn.content());
+            }
+
+            return ToolResult.success("Conversation exported for resume", result.toString());
         } catch (Exception e) {
             return ToolResult.error("Resume error: " + e.getMessage());
         }

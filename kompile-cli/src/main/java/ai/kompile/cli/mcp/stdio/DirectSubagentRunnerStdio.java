@@ -17,6 +17,8 @@
 package ai.kompile.cli.mcp.stdio;
 
 import ai.kompile.cli.main.chat.agent.AgentConfig;
+import ai.kompile.cli.main.chat.roles.RoleConfig;
+import ai.kompile.cli.main.chat.roles.RoleManager;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -43,13 +45,52 @@ public class DirectSubagentRunnerStdio {
     private static final int MAX_OUTPUT_BYTES = 512_000; // 512KB
 
     private final Path workDir;
+    private final RoleManager roleManager;
 
     public DirectSubagentRunnerStdio(Path workDir) {
         this.workDir = workDir;
+        this.roleManager = null;
+    }
+
+    public DirectSubagentRunnerStdio(Path workDir, RoleManager roleManager) {
+        this.workDir = workDir;
+        this.roleManager = roleManager;
+    }
+
+    /** Maximum subagent recursion depth before MCP tool injection is disabled. */
+    private static final int MAX_SUBAGENT_DEPTH = 3;
+
+    /**
+     * Read the current subagent depth from the environment variable.
+     * Returns 0 if not set (i.e., this is the top-level call).
+     */
+    private int getCurrentSubagentDepth() {
+        String depthStr = System.getenv("KOMPILE_SUBAGENT_DEPTH");
+        if (depthStr != null) {
+            try {
+                return Integer.parseInt(depthStr);
+            } catch (NumberFormatException e) {
+                // Ignore malformed values
+            }
+        }
+        return 0;
     }
 
     public String runSubagent(AgentConfig agent, String prompt) throws Exception {
         String agentName = agent.getName();
+        String effectivePrompt = prompt;
+
+        // If a role is specified, prepend its system prompt to the user's prompt
+        String roleName = agent.getRoleName();
+        if (roleName != null && !roleName.isEmpty()) {
+            RoleConfig role = resolveRole(roleName);
+            if (role != null) {
+                effectivePrompt = buildRolePrompt(role) + "\n\n---\n\n" + prompt;
+                System.err.println(DIM + "  Role: " + roleName + RESET);
+            } else {
+                System.err.println(DIM + "  Warning: role '" + roleName + "' not found, using prompt as-is" + RESET);
+            }
+        }
         String binary = resolveAgentBinary(agentName);
 
         if (binary == null) {
@@ -67,26 +108,68 @@ public class DirectSubagentRunnerStdio {
         // All status output goes to stderr (stdout is the MCP JSON-RPC pipe)
         System.err.println(GREEN + "⟳ Spawning subagent: " + agentName + RESET);
         System.err.println(DIM + "  Binary: " + binary + RESET);
-        System.err.println(DIM + "  Prompt: " + prompt.substring(0, Math.min(80, prompt.length())) + "..." + RESET);
+        System.err.println(DIM + "  Prompt: " + effectivePrompt.substring(0, Math.min(80, effectivePrompt.length())) + "..." + RESET);
         System.err.flush();
 
-        List<String> cmd = buildAgentCommand(binary, agentName, prompt);
+        // Check recursion depth to prevent infinite subagent spawning
+        int currentDepth = getCurrentSubagentDepth();
+        boolean injectMcpTools = currentDepth < MAX_SUBAGENT_DEPTH;
+        if (!injectMcpTools) {
+            System.err.println(DIM + "  Warning: Subagent depth limit reached (" + currentDepth +
+                    "), skipping MCP tool injection to prevent recursion" + RESET);
+        }
+
+        // Inject MCP tools and track the settings file for cleanup
+        Path settingsFile = null;
+        if (injectMcpTools) {
+            try {
+                settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(workDir, agentName);
+                if (settingsFile != null) {
+                    System.err.println(DIM + "  Injected kompile MCP tools into " + settingsFile + RESET);
+                    System.err.flush();
+                }
+            } catch (Exception e) {
+                System.err.println(DIM + "  Warning: Could not configure MCP tools for subagent: "
+                        + e.getMessage() + RESET);
+                System.err.flush();
+            }
+        }
+
+        try {
+            return executeSubagentProcess(agentName, effectivePrompt, binary, prompt, currentDepth);
+        } finally {
+            // Always restore original settings after subagent exits
+            if (settingsFile != null) {
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(settingsFile);
+            }
+        }
+    }
+
+    private String executeSubagentProcess(String agentName, String effectivePrompt, String binary,
+                                          String prompt, int currentDepth) throws Exception {
+        List<String> cmd = buildAgentCommand(binary, agentName, effectivePrompt);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(workDir.toFile());
+
+        // Increment and pass the subagent depth so child processes can enforce the same limit
+        pb.environment().put("KOMPILE_SUBAGENT_DEPTH", String.valueOf(currentDepth + 1));
 
         // CRITICAL: Do NOT use inheritIO(). When running inside kompile mcp-stdio:
         //   - stdout is the MCP JSON-RPC pipe — subprocess output would corrupt it
         //   - stdin is the MCP JSON-RPC input — subprocess reads would consume messages
         // Instead: close stdin, merge stderr into stdout, capture all output.
-        pb.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
+        // Use platform-specific null device for stdin redirection.
+        String osName = System.getProperty("os.name").toLowerCase();
+        File nullDevice = osName.contains("win") ? new File("NUL") : new File("/dev/null");
+        pb.redirectInput(ProcessBuilder.Redirect.from(nullDevice));
         pb.redirectErrorStream(true); // merge stderr into stdout for unified capture
 
         Process process = pb.start();
         long startTime = System.currentTimeMillis();
 
         // Capture subprocess output in a background thread to prevent pipe buffer deadlock
-        StringBuilder outputBuilder = new StringBuilder();
+        StringBuffer outputBuilder = new StringBuffer();
         Thread outputReader = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -170,21 +253,6 @@ public class DirectSubagentRunnerStdio {
 
         String name = agentName.toLowerCase();
 
-        // Inject MCP tools into the agent's settings before building the command.
-        // McpToolInjection clears existing MCP servers to prevent recursive spawning deadlocks
-        // (subagent → kompile MCP → task tool → subagent → ...).
-        try {
-            Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(workDir, agentName);
-            if (settingsFile != null) {
-                System.err.println(DIM + "  Injected kompile MCP tools into " + settingsFile + RESET);
-                System.err.flush();
-            }
-        } catch (Exception e) {
-            System.err.println(DIM + "  Warning: Could not configure MCP tools for subagent: "
-                    + e.getMessage() + RESET);
-            System.err.flush();
-        }
-
         // Build the non-interactive command for each agent.
         // Each agent has its own flags for auto-approve and one-shot prompt execution.
         if (name.contains("claude")) {
@@ -218,5 +286,29 @@ public class DirectSubagentRunnerStdio {
         }
 
         return cmd;
+    }
+
+    private RoleConfig resolveRole(String roleName) {
+        if (roleManager != null) {
+            return roleManager.getRole(roleName);
+        }
+        // Fallback: try to load roles directly from disk
+        try {
+            RoleManager fallbackManager = new RoleManager(workDir);
+            return fallbackManager.getRole(roleName);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String buildRolePrompt(RoleConfig role) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("# Role: ").append(role.getDisplayName()).append("\n\n");
+        sb.append(role.getSystemPrompt());
+        if (role.getDescription() != null && !role.getDescription().isEmpty()) {
+            sb.append("\n\n## Context\n");
+            sb.append(role.getDescription());
+        }
+        return sb.toString();
     }
 }
