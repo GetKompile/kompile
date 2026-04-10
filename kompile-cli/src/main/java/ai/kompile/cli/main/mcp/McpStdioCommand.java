@@ -67,6 +67,8 @@ public class McpStdioCommand implements Callable<Integer> {
                     }
                 } catch (Exception e) {
                     System.err.println("[MCP] Error handling message: " + e.getMessage());
+                } finally {
+                    CTX.remove();
                 }
             }
         } catch (Exception e) {
@@ -155,7 +157,7 @@ public class McpStdioCommand implements Callable<Integer> {
         var roleManager = new ai.kompile.cli.main.chat.roles.RoleManager(wd);
         var permissionService = new ai.kompile.cli.main.chat.permission.PermissionService();
         var processManager = new ai.kompile.cli.main.chat.tools.BackgroundProcessManager(System.getProperty("user.dir"));
-        var subagentRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(wd);
+        var subagentRunner = new ai.kompile.cli.mcp.stdio.DirectSubagentRunnerStdio(wd, roleManager);
 
         // ── File I/O tools ─────────────────────────────────────────────────
         registerCliTool(tools, new ai.kompile.cli.main.chat.tools.ReadTool(), om, wd);

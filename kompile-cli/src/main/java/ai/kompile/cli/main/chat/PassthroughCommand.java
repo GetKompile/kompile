@@ -72,8 +72,7 @@ public class PassthroughCommand implements Callable<Integer> {
     int mcpPort;
 
     // Cached resolved MCP URL (to avoid double-probing)
-    private String resolvedMcpUrl;
-    private boolean mcpUrlResolved;
+    private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -102,17 +101,20 @@ public class PassthroughCommand implements Callable<Integer> {
                 }
 
                 // Reset MCP URL cache when re-entering loop
-                mcpUrlResolved = false;
-                resolvedMcpUrl = null;
+                mcpUrlResolver.resetCache();
 
                 List<String> agentCommand = buildCommand(agentBinary);
                 System.out.println(CYAN + "Starting " + agent + " session..." + RESET);
+                Path injectedSettingsFile = null;
                 if (injectTools) {
                     try {
-                        Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(Path.of(workingDir), agent);
-                        if (settingsFile != null) {
-                            System.out.println(GREEN + "Kompile tools injected" + RESET
-                                    + DIM + " (" + settingsFile + ")" + RESET);
+                        String sseUrl = resolveMcpUrl();
+                        injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                                Path.of(workingDir), agent, sseUrl);
+                        if (injectedSettingsFile != null) {
+                            String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+                            System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
+                                    + DIM + " (" + injectedSettingsFile + ")" + RESET);
                         }
                     } catch (java.io.IOException e) {
                         System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
@@ -143,6 +145,9 @@ public class PassthroughCommand implements Callable<Integer> {
                 } catch (Exception e) {
                     System.err.println("Error running agent: " + e.getMessage());
                     lastExitCode = 1;
+                } finally {
+                    // Restore original settings to prevent pollution
+                    ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
                 }
 
                 // Clean up terminal state after agent exits
@@ -309,6 +314,8 @@ public class PassthroughCommand implements Callable<Integer> {
             harvestQwenTranscript(history, metrics, sessionStart);
         } else if (agentLower.contains("opencode")) {
             harvestOpenCodeTranscript(history, metrics, sessionStart);
+        } else if (agentLower.contains("gemini")) {
+            harvestGeminiTranscript(history, metrics, sessionStart);
         }
     }
 
@@ -334,38 +341,48 @@ public class PassthroughCommand implements Callable<Integer> {
 
     /**
      * Find the Claude project directory by matching against the working dir path.
+     * Claude encodes paths by replacing '/' with '-', so /home/user/my-project
+     * becomes -home-user-my-project. To avoid ambiguity with directory names
+     * that contain hyphens, we use a reverse-lookup approach: encode each candidate
+     * directory name the same way Claude would, and check for a match.
      */
     private Path findClaudeProjectDir(Path claudeProjectsDir, String absWorkDir) {
-        // Try direct encoding first: /home/user/project -> -home-user-project
-        String directName = absWorkDir.replace("/", "-").replace("\\", "-");
-        Path direct = claudeProjectsDir.resolve(directName);
+        String normalized = absWorkDir.replace("\\", "/");
+
+        // Compute the expected encoded name for the working directory
+        String expectedEncoded = normalized.replace("/", "-");
+
+        // Try direct match first (exact encoded name)
+        Path direct = claudeProjectsDir.resolve(expectedEncoded);
         if (Files.isDirectory(direct)) return direct;
 
-        // Scan for a matching directory
-        String normalized = absWorkDir.replace("\\", "/");
+        // Reverse lookup: iterate directory entries, encode each one the way Claude would,
+        // and compare against the expected encoding of the working directory.
         File[] dirs = claudeProjectsDir.toFile().listFiles(File::isDirectory);
         if (dirs == null) return null;
 
         for (File dir : dirs) {
-            // Decode: -home-user-project -> /home/user/project
-            String decoded = "/" + dir.getName().substring(1).replace("-", "/");
-            if (normalized.equals(decoded) || normalized.startsWith(decoded + "/")) {
+            String name = dir.getName();
+            // For each candidate, try to decode it back to a path by trying all
+            // possible split points for hyphens. Instead, we do the reverse:
+            // take the candidate name, and check if our normalized path, when encoded,
+            // matches the candidate name.
+            // Since we don't know which hyphens are path separators vs. part of dir names,
+            // we check: does the candidate, when decoded (all hyphens -> slashes), produce
+            // a prefix of our working directory?
+            if (!name.startsWith("-")) continue;
+            String decoded = "/" + name.substring(1).replace("-", "/");
+            if (normalized.equals(decoded) || normalized.startsWith(decoded + "/")
+                    || decoded.startsWith(normalized + "/")) {
                 return dir.toPath();
             }
         }
 
-        // Fallback: try replacing only path separators, keeping hyphens in dir names
+        // Fallback: try the old naive encoding match
+        String directName = normalized.replace("/", "-");
         for (File dir : dirs) {
-            String name = dir.getName();
-            if (name.startsWith("-")) {
-                // Build path from segments
-                String withSlashes = name.replaceFirst("^-", "/");
-                // This is ambiguous (hyphens in names vs path separators)
-                // but check if our workdir starts with something close
-                if (normalized.replace("/", "-").equals(name) ||
-                        ("-" + normalized.substring(1).replace("/", "-")).equals(name)) {
-                    return dir.toPath();
-                }
+            if (dir.getName().equals(directName)) {
+                return dir.toPath();
             }
         }
         return null;
@@ -373,6 +390,10 @@ public class PassthroughCommand implements Callable<Integer> {
 
     /**
      * Find the most recently modified .jsonl file that was updated during our session.
+     * Uses a 30-second tolerance window to account for slow agent writes or filesystem
+     * latency. Tradeoff: a wider window reduces the chance of missing the session file,
+     * but could theoretically pick up a file from a very recent prior session if the
+     * agent didn't write anything this time. The 30s window is a balance between these.
      */
     private File findNewestJsonl(Path projectDir, Instant sessionStart) {
         File[] jsonlFiles = projectDir.toFile().listFiles(
@@ -385,8 +406,9 @@ public class PassthroughCommand implements Callable<Integer> {
 
         for (File f : jsonlFiles) {
             long lastMod = f.lastModified();
-            // Must have been modified after our session started (5s tolerance)
-            if (lastMod >= startMillis - 5000 && lastMod > newestTime) {
+            // Must have been modified after our session started (30s tolerance to
+            // account for slow agent writes or filesystem latency)
+            if (lastMod >= startMillis - 30000 && lastMod > newestTime) {
                 newestTime = lastMod;
                 newest = f;
             }
@@ -702,6 +724,143 @@ public class PassthroughCommand implements Callable<Integer> {
         history.logSystem("OpenCode session - no structured logs available for harvesting.");
     }
 
+    /**
+     * Locate and parse Gemini CLI session logs.
+     * Gemini CLI stores sessions at ~/.gemini/sessions/ as JSONL files.
+     * TODO: Update path and parsing if Gemini changes its session storage format.
+     */
+    private void harvestGeminiTranscript(ChatHistory history, ChatSessionMetrics metrics, Instant sessionStart) {
+        Path geminiSessionsDir = Path.of(System.getProperty("user.home"), ".gemini", "sessions");
+        if (!Files.isDirectory(geminiSessionsDir)) {
+            // Fallback: check for .gemini directory at all
+            Path geminiDir = Path.of(System.getProperty("user.home"), ".gemini");
+            if (!Files.isDirectory(geminiDir)) {
+                history.logSystem("Gemini session - no .gemini directory found.");
+                return;
+            }
+            // If .gemini exists but no sessions subdir, try to find JSONL files
+            File jsonlFile = findNewestJsonlRecursive(geminiDir, sessionStart);
+            if (jsonlFile == null) {
+                history.logSystem("Gemini session - no JSONL logs found in .gemini directory.");
+                return;
+            }
+            parseGeminiJsonl(jsonlFile, history, metrics);
+            return;
+        }
+
+        File jsonlFile = findNewestJsonlRecursive(geminiSessionsDir, sessionStart);
+        if (jsonlFile == null) {
+            history.logSystem("Gemini session - no JSONL logs found in sessions directory.");
+            return;
+        }
+
+        parseGeminiJsonl(jsonlFile, history, metrics);
+    }
+
+    /**
+     * Parse a Gemini CLI JSONL session file.
+     * Entry types may include: user, assistant (model), tool_use, tool_result, system.
+     * TODO: Verify actual Gemini JSONL schema and adjust field names accordingly.
+     */
+    private void parseGeminiJsonl(File jsonlFile, ChatHistory history, ChatSessionMetrics metrics) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(jsonlFile), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                try {
+                    JsonNode node = objectMapper.readTree(line);
+                    String role = node.path("role").asText("");
+                    String type = node.path("type").asText("");
+
+                    switch (role) {
+                        case "user" -> {
+                            String text = extractGeminiUserText(node);
+                            if (text != null && !text.isBlank()) {
+                                history.logUserMessage(text);
+                                metrics.recordUserTurn(text);
+                            }
+                        }
+                        case "model", "assistant" -> {
+                            String text = extractGeminiAssistantText(node);
+                            long tokenCount = node.path("tokenCount").asLong(0);
+                            if (tokenCount > 0) {
+                                metrics.recordAssistantTurn(text != null ? text : "", tokenCount);
+                            }
+                            if (text != null && !text.isBlank()) {
+                                // Also log if we got text
+                                if (tokenCount == 0) {
+                                    metrics.recordAssistantTurn(text, 0);
+                                }
+                            }
+                        }
+                        case "tool" -> {
+                            String toolName = node.path("name").asText("unknown");
+                            boolean isError = node.path("error").asBoolean(false);
+                            history.logToolCall(toolName, isError, 0);
+                            metrics.recordToolCall(toolName, isError, 0);
+                        }
+                        default -> {
+                            // system, etc. — skip
+                        }
+                    }
+                } catch (Exception e) {
+                    // Skip unparseable lines
+                }
+            }
+        } catch (IOException e) {
+            // Couldn't read the file — metrics will show zeros
+        }
+    }
+
+    private String extractGeminiUserText(JsonNode node) {
+        // Try common field patterns for user message text
+        if (node.has("text") && node.get("text").isTextual()) {
+            return node.get("text").asText();
+        }
+        if (node.has("content") && node.get("content").isTextual()) {
+            return node.get("content").asText();
+        }
+        if (node.has("message") && node.get("message").isTextual()) {
+            return node.get("message").asText();
+        }
+        if (node.has("parts") && node.get("parts").isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode part : node.get("parts")) {
+                if (part.has("text") && part.get("text").isTextual()) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(part.get("text").asText());
+                }
+            }
+            return sb.isEmpty() ? null : sb.toString();
+        }
+        return null;
+    }
+
+    private String extractGeminiAssistantText(JsonNode node) {
+        // Try common field patterns for assistant/model message text
+        if (node.has("text") && node.get("text").isTextual()) {
+            return node.get("text").asText();
+        }
+        if (node.has("content") && node.get("content").isTextual()) {
+            return node.get("content").asText();
+        }
+        if (node.has("message") && node.get("message").isTextual()) {
+            return node.get("message").asText();
+        }
+        if (node.has("parts") && node.get("parts").isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode part : node.get("parts")) {
+                if (part.has("text") && part.get("text").isTextual()) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(part.get("text").asText());
+                }
+            }
+            return sb.isEmpty() ? null : sb.toString();
+        }
+        return null;
+    }
+
     // ── Shared helpers for session log discovery ────────────────────────────
 
     /**
@@ -717,7 +876,8 @@ public class PassthroughCommand implements Callable<Integer> {
         long newestTime = 0;
         for (File f : allJsonl) {
             long lastMod = f.lastModified();
-            if (lastMod >= startMillis - 5000 && lastMod > newestTime) {
+            // 30s tolerance to match findNewestJsonl
+            if (lastMod >= startMillis - 30000 && lastMod > newestTime) {
                 newestTime = lastMod;
                 newest = f;
             }
@@ -996,59 +1156,7 @@ public class PassthroughCommand implements Callable<Integer> {
     // ── MCP URL resolution ──────────────────────────────────────────────────
 
     private String resolveMcpUrl() {
-        if (mcpUrlResolved) return resolvedMcpUrl;
-        mcpUrlResolved = true;
-        resolvedMcpUrl = doResolveMcpUrl();
-        return resolvedMcpUrl;
-    }
-
-    private String doResolveMcpUrl() {
-        if (kompileUrl != null && !kompileUrl.isEmpty()) {
-            String url = kompileUrl.endsWith("/") ? kompileUrl.substring(0, kompileUrl.length() - 1) : kompileUrl;
-            if (!url.contains("/mcp")) url = url + "/mcp/sse";
-            return url;
-        }
-
-        if (mcpPort > 0) return "http://localhost:" + mcpPort + "/mcp/sse";
-
-        int[] probePorts = {8080, 8443, 9090, 3000};
-        for (int port : probePorts) {
-            if (probeKompileApp(port)) {
-                System.out.println(DIM + "Auto-detected kompile-app on port " + port + RESET);
-                return "http://localhost:" + port + "/mcp/sse";
-            }
-        }
-        return null;
-    }
-
-    private boolean probeKompileApp(int port) {
-        try {
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofMillis(500))
-                    .build();
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create("http://localhost:" + port + "/mcp/status"))
-                    .timeout(java.time.Duration.ofMillis(1000))
-                    .GET()
-                    .build();
-            java.net.http.HttpResponse<String> response = client.send(request,
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private String findKompileBinary() {
-        try {
-            String processCmd = ProcessHandle.current().info().command().orElse(null);
-            if (processCmd == null) return null;
-            if (!processCmd.contains("java")) return processCmd;
-            String jarPath = getClass().getProtectionDomain()
-                    .getCodeSource().getLocation().toURI().getPath();
-            if (java.nio.file.Files.exists(java.nio.file.Path.of(jarPath))) return processCmd + " -jar " + jarPath;
-        } catch (Exception e) { /* Fall through */ }
-        return null;
+        return mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
     }
 
     private static String formatNumber(long n) {

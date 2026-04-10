@@ -91,8 +91,7 @@ public class ResumeCommand implements Callable<Integer> {
     private int mcpPort;
 
     // Cached resolved MCP URL (to avoid double-probing)
-    private String resolvedMcpUrl;
-    private boolean mcpUrlResolved;
+    private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
 
     // ANSI color codes
     private static final String RESET = "\033[0m";
@@ -258,7 +257,7 @@ public class ResumeCommand implements Callable<Integer> {
 
             try {
                 turns = reader.readKompileSession(sessionId);
-            } catch (Exception ignored) {
+            } catch (Exception kompileError) {
                 Exception lastExternalError = null;
                 for (String externalSource : java.util.List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
                     try {
@@ -275,8 +274,12 @@ public class ResumeCommand implements Callable<Integer> {
                         lastExternalError = externalError;
                     }
                 }
-                if (turns == null && lastExternalError != null) {
-                    throw lastExternalError;
+                if (turns == null) {
+                    if (lastExternalError != null) {
+                        lastExternalError.addSuppressed(kompileError);
+                        throw lastExternalError;
+                    }
+                    throw new IOException("No transcript found for session: " + sessionId, kompileError);
                 }
             }
 
@@ -303,18 +306,22 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println("  Saved to: " + exportResult.getSessionPath());
             System.out.println();
 
-            // Build the agent command with tool injection
+            // Build the agent command (no tool injection here — done below)
             List<String> agentCommand = buildAgentCommand(agent, exportResult);
 
+            Path injectedSettingsFile = null;
             if (injectTools) {
                 Path agentWorkingDir = exportResult.getWorkingDirectory() != null
                         ? exportResult.getWorkingDirectory()
-                        : Path.of(System.getProperty("user.dir"));
+                        : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
                 try {
-                    Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(agentWorkingDir, agent);
-                    if (settingsFile != null) {
-                        System.out.println(GREEN + "Kompile tools injected" + RESET
-                                + DIM + " (" + settingsFile + ")" + RESET);
+                    String sseUrl = resolveMcpUrl();
+                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                            agentWorkingDir, agent, sseUrl);
+                    if (injectedSettingsFile != null) {
+                        String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+                        System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
+                                + DIM + " (" + injectedSettingsFile + ")" + RESET);
                     }
                 } catch (java.io.IOException e) {
                     System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
@@ -325,13 +332,19 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println("Launching agent with native session resume...");
             System.out.println();
 
-            ProcessBuilder pb = new ProcessBuilder(agentCommand);
-            if (exportResult.getWorkingDirectory() != null) {
-                pb.directory(exportResult.getWorkingDirectory().toFile());
+            int exitCode;
+            try {
+                ProcessBuilder pb = new ProcessBuilder(agentCommand);
+                if (exportResult.getWorkingDirectory() != null) {
+                    pb.directory(exportResult.getWorkingDirectory().toFile());
+                }
+                pb.inheritIO();
+                Process process = pb.start();
+                exitCode = process.waitFor();
+            } finally {
+                // Restore original settings to prevent pollution
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
             }
-            pb.inheritIO();
-            Process process = pb.start();
-            int exitCode = process.waitFor();
 
             System.out.println();
             System.out.println("✓ Agent session completed (exit code: " + exitCode + ")");
@@ -380,20 +393,8 @@ public class ResumeCommand implements Callable<Integer> {
             cmd.add("--yolo");
         }
 
-        // Inject tools by writing MCP config to the agent's settings file
-        if (injectTools) {
-            Path agentWorkingDir = exportResult.getWorkingDirectory() != null
-                    ? exportResult.getWorkingDirectory()
-                    : Path.of(System.getProperty("user.dir"));
-            try {
-                Path settingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(agentWorkingDir, agent);
-                if (settingsFile != null) {
-                    System.out.println(DIM + "Injected kompile MCP tools into " + settingsFile + RESET);
-                }
-            } catch (java.io.IOException e) {
-                System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
-            }
-        }
+        // Tool injection is handled by the caller (resumeConversation) — not here,
+        // to avoid double-injection and to allow proper cleanup after agent exit.
 
         return cmd;
     }
@@ -415,59 +416,7 @@ public class ResumeCommand implements Callable<Integer> {
     // ── MCP URL resolution ──────────────────────────────────────────────────
 
     private String resolveMcpUrl() {
-        if (mcpUrlResolved) return resolvedMcpUrl;
-        mcpUrlResolved = true;
-        resolvedMcpUrl = doResolveMcpUrl();
-        return resolvedMcpUrl;
+        return mcpUrlResolver.resolveMcpUrl(kompileUrl, mcpPort);
     }
 
-    private String doResolveMcpUrl() {
-        if (kompileUrl != null && !kompileUrl.isEmpty()) {
-            String url = kompileUrl.endsWith("/") ? kompileUrl.substring(0, kompileUrl.length() - 1) : kompileUrl;
-            if (!url.contains("/mcp")) url = url + "/mcp/sse";
-            return url;
-        }
-
-        if (mcpPort > 0) return "http://localhost:" + mcpPort + "/mcp/sse";
-
-        int[] probePorts = {8080, 8443, 9090, 3000};
-        for (int port : probePorts) {
-            if (probeKompileApp(port)) {
-                System.out.println(DIM + "Auto-detected kompile-app on port " + port + RESET);
-                return "http://localhost:" + port + "/mcp/sse";
-            }
-        }
-        return null;
-    }
-
-    private boolean probeKompileApp(int port) {
-        try {
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofMillis(500))
-                    .build();
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create("http://localhost:" + port + "/mcp/status"))
-                    .timeout(java.time.Duration.ofMillis(1000))
-                    .GET()
-                    .build();
-            java.net.http.HttpResponse<String> response = client.send(request,
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private String findKompileBinary() {
-        try {
-            String processCmd = ProcessHandle.current().info().command().orElse(null);
-            if (processCmd == null) return null;
-            if (!processCmd.contains("java")) return processCmd;
-            String jarPath = getClass().getProtectionDomain()
-                    .getCodeSource().getLocation().toURI().getPath();
-            if (java.nio.file.Files.exists(java.nio.file.Path.of(jarPath)))
-                return processCmd + " -jar " + jarPath;
-        } catch (Exception e) { /* Fall through */ }
-        return null;
-    }
 }

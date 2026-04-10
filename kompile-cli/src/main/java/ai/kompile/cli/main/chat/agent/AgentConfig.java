@@ -44,6 +44,7 @@ public class AgentConfig {
     private final boolean canSpawnSubagents;
     private final String modelHint; // e.g. "fast", "default", "powerful" - guides model selection
     private final boolean isCustom; // loaded from .kompile/agents/ file
+    private final String roleName; // optional role to apply to this agent
 
     private AgentConfig(Builder builder) {
         this.name = builder.name;
@@ -57,6 +58,7 @@ public class AgentConfig {
         this.canSpawnSubagents = builder.canSpawnSubagents;
         this.modelHint = builder.modelHint;
         this.isCustom = builder.isCustom;
+        this.roleName = builder.roleName;
     }
 
     public String getName() { return name; }
@@ -70,6 +72,7 @@ public class AgentConfig {
     public boolean canSpawnSubagents() { return canSpawnSubagents; }
     public String getModelHint() { return modelHint; }
     public boolean isCustom() { return isCustom; }
+    public String getRoleName() { return roleName; }
 
     public static Builder builder(String name) {
         return new Builder(name);
@@ -87,6 +90,7 @@ public class AgentConfig {
         private boolean canSpawnSubagents = false;
         private String modelHint = "default";
         private boolean isCustom = false;
+        private String roleName = null;
 
         public Builder(String name) {
             this.name = name;
@@ -140,6 +144,11 @@ public class AgentConfig {
 
         public Builder isCustom(boolean isCustom) {
             this.isCustom = isCustom;
+            return this;
+        }
+
+        public Builder roleName(String roleName) {
+            this.roleName = roleName;
             return this;
         }
 

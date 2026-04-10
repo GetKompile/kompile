@@ -49,6 +49,9 @@ public class StdioTaskTool {
         ArrayNode enumValues = agent.putArray("enum");
         enumValues.add("qwen"); enumValues.add("claude"); enumValues.add("codex");
         enumValues.add("gemini"); enumValues.add("opencode");
+        var role = props.putObject("role");
+        role.put("type", "string");
+        role.put("description", "Optional role to assign to the subagent (e.g., 'developer', 'architect', 'reviewer')");
         schema.putArray("required").add("description").add("prompt");
         return schema;
     }
@@ -57,6 +60,7 @@ public class StdioTaskTool {
         String desc = (String) arguments.getOrDefault("description", "");
         String prompt = (String) arguments.getOrDefault("prompt", "");
         String agentName = (String) arguments.getOrDefault("agent", "qwen");
+        String roleName = (String) arguments.get("role"); // optional
 
         if (prompt == null || prompt.isEmpty()) {
             return ToolResult.error("prompt is required");
@@ -65,9 +69,11 @@ public class StdioTaskTool {
         AgentConfig agentConfig = AgentConfig.builder(agentName)
             .displayName(agentName.substring(0, 1).toUpperCase() + agentName.substring(1))
             .description("External " + agentName + " agent")
-            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false).build();
+            .systemPrompt(prompt).maxSteps(50).isSubagent(true).canSpawnSubagents(false)
+            .roleName(roleName)
+            .build();
 
-        System.out.println("\u001B[32m  ⟳ Spawning " + agentName + " subagent: " + desc + "\u001B[0m");
+        System.err.println("\u001B[32m  ⟳ Spawning " + agentName + " subagent: " + desc + "\u001B[0m");
 
         try {
             String result = subagentRunner.runSubagent(agentConfig, prompt);

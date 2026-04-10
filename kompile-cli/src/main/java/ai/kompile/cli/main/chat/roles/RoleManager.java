@@ -17,6 +17,8 @@
 package ai.kompile.cli.main.chat.roles;
 
 import ai.kompile.cli.common.KompileHome;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -37,10 +39,17 @@ import java.util.stream.Collectors;
 public class RoleManager {
 
     private static final String ROLES_DIR = "roles";
+    private static final String AGENT_ROLES_FILE = "agent-roles.json";
 
     private final Path workingDirectory;
     private final Map<String, RoleConfig> roles = new ConcurrentHashMap<>();
     private volatile String activeRoleName;
+    private final Map<String, String> agentRoleMap = new ConcurrentHashMap<>(); // agent name → role name
+
+    // JSON persistence
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Path agentRolesFilePath;
+    private final Object agentRolesLock = new Object();
 
     /**
      * Create a new RoleManager.
@@ -49,7 +58,9 @@ public class RoleManager {
      */
     public RoleManager(Path workingDirectory) {
         this.workingDirectory = workingDirectory;
+        this.agentRolesFilePath = KompileHome.homeDirectory().toPath().resolve("roles").resolve(AGENT_ROLES_FILE);
         loadAllRoles();
+        loadAgentRoles();
     }
 
     /**
@@ -278,6 +289,27 @@ public class RoleManager {
     }
 
     /**
+     * Assign a role to a specific agent and persist to disk.
+     *
+     * @param agentName the agent name (e.g., "claude", "gemini", "qwen")
+     * @param roleName the role name to assign
+     */
+    public void setAgentRole(String agentName, String roleName) {
+        agentRoleMap.put(agentName.toLowerCase(), roleName);
+        saveAgentRoles();
+    }
+
+    /**
+     * Get the role assigned to a specific agent.
+     *
+     * @param agentName the agent name
+     * @return the role name, or null if not assigned
+     */
+    public String getAgentRole(String agentName) {
+        return agentRoleMap.get(agentName.toLowerCase());
+    }
+
+    /**
      * Get the active role config, or null if no role is active.
      */
     public RoleConfig getActiveRole() {
@@ -314,5 +346,47 @@ public class RoleManager {
         }
 
         return files;
+    }
+
+    // ── Agent-role persistence ──────────────────────────────────────────────
+
+    /**
+     * Load agent-role mappings from disk.
+     * Handles the case where the file doesn't exist yet (first run).
+     */
+    private void loadAgentRoles() {
+        synchronized (agentRolesLock) {
+            if (!Files.exists(agentRolesFilePath)) {
+                return; // First run, no mappings yet
+            }
+            try {
+                String content = Files.readString(agentRolesFilePath);
+                Map<String, String> loaded = objectMapper.readValue(content,
+                        new TypeReference<Map<String, String>>() {});
+                agentRoleMap.clear();
+                agentRoleMap.putAll(loaded);
+            } catch (IOException e) {
+                System.err.println("Warning: Could not load agent roles from " + agentRolesFilePath + ": " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Save agent-role mappings to disk as JSON.
+     */
+    private void saveAgentRoles() {
+        synchronized (agentRolesLock) {
+            try {
+                Path rolesDir = agentRolesFilePath.getParent();
+                if (rolesDir != null && !Files.exists(rolesDir)) {
+                    Files.createDirectories(rolesDir);
+                }
+                String json = objectMapper.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(agentRoleMap);
+                Files.writeString(agentRolesFilePath, json);
+            } catch (IOException e) {
+                System.err.println("Warning: Could not save agent roles to " + agentRolesFilePath + ": " + e.getMessage());
+            }
+        }
     }
 }
