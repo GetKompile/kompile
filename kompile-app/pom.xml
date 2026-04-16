@@ -44,6 +44,8 @@
     <module>kompile-loader-pdf-extended</module>
     <module>kompile-loader-pdf-tables</module>
     <module>kompile-loader-web</module>
+    <module>kompile-loader-gdrive</module>
+    <module>kompile-loader-onedrive</module>
     <module>kompile-app-anserini</module>
     <module>kompile-app-openai-llm</module>
     <module>kompile-app-anthropic-llm</module>
@@ -79,6 +81,7 @@
     <module>kompile-source-jira</module>
     <module>kompile-source-slack</module>
     <module>kompile-source-gdrive</module>
+    <module>kompile-source-onedrive</module>
     <module>kompile-source-notion</module>
     <module>kompile-source-reddit</module>
     <module>kompile-source-email</module>
@@ -101,6 +104,7 @@
     <module>kompile-pipeline-management</module>
     <module>kompile-kvcache</module>
     <module>kompile-tool-model-staging</module>
+    <module>kompile-notebook</module>
     <module>kompile-e2e-tests</module>
     <module>kompile-app-lite</module>
 
@@ -290,6 +294,16 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-gdrive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-loader-onedrive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-app-anserini</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -360,7 +374,7 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
-        <artifactId>kompile-pipelines-app-llm</artifactId>
+        <artifactId>kompile-app-llm-pipeline</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -456,6 +470,11 @@
       </dependency>
       <dependency>
         <groupId>ai.kompile</groupId>
+        <artifactId>kompile-source-onedrive</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
         <artifactId>kompile-source-notion</artifactId>
         <version>${project.version}</version>
       </dependency>
@@ -534,6 +553,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-kvcache</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-notebook</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

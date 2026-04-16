@@ -20,9 +20,13 @@ import ai.kompile.app.services.mcp.BuiltInToolDiscoveryService;
 import ai.kompile.app.services.mcp.McpActionLogService;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
 import ai.kompile.app.services.mcp.ToolPermissionService;
+import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
 import ai.kompile.app.tools.*;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import ai.kompile.core.mcp.ToolChangeEvent;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
 import ai.kompile.tool.rag.RagToolImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -213,10 +217,28 @@ public class McpToolRegistry {
     private AgentDelegationTool agentDelegationTool;
 
     @Autowired(required = false)
+    private ai.kompile.notebook.tools.NotebookTool notebookTool;
+
+    @Autowired(required = false)
+    private ai.kompile.notebook.tools.NoteTool noteTool;
+
+    @Autowired(required = false)
     private ToolPermissionService toolPermissionService;
 
     @Autowired(required = false)
     private BuiltInToolDiscoveryService toolDiscoveryService;
+
+    @Autowired(required = false)
+    private ToolResponseCompressorRegistry compressorRegistry;
+
+    @Autowired(required = false)
+    private DynamicToolsetsMetaTool dynamicToolsetsMetaTool;
+
+    @Autowired(required = false)
+    private ResultFetchTool resultFetchTool;
+
+    @Autowired(required = false)
+    private McpOptimizationConfigProvider optimizationConfigProvider;
 
     @Autowired
     public McpToolRegistry(ObjectMapper objectMapper,
@@ -242,8 +264,21 @@ public class McpToolRegistry {
             allTools.addAll(specs);
         }
 
+        // Apply meta-tool mode filter (DIRECT/DYNAMIC/HYBRID).
+        Set<String> allowed = resolveAllowedToolNames();
+        List<McpServerFeatures.SyncToolSpecification> registerList = allTools;
+        if (allowed != null) {
+            registerList = new ArrayList<>();
+            for (McpServerFeatures.SyncToolSpecification spec : allTools) {
+                if (allowed.contains(spec.tool().name())) {
+                    registerList.add(spec);
+                }
+            }
+            log.info("MCP meta-tool mode filter: {} of {} tools exposed", registerList.size(), allTools.size());
+        }
+
         // Register each tool with the server
-        for (McpServerFeatures.SyncToolSpecification toolSpec : allTools) {
+        for (McpServerFeatures.SyncToolSpecification toolSpec : registerList) {
             try {
                 server.addTool(toolSpec);
                 log.debug("Registered MCP tool: {}", toolSpec.tool().name());
@@ -252,8 +287,56 @@ public class McpToolRegistry {
             }
         }
 
-        toolCount = allTools.size();
+        toolCount = registerList.size();
         log.info("Registered {} MCP tools with the server", toolCount);
+    }
+
+    /**
+     * Mirrors {@code McpSseServerConfiguration.resolveAllowedToolNames} so both
+     * MCP paths agree on which tools are visible under the current mode.
+     */
+    private Set<String> resolveAllowedToolNames() {
+        if (optimizationConfigProvider == null) {
+            return null;
+        }
+        McpOptimizationConfig cfg = optimizationConfigProvider.getConfiguration();
+        MetaToolMode mode = cfg != null && cfg.getMetaToolMode() != null
+                ? cfg.getMetaToolMode()
+                : MetaToolMode.DIRECT;
+        if (mode == MetaToolMode.DIRECT) {
+            return null;
+        }
+
+        Set<String> allowed = new HashSet<>();
+        allowed.add("search_tools");
+        allowed.add("describe_tools");
+        allowed.add("execute_tool");
+        allowed.add("fetch_result");
+
+        if (cfg.getAlwaysExposedTools() != null) {
+            for (String name : cfg.getAlwaysExposedTools()) {
+                if (name != null && !name.isBlank()) {
+                    allowed.add(name);
+                }
+            }
+        }
+
+        if (mode == MetaToolMode.HYBRID) {
+            allowed.add("rag_query");
+            allowed.add("read_file");
+            allowed.add("list_files");
+        }
+
+        if (cfg.getToolOverrides() != null) {
+            cfg.getToolOverrides().forEach((name, override) -> {
+                if (override != null && Boolean.TRUE.equals(override.getExposeInDynamicMode())) {
+                    allowed.add(name);
+                } else if (override != null && Boolean.FALSE.equals(override.getExposeInDynamicMode())) {
+                    allowed.remove(name);
+                }
+            });
+        }
+        return allowed;
     }
 
     /**
@@ -407,6 +490,13 @@ public class McpToolRegistry {
         addBeanIfAvailable(chunkManagementTool, "Chunk Management");
         addBeanIfAvailable(crossIndexTool, "Cross Index");
         addBeanIfAvailable(agentDelegationTool, "Agent Delegation");
+        addBeanIfAvailable(notebookTool, "Notebook");
+        addBeanIfAvailable(noteTool, "Note");
+
+        // MCP-optimization meta-tools (visible in all modes; the mode filter
+        // later decides which other tools survive).
+        addBeanIfAvailable(dynamicToolsetsMetaTool, "Dynamic Toolsets");
+        addBeanIfAvailable(resultFetchTool, "Result Fetch");
     }
 
     private void addBeanIfAvailable(Object bean, String name) {
@@ -478,9 +568,20 @@ public class McpToolRegistry {
                         // Invoke the method
                         Object result = invokeToolMethod(bean, method, args);
 
-                        // Log success
+                        // Log success with the full pre-compression payload so
+                        // audit logs retain everything.
                         String resultStr = formatResult(result);
                         actionLogService.logActionSuccess(logEntry.getId(), resultStr, null);
+
+                        // Apply MCP response compression (handle replacement,
+                        // head-then-elide, etc.) before serializing to the client.
+                        if (compressorRegistry != null) {
+                            try {
+                                result = compressorRegistry.compress(toolName, result);
+                            } catch (Exception ce) {
+                                log.warn("Compression threw for tool {}: {} - using original", toolName, ce.getMessage());
+                            }
+                        }
 
                         return successResult(result);
                     } catch (Exception e) {
