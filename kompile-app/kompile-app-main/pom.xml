@@ -185,6 +185,23 @@
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-loader-web</artifactId>
         </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-gdrive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-loader-onedrive</artifactId>
+        </dependency>
+        <!-- OAuth-backed source provider modules for UI data source registration -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-gdrive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-source-onedrive</artifactId>
+        </dependency>
         <!-- Table-aware chunker for structured data -->
         <dependency>
             <groupId>ai.kompile</groupId>
@@ -250,6 +267,19 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-kvcache</artifactId>
+        </dependency>
+
+        <!-- Research Notebook: logical grouping of sources + notes + per-session context -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-notebook</artifactId>
+        </dependency>
+
+        <!-- LLM: pipeline-backed LanguageModel and on-demand /api/llm/* endpoints -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-llm-pipeline</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Scheduling -->
@@ -411,6 +441,11 @@
         <!-- GraalVM Native Image profile for kompile-app-main -->
         <profile>
             <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>
@@ -491,7 +526,10 @@
             </build>
         </profile>
 
-        <!-- Subprocess native image profiles -->
+        <!-- Subprocess native image profiles.
+             NOT activated by kompile.dist because the unified `native` profile already produces
+             a single binary (`kompile-app`) that handles all subprocess types via the
+             subprocess-type flag. These profiles are opt-in for separate per-subprocess binaries. -->
         <profile>
             <id>native-ingest</id>
             <build>

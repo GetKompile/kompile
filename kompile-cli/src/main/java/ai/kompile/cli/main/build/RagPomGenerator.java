@@ -154,6 +154,10 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeKvCache;
 
     @CommandLine.Option(names = {
+            "--includeNotebook" }, description = "Include kompile-notebook module (research notebooks, notes, per-source context)", defaultValue = "true", negatable = true)
+    private boolean includeNotebook;
+
+    @CommandLine.Option(names = {
             "--includeEmbeddingPostgresml" }, description = "Include kompile-embedding-postgresml module")
     private boolean includeEmbeddingPostgresml = false;
     @CommandLine.Option(names = { "--includePgmlIndexer" }, description = "Include kompile-app-pgml-indexer module")
@@ -1311,6 +1315,8 @@ public class RagPomGenerator implements Callable<Void> {
             addDependency(defaultDependencies, "ai.kompile", "kompile-tool-model-staging", "${kompile.project.version}");
         if (includeKvCache)
             addDependency(defaultDependencies, "ai.kompile", "kompile-kvcache", "${kompile.project.version}");
+        if (includeNotebook)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-notebook", "${kompile.project.version}");
 
         addDependency(defaultDependencies, "org.projectlombok", "lombok", "${lombok.version}", "provided", null, true);
         addDependency(defaultDependencies, "com.fasterxml.jackson.core", "jackson-databind", "${jackson.version}");

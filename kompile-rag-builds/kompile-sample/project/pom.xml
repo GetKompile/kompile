@@ -157,6 +157,30 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
+      <artifactId>kompile-loader-gdrive</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-loader-onedrive</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-source-gdrive</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-source-onedrive</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-chunker-sentence</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
@@ -214,6 +238,18 @@
     <dependency>
       <groupId>ai.kompile</groupId>
       <artifactId>kompile-kvcache</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-notebook</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-app-llm-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>

@@ -51,12 +51,14 @@ import java.util.Properties;
         "ai.kompile.app.staging.repository",
         "ai.kompile.app.eval.repository",
         "ai.kompile.app.prompts.repository",
+        "ai.kompile.app.monitor.repository",
         "ai.kompile.chat.history.repository",
         "ai.kompile.knowledgegraph.repository",
         "ai.kompile.knowledgegraph.builder.repository",
         "ai.kompile.knowledgegraph.embedding.repository",
         "ai.kompile.oauth.repository",
-        "ai.kompile.orchestrator.repository"
+        "ai.kompile.orchestrator.repository",
+        "ai.kompile.notebook.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -67,12 +69,14 @@ import java.util.Properties;
     "ai.kompile.app.staging.domain",
     "ai.kompile.app.eval.domain",
     "ai.kompile.app.prompts.domain",
+    "ai.kompile.app.monitor.domain",
     "ai.kompile.chat.history.domain",
     "ai.kompile.knowledgegraph.domain",
     "ai.kompile.knowledgegraph.builder.domain",
     "ai.kompile.knowledgegraph.embedding.domain",
     "ai.kompile.oauth.domain",
-    "ai.kompile.orchestrator.model"
+    "ai.kompile.orchestrator.model",
+    "ai.kompile.notebook.domain"
 })
 public class PrimaryDataSourceConfig {
 
@@ -106,12 +110,14 @@ public class PrimaryDataSourceConfig {
         "ai.kompile.app.staging.domain",
         "ai.kompile.app.eval.domain",
         "ai.kompile.app.prompts.domain",
+        "ai.kompile.app.monitor.domain",
         "ai.kompile.chat.history.domain",
         "ai.kompile.knowledgegraph.domain",
         "ai.kompile.knowledgegraph.builder.domain",
         "ai.kompile.knowledgegraph.embedding.domain",
         "ai.kompile.oauth.domain",
-        "ai.kompile.orchestrator.model"
+        "ai.kompile.orchestrator.model",
+        "ai.kompile.notebook.domain"
     };
 
     @Bean
