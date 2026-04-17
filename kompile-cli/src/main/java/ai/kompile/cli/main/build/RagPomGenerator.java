@@ -154,6 +154,10 @@ public class RagPomGenerator implements Callable<Void> {
     private boolean includeKvCache;
 
     @CommandLine.Option(names = {
+            "--includeRagPipeline" }, description = "Include kompile-rag-pipeline module for end-to-end RAG pipeline management", defaultValue = "true", negatable = true)
+    private boolean includeRagPipeline;
+
+    @CommandLine.Option(names = {
             "--includeGraphAlgorithms" }, description = "Include kompile-graph-algorithms module (PageRank, communities, shortest path)", defaultValue = "true", negatable = true)
     private boolean includeGraphAlgorithms;
 
@@ -1315,6 +1319,8 @@ public class RagPomGenerator implements Callable<Void> {
             addDependency(defaultDependencies, "ai.kompile", "kompile-tool-model-staging", "${kompile.project.version}");
         if (includeKvCache)
             addDependency(defaultDependencies, "ai.kompile", "kompile-kvcache", "${kompile.project.version}");
+        if (includeRagPipeline)
+            addDependency(defaultDependencies, "ai.kompile", "kompile-rag-pipeline", "${kompile.project.version}");
         if (includeGraphAlgorithms)
             addDependency(defaultDependencies, "ai.kompile", "kompile-graph-algorithms", "${kompile.project.version}");
 

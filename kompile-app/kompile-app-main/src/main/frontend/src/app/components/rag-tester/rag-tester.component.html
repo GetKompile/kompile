@@ -662,31 +662,10 @@
             <mat-icon>memory</mat-icon>
             {{ isEmbedding ? 'Embedding...' : 'Generate Embedding' }}
           </button>
-
-          <!-- Op Timing Controls -->
-          <div class="op-timing-controls">
-            <mat-slide-toggle [(ngModel)]="opTimingEnabled" [ngModelOptions]="{standalone: true}" (change)="toggleOpTiming()"
-              [disabled]="opTimingLoading"
-              matTooltip="Enable ND4J op timing profiler to capture operation execution times">
-              <mat-icon class="toggle-icon">speed</mat-icon>
-              Op Profiling
-            </mat-slide-toggle>
-            <button mat-stroked-button (click)="flushOpTimingStats()"
-              [disabled]="opTimingLoading || !opTimingEnabled"
-              matTooltip="Capture timing statistics from ring buffer">
-              <mat-icon>refresh</mat-icon>
-              Flush Stats
-            </button>
-            <button mat-icon-button (click)="resetOpTiming()"
-              [disabled]="opTimingLoading"
-              matTooltip="Reset all timing data">
-              <mat-icon>restart_alt</mat-icon>
-            </button>
-          </div>
         </div>
       </div>
 
-      <mat-progress-bar *ngIf="isEmbedding || opTimingLoading" mode="indeterminate"></mat-progress-bar>
+      <mat-progress-bar *ngIf="isEmbedding" mode="indeterminate"></mat-progress-bar>
 
       <div *ngIf="embedResponse" class="embed-result">
         <div class="embed-info">
@@ -737,124 +716,6 @@
         </div>
       </div>
 
-      <!-- Op Timing Results Panel -->
-      <mat-expansion-panel *ngIf="showOpTimingPanel || opTimingStatsAll.length > 0 || subprocessOpTimingStatsAll.length > 0" class="op-timing-panel" [expanded]="true">
-        <mat-expansion-panel-header>
-          <mat-panel-title>
-            <mat-icon>speed</mat-icon>
-            <span>Op Timing Results</span>
-          </mat-panel-title>
-          <mat-panel-description>
-            <span *ngIf="subprocessOpTimingNumOps > 0">Subprocess: {{ subprocessOpTimingNumOps }} ops, {{ subprocessOpTimingTotalExecutions }} executions</span>
-            <span *ngIf="opTimingNumOps > 0"> | Main JVM: {{ opTimingNumOps }} ops</span>
-          </mat-panel-description>
-        </mat-expansion-panel-header>
-
-        <!-- Subprocess Op Timing (where actual inference runs!) -->
-        <div class="subprocess-op-timing-section" *ngIf="subprocessOpTimingStatsAll.length > 0">
-          <h4 class="section-title">
-            <mat-icon>psychology</mat-icon>
-            Subprocess Op Timing (Embedding Inference)
-          </h4>
-          <p class="section-subtitle">These are the actual ND4J operations from the embedding subprocess where inference runs.</p>
-
-          <table class="op-timing-table">
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Op Name</th>
-                <th>Calls</th>
-                <th>Total (ms)</th>
-                <th>Avg (us)</th>
-                <th>StdDev (us)</th>
-                <th>Helper %</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let stat of subprocessOpTimingStats">
-                <td>{{ stat.rank }}</td>
-                <td><code>{{ stat.opName }}</code></td>
-                <td>{{ stat.calls | number }}</td>
-                <td>{{ formatOpTimingNumber(stat.totalMs) }}</td>
-                <td>{{ formatOpTimingNumber(stat.avgUs) }}</td>
-                <td>{{ formatOpTimingNumber(stat.stdDevUs) }}</td>
-                <td [ngClass]="getHelperPercentClass(stat.helperPercent)">
-                  {{ formatOpTimingNumber(stat.helperPercent, 1) }}%
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <!-- Subprocess Paginator -->
-          <mat-paginator
-            [length]="subprocessOpTimingStatsAll.length"
-            [pageSize]="subprocessOpTimingPageSize"
-            [pageIndex]="subprocessOpTimingPageIndex"
-            [pageSizeOptions]="opTimingPageSizeOptions"
-            (page)="onSubprocessOpTimingPageChange($event)"
-            showFirstLastButtons
-            aria-label="Select page of subprocess op timing results">
-          </mat-paginator>
-        </div>
-
-        <!-- Main JVM Op Timing (usually empty since inference runs in subprocess) -->
-        <div class="op-timing-content" *ngIf="opTimingStatsAll.length > 0">
-          <h4 class="section-title">
-            <mat-icon>memory</mat-icon>
-            Main JVM Op Timing
-          </h4>
-          <table class="op-timing-table">
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Op Name</th>
-                <th>Calls</th>
-                <th>Total (ms)</th>
-                <th>Avg (us)</th>
-                <th>StdDev (us)</th>
-                <th>Helper %</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let stat of opTimingStats">
-                <td>{{ stat.rank }}</td>
-                <td><code>{{ stat.opName }}</code></td>
-                <td>{{ stat.calls | number }}</td>
-                <td>{{ formatOpTimingNumber(stat.totalMs) }}</td>
-                <td>{{ formatOpTimingNumber(stat.avgUs) }}</td>
-                <td>{{ formatOpTimingNumber(stat.stdDevUs) }}</td>
-                <td [ngClass]="getHelperPercentClass(stat.helperPercent)">
-                  {{ formatOpTimingNumber(stat.helperPercent, 1) }}%
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <!-- Main JVM Paginator -->
-          <mat-paginator
-            [length]="opTimingStatsAll.length"
-            [pageSize]="opTimingPageSize"
-            [pageIndex]="opTimingPageIndex"
-            [pageSizeOptions]="opTimingPageSizeOptions"
-            (page)="onOpTimingPageChange($event)"
-            showFirstLastButtons
-            aria-label="Select page of op timing results">
-          </mat-paginator>
-        </div>
-
-        <div class="op-timing-hint" *ngIf="subprocessOpTimingStatsAll.length > 0 || opTimingStatsAll.length > 0">
-          <mat-icon>info</mat-icon>
-          <span>
-            Results sorted by Total (ms) descending. Helper % shows how often platform-optimized helpers (oneDNN/cuDNN) are used.
-            Higher values indicate better hardware utilization.
-          </span>
-        </div>
-
-        <div class="op-timing-empty" *ngIf="opTimingStatsAll.length === 0 && subprocessOpTimingStatsAll.length === 0">
-          <mat-icon>hourglass_empty</mat-icon>
-          <span>No timing data captured yet. Enable profiling, generate an embedding, then click "Flush Stats".</span>
-        </div>
-      </mat-expansion-panel>
     </mat-card-content>
   </mat-card>
 </div>

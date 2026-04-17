@@ -267,6 +267,12 @@
             <artifactId>kompile-pipeline-management</artifactId>
         </dependency>
 
+        <!-- RAG Pipeline Management -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-rag-pipeline</artifactId>
+        </dependency>
+
         <!-- KV Cache Management -->
         <dependency>
             <groupId>ai.kompile</groupId>

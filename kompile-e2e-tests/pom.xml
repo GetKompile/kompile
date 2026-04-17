@@ -259,6 +259,11 @@
       <artifactId>kompile-app-llm-pipeline</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
+      <artifactId>kompile-ocr-integration</artifactId>
+      <scope>test</scope>
+    </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- Pipeline framework modules                                     -->
@@ -357,6 +362,25 @@
     </dependency>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- Testcontainers (needed at compile time for Neo4j tests)        -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>neo4j</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- Lombok                                                         -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <dependency>
@@ -409,22 +433,4 @@
     </plugins>
   </build>
 
-  <profiles>
-    <!-- Activate with -Ptestcontainers for Docker-based integration tests -->
-    <profile>
-      <id>testcontainers</id>
-      <dependencies>
-        <dependency>
-          <groupId>org.testcontainers</groupId>
-          <artifactId>testcontainers</artifactId>
-          <scope>test</scope>
-        </dependency>
-        <dependency>
-          <groupId>org.testcontainers</groupId>
-          <artifactId>junit-jupiter</artifactId>
-          <scope>test</scope>
-        </dependency>
-      </dependencies>
-    </profile>
-  </profiles>
 </project>

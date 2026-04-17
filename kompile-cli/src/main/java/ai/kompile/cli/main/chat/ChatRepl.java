@@ -330,6 +330,105 @@ public class ChatRepl {
             }
         });
 
+        // ================================================================
+        // Mode-switching hotkeys (Ctrl+X prefix chord)
+        // ================================================================
+
+        // Ctrl+X P — Toggle planning mode
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("toggle-plan-mode"),
+            KeyMap.ctrl('X'), "p"
+        );
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("toggle-plan-mode"),
+            KeyMap.ctrl('X'), "P"
+        );
+
+        ((LineReaderImpl) reader).setVariable("toggle-plan-mode", new org.jline.reader.Widget() {
+            @Override
+            public boolean apply() {
+                boolean newState = !agenticLoop.isPlanningMode();
+                agenticLoop.setPlanningMode(newState);
+                System.out.println();
+                if (newState) {
+                    System.out.println(renderer.green("  ✓ Planning mode ON"));
+                    System.out.println(renderer.dim("    Next message: plan → approve → execute"));
+                } else {
+                    System.out.println(renderer.yellow("  ○ Planning mode OFF"));
+                    System.out.println(renderer.dim("    Messages go directly to the agentic loop"));
+                }
+                System.out.println();
+                System.out.flush();
+                chatHistory.logSystem("Planning mode " + (newState ? "enabled" : "disabled") + " (via Ctrl+X P)");
+                return true;
+            }
+        });
+
+        // Ctrl+X T — Show todos / checklist
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("show-todos"),
+            KeyMap.ctrl('X'), "t"
+        );
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("show-todos"),
+            KeyMap.ctrl('X'), "T"
+        );
+
+        ((LineReaderImpl) reader).setVariable("show-todos", new org.jline.reader.Widget() {
+            @Override
+            public boolean apply() {
+                List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+                System.out.println();
+                if (todos.isEmpty()) {
+                    System.out.println(renderer.dim("  No tasks in the current session."));
+                } else {
+                    System.out.println(renderer.renderTodoList(todos));
+                }
+                System.out.println();
+                System.out.flush();
+                return true;
+            }
+        });
+
+        // Ctrl+X A — Cycle primary agent (coder → planner → coder)
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("cycle-agent"),
+            KeyMap.ctrl('X'), "a"
+        );
+        ((LineReaderImpl) reader).getKeyMaps().get(LineReader.EMACS).bind(
+            new org.jline.reader.Reference("cycle-agent"),
+            KeyMap.ctrl('X'), "A"
+        );
+
+        ((LineReaderImpl) reader).setVariable("cycle-agent", new org.jline.reader.Widget() {
+            @Override
+            public boolean apply() {
+                List<AgentConfig> primaries = agentRegistry.getPrimaryAgents();
+                if (primaries.size() < 2) return true;
+
+                // Find current index and advance
+                int currentIdx = -1;
+                for (int i = 0; i < primaries.size(); i++) {
+                    if (primaries.get(i).getName().equals(localAgentName)) {
+                        currentIdx = i;
+                        break;
+                    }
+                }
+                int nextIdx = (currentIdx + 1) % primaries.size();
+                AgentConfig nextAgent = primaries.get(nextIdx);
+                localAgentName = nextAgent.getName();
+                agenticLoop.setAgentConfig(nextAgent);
+
+                System.out.println();
+                System.out.println(renderer.cyan("  ⇄ Agent: " + nextAgent.getDisplayName())
+                        + renderer.dim(" — " + nextAgent.getDescription()));
+                System.out.println();
+                System.out.flush();
+                chatHistory.logSystem("Switched agent to: " + localAgentName + " (via Ctrl+X A)");
+                return true;
+            }
+        });
+
         // Print welcome banner with mode options
         if (localMode) {
             System.out.println(ascii.welcomePanelWithModes(sessionId, localAgentName, false, true));
@@ -1165,9 +1264,12 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
             body.append("\n");
-            body.append(renderer.bold(renderer.cyan("Background Tasks & Cancel"))).append("\n");
+            body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
             body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
             body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X P")).append("            Toggle planning mode\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X T")).append("            Show session task list (todos)\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X A")).append("            Cycle agent (coder/planner)\n");
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
@@ -1254,9 +1356,12 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/queue-clear")).append("          Clear all queued messages\n");
             body.append("  ").append(renderer.cyan("/queue-status")).append("         Show queue status\n");
             body.append("\n");
-            body.append(renderer.bold(renderer.cyan("Background Tasks & Cancel"))).append("\n");
+            body.append(renderer.bold(renderer.cyan("Hotkeys & Background"))).append("\n");
             body.append("  ").append(renderer.cyan("Escape")).append("              Cancel in-progress LLM/tool operation\n");
             body.append("  ").append(renderer.cyan("Ctrl+B")).append("              Background current LLM response\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X P")).append("            Toggle planning mode\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X T")).append("            Show session task list (todos)\n");
+            body.append("  ").append(renderer.cyan("Ctrl+X A")).append("            Cycle agent (coder/planner)\n");
             body.append("  ").append(renderer.cyan("/jobs")).append("               List background tasks\n");
             body.append("  ").append(renderer.cyan("/jobs-remove <id>")).append("   Remove a completed task\n");
             body.append("  ").append(renderer.cyan("/jobs-clear")).append("         Clear all completed tasks\n");
@@ -2664,6 +2769,9 @@ public class ChatRepl {
         System.out.println();
         System.out.println(renderer.dim("  Escape              Cancel in-progress operation"));
         System.out.println(renderer.dim("  Ctrl+B              Background current task"));
+        System.out.println(renderer.dim("  Ctrl+X P            Toggle planning mode"));
+        System.out.println(renderer.dim("  Ctrl+X T            Show todos"));
+        System.out.println(renderer.dim("  Ctrl+X A            Cycle agent"));
         System.out.println(renderer.dim("  /jobs-remove <id>   Remove a completed task"));
         System.out.println(renderer.dim("  /jobs-clear         Clear all completed tasks"));
         System.out.println(renderer.dim("  /auto-dequeue       Toggle auto-send queued messages"));
