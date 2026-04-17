@@ -325,16 +325,25 @@ public class PassthroughCommand implements Callable<Integer> {
      */
     private void harvestClaudeTranscript(ChatHistory history, ChatSessionMetrics metrics, Instant sessionStart) {
         Path claudeProjectsDir = Path.of(System.getProperty("user.home"), ".claude", "projects");
-        if (!Files.isDirectory(claudeProjectsDir)) return;
+        if (!Files.isDirectory(claudeProjectsDir)) {
+            System.err.println(YELLOW + "Warning: Could not harvest Claude transcript - projects dir not found" + RESET);
+            return;
+        }
 
         // Claude encodes the working dir path as the project dir name (/ -> -)
         String absWorkDir = new File(workingDir).getAbsoluteFile().toPath().normalize().toString();
         Path projectDir = findClaudeProjectDir(claudeProjectsDir, absWorkDir);
-        if (projectDir == null) return;
+        if (projectDir == null) {
+            System.err.println(YELLOW + "Warning: Could not harvest Claude transcript - project dir not found for: " + absWorkDir + RESET);
+            return;
+        }
 
         // Find the most recently modified .jsonl created during our session
         File jsonlFile = findNewestJsonl(projectDir, sessionStart);
-        if (jsonlFile == null) return;
+        if (jsonlFile == null) {
+            System.err.println(YELLOW + "Warning: Could not harvest Claude transcript - no JSONL session file found in: " + projectDir + RESET);
+            return;
+        }
 
         parseClaudeJsonl(jsonlFile, history, metrics);
     }

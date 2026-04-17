@@ -39,7 +39,7 @@ public class ChatCompleter implements Completer {
             "/quit", "/exit", "/queue", "/queues", "/queue-send",
             "/queue-send-all", "/queue-remove", "/queue-clear", "/queue-status",
             "/jobs", "/jobs-remove", "/jobs-clear", "/auto-dequeue", "/stats",
-            "/skills"
+            "/skills", "/model", "/plan", "/todos"
     };
 
     private final Supplier<List<McpSseClient.ToolInfo>> toolsSupplier;

@@ -73,6 +73,7 @@ import { ChunkManagerComponent } from './components/chunk-manager/chunk-manager.
 import { KGEmbeddingsComponent } from './components/kg-embeddings/kg-embeddings.component';
 import { SameDiffGraphComponent } from './components/samediff-graph/samediff-graph.component';
 import { GuardrailsSettingsComponent } from './components/settings/guardrails-settings/guardrails-settings.component';
+import { McpOptimizationSettingsComponent } from './components/settings/mcp-optimization-settings/mcp-optimization-settings.component';
 import { EvaluationSettingsComponent } from './components/settings/evaluation-settings/evaluation-settings.component';
 import { QueryTransformerSettingsComponent } from './components/settings/query-transformer-settings/query-transformer-settings.component';
 import { EvalDebuggerComponent } from './components/eval-debugger/eval-debugger.component';
@@ -104,6 +105,7 @@ import { ToolPermissionsComponent } from './components/tool-permissions/tool-per
 import { GpuLifecycleComponent } from './components/gpu-lifecycle/gpu-lifecycle.component';
 import { VlmOrchestrationComponent } from './components/vlm-orchestration/vlm-orchestration.component';
 import { TritonCacheComponent } from './components/triton-cache/triton-cache.component';
+import { MonitorsManagerComponent } from './components/monitors-manager/monitors-manager.component';
 import { PassthroughChatComponent } from './components/passthrough-chat/passthrough-chat.component';
 import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framework.component';
 import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
@@ -256,6 +258,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     LogSettingsComponent,
     SameDiffGraphComponent,
     GuardrailsSettingsComponent,
+    McpOptimizationSettingsComponent,
     EvaluationSettingsComponent,
     QueryTransformerSettingsComponent,
     EvalDebuggerComponent,
@@ -270,6 +273,7 @@ import { MatNativeDateModule } from '@angular/material/core';
     GpuLifecycleComponent,
     VlmOrchestrationComponent,
     TritonCacheComponent,
+    MonitorsManagerComponent,
     PassthroughChatComponent,
     Nd4jFrameworkComponent,
     SameDiffLLMModelsComponent

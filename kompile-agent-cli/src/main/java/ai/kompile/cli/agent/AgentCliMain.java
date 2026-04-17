@@ -26,11 +26,15 @@ import java.util.concurrent.Callable;
                 AgentTaskCommand.class,
                 AgentChannelCommand.class,
                 AgentSessionCommand.class,
-                AgentChatCommand.class
+                AgentChatCommand.class,
+                AgentMonitorCommand.class,
+                AgentLogsCommand.class,
+                SubprocessLogsCommand.class,
+                ChatImportCommand.class
         },
         mixinStandardHelpOptions = true,
         usageHelpAutoWidth = true,
-        description = "Agent and workflow management: workflow, task, channel, session, chat.")
+        description = "Agent and workflow management: workflow, task, channel, session, chat, monitor, logs, subprocess-logs, chat-import.")
 public class AgentCliMain implements Callable<Integer> {
 
     @Override

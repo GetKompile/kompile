@@ -16,20 +16,30 @@
 
 package ai.kompile.app.config;
 
+import ai.kompile.app.services.mcp.optimization.CompressingToolCallbackProvider;
+import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
 import ai.kompile.app.tools.*;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
 import ai.kompile.tool.rag.RagToolImpl;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Configuration for Spring AI MCP SSE Server.
@@ -90,10 +100,29 @@ public class McpSseServerConfiguration {
     @Autowired(required = false)
     private AgentDelegationTool agentDelegationTool;
 
+    @Autowired(required = false)
+    private ToolResponseCompressorRegistry compressorRegistry;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private DynamicToolsetsMetaTool dynamicToolsetsMetaTool;
+
+    @Autowired(required = false)
+    private ResultFetchTool resultFetchTool;
+
+    @Autowired(required = false)
+    private McpOptimizationConfigProvider optimizationConfigProvider;
+
     /**
      * Creates a ToolCallbackProvider that exposes all discovered tool beans
      * to the MCP server. Spring AI will automatically register these tools
      * and make them available to MCP clients.
+     *
+     * <p>When {@link ToolResponseCompressorRegistry} is available the provider
+     * is wrapped in {@link CompressingToolCallbackProvider} so every tool result
+     * goes through the configured compressor chain before reaching the client.
      */
     @Bean
     public ToolCallbackProvider kompileToolCallbackProvider() {
@@ -114,11 +143,100 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, modelManagementTool, "Model Management");
         addToolIfAvailable(toolObjects, agentDelegationTool, "Agent Delegation");
 
+        // Meta-tools are always registered; the mode filter below decides which
+        // tool *names* the MCP client actually sees.
+        addToolIfAvailable(toolObjects, dynamicToolsetsMetaTool, "Dynamic Toolsets");
+        addToolIfAvailable(toolObjects, resultFetchTool, "Result Fetch");
+
         logger.info("Created MCP SSE tool callback provider with {} tool objects", toolObjects.size());
 
-        return MethodToolCallbackProvider.builder()
+        ToolCallbackProvider base = MethodToolCallbackProvider.builder()
                 .toolObjects(toolObjects.toArray())
                 .build();
+
+        Set<String> allowedToolNames = resolveAllowedToolNames(toolObjects);
+        if (allowedToolNames != null) {
+            logger.info("MCP SSE meta-tool mode active: exposing {} tool names", allowedToolNames.size());
+        }
+
+        if (compressorRegistry != null) {
+            logger.info("Wrapping MCP SSE tool callbacks with response compression");
+            return new CompressingToolCallbackProvider(base, compressorRegistry, objectMapper, allowedToolNames);
+        }
+        if (allowedToolNames != null) {
+            // Still need to apply filtering even when compression isn't wired.
+            return new CompressingToolCallbackProvider(base, null, objectMapper, allowedToolNames);
+        }
+        return base;
+    }
+
+    /**
+     * Returns {@code null} for {@code DIRECT} mode (no filter). For DYNAMIC
+     * exposes only meta-tools + {@code alwaysExposedTools}; for HYBRID the
+     * same plus a small built-in whitelist.
+     */
+    private Set<String> resolveAllowedToolNames(List<Object> toolObjects) {
+        McpOptimizationConfig cfg = optimizationConfigProvider != null
+                ? optimizationConfigProvider.getConfiguration()
+                : null;
+        MetaToolMode mode = cfg != null && cfg.getMetaToolMode() != null
+                ? cfg.getMetaToolMode()
+                : MetaToolMode.DIRECT;
+        if (mode == MetaToolMode.DIRECT) {
+            return null;
+        }
+
+        Set<String> allowed = new HashSet<>();
+        // Meta-tool names are always visible in DYNAMIC / HYBRID modes.
+        allowed.add("search_tools");
+        allowed.add("describe_tools");
+        allowed.add("execute_tool");
+        allowed.add("fetch_result");
+
+        if (cfg.getAlwaysExposedTools() != null) {
+            for (String name : cfg.getAlwaysExposedTools()) {
+                if (name != null && !name.isBlank()) {
+                    allowed.add(name);
+                }
+            }
+        }
+
+        if (mode == MetaToolMode.HYBRID) {
+            // Common high-traffic tools stay direct to avoid the discovery hop
+            // for the hot path.
+            allowed.add("rag_query");
+            allowed.add("read_file");
+            allowed.add("list_files");
+        }
+
+        // Also respect per-tool overrides that force expose-in-dynamic.
+        if (cfg.getToolOverrides() != null) {
+            cfg.getToolOverrides().forEach((name, override) -> {
+                if (override != null && Boolean.TRUE.equals(override.getExposeInDynamicMode())) {
+                    allowed.add(name);
+                } else if (override != null && Boolean.FALSE.equals(override.getExposeInDynamicMode())) {
+                    allowed.remove(name);
+                }
+            });
+        }
+
+        // Sanity: if a listed tool doesn't exist among toolObjects we still
+        // leave it in the set (Spring AI just won't match it); no harm done.
+        return allowed;
+    }
+
+    @SuppressWarnings("unused")
+    private Set<String> extractToolNames(List<Object> toolObjects) {
+        Set<String> names = new HashSet<>();
+        for (Object bean : toolObjects) {
+            for (Method m : bean.getClass().getDeclaredMethods()) {
+                Tool t = m.getAnnotation(Tool.class);
+                if (t != null) {
+                    names.add(t.name().isBlank() ? m.getName() : t.name());
+                }
+            }
+        }
+        return names;
     }
 
     // Note: SpringMvcSseServerTransport is now created in McpServerConfig.java

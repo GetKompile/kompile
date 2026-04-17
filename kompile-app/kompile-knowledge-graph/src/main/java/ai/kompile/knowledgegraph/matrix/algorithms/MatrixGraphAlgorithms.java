@@ -86,32 +86,36 @@ public class MatrixGraphAlgorithms {
         if (n == 0) {
             return Collections.emptyMap();
         }
-
-        INDArray adjacency = graph.getCombinedAdjacencyMatrix();
-
-        // Get submatrix for actual nodes
-        INDArray adj = adjacency.get(
+        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
                 NDArrayIndex.indices(createRange(n)),
                 NDArrayIndex.indices(createRange(n))
         );
+        return pageRank(adj, nodeIdsOf(graph), dampingFactor, convergence, maxIterations);
+    }
 
-        // Create transition matrix (column-normalized) using vectorized operations
-        // transitionMatrix[j,i] = adj[i,j] / outDegree[i], or 1/n for dangling nodes
-        INDArray outDegrees = adj.sum(1);  // Shape: [n]
+    /**
+     * Matrix-primitive PageRank. Takes an [n x n] adjacency matrix and the parallel list of
+     * node IDs (row/col i ↔ nodeIds[i]). Shared by {@code AdjacencyMatrixGraph}-backed and
+     * {@code AdjacencyView}-backed callers so there is a single implementation.
+     */
+    public static Map<String, Double> pageRank(INDArray adj,
+                                                List<String> nodeIds,
+                                                double dampingFactor,
+                                                double convergence,
+                                                int maxIterations) {
+        int n = nodeIds.size();
+        if (n == 0) return Collections.emptyMap();
 
-        // Find dangling nodes (out-degree = 0)
-        INDArray isDangling = outDegrees.eq(0);  // Boolean mask
-
-        // Avoid division by zero: set zero degrees to 1 temporarily
+        // Build column-stochastic transition matrix T where T[j,i] = adj[i,j] / outDeg[i],
+        // so that new_pr = T · pr correctly distributes each node's rank across its outgoing
+        // edges. Derivation: row-normalize adj (divide row i by outDeg[i]), then transpose.
+        INDArray outDegrees = adj.sum(1);
+        INDArray isDangling = outDegrees.eq(0);
         INDArray safeDegrees = outDegrees.add(isDangling.castTo(DataType.FLOAT));
 
-        // Transpose adjacency and divide each column by its corresponding out-degree
-        // adj.T has shape [n, n], safeDegrees has shape [n]
-        // We need to divide column i by safeDegrees[i], which is row-wise division on transpose
-        INDArray transitionMatrix = adj.transpose().divColumnVector(safeDegrees.reshape(n, 1));
+        INDArray transitionMatrix = adj.divColumnVector(safeDegrees.reshape(n, 1)).transpose();
 
-        // For dangling nodes, set their column (now row after transpose logic) to 1/n
-        // Create uniform distribution column
+        // For dangling nodes (no outgoing edges), spread rank uniformly across all nodes.
         INDArray uniformCol = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
         for (int i = 0; i < n; i++) {
             if (isDangling.getDouble(i) > 0) {
@@ -122,36 +126,24 @@ public class MatrixGraphAlgorithms {
         isDangling.close();
         safeDegrees.close();
 
-        // Initialize PageRank vector
         INDArray pr = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
         INDArray teleport = Nd4j.ones(DataType.FLOAT, n, 1).div(n);
 
-        // Power iteration
         for (int iter = 0; iter < maxIterations; iter++) {
             INDArray newPr = transitionMatrix.mmul(pr).mul(dampingFactor)
                     .add(teleport.mul(1 - dampingFactor));
-
             double diff = pr.sub(newPr).norm2Number().doubleValue();
-
             pr.assign(newPr);
-
             if (diff < convergence) {
                 log.debug("PageRank converged after {} iterations", iter + 1);
                 break;
             }
         }
 
-        // Convert to map
-        Map<String, Double> result = new HashMap<>();
-        Map<Integer, String> indexToId = graph.getIndexToNodeId();
-
+        Map<String, Double> result = new HashMap<>(n);
         for (int i = 0; i < n; i++) {
-            String nodeId = indexToId.get(i);
-            if (nodeId != null) {
-                result.put(nodeId, pr.getDouble(i, 0));
-            }
+            result.put(nodeIds.get(i), pr.getDouble(i, 0));
         }
-
         return result;
     }
 
@@ -376,47 +368,45 @@ public class MatrixGraphAlgorithms {
      */
     public static List<Set<String>> findConnectedComponents(AdjacencyMatrixGraph graph) {
         int n = graph.getNodeCount();
-        if (n == 0) {
-            return Collections.emptyList();
-        }
+        if (n == 0) return Collections.emptyList();
+        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
+                NDArrayIndex.indices(createRange(n)),
+                NDArrayIndex.indices(createRange(n))
+        );
+        return findConnectedComponents(adj, nodeIdsOf(graph));
+    }
 
-        INDArray adjacency = graph.getCombinedAdjacencyMatrix();
-        Map<Integer, String> indexToId = graph.getIndexToNodeId();
+    /**
+     * Matrix-primitive weakly connected components over an [n x n] adjacency matrix. Edges
+     * are symmetrized (A + A<sup>T</sup>) so direction is ignored. Returns one set of node IDs
+     * per component, in discovery order.
+     */
+    public static List<Set<String>> findConnectedComponents(INDArray adj, List<String> nodeIds) {
+        int n = nodeIds.size();
+        if (n == 0) return Collections.emptyList();
 
-        // Make symmetric for undirected graph
-        INDArray symmetric = adjacency.add(adjacency.transpose());
+        INDArray symmetric = adj.add(adj.transpose());
 
         boolean[] visited = new boolean[n];
         List<Set<String>> components = new ArrayList<>();
-
         for (int i = 0; i < n; i++) {
-            if (!visited[i] && indexToId.containsKey(i)) {
-                Set<String> component = new HashSet<>();
-                Queue<Integer> queue = new LinkedList<>();
-                queue.add(i);
-                visited[i] = true;
-
-                while (!queue.isEmpty()) {
-                    int current = queue.poll();
-                    String nodeId = indexToId.get(current);
-                    if (nodeId != null) {
-                        component.add(nodeId);
+            if (visited[i]) continue;
+            Set<String> component = new HashSet<>();
+            Queue<Integer> queue = new ArrayDeque<>();
+            queue.add(i);
+            visited[i] = true;
+            while (!queue.isEmpty()) {
+                int current = queue.poll();
+                component.add(nodeIds.get(current));
+                for (int j = 0; j < n; j++) {
+                    if (!visited[j] && symmetric.getDouble(current, j) > 0) {
+                        visited[j] = true;
+                        queue.add(j);
                     }
-
-                    for (int j = 0; j < n; j++) {
-                        if (!visited[j] && symmetric.getDouble(current, j) > 0 && indexToId.containsKey(j)) {
-                            visited[j] = true;
-                            queue.add(j);
-                        }
-                    }
-                }
-
-                if (!component.isEmpty()) {
-                    components.add(component);
                 }
             }
+            components.add(component);
         }
-
         return components;
     }
 
@@ -479,37 +469,66 @@ public class MatrixGraphAlgorithms {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Computes degree centrality for all nodes.
+     * Computes degree centrality for all nodes (normalized to [0, 1] by dividing by max).
      *
      * @param graph The graph
-     * @return Map of node ID to degree centrality
+     * @return Map of node ID to normalized degree centrality
      */
     public static Map<String, Double> degreeCentrality(AdjacencyMatrixGraph graph) {
         int n = graph.getNodeCount();
-        if (n == 0) {
-            return Collections.emptyMap();
-        }
-
-        INDArray adjacency = graph.getCombinedAdjacencyMatrix();
-        Map<Integer, String> indexToId = graph.getIndexToNodeId();
-
-        // Sum of outgoing + incoming edges
-        INDArray outDegrees = adjacency.sum(1);
-        INDArray inDegrees = adjacency.sum(0).transpose();
-        INDArray totalDegrees = outDegrees.add(inDegrees);
-
-        Map<String, Double> result = new HashMap<>();
-        double maxDegree = totalDegrees.maxNumber().doubleValue();
-
+        if (n == 0) return Collections.emptyMap();
+        INDArray adj = graph.getCombinedAdjacencyMatrix().get(
+                NDArrayIndex.indices(createRange(n)),
+                NDArrayIndex.indices(createRange(n))
+        );
+        INDArray totals = degrees(adj, DegreeType.TOTAL_WEIGHTED);
+        double maxDegree = totals.maxNumber().doubleValue();
+        List<String> nodeIds = nodeIdsOf(graph);
+        Map<String, Double> result = new HashMap<>(n);
         for (int i = 0; i < n; i++) {
-            String nodeId = indexToId.get(i);
-            if (nodeId != null) {
-                double centrality = maxDegree > 0 ? totalDegrees.getDouble(i) / maxDegree : 0;
-                result.put(nodeId, centrality);
-            }
+            result.put(nodeIds.get(i), maxDegree > 0 ? totals.getDouble(i) / maxDegree : 0.0);
         }
-
         return result;
+    }
+
+    /**
+     * Degree counting modes.
+     * <ul>
+     *   <li>{@link #IN}, {@link #OUT}: count of distinct incoming / outgoing neighbors (nonzero entries).</li>
+     *   <li>{@link #TOTAL}: count of distinct undirected neighbors (unique union of in + out).</li>
+     *   <li>{@link #TOTAL_WEIGHTED}: sum of outgoing + incoming edge weights — counts each edge
+     *       from both endpoints, so a single A→B edge contributes 1 to both A and B.</li>
+     * </ul>
+     */
+    public enum DegreeType { IN, OUT, TOTAL, TOTAL_WEIGHTED }
+
+    /**
+     * Matrix-primitive degree computation. Returns a 1-D {@link INDArray} of length {@code n}
+     * where entry {@code i} is the degree of the node whose row/col index is {@code i}.
+     */
+    public static INDArray degrees(INDArray adj, DegreeType type) {
+        return switch (type) {
+            case IN -> adj.gt(0).castTo(DataType.FLOAT).sum(0);
+            case OUT -> adj.gt(0).castTo(DataType.FLOAT).sum(1);
+            case TOTAL -> {
+                INDArray symm = adj.add(adj.transpose());
+                yield symm.gt(0).castTo(DataType.FLOAT).sum(1);
+            }
+            case TOTAL_WEIGHTED -> adj.sum(1).add(adj.sum(0));
+        };
+    }
+
+    /**
+     * Returns the node IDs of {@code graph} indexed by matrix position.
+     */
+    public static List<String> nodeIdsOf(AdjacencyMatrixGraph graph) {
+        int n = graph.getNodeCount();
+        Map<Integer, String> indexToId = graph.getIndexToNodeId();
+        List<String> ids = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            ids.add(indexToId.get(i));
+        }
+        return ids;
     }
 
     /**

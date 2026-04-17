@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>kompile-dist</artifactId>
+    <packaging>pom</packaging>
+    <name>Kompile :: Distribution</name>
+    <description>
+        Curated end-to-end platform distribution. Bundles all GraalVM native images
+        (CLIs, main RAG server, subprocess types, app-lite), kompile-sdk-serving,
+        shared libraries (libkompile_pipelines, libkompile_c_library), and the
+        kompile-python sdx_runtime wheel into a single platform-specific archive.
+
+        Activated by -Dkompile.dist=true at the reactor root.
+    </description>
+
+    <!--
+        Reactor-ordering dependencies. Declaring these forces Maven to build
+        every upstream module that contributes an artifact to the distribution
+        before kompile-dist itself is assembled. The dependencies are pom-typed
+        so they do not pull anything onto the classpath (kompile-dist has no
+        compiled code of its own).
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-agent-cli</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-cli</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-cli</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-component-cli</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-main</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-app-lite</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <!--
+            Staging service. We pull the Spring Boot exec jar (classifier=exec)
+            so the maven-dependency-plugin can copy it to staging-deps/ for the
+            assembly. Declared with scope=provided so it does not propagate to
+            anything that consumes kompile-dist transitively.
+        -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-model-staging</artifactId>
+            <version>${project.version}</version>
+            <classifier>exec</classifier>
+            <scope>provided</scope>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-sdk-serving</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-pipelines-framework-runtime</artifactId>
+            <version>${project.version}</version>
+            <type>pom</type>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                Build the non-Maven components (kompile-c-library via CMake and
+                the kompile-python wheel via setuptools) in prepare-package,
+                so they are on disk before the assembly runs.
+
+                Both depend on libkompile_pipelines.so, which is produced by
+                kompile-pipelines-framework-runtime's native-library profile —
+                and that module is ordered before kompile-dist via the
+                pom dependency declared above.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>build-c-library</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>bash</executable>
+                            <workingDirectory>${project.parent.basedir}/kompile-c-library</workingDirectory>
+                            <arguments>
+                                <argument>rebuild-and-link.sh</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>build-python-wheel</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>python3</executable>
+                            <workingDirectory>${project.parent.basedir}/kompile-python</workingDirectory>
+                            <arguments>
+                                <argument>setup.py</argument>
+                                <argument>bdist_wheel</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                Copy the kompile-model-staging Spring Boot exec jar from the
+                local Maven repository into ${project.build.directory}/staging-deps,
+                where the assembly descriptor expects it. Using classifier=exec
+                ensures we get the repackaged Spring Boot fat jar (with all
+                dependencies bundled), not the thin jar.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-staging-exec-jar</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>ai.kompile</groupId>
+                                    <artifactId>kompile-model-staging</artifactId>
+                                    <version>${project.version}</version>
+                                    <classifier>exec</classifier>
+                                    <type>jar</type>
+                                    <overWrite>true</overWrite>
+                                    <outputDirectory>${project.build.directory}/staging-deps</outputDirectory>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Build the distribution archive -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>create-distribution</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <descriptors>
+                                <descriptor>src/main/assembly/dist.xml</descriptor>
+                            </descriptors>
+                            <finalName>kompile-${project.version}</finalName>
+                            <appendAssemblyId>true</appendAssemblyId>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

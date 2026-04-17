@@ -15,6 +15,8 @@
  */
 package ai.kompile.knowledgegraph.tool;
 
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
 import ai.kompile.knowledgegraph.domain.*;
 import ai.kompile.knowledgegraph.repository.*;
 import ai.kompile.knowledgegraph.service.*;
@@ -40,6 +42,7 @@ public class KnowledgeGraphToolImpl {
     private final SourceWeightingService weightingService;
     private final EntityMentionRepository entityMentionRepository;
     private final GraphNodeRepository nodeRepository;
+    private final McpOptimizationConfigProvider optimizationProvider;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INPUT RECORDS
@@ -59,11 +62,15 @@ public class KnowledgeGraphToolImpl {
             KnowledgeGraphService graphService,
             SourceWeightingService weightingService,
             EntityMentionRepository entityMentionRepository,
-            GraphNodeRepository nodeRepository) {
+            GraphNodeRepository nodeRepository,
+            @Autowired(required = false) McpOptimizationConfigProvider optimizationProvider) {
         this.graphService = graphService;
         this.weightingService = weightingService;
         this.entityMentionRepository = entityMentionRepository;
         this.nodeRepository = nodeRepository;
+        this.optimizationProvider = optimizationProvider != null
+                ? optimizationProvider
+                : McpOptimizationConfigProvider.ofDefaults();
         logger.debug("KnowledgeGraphToolImpl initialized");
     }
 
@@ -97,7 +104,7 @@ public class KnowledgeGraphToolImpl {
                     "documentId", node.getExternalId() != null ? node.getExternalId() : node.getNodeId(),
                     "title", node.getTitle() != null ? node.getTitle() : "Untitled",
                     "type", node.getNodeType().name(),
-                    "description", node.getDescription() != null ? node.getDescription() : "",
+                    "description", truncateDescription(node.getDescription(), 200),
                     "source", node.getSourceNode() != null ? node.getSourceNode().getTitle() : "Unknown"
                 ))
                 .collect(Collectors.toList());
@@ -146,7 +153,7 @@ public class KnowledgeGraphToolImpl {
                     result.put("documentId", node.getExternalId() != null ? node.getExternalId() : node.getNodeId());
                     result.put("title", node.getTitle() != null ? node.getTitle() : "Untitled");
                     result.put("type", node.getNodeType().name());
-                    result.put("description", truncate(node.getDescription(), 200));
+                    result.put("description", truncateDescription(node.getDescription(), 200));
                     return result;
                 })
                 .limit(maxResults)
@@ -191,7 +198,7 @@ public class KnowledgeGraphToolImpl {
             result.put("sourceId", source.getNodeId());
             result.put("title", source.getTitle());
             result.put("type", source.getSourceType());
-            result.put("description", source.getDescription());
+            result.put("description", truncateDescription(source.getDescription(), 200));
             result.put("documentCount", source.getChildCount());
 
             // Get source weight
@@ -298,7 +305,7 @@ public class KnowledgeGraphToolImpl {
                     "nodeId", (Object) node.getNodeId(),
                     "title", node.getTitle() != null ? node.getTitle() : "Untitled",
                     "type", node.getNodeType().name(),
-                    "description", truncate(node.getDescription(), 150),
+                    "description", truncateDescription(node.getDescription(), 150),
                     "connections", node.getEdgeCount()
                 ))
                 .collect(Collectors.toList());
@@ -408,7 +415,7 @@ public class KnowledgeGraphToolImpl {
                             "documentId", child.getNodeId(),
                             "title", child.getTitle() != null ? child.getTitle() : "Untitled",
                             "source", sourceId,
-                            "description", truncate(child.getDescription(), 150)
+                            "description", truncateDescription(child.getDescription(), 150)
                         ));
                     }
                 }
@@ -475,5 +482,20 @@ public class KnowledgeGraphToolImpl {
         if (text == null) return "";
         if (text.length() <= maxLength) return text;
         return text.substring(0, maxLength - 3) + "...";
+    }
+
+    /**
+     * Truncates node descriptions to the configured MCP optimization length,
+     * falling back to the provided default when optimization is disabled.
+     */
+    private String truncateDescription(String text, int fallbackMaxLength) {
+        McpOptimizationConfig cfg = optimizationProvider.getConfiguration();
+        int max = Boolean.TRUE.equals(cfg.getEnabled()) && cfg.getKnowledgeGraphTruncateChars() != null
+                ? cfg.getKnowledgeGraphTruncateChars()
+                : fallbackMaxLength;
+        if (max <= 0) {
+            return text == null ? "" : text;
+        }
+        return truncate(text, max);
     }
 }

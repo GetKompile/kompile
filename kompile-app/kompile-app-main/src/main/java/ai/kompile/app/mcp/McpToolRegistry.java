@@ -217,10 +217,7 @@ public class McpToolRegistry {
     private AgentDelegationTool agentDelegationTool;
 
     @Autowired(required = false)
-    private ai.kompile.notebook.tools.NotebookTool notebookTool;
-
-    @Autowired(required = false)
-    private ai.kompile.notebook.tools.NoteTool noteTool;
+    private NoteTool noteTool;
 
     @Autowired(required = false)
     private ToolPermissionService toolPermissionService;
@@ -490,7 +487,6 @@ public class McpToolRegistry {
         addBeanIfAvailable(chunkManagementTool, "Chunk Management");
         addBeanIfAvailable(crossIndexTool, "Cross Index");
         addBeanIfAvailable(agentDelegationTool, "Agent Delegation");
-        addBeanIfAvailable(notebookTool, "Notebook");
         addBeanIfAvailable(noteTool, "Note");
 
         // MCP-optimization meta-tools (visible in all modes; the mode filter

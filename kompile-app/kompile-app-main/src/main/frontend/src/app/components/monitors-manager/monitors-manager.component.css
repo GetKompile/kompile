@@ -1,0 +1,114 @@
+.monitors-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.section-card {
+  width: 100%;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.form-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.monitors-table {
+  width: 100%;
+}
+
+.monitors-table .mono,
+.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.85em;
+}
+
+.status-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75em;
+  font-weight: 600;
+  background: #eee;
+  color: #555;
+}
+
+.status-chip.active {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.status-chip.fired {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-chip.cancelled {
+  background: #fafafa;
+  color: #757575;
+}
+
+.status-chip.error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.empty-hint {
+  color: #888;
+  font-style: italic;
+  margin: 12px 0 0;
+}
+
+.event-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.event-list li {
+  display: grid;
+  grid-template-columns: 80px 1fr 200px 2fr;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  background: #fafafa;
+  border-radius: 6px;
+}
+
+.event-time {
+  font-family: monospace;
+  color: #555;
+}
+
+.event-title {
+  font-weight: 600;
+  color: #2e7d32;
+}
+
+.event-title.failed {
+  color: #c62828;
+}
+
+.event-session {
+  color: #555;
+}
+
+.event-message {
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

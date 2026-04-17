@@ -458,7 +458,7 @@ public class VlmTestSubprocessMain {
                 System.getProperty(ND4JSystemProperties.DSP_GRAPH_EXECUTION_MODE, "unset"),
                 System.getProperty(ND4JSystemProperties.TRITON_SKIP_KERNELS, "unset"),
                 System.getProperty(ND4JSystemProperties.TRITON_TF32, "unset"),
-                System.getProperty(ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS, "unset"),
+                System.getProperty("nd4j.dsp.noNativeDecodeInputs", "unset"),
                 System.getProperty(ND4JSystemProperties.DSP_NO_FREEZE, "unset"),
                 System.getProperty(ND4JSystemProperties.DSP_NO_ATTN_OVERRIDE, "unset"),
                 System.getProperty(ND4JSystemProperties.DSP_NO_DIRECT, "unset"),
@@ -498,7 +498,7 @@ public class VlmTestSubprocessMain {
             setPropertyIfAbsent(ND4JSystemProperties.DSP_NO_FREEZE, "true");
         }
         if (Boolean.TRUE.equals(config.dspNoNativeDecode())) {
-            setPropertyIfAbsent(ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS, "true");
+            setPropertyIfAbsent("nd4j.dsp.noNativeDecodeInputs", "true");
         }
         if (Boolean.TRUE.equals(config.dspNoAttnOverride())) {
             setPropertyIfAbsent(ND4JSystemProperties.DSP_NO_ATTN_OVERRIDE, "true");
@@ -542,7 +542,7 @@ public class VlmTestSubprocessMain {
             System.setProperty(ND4JSystemProperties.TRITON_TF32, "true");
         }
         if (Boolean.TRUE.equals(vlmArgs.dspNoNativeDecode())) {
-            System.setProperty(ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS, "true");
+            System.setProperty("nd4j.dsp.noNativeDecodeInputs", "true");
         }
         if (Boolean.TRUE.equals(vlmArgs.dspNoFreeze())) {
             System.setProperty(ND4JSystemProperties.DSP_NO_FREEZE, "true");

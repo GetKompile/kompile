@@ -170,6 +170,11 @@ public class StagingService {
                 outputPath = modelPath;
             }
 
+            // 2b. Download tokenizer if needed (GGUF models don't include HF tokenizer.json)
+            if (needsConversion(modelPath)) {
+                ensureTokenizer(request, pendingDir, modelPath);
+            }
+
             // 3. Validate
             info.withStatus(StagingStatus.VALIDATING, 70, "Validating model");
             progressCallback.accept(info);
@@ -232,11 +237,23 @@ public class StagingService {
             // Move files
             moveDirectory(verifiedDir, productionDir);
 
-            // Find model and vocab files
-            Path modelFile = findFile(productionDir, "model.sdz", ".fb");
-            Path vocabFile = findFile(productionDir, "vocab.txt");
+            // Find model and vocab files using shard-aware helpers
+            Path modelFile = findModelFile(productionDir);
+            Path vocabFile = findVocabFile(productionDir);
+            boolean sharded = isShardedModel(productionDir);
 
-            // Calculate checksum
+            // For sharded models, model_file stores the logical base name "model.sdz"
+            // which SameDiff.load() uses to discover shard files in the same directory.
+            String modelFileName;
+            if (sharded) {
+                modelFileName = "model.sdz";
+            } else {
+                modelFileName = modelFile != null ? modelFile.getFileName().toString() : "model.sdz";
+            }
+
+            String vocabFileName = vocabFile != null ? vocabFile.getFileName().toString() : "vocab.txt";
+
+            // Calculate checksum on whatever representative file we have
             String checksum = modelFile != null ? calculateChecksum(modelFile) : null;
 
             // Auto-probe vision encoder IO config for VLM models
@@ -252,8 +269,8 @@ public class StagingService {
                     .modelId(modelId)
                     .type(type)
                     .path(type.getDirectoryName() + "/" + modelId)
-                    .modelFile(modelFile != null ? modelFile.getFileName().toString() : "model.sdz")
-                    .vocabFile(vocabFile != null ? vocabFile.getFileName().toString() : "vocab.txt")
+                    .modelFile(modelFileName)
+                    .vocabFile(vocabFileName)
                     .checksum(checksum)
                     .status(ModelStatus.ACTIVE)
                     .promotedAt(Instant.now().toString())
@@ -630,7 +647,94 @@ public class StagingService {
     private boolean needsConversion(Path modelPath) {
         if (modelPath == null) return false;
         String name = modelPath.getFileName().toString().toLowerCase();
-        return name.endsWith(".onnx") || name.endsWith(".pb") || name.endsWith(".h5");
+        return name.endsWith(".onnx")
+                || name.endsWith(".pb")
+                || name.endsWith(".h5")
+                || name.endsWith(".gguf")
+                || name.endsWith(".ggml");
+    }
+
+    /**
+     * Ensure a tokenizer.json exists in the staging directory for the model.
+     * GGUF models embed tokenizer metadata but not in HuggingFace format.
+     * If a tokenizerUrl was provided in the request, download it.
+     * Otherwise, try to infer the URL from the GGUF source URL.
+     */
+    private void ensureTokenizer(DownloadRequest request, Path pendingDir, Path originalModelPath) {
+        try {
+            Path tokenizerJson = pendingDir.resolve("tokenizer.json");
+            if (Files.exists(tokenizerJson) && Files.size(tokenizerJson) > 100) {
+                log.debug("tokenizer.json already present at {}", tokenizerJson);
+                return;
+            }
+
+            List<String> candidates = new java.util.ArrayList<>();
+            if (request.getTokenizerUrl() != null && !request.getTokenizerUrl().isBlank()) {
+                candidates.add(request.getTokenizerUrl());
+            }
+            candidates.addAll(inferTokenizerUrlCandidates(request.getRepository()));
+
+            for (String tokenizerUrl : candidates) {
+                log.info("Trying tokenizer.json from {} for model {}", tokenizerUrl, request.getModelId());
+                try {
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(tokenizerUrl).openConnection();
+                    conn.setConnectTimeout(30000);
+                    conn.setReadTimeout(60000);
+                    conn.setRequestProperty("User-Agent", "Kompile-Model-Staging/1.0");
+                    conn.setInstanceFollowRedirects(true);
+                    int code = conn.getResponseCode();
+                    if (code == 200) {
+                        try (java.io.InputStream in = conn.getInputStream()) {
+                            Files.copy(in, tokenizerJson, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        if (Files.size(tokenizerJson) > 100) {
+                            log.info("Downloaded tokenizer.json ({} bytes) from {}", Files.size(tokenizerJson), tokenizerUrl);
+                            conn.disconnect();
+                            return;
+                        }
+                    } else {
+                        log.debug("HTTP {} from {}, trying next candidate", code, tokenizerUrl);
+                    }
+                    conn.disconnect();
+                } catch (Exception e) {
+                    log.debug("Failed to fetch tokenizer from {}: {}", tokenizerUrl, e.getMessage());
+                }
+            }
+            log.warn("No tokenizer.json could be downloaded for model {}. LLM loading may need manual tokenizer setup.", request.getModelId());
+        } catch (Exception e) {
+            log.warn("Failed to download tokenizer for model {}: {}", request.getModelId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Try to infer a tokenizer.json URL from a HuggingFace GGUF model URL.
+     * GGUF repos often don't contain tokenizer.json, so we return the GGUF repo URL
+     * first (caller will try it), and the caller should fall through if 404.
+     */
+    private String inferTokenizerUrl(String modelUrl) {
+        if (modelUrl == null) return null;
+        if (modelUrl.contains("huggingface.co") && modelUrl.contains("/resolve/")) {
+            int resolveIdx = modelUrl.indexOf("/resolve/");
+            String repoBase = modelUrl.substring(0, resolveIdx);
+            String branch = "main";
+            String afterResolve = modelUrl.substring(resolveIdx + "/resolve/".length());
+            int slashIdx = afterResolve.indexOf('/');
+            if (slashIdx > 0) {
+                branch = afterResolve.substring(0, slashIdx);
+            }
+            return repoBase + "/resolve/" + branch + "/tokenizer.json";
+        }
+        return null;
+    }
+
+    /**
+     * Try multiple tokenizer URL candidates when the primary fails.
+     */
+    private List<String> inferTokenizerUrlCandidates(String modelUrl) {
+        List<String> candidates = new java.util.ArrayList<>();
+        String primary = inferTokenizerUrl(modelUrl);
+        if (primary != null) candidates.add(primary);
+        return candidates;
     }
 
     private void moveToFailed(Path source, String modelId) {
@@ -703,6 +807,51 @@ public class StagingService {
             }
         }
         return null;
+    }
+
+    /**
+     * Find the logical model file in a directory. For sharded models (produced by
+     * saveAutoShard), the actual files are model.shard0-of-N.sdnb etc. but
+     * SameDiff.load() resolves them from a base name like "model.sdz".
+     * Returns the shard-0 file if sharded, or a single .sdz/.fb file if present.
+     */
+    private Path findModelFile(Path dir) throws IOException {
+        // First check for a real single-file model
+        Path single = findFile(dir, "model.sdz", ".fb");
+        if (single != null) return single;
+
+        // Look for sharded model files
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path path : stream) {
+                String name = path.getFileName().toString();
+                if (name.contains(".shard0-of-") && name.endsWith(".sdnb")) {
+                    return path;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find a tokenizer/vocab file in a directory, checking multiple common names.
+     */
+    private Path findVocabFile(Path dir) throws IOException {
+        return findFile(dir, "tokenizer.json", "vocab.txt", "sentencepiece.model");
+    }
+
+    /**
+     * Check if a model directory contains sharded files rather than a single model file.
+     */
+    private boolean isShardedModel(Path dir) throws IOException {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path path : stream) {
+                String name = path.getFileName().toString();
+                if (name.contains(".shard0-of-") && name.endsWith(".sdnb")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private StagingModelInfo findStagedModel(String modelId) {

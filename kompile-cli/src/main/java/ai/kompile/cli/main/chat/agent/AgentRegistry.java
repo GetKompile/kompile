@@ -19,6 +19,8 @@ package ai.kompile.cli.main.chat.agent;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.roles.RoleConfig;
 
+import ai.kompile.cli.main.chat.config.ChatConfig;
+
 import java.util.*;
 
 /**
@@ -54,7 +56,7 @@ public class AgentRegistry {
                 .systemPrompt(PLANNER_SYSTEM_PROMPT)
                 .enabledTools(Set.of("read", "grep", "glob", "list", "bash", "webfetch", "websearch",
                         "task", "todowrite", "todoread", "transcript_search", "rag_search",
-                        "graph_search", "process"))
+                        "graph_search", "process", "exit_plan_mode"))
                 .permissionOverrides(Map.of(
                         "edit", PermissionService.PermissionLevel.DENY,
                         "write", PermissionService.PermissionLevel.DENY,
@@ -329,7 +331,14 @@ public class AgentRegistry {
             - Delegate deep research to explorer subagents
             - Create clear, actionable plans with specific file paths and changes
             - Consider edge cases and potential issues
-            - Use todowrite to track your analysis steps
+            - Use todowrite to create a checklist of all planned steps with status 'pending'
+            - When your plan is complete, call exit_plan_mode with a summary
+
+            Planning workflow:
+            1. Analyze the task using read-only tools (read, grep, glob, bash)
+            2. Break the work into discrete steps using todowrite (action: add)
+            3. For each step, include the specific file path and what to change
+            4. Call exit_plan_mode when all steps are planned
 
             Knowledge & Memory:
             - Use transcript_search to recall context from previous conversations
@@ -437,6 +446,61 @@ public class AgentRegistry {
             - Testing approach
             - Risks and mitigation
             """;
+
+    // ========================================================================
+    // Model allowlists by tier
+    // ========================================================================
+
+    /**
+     * All models across all providers — used for primary agents (coder, planner)
+     * that should have access to every model the provider offers.
+     */
+    public static List<String> getAllModelsForProvider(String provider) {
+        String[] models = ChatConfig.getDefaultModels(provider);
+        return models.length > 0 ? List.of(models) : List.of();
+    }
+
+    /**
+     * "Fast" tier models — cheaper/faster models suited for quick lookups.
+     * Maps modelHint "fast" to the fastest model per provider.
+     */
+    public static final Map<String, List<String>> FAST_MODELS = Map.ofEntries(
+            Map.entry("anthropic", List.of("claude-haiku-4-20250514", "claude-sonnet-4-20250514")),
+            Map.entry("openai", List.of("gpt-4o-mini", "gpt-4o")),
+            Map.entry("gemini", List.of("gemini-2.0-flash", "gemini-2.5-flash")),
+            Map.entry("openrouter", List.of("openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro")),
+            Map.entry("deepseek", List.of("deepseek-chat", "deepseek-coder")),
+            Map.entry("groq", List.of("llama-3.3-70b-versatile", "mixtral-8x7b-32768")),
+            Map.entry("ollama", List.of()) // all local models allowed
+    );
+
+    /**
+     * "Default" tier models — standard models for most tasks.
+     */
+    public static final Map<String, List<String>> DEFAULT_MODELS = Map.ofEntries(
+            Map.entry("anthropic", List.of("claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514")),
+            Map.entry("openai", List.of("gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini")),
+            Map.entry("gemini", List.of("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash")),
+            Map.entry("openrouter", List.of("anthropic/claude-sonnet-4", "openai/gpt-4o", "google/gemini-2.5-pro")),
+            Map.entry("deepseek", List.of("deepseek-chat", "deepseek-coder", "deepseek-reasoner")),
+            Map.entry("groq", List.of("llama-3.3-70b-versatile", "mixtral-8x7b-32768")),
+            Map.entry("ollama", List.of()) // all local models allowed
+    );
+
+    /**
+     * Resolve model allowlist for a given modelHint and provider.
+     * Returns empty list if all models should be allowed.
+     */
+    public static List<String> resolveAllowedModels(String modelHint, String provider) {
+        if (provider == null || "kompile".equals(provider) || "ollama".equals(provider)) {
+            return List.of(); // no restrictions
+        }
+        if ("fast".equals(modelHint)) {
+            return FAST_MODELS.getOrDefault(provider, List.of());
+        }
+        // "default" and "powerful" get full access
+        return DEFAULT_MODELS.getOrDefault(provider, List.of());
+    }
 
     // -- Researcher: web search and documentation --
     private static final String RESEARCHER_PROMPT = """

@@ -69,6 +69,9 @@ public class DirectSubagentRunner implements SubagentRunner {
         String systemPrompt = agent.getSystemPrompt();
         if (systemPrompt == null) systemPrompt = "";
 
+        // Resolve model override for this subagent based on its modelHint
+        String modelOverride = agent.getModelOverride();
+
         // Run the agentic loop
         StringBuilder fullResponse = new StringBuilder();
         int step = 0;
@@ -81,7 +84,7 @@ public class DirectSubagentRunner implements SubagentRunner {
             step++;
 
             DirectLlmClient.StreamResult result = subClient.streamChat(
-                    currentMessage, systemPrompt, toolDefs, pendingToolResults);
+                    currentMessage, systemPrompt, toolDefs, pendingToolResults, modelOverride);
 
             // Collect text
             if (result.text != null && !result.text.isEmpty()) {

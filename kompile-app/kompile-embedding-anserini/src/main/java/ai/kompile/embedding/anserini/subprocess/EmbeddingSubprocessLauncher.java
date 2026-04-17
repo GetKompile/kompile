@@ -16,6 +16,8 @@
 
 package ai.kompile.embedding.anserini.subprocess;
 
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.embedding.anserini.AnseriniEncoderFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -110,6 +112,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
 
     // Debug configuration
     private volatile DebugConfig debugConfig = new DebugConfig();
+
+    // Central log writer for ~/.kompile/logs/subprocesses/embedding/<runId>.log
+    private volatile SubprocessLogWriter subprocessLogWriter;
 
     // Device routing: optional overrides for this subprocess
     // When set, these values override the live ND4J environment values passed to the subprocess
@@ -1349,6 +1354,22 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
 
         process = pb.start();
 
+        // Initialise per-run log writer (non-fatal if it fails)
+        String logRunId = currentTaskId != null ? currentTaskId : UUID.randomUUID().toString();
+        try {
+            SubprocessLogWriter slw = new SubprocessLogWriter("embedding", logRunId);
+            String workDir = pb.directory() != null ? pb.directory().getAbsolutePath() : null;
+            slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    currentTaskId,
+                    command,
+                    workDir,
+                    process.pid(),
+                    maxHeapMb + "m"));
+            subprocessLogWriter = slw;
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
+        }
+
         // Set up I/O
         processStdout = new BufferedReader(new InputStreamReader(process.getInputStream()));
         processStdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
@@ -1698,6 +1719,14 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
 
         running.set(false);
         modelLoaded = false;
+
+        // Finalise central log writer on graceful stop
+        Integer stopExitCode = null;
+        if (process != null) {
+            try { stopExitCode = process.exitValue(); } catch (Exception _ignored) {}
+        }
+        finaliseSubprocessLog("COMPLETED", stopExitCode, null);
+
         logger.info("Embedding subprocess stopped");
     }
 
@@ -2004,6 +2033,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                                 level, "stdout", line, System.currentTimeMillis());
                         logCallback.accept(logMsg);
                     }
+                    // Write to central log file (non-fatal)
+                    try {
+                        SubprocessLogWriter slw = subprocessLogWriter;
+                        if (slw != null) {
+                            slw.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                        }
+                    } catch (Exception _logEx) {
+                        logger.debug("SubprocessLogWriter stdout write failed: {}", _logEx.getMessage());
+                    }
                 }
             }
         } catch (IOException e) {
@@ -2037,6 +2075,15 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
                     EmbeddingSubprocessMessage.Log logMsg = new EmbeddingSubprocessMessage.Log(
                             level, "stderr", line, System.currentTimeMillis());
                     logCallback.accept(logMsg);
+                }
+                // Write to central log file (non-fatal)
+                try {
+                    SubprocessLogWriter slw = subprocessLogWriter;
+                    if (slw != null) {
+                        slw.writeLine(AgentLogRecord.Stream.STDERR, line);
+                    }
+                } catch (Exception _logEx) {
+                    logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
                 }
 
                 // Track recent error lines for crash diagnostics
@@ -2290,6 +2337,9 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
         }
 
         logger.error("Subprocess crashed (exit code {}): {}", exitCode, crashReason);
+
+        // Finalise central log writer on crash
+        finaliseSubprocessLog("CRASHED", exitCode == -1 ? null : exitCode, crashReason);
 
         // Fail all pending requests with detailed error
         RuntimeException crashException = new RuntimeException("Subprocess crashed: " + crashReason);
@@ -2657,6 +2707,33 @@ public class EmbeddingSubprocessLauncher implements AutoCloseable {
      */
     public int getMaxRestartAttempts() {
         return maxRestartAttempts;
+    }
+
+    /**
+     * Write end record and close the SubprocessLogWriter (non-fatal, best-effort).
+     *
+     * @param state      terminal state string (e.g. "COMPLETED", "CRASHED", "CANCELLED")
+     * @param exitCode   process exit code, or null if unknown
+     * @param errorMsg   error description, or null
+     */
+    private void finaliseSubprocessLog(String state, Integer exitCode, String errorMsg) {
+        SubprocessLogWriter slw = subprocessLogWriter;
+        subprocessLogWriter = null;
+        if (slw == null) {
+            return;
+        }
+        try {
+            boolean oomDetected = exitCode != null && exitCode == 137;
+            slw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, errorMsg, oomDetected, null));
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter writeEnd failed: {}", _logEx.getMessage());
+        }
+        try {
+            slw.close();
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter close failed: {}", _logEx.getMessage());
+        }
     }
 
     @Override

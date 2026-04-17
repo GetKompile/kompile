@@ -380,7 +380,7 @@ public record Nd4jEnvironmentConfig(
                 .optimizerEnabled(getBoolProp(ND4JSystemProperties.OPTIMIZER_ENABLED))
                 .optimizerFp16(getBoolProp(ND4JSystemProperties.OPTIMIZER_FP16))
                 .dspNoFreeze(getBoolProp(ND4JSystemProperties.DSP_NO_FREEZE))
-                .dspNoNativeDecode(getBoolProp(ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS))
+                .dspNoNativeDecode(getBoolProp("nd4j.dsp.noNativeDecodeInputs"))
                 .dspNoAttnOverride(getBoolProp(ND4JSystemProperties.DSP_NO_ATTN_OVERRIDE))
                 .dspNoDirect(getBoolProp(ND4JSystemProperties.DSP_NO_DIRECT))
                 .tritonSkipKernels(getBoolProp(ND4JSystemProperties.TRITON_SKIP_KERNELS))

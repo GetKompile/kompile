@@ -89,14 +89,8 @@ public class KompilePipelineLanguageModelAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public DataFactory kompileDataFactory() {
-        // User must provide their concrete DataFactory implementation.
-        // This is a placeholder that will throw an error if not replaced.
-        // Example: return new ai.kompile.pipelines.framework.core.data.JDataFactory();
-        logger.error("CRITICAL: No concrete DataFactory bean is defined. " +
-                "The application will fail to start unless a bean returning a " +
-                "concrete implementation (e.g., JDataFactory) is provided for DataFactory.");
-        throw new IllegalStateException("A concrete and working DataFactory bean definition is required. " +
-                "Please provide a @Bean method that returns your DataFactory implementation.");
+        logger.info("Providing default JDataFactory bean.");
+        return new ai.kompile.pipelines.framework.core.data.JDataFactory();
     }
 
     @Bean

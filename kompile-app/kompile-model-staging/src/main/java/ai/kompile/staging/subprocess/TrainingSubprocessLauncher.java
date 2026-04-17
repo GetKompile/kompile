@@ -16,6 +16,8 @@
 
 package ai.kompile.staging.subprocess;
 
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.staging.domain.TrainingJobHistory;
 import ai.kompile.staging.service.TrainingJobHistoryService;
 import ai.kompile.staging.web.dto.TrainingConfigRequest;
@@ -155,6 +157,18 @@ public class TrainingSubprocessLauncher {
         Process process = pb.start();
 
         SubprocessHandle handle = new SubprocessHandle(process, jobId, System.currentTimeMillis());
+
+        // Initialise the centralized log writer now that the process is running and pid is known.
+        try {
+            SubprocessLogWriter logWriter = new SubprocessLogWriter("training", jobId);
+            String workingDir = pb.directory() != null ? pb.directory().getAbsolutePath() : null;
+            logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    null, command, workingDir, process.pid(), subprocessHeapSize));
+            handle.logWriter = logWriter;
+        } catch (Exception e) {
+            log.debug("Failed to initialise SubprocessLogWriter for training job {}: {}", jobId, e.getMessage());
+        }
+
         activeProcesses.put(jobId, handle);
 
         historyService.markRunning(jobId);
@@ -181,6 +195,16 @@ public class TrainingSubprocessLauncher {
         activeProcesses.remove(jobId);
         historyService.markCancelled(jobId, "Cancelled by user");
         updateJobStatus(jobId, "CANCELLED");
+        // Finalise the centralized log aggregation entry
+        if (handle.logWriter != null) {
+            try {
+                handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                        "CANCELLED", null, "Cancelled by user", false, false));
+                handle.logWriter.close();
+            } catch (Exception ex) {
+                log.debug("SubprocessLogWriter close failed on cancel for {}: {}", jobId, ex.getMessage());
+            }
+        }
         completeEmitters(jobId);
         return true;
     }
@@ -279,6 +303,16 @@ public class TrainingSubprocessLauncher {
                     } else {
                         log.trace("[training-{}] stdout: {}", jobId, line);
                     }
+                    // Write to centralized log aggregation store
+                    final String finalLine = line;
+                    try {
+                        SubprocessHandle h = activeProcesses.get(jobId);
+                        if (h != null && h.logWriter != null) {
+                            h.logWriter.writeLine(AgentLogRecord.Stream.STDOUT, finalLine);
+                        }
+                    } catch (Exception ex) {
+                        log.debug("SubprocessLogWriter stdout write failed for {}: {}", jobId, ex.getMessage());
+                    }
                 }
             } catch (Exception e) {
                 log.warn("Error reading training subprocess stdout for {}: {}", jobId, e.getMessage());
@@ -299,6 +333,16 @@ public class TrainingSubprocessLauncher {
                         historyService.markMemoryKilled(jobId, 100.0);
                         updateJobStatus(jobId, "MEMORY_KILLED");
                     }
+                    // Write to centralized log aggregation store
+                    final String finalLine = line;
+                    try {
+                        SubprocessHandle h = activeProcesses.get(jobId);
+                        if (h != null && h.logWriter != null) {
+                            h.logWriter.writeLine(AgentLogRecord.Stream.STDERR, finalLine);
+                        }
+                    } catch (Exception ex) {
+                        log.debug("SubprocessLogWriter stderr write failed for {}: {}", jobId, ex.getMessage());
+                    }
                 }
             } catch (Exception e) {
                 log.warn("Error reading training subprocess stderr for {}: {}", jobId, e.getMessage());
@@ -313,18 +357,41 @@ public class TrainingSubprocessLauncher {
             try {
                 int exitCode = process.waitFor();
                 log.info("Training subprocess {} exited with code {}", jobId, exitCode);
-                activeProcesses.remove(jobId);
+                SubprocessHandle handle = activeProcesses.remove(jobId);
+
+                String finalState = "COMPLETED";
+                String errorMessage = null;
+                boolean oomDetected = false;
 
                 if (exitCode != 0) {
                     TrainingJobStatus current = jobStatuses.get(jobId);
                     if (current != null && !"COMPLETED".equals(current.getStatus())
                             && !"CANCELLED".equals(current.getStatus())
                             && !"MEMORY_KILLED".equals(current.getStatus())) {
-                        historyService.markFailed(jobId, "Subprocess exited with code " + exitCode,
+                        errorMessage = "Subprocess exited with code " + exitCode;
+                        historyService.markFailed(jobId, errorMessage,
                                 null, TrainingJobHistory.FailureReason.TRAINING_ERROR);
                         updateJobStatus(jobId, "FAILED");
+                        finalState = "FAILED";
+                    } else if (current != null && "MEMORY_KILLED".equals(current.getStatus())) {
+                        finalState = "OOM";
+                        oomDetected = true;
+                    } else if (current != null && "CANCELLED".equals(current.getStatus())) {
+                        finalState = "CANCELLED";
                     }
                 }
+
+                // Finalise the centralized log aggregation entry
+                if (handle != null && handle.logWriter != null) {
+                    try {
+                        handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                                finalState, exitCode, errorMessage, oomDetected, false));
+                        handle.logWriter.close();
+                    } catch (Exception ex) {
+                        log.debug("SubprocessLogWriter writeEnd failed for {}: {}", jobId, ex.getMessage());
+                    }
+                }
+
                 completeEmitters(jobId);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -569,8 +636,19 @@ public class TrainingSubprocessLauncher {
     public void shutdown() {
         log.info("Shutting down training subprocess launcher, cancelling {} active processes", activeProcesses.size());
         for (Map.Entry<String, SubprocessHandle> entry : activeProcesses.entrySet()) {
-            entry.getValue().process.destroyForcibly();
+            SubprocessHandle handle = entry.getValue();
+            handle.process.destroyForcibly();
             historyService.markCancelled(entry.getKey(), "Application shutdown");
+            // Finalise the centralized log aggregation entry
+            if (handle.logWriter != null) {
+                try {
+                    handle.logWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "CANCELLED", null, "Application shutdown", false, false));
+                    handle.logWriter.close();
+                } catch (Exception ex) {
+                    log.debug("SubprocessLogWriter close failed on shutdown for {}: {}", entry.getKey(), ex.getMessage());
+                }
+            }
         }
         activeProcesses.clear();
     }
@@ -583,6 +661,7 @@ public class TrainingSubprocessLauncher {
         final String jobId;
         final long startTimeMs;
         volatile long lastHeartbeatMs;
+        volatile SubprocessLogWriter logWriter;
 
         SubprocessHandle(Process process, String jobId, long startTimeMs) {
             this.process = process;

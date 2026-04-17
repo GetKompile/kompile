@@ -130,6 +130,16 @@ public class BackgroundTaskManager {
         }
     }
 
+    /**
+     * Invoked whenever a background task reaches a terminal state
+     * (COMPLETED or FAILED). Consumers can use this to forward wake-up
+     * events to an app-side chat monitor via the REST API.
+     */
+    @FunctionalInterface
+    public interface CompletionListener {
+        void onComplete(BackgroundTask task);
+    }
+
     private final Map<String, BackgroundTask> tasks;
     private final List<String> taskOrder;
     private BackgroundTask currentTask;
@@ -142,9 +152,35 @@ public class BackgroundTaskManager {
     // Recently completed backgrounded tasks (for notification at next prompt)
     private final List<BackgroundTask> pendingNotifications = new CopyOnWriteArrayList<>();
 
+    // Optional listeners invoked on terminal status
+    private final List<CompletionListener> completionListeners = new CopyOnWriteArrayList<>();
+
     public BackgroundTaskManager() {
         this.tasks = new ConcurrentHashMap<>();
         this.taskOrder = new CopyOnWriteArrayList<>();
+    }
+
+    /**
+     * Register a listener invoked when any tracked task reaches COMPLETED or FAILED.
+     */
+    public void addCompletionListener(CompletionListener listener) {
+        if (listener != null) {
+            completionListeners.add(listener);
+        }
+    }
+
+    public void removeCompletionListener(CompletionListener listener) {
+        completionListeners.remove(listener);
+    }
+
+    private void fireCompletion(BackgroundTask task) {
+        for (CompletionListener l : completionListeners) {
+            try {
+                l.onComplete(task);
+            } catch (RuntimeException e) {
+                // Swallow — a buggy listener must not break the REPL.
+            }
+        }
     }
 
     /**
@@ -192,7 +228,28 @@ public class BackgroundTaskManager {
             if (wasBackgrounded) {
                 pendingNotifications.add(currentTask);
             }
+            BackgroundTask finished = currentTask;
             currentTask = null;
+            fireCompletion(finished);
+        }
+    }
+
+    /**
+     * Marks the current task as failed with the given error and fires
+     * completion listeners. If the task was backgrounded it is added to
+     * pending notifications so the REPL surfaces the failure at the next
+     * prompt.
+     */
+    public void failCurrentTask(Throwable error) {
+        if (currentTask != null) {
+            boolean wasBackgrounded = currentTask.getStatus() == BackgroundTask.BackgroundTaskStatus.BACKGROUNDED;
+            currentTask.setError(error);
+            if (wasBackgrounded) {
+                pendingNotifications.add(currentTask);
+            }
+            BackgroundTask finished = currentTask;
+            currentTask = null;
+            fireCompletion(finished);
         }
     }
 

@@ -48,6 +48,7 @@
     <module>kompile-model-cli</module>
     <module>kompile-agent-cli</module>
     <module>kompile-component-cli</module>
+    <module>kompile-e2e-tests</module>
   </modules>
 
   <properties>
@@ -134,6 +135,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-cli-common</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-cli</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -731,6 +737,29 @@
       <properties>
         <javacpp.platform.extension>-avx512</javacpp.platform.extension>
       </properties>
+    </profile>
+
+    <!--
+      Curated end-to-end distribution profile.
+      Activated by -Dkompile.dist=true (NOT -Pdist, because child module
+      profile activation only sees user/system properties, not parent
+      profile properties). The same flag propagates to every child native
+      profile (native, native-ingest, native-vector, native-embedding,
+      native-model-init, native-library, plus CLI natives and app-lite),
+      and adds the kompile-dist assembly module to the reactor.
+
+      Example: mvn clean package -Dkompile.dist=true
+    -->
+    <profile>
+      <id>dist</id>
+      <activation>
+        <property>
+          <name>kompile.dist</name>
+        </property>
+      </activation>
+      <modules>
+        <module>kompile-dist</module>
+      </modules>
     </profile>
   </profiles>
 </project>

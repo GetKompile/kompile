@@ -96,12 +96,20 @@ public class McpStdioCommand implements Callable<Integer> {
                 case "initialize" -> {
                     ObjectNode initResult = om.createObjectNode();
                     initResult.put("protocolVersion", "2024-11-05");
-                    initResult.putObject("capabilities").putObject("tools").put("listChanged", false);
+                    ObjectNode caps = initResult.putObject("capabilities");
+                    caps.putObject("tools").put("listChanged", false);
                     ObjectNode serverInfo = initResult.putObject("serverInfo");
                     serverInfo.put("name", "kompile-cli");
                     serverInfo.put("version", "0.1.0-SNAPSHOT");
                     result.set("result", initResult);
                 }
+
+                // Notifications — no response needed (no id)
+                case "notifications/initialized", "notifications/cancelled",
+                     "notifications/progress", "notifications/roots/list_changed" -> {
+                    return null; // Notifications never get a response
+                }
+
                 case "tools/list" -> {
                     ObjectNode toolsResult = om.createObjectNode();
                     var toolsArray = toolsResult.putArray("tools");
@@ -135,8 +143,43 @@ public class McpStdioCommand implements Callable<Integer> {
                         result.set("result", callResult);
                     }
                 }
+
+                // Empty list responses for capabilities we don't support —
+                // clients may probe these even when not declared in capabilities.
+                // Returning nothing would cause the client to hang waiting for a response.
+                case "resources/list" -> {
+                    ObjectNode listResult = om.createObjectNode();
+                    listResult.putArray("resources");
+                    result.set("result", listResult);
+                }
+                case "resources/templates/list" -> {
+                    ObjectNode listResult = om.createObjectNode();
+                    listResult.putArray("resourceTemplates");
+                    result.set("result", listResult);
+                }
+                case "prompts/list" -> {
+                    ObjectNode listResult = om.createObjectNode();
+                    listResult.putArray("prompts");
+                    result.set("result", listResult);
+                }
+                case "logging/setLevel" -> {
+                    result.set("result", om.createObjectNode());
+                }
+
                 case "ping" -> result.set("result", om.createObjectNode());
-                default -> { return null; }
+
+                default -> {
+                    // For requests (have an id), return a proper JSON-RPC error
+                    // so the client doesn't hang waiting for a response.
+                    // For notifications (no id), silently ignore.
+                    if (idNode != null) {
+                        ObjectNode error = result.putObject("error");
+                        error.put("code", -32601);
+                        error.put("message", "Method not found: " + method);
+                    } else {
+                        return null;
+                    }
+                }
             }
             return result;
         } catch (Exception e) {
@@ -192,9 +235,17 @@ public class McpStdioCommand implements Callable<Integer> {
             args -> { try { return procTool.execute(om.valueToTree(args), ctx(wd)); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
 
         // ── Delegation tools ───────────────────────────────────────────────
-        var taskTool = new ai.kompile.cli.mcp.stdio.StdioTaskTool(agentRegistry, subagentRunner, om);
+        var taskTool = new ai.kompile.cli.mcp.stdio.StdioTaskTool(agentRegistry, subagentRunner, om, roleManager);
         tools.put(taskTool.id(), new ToolDef(taskTool.id(), taskTool.description(), taskTool.parameterSchema(),
             args -> { try { return taskTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+
+        var quorumTool = new ai.kompile.cli.mcp.stdio.StdioQuorumTaskTool(agentRegistry, subagentRunner, om, wd);
+        tools.put(quorumTool.id(), new ToolDef(quorumTool.id(), quorumTool.description(), quorumTool.parameterSchema(),
+            args -> { try { return quorumTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
+
+        var multiTool = new ai.kompile.cli.mcp.stdio.StdioMultiTaskTool(agentRegistry, subagentRunner, om, wd, roleManager);
+        tools.put(multiTool.id(), new ToolDef(multiTool.id(), multiTool.description(), multiTool.parameterSchema(),
+            args -> { try { return multiTool.execute(args); } catch (Exception e) { return ai.kompile.cli.main.chat.tools.ToolResult.error(e.getMessage()); } }));
 
         var rmTool = new ai.kompile.cli.main.chat.tools.RoleManagerTool(roleManager, om);
         tools.put(rmTool.id(), new ToolDef(rmTool.id(), rmTool.description(), rmTool.parameterSchema(),

@@ -256,7 +256,7 @@ public class ComponentConfigCommand implements Callable<Integer> {
     private Integer getDefaultPort(String id) {
         return switch (id) {
             case "kompile-app-main" -> 8080;
-            case "kompile-model-staging" -> 8081;
+            case "kompile-model-staging" -> 8090;
             default -> null;
         };
     }

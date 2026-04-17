@@ -24,6 +24,8 @@ import ai.kompile.app.services.Nd4jEnvironmentConfigService;
 import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.subprocess.VlmTestSubprocessArgs;
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -217,6 +219,9 @@ public class VlmTestSubprocessLauncher {
                 if (options.containsKey("maxKvLen")) {
                     argsBuilder.maxKvLen(Integer.parseInt(options.get("maxKvLen")));
                 }
+                if (options.containsKey("maxPages")) {
+                    argsBuilder.maxPages(Integer.parseInt(options.get("maxPages")));
+                }
                 // ND4J optimizer flags
                 if (options.containsKey("optimizerEnabled")) {
                     argsBuilder.optimizerEnabled(Boolean.parseBoolean(options.get("optimizerEnabled")));
@@ -389,6 +394,17 @@ public class VlmTestSubprocessLauncher {
             VlmTestHandle handle = new VlmTestHandle(taskId, process, future, filePath, logFile, logWriter);
             activeTests.put(taskId, handle);
 
+            // --- Phase-2 log aggregation: central JSON-lines store ---
+            try {
+                SubprocessLogWriter slw = new SubprocessLogWriter("vlm-test", taskId);
+                handle.subprocessLogWriter = slw;
+                slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                        taskId, command, null, process.pid(), getEffectiveHeapSize()));
+                logger.debug("[vlm-test-{}] SubprocessLogWriter opened: {}", taskId, slw.getLogFile());
+            } catch (Exception _logEx) {
+                logger.debug("[vlm-test-{}] SubprocessLogWriter init failed (non-fatal): {}", taskId, _logEx.getMessage());
+            }
+
             logger.info("VLM test subprocess log file for task {}: {}", taskId, logFile);
             sendWebSocketUpdate(taskId, "RUNNING", 0, "VLM_INIT", "Subprocess started", null);
 
@@ -418,13 +434,16 @@ public class VlmTestSubprocessLauncher {
                     result = handle.buildResult(status);
                     sendWebSocketUpdate(taskId, status, 100, "DONE",
                             "VLM test " + (allFailed ? "failed" : "completed with some page errors"), result);
+                    writeEndSubprocessLog(handle, status, exitCode, null);
                 } else {
                     sendWebSocketUpdate(taskId, "COMPLETED", 100, "DONE", "VLM test completed", result);
+                    writeEndSubprocessLog(handle, "COMPLETED", exitCode, null);
                 }
                 future.complete(result);
             } else if (exitCode == 130) {
                 VlmTestResult result = handle.buildResult("CANCELLED");
                 sendWebSocketUpdate(taskId, "CANCELLED", 0, "CANCELLED", "VLM test cancelled", null);
+                writeEndSubprocessLog(handle, "CANCELLED", exitCode, null);
                 future.complete(result);
             } else {
                 String error = "Subprocess exited with code " + exitCode;
@@ -434,22 +453,32 @@ public class VlmTestSubprocessLauncher {
                 result.errorMessage = error;
                 result.logFilePath = handle.logFilePath.toString();
                 sendWebSocketUpdate(taskId, "FAILED", 0, "ERROR", error, null);
+                writeEndSubprocessLog(handle, "FAILED", exitCode, error);
                 future.complete(result);
             }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             sendWebSocketUpdate(taskId, "CANCELLED", 0, "CANCELLED", "Interrupted", null);
+            VlmTestHandle interruptedHandle = activeTests.get(taskId);
+            if (interruptedHandle != null) {
+                writeEndSubprocessLog(interruptedHandle, "CANCELLED", null, "Interrupted");
+            }
             future.complete(new VlmTestResult(taskId, filePath, "CANCELLED"));
         } catch (Exception e) {
             logger.error("VLM test subprocess error for task {}. Log file: /tmp/vlm-test-{}.log",
                     taskId, taskId, e);
             sendWebSocketUpdate(taskId, "FAILED", 0, "ERROR", e.getMessage(), null);
+            VlmTestHandle errHandle = activeTests.get(taskId);
+            if (errHandle != null) {
+                writeEndSubprocessLog(errHandle, "FAILED", null, e.getMessage());
+            }
             future.completeExceptionally(e);
         } finally {
             VlmTestHandle handle = activeTests.get(taskId);
             if (handle != null) {
                 handle.closeLog();
+                handle.closeSubprocessLog();
             }
             if (process != null && process.isAlive()) {
                 process.destroyForcibly();
@@ -476,6 +505,14 @@ public class VlmTestSubprocessLauncher {
             String line;
             while ((line = reader.readLine()) != null) {
                 handle.writeToLog("STDOUT", line);
+                // Central log aggregation
+                if (handle.subprocessLogWriter != null) {
+                    try {
+                        handle.subprocessLogWriter.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                    } catch (Exception _logEx) {
+                        logger.debug("[vlm-test-{}] SubprocessLogWriter stdout write failed: {}", handle.taskId, _logEx.getMessage());
+                    }
+                }
                 if (line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
                     String json = line.substring(SubprocessMessage.MESSAGE_PREFIX.length());
                     handleMessage(handle, json);
@@ -497,6 +534,14 @@ public class VlmTestSubprocessLauncher {
             while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) continue;
                 handle.writeToLog("STDERR", line);
+                // Central log aggregation
+                if (handle.subprocessLogWriter != null) {
+                    try {
+                        handle.subprocessLogWriter.writeLine(AgentLogRecord.Stream.STDERR, line);
+                    } catch (Exception _logEx) {
+                        logger.debug("[vlm-test-{}] SubprocessLogWriter stderr write failed: {}", handle.taskId, _logEx.getMessage());
+                    }
+                }
 
                 String level;
                 if (line.contains("OutOfMemoryError") || line.contains("Java heap space")) {
@@ -613,6 +658,21 @@ public class VlmTestSubprocessLauncher {
             messagingTemplate.convertAndSend("/topic/vlm-test/" + taskId + "/logs", logEntry);
         } catch (Exception e) {
             logger.warn("Failed to send log entry for VLM test {}", taskId, e);
+        }
+    }
+
+    /**
+     * Write the terminal SubprocessRunResult to the central log store.
+     * All failures are swallowed so aggregation never breaks a VLM test.
+     */
+    private void writeEndSubprocessLog(VlmTestHandle handle, String state, Integer exitCode, String errorMessage) {
+        SubprocessLogWriter slw = handle.subprocessLogWriter;
+        if (slw == null) return;
+        try {
+            slw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, errorMessage, false, false));
+        } catch (Exception _logEx) {
+            logger.debug("[vlm-test-{}] SubprocessLogWriter writeEnd failed (non-fatal): {}", handle.taskId, _logEx.getMessage());
         }
     }
 
@@ -992,6 +1052,9 @@ public class VlmTestSubprocessLauncher {
         final Path logFilePath;
         final BufferedWriter logWriter;
 
+        /** Central JSON-lines log writer (Phase-2 log aggregation). May be null if init failed. */
+        volatile SubprocessLogWriter subprocessLogWriter;
+
         volatile boolean cancelled = false;
         volatile int lastProgress = 0;
         volatile String lastPhase = "INIT";
@@ -1029,6 +1092,18 @@ public class VlmTestSubprocessLauncher {
                     logWriter.close();
                 } catch (IOException e) {
                     // Ignore
+                }
+            }
+        }
+
+        /** Close the central SubprocessLogWriter (non-fatal). */
+        void closeSubprocessLog() {
+            SubprocessLogWriter slw = subprocessLogWriter;
+            if (slw != null) {
+                try {
+                    slw.close();
+                } catch (Exception _e) {
+                    // best-effort
                 }
             }
         }

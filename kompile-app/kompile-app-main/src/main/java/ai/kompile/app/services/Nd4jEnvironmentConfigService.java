@@ -537,7 +537,7 @@ public class Nd4jEnvironmentConfigService {
                         config.dspNoFreeze().toString());
             }
             if (config.dspNoNativeDecode() != null) {
-                System.setProperty(org.nd4j.common.config.ND4JSystemProperties.DSP_NO_NATIVE_DECODE_INPUTS,
+                System.setProperty("nd4j.dsp.noNativeDecodeInputs",
                         config.dspNoNativeDecode().toString());
             }
             if (config.dspNoAttnOverride() != null) {

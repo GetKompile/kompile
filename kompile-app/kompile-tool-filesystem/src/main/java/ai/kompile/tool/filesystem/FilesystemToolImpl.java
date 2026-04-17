@@ -16,8 +16,12 @@
 
 package ai.kompile.tool.filesystem; // New package
 
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
+import ai.kompile.core.mcp.optimization.ResultReferenceCache;
 import ai.kompile.tool.filesystem.config.FilesystemToolProperties; // Import from this module's config
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +36,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -39,7 +44,10 @@ import java.util.stream.Stream;
 public class FilesystemToolImpl { // Renamed class for convention, original name "FilesystemTool" is also fine
 
     private static final Logger logger = LoggerFactory.getLogger(FilesystemToolImpl.class);
+    private static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
     private final FilesystemToolProperties properties;
+    private final McpOptimizationConfigProvider optimizationProvider;
+    private final ResultReferenceCache resultCache;
     private Map<String, Path> resolvedRoots;
 
     // Input DTOs are inner records, which is fine.
@@ -48,9 +56,16 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
     public record WriteFileInput(String rootAlias, String filePath, String content, Boolean append) {}
     public record DeleteFileInput(String rootAlias, String filePath) {}
     public record CreateDirectoryInput(String rootAlias, String directoryPath) {}
+    public record UndoTokenInput(String undoToken) {}
 
-    public FilesystemToolImpl(FilesystemToolProperties properties) {
+    public FilesystemToolImpl(FilesystemToolProperties properties,
+                              @Autowired(required = false) McpOptimizationConfigProvider optimizationProvider,
+                              @Autowired(required = false) ResultReferenceCache resultCache) {
         this.properties = properties;
+        this.optimizationProvider = optimizationProvider != null
+                ? optimizationProvider
+                : McpOptimizationConfigProvider.ofDefaults();
+        this.resultCache = resultCache;
         logger.debug("FilesystemToolImpl constructed.");
     }
 
@@ -211,7 +226,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
 
     @Tool(name = "write_file",
             description = "Writes content to a file in a configured filesystem root. Provide rootAlias (e.g., 'default'), relative filePath, and content. " +
-                    "Set append=true to append to existing file, otherwise it overwrites. Returns the previous content for undo capability.")
+                    "Set append=true to append to existing file, otherwise it overwrites. Returns an undo_token — pass it to fs_undo to revert.")
     public Map<String, Object> writeFile(WriteFileInput input) {
         logger.info("FilesystemTool: Executing write_file with input: rootAlias={}, filePath={}, contentLength={}, append={}",
                 input.rootAlias(), input.filePath(),
@@ -233,16 +248,17 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("file_path", targetFile.toString());
 
-            // Store previous content for undo capability
+            // Capture previous content for undo. Route through the result-reference
+            // cache when optimization is enabled so the response payload doesn't
+            // balloon to 10MB on large overwrites.
             String previousContent = null;
             boolean fileExisted = Files.exists(targetFile);
             if (fileExisted && Files.isRegularFile(targetFile)) {
                 try {
                     long fileSize = Files.size(targetFile);
-                    if (fileSize <= 10 * 1024 * 1024) { // Only store if <= 10MB
+                    if (fileSize <= MAX_FILE_BYTES) {
                         previousContent = Files.readString(targetFile);
                         result.put("previousContentLength", previousContent.length());
-                        result.put("previousContent", previousContent);
                     } else {
                         result.put("previousContentLength", fileSize);
                         result.put("previousContentTooLarge", true);
@@ -252,6 +268,8 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
                 }
             }
             result.put("fileExistedBefore", fileExisted);
+
+            stashUndoOrInlineContent(previousContent, targetFile.toString(), result);
 
             // Create parent directories if needed
             Path parent = targetFile.getParent();
@@ -286,7 +304,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
 
     @Tool(name = "delete_file",
             description = "Deletes a file or empty directory from a configured filesystem root. Provide rootAlias (e.g., 'default') and relative filePath. " +
-                    "Returns the previous content for undo capability if it was a file.")
+                    "Returns an undo_token for files — pass it to fs_undo to restore.")
     public Map<String, Object> deleteFile(DeleteFileInput input) {
         logger.info("FilesystemTool: Executing delete_file with input: {}", input);
 
@@ -308,13 +326,15 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
             boolean wasDirectory = Files.isDirectory(targetPath);
             result.put("wasDirectory", wasDirectory);
 
-            // Store previous content for undo capability (only for files)
+            // Capture previous content for undo (only for files). Route through the
+            // result-reference cache when optimization is enabled so the response
+            // payload doesn't inline the entire file.
+            String previousContent = null;
             if (!wasDirectory) {
                 try {
                     long fileSize = Files.size(targetPath);
-                    if (fileSize <= 10 * 1024 * 1024) { // Only store if <= 10MB
-                        String previousContent = Files.readString(targetPath);
-                        result.put("previousContent", previousContent);
+                    if (fileSize <= MAX_FILE_BYTES) {
+                        previousContent = Files.readString(targetPath);
                         result.put("previousContentLength", previousContent.length());
                     } else {
                         result.put("previousContentLength", fileSize);
@@ -325,6 +345,7 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
                     logger.warn("Could not read previous content for undo: {}", e.getMessage());
                     result.put("warning", "Could not backup content for undo: " + e.getMessage());
                 }
+                stashUndoOrInlineContent(previousContent, targetPath.toString(), result);
             }
 
             // Delete the file/directory
@@ -348,6 +369,93 @@ public class FilesystemToolImpl { // Renamed class for convention, original name
             logger.error("IO error in delete_file for input {}: {}", input, e.getMessage(), e);
             return Map.of("error", "IO Error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Routes previous content to either the result-reference cache (when
+     * optimization is enabled) or inlines it (when disabled / cache is absent).
+     */
+    private void stashUndoOrInlineContent(String previousContent, String filePath, Map<String, Object> result) {
+        if (previousContent == null) {
+            return;
+        }
+        McpOptimizationConfig cfg = optimizationProvider.getConfiguration();
+        boolean useCache = resultCache != null
+                && Boolean.TRUE.equals(cfg.getEnabled())
+                && Boolean.TRUE.equals(cfg.getFilesystemStorePreviousContentInCache());
+        if (useCache) {
+            String token = resultCache.storeFilesystemUndo(filePath, previousContent);
+            result.put("undo_token", token);
+            result.put("undoHint", "Call fs_undo with this token to restore, or fs_get_previous_content to fetch the raw content.");
+        } else {
+            result.put("previousContent", previousContent);
+        }
+    }
+
+    @Tool(name = "fs_undo",
+            description = "Restores a file to its pre-write-or-delete state using an undo_token returned by write_file or delete_file.")
+    public Map<String, Object> fsUndo(UndoTokenInput input) {
+        if (input == null || input.undoToken() == null || input.undoToken().isBlank()) {
+            return Map.of("error", "undoToken cannot be empty.");
+        }
+        if (resultCache == null) {
+            return Map.of("error", "Undo cache is not available; MCP optimization is disabled.");
+        }
+        Optional<Map<String, Object>> entryOpt = resultCache.getFilesystemUndo(input.undoToken());
+        if (entryOpt.isEmpty()) {
+            return Map.of("error", "Unknown or expired undo_token: " + input.undoToken());
+        }
+        Map<String, Object> entry = entryOpt.get();
+        String filePath = (String) entry.get("filePath");
+        String previousContent = (String) entry.get("previousContent");
+        if (filePath == null) {
+            return Map.of("error", "Undo entry is missing a filePath.");
+        }
+        try {
+            Path target = Paths.get(filePath);
+            Path parent = target.getParent();
+            if (parent != null && !Files.exists(parent)) {
+                Files.createDirectories(parent);
+            }
+            if (previousContent == null) {
+                // Original state was "file did not exist" — the undo is a delete.
+                if (Files.exists(target)) {
+                    Files.delete(target);
+                }
+            } else {
+                Files.writeString(target, previousContent);
+            }
+            resultCache.invalidateFilesystemUndo(input.undoToken());
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "success");
+            result.put("restored_path", filePath);
+            result.put("bytesRestored", previousContent == null ? 0 : previousContent.length());
+            return result;
+        } catch (IOException e) {
+            logger.error("fs_undo IO error for token {}: {}", input.undoToken(), e.getMessage(), e);
+            return Map.of("error", "IO Error: " + e.getMessage());
+        }
+    }
+
+    @Tool(name = "fs_get_previous_content",
+            description = "Returns the full previous content associated with an undo_token without restoring the file.")
+    public Map<String, Object> fsGetPreviousContent(UndoTokenInput input) {
+        if (input == null || input.undoToken() == null || input.undoToken().isBlank()) {
+            return Map.of("error", "undoToken cannot be empty.");
+        }
+        if (resultCache == null) {
+            return Map.of("error", "Undo cache is not available; MCP optimization is disabled.");
+        }
+        Optional<Map<String, Object>> entryOpt = resultCache.getFilesystemUndo(input.undoToken());
+        if (entryOpt.isEmpty()) {
+            return Map.of("error", "Unknown or expired undo_token: " + input.undoToken());
+        }
+        Map<String, Object> entry = entryOpt.get();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("file_path", entry.get("filePath"));
+        result.put("previousContent", entry.get("previousContent"));
+        result.put("status", "success");
+        return result;
     }
 
     @Tool(name = "create_directory",

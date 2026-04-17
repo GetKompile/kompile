@@ -17,8 +17,10 @@
 package ai.kompile.cli.main.chat.tools;
 
 import ai.kompile.cli.common.KompileHome;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
@@ -29,48 +31,57 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 /**
- * Persistent memory tool that reads and writes MEMORY.md files,
- * providing long-term memory across chat sessions.
- * <p>
- * Memory files are stored at two levels:
+ * Persistent memory tool that provides three complementary layers of
+ * cross-session memory for the kompile chat CLI:
+ *
+ * <ol>
+ *   <li><b>Flat markdown files</b> — {@code read}/{@code write}/{@code append}/
+ *       {@code list}/{@code search} raw markdown files in the memory directory
+ *       (the original Claude-Code-style MEMORY.md + topic files).</li>
+ *   <li><b>Typed memories</b> — {@code save}/{@code forget}/{@code recall}/
+ *       {@code types} store individual memory files with YAML frontmatter
+ *       ({@code name}, {@code description}, {@code type}) and automatically
+ *       maintain a {@code MEMORY.md} index. Types follow the Claude-Code
+ *       auto-memory taxonomy: {@code user}, {@code feedback}, {@code project},
+ *       {@code reference}.</li>
+ *   <li><b>Knowledge graph</b> — {@code create_entity}, {@code create_relation},
+ *       {@code add_observation}, {@code delete_entity}, {@code delete_relation},
+ *       {@code delete_observation}, {@code read_graph}, {@code search_nodes},
+ *       and {@code open_nodes} implement the official MCP memory server API
+ *       against a JSONL-backed graph ({@code graph.jsonl}).</li>
+ * </ol>
+ *
+ * <p>Memory is stored at two scopes:
  * <ul>
- *   <li><b>Global</b>: {@code ~/.kompile/memory/MEMORY.md} - user-wide preferences,
- *       common patterns, and cross-project knowledge</li>
- *   <li><b>Project</b>: {@code .kompile/memory/MEMORY.md} - project-specific
+ *   <li><b>Global</b>: {@code ~/.kompile/memory/} - user-wide preferences and
+ *       cross-project knowledge</li>
+ *   <li><b>Project</b>: {@code .kompile/memory/} - project-specific
  *       architecture decisions, conventions, debugging notes</li>
- * </ul>
- * <p>
- * Additional topic files (e.g. {@code debugging.md}, {@code architecture.md})
- * can be created in the same directories for detailed notes that are too large
- * for the main MEMORY.md file.
- * <p>
- * Actions:
- * <ul>
- *   <li><b>read</b> - Read a memory file (defaults to MEMORY.md)</li>
- *   <li><b>write</b> - Overwrite a memory file with new content</li>
- *   <li><b>append</b> - Append content to a memory file</li>
- *   <li><b>list</b> - List all memory files at both levels</li>
- *   <li><b>search</b> - Search across all memory files</li>
- * </ul>
- * <p>
- * Modeled after Claude Code's MEMORY.md system. The agent should:
- * <ul>
- *   <li>Save stable patterns confirmed across multiple interactions</li>
- *   <li>Record key architectural decisions and important file paths</li>
- *   <li>Note user preferences for workflow, tools, and communication style</li>
- *   <li>Store solutions to recurring problems and debugging insights</li>
- *   <li>NOT save session-specific context or speculative conclusions</li>
  * </ul>
  */
 public class MemoryTool implements CliTool {
 
     private static final String MEMORY_DIR = "memory";
     private static final String DEFAULT_FILE = "MEMORY.md";
+    private static final String INDEX_FILE = "MEMORY.md";
+    private static final String GRAPH_FILE = "graph.jsonl";
+
     private static final int MAX_MEMORY_FILE_SIZE = 50_000; // ~50KB
     private static final int MAX_MAIN_MEMORY_LINES = 200;
+
+    private static final Set<String> MEMORY_TYPES =
+            Set.of("user", "feedback", "project", "reference");
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final DateTimeFormatter TIMESTAMP_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -81,12 +92,21 @@ public class MemoryTool implements CliTool {
 
     @Override
     public String description() {
-        return "Read and write persistent MEMORY.md files that persist across chat sessions. "
-                + "Use 'read' to load memory (project or global), 'write' to save/overwrite, "
-                + "'append' to add new entries, 'list' to see all memory files, 'search' to find "
-                + "content across memory files. Save important facts, patterns, decisions, and "
-                + "preferences here. Project memories are in .kompile/memory/, global in ~/.kompile/memory/. "
-                + "Keep MEMORY.md concise (under 200 lines) and create topic files for details.";
+        return "Persistent memory across chat sessions. Three layers: "
+                + "(1) FLAT FILES — 'read', 'write', 'append', 'list', 'search' raw markdown "
+                + "files under .kompile/memory/ (project) or ~/.kompile/memory/ (global). "
+                + "(2) TYPED MEMORIES — 'save' with memoryType=user|feedback|project|reference, "
+                + "name, description, content; 'forget' by name; 'recall' with query and optional "
+                + "memoryType filter; 'types' to browse by type. Typed memories are individual "
+                + "files with YAML frontmatter and are auto-indexed in MEMORY.md. Use for user "
+                + "preferences, workflow feedback, project facts, and external references. "
+                + "(3) KNOWLEDGE GRAPH — 'create_entity' with entities[{name,entityType,observations[]}], "
+                + "'create_relation' with relations[{from,to,relationType}], 'add_observation' with "
+                + "observations[{entityName,contents[]}], 'delete_entity' with names[], "
+                + "'delete_relation', 'delete_observation' with deletions[{entityName,observations[]}], "
+                + "'read_graph', 'search_nodes' with query, 'open_nodes' with names[]. Backed by "
+                + "graph.jsonl; implements the official MCP memory server API. "
+                + "Default scope is 'project'; pass scope='global' for cross-project memory.";
     }
 
     @Override
@@ -96,28 +116,52 @@ public class MemoryTool implements CliTool {
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
 
-        ObjectNode action = props.putObject("action");
-        action.put("type", "string");
-        action.put("description", "Action: 'read', 'write', 'append', 'list', or 'search'");
+        addStringProp(props, "action",
+                "Action. Flat: read|write|append|list|search. "
+                        + "Typed: save|forget|recall|types. "
+                        + "Graph: create_entity|create_relation|add_observation|"
+                        + "delete_entity|delete_relation|delete_observation|"
+                        + "read_graph|search_nodes|open_nodes");
+        addStringProp(props, "scope", "Memory scope: 'project' (default) or 'global'");
+        addStringProp(props, "file",
+                "File name for flat ops (default: MEMORY.md). Use topic files like "
+                        + "'debugging.md' for detailed notes.");
+        addStringProp(props, "content", "Content to write/append/save");
+        addStringProp(props, "query", "Search query for search/recall/search_nodes");
+        addStringProp(props, "memoryType",
+                "Memory type for save/recall/types: user|feedback|project|reference");
+        addStringProp(props, "name",
+                "Memory name (for save/forget) or a single entity name (for graph ops)");
+        addStringProp(props, "description",
+                "One-line description used as the MEMORY.md index hook for typed memories");
 
-        ObjectNode scope = props.putObject("scope");
-        scope.put("type", "string");
-        scope.put("description", "Memory scope: 'project' (default) or 'global'");
-
-        ObjectNode file = props.putObject("file");
-        file.put("type", "string");
-        file.put("description", "Memory file name (default: MEMORY.md). Use topic files like 'debugging.md' for detailed notes.");
-
-        ObjectNode content = props.putObject("content");
-        content.put("type", "string");
-        content.put("description", "Content to write or append");
-
-        ObjectNode query = props.putObject("query");
-        query.put("type", "string");
-        query.put("description", "Search query for 'search' action");
+        // Array params for batch ops (graph + bulk typed operations)
+        addArrayProp(props, "entities",
+                "Array for create_entity: [{name, entityType, observations[]}]");
+        addArrayProp(props, "relations",
+                "Array for create_relation/delete_relation: [{from, to, relationType}]");
+        addArrayProp(props, "observations",
+                "Array for add_observation: [{entityName, contents[]}]");
+        addArrayProp(props, "deletions",
+                "Array for delete_observation: [{entityName, observations[]}]");
+        addArrayProp(props, "names",
+                "Array of names for delete_entity/open_nodes");
 
         schema.putArray("required").add("action");
         return schema;
+    }
+
+    private static void addStringProp(ObjectNode props, String name, String desc) {
+        ObjectNode p = props.putObject(name);
+        p.put("type", "string");
+        p.put("description", desc);
+    }
+
+    private static void addArrayProp(ObjectNode props, String name, String desc) {
+        ObjectNode p = props.putObject(name);
+        p.put("type", "array");
+        p.put("description", desc);
+        p.putObject("items").put("type", "object");
     }
 
     @Override
@@ -129,29 +173,79 @@ public class MemoryTool implements CliTool {
 
         String action = params.path("action").asText("");
         String scope = params.path("scope").asText("project");
-        String fileName = params.path("file").asText(DEFAULT_FILE);
-
-        // Sanitize filename
-        fileName = sanitizeFileName(fileName);
-
         Path memDir = resolveMemoryDir(scope, context.getWorkingDirectory());
 
-        switch (action) {
-            case "read":
-                return readMemory(memDir, fileName, scope);
-            case "write":
-                return writeMemory(memDir, fileName, params.path("content").asText(""), scope);
-            case "append":
-                return appendMemory(memDir, fileName, params.path("content").asText(""), scope);
-            case "list":
-                return listMemoryFiles(context.getWorkingDirectory());
-            case "search":
-                return searchMemory(params.path("query").asText(""), context.getWorkingDirectory());
-            default:
-                return ToolResult.error("Unknown action: " + action
-                        + ". Use 'read', 'write', 'append', 'list', or 'search'.");
+        try {
+            switch (action) {
+                // Flat markdown file operations
+                case "read":
+                    return readMemory(memDir,
+                            sanitizeFileName(params.path("file").asText(DEFAULT_FILE)), scope);
+                case "write":
+                    return writeMemory(memDir,
+                            sanitizeFileName(params.path("file").asText(DEFAULT_FILE)),
+                            params.path("content").asText(""), scope);
+                case "append":
+                    return appendMemory(memDir,
+                            sanitizeFileName(params.path("file").asText(DEFAULT_FILE)),
+                            params.path("content").asText(""), scope);
+                case "list":
+                    return listMemoryFiles(context.getWorkingDirectory());
+                case "search":
+                    return searchMemory(params.path("query").asText(""),
+                            context.getWorkingDirectory());
+
+                // Typed memory operations
+                case "save":
+                    return saveTypedMemory(memDir, params, scope);
+                case "forget":
+                    return forgetTypedMemory(memDir, params, scope);
+                case "recall":
+                    return recallTypedMemory(memDir, params, scope);
+                case "types":
+                    return listByType(memDir, params, scope);
+
+                // Knowledge graph operations (MCP memory server API)
+                case "create_entity":
+                case "create_entities":
+                    return createEntities(memDir, params, scope);
+                case "create_relation":
+                case "create_relations":
+                    return createRelations(memDir, params, scope);
+                case "add_observation":
+                case "add_observations":
+                    return addObservations(memDir, params, scope);
+                case "delete_entity":
+                case "delete_entities":
+                    return deleteEntities(memDir, params, scope);
+                case "delete_relation":
+                case "delete_relations":
+                    return deleteRelations(memDir, params, scope);
+                case "delete_observation":
+                case "delete_observations":
+                    return deleteObservations(memDir, params, scope);
+                case "read_graph":
+                    return readGraph(memDir, scope);
+                case "search_nodes":
+                    return searchNodes(memDir, params.path("query").asText(""), scope);
+                case "open_nodes":
+                    return openNodes(memDir, params, scope);
+
+                default:
+                    return ToolResult.error("Unknown action: '" + action + "'. Flat: "
+                            + "read|write|append|list|search. Typed: save|forget|recall|types. "
+                            + "Graph: create_entity|create_relation|add_observation|"
+                            + "delete_entity|delete_relation|delete_observation|"
+                            + "read_graph|search_nodes|open_nodes.");
+            }
+        } catch (IOException e) {
+            return ToolResult.error("I/O error: " + e.getMessage());
         }
     }
+
+    // ========================================================================
+    // Flat markdown file operations (original MemoryTool behavior)
+    // ========================================================================
 
     private ToolResult readMemory(Path memDir, String fileName, String scope) {
         Path file = memDir.resolve(fileName);
@@ -162,7 +256,6 @@ public class MemoryTool implements CliTool {
 
         try {
             String content = Files.readString(file, StandardCharsets.UTF_8);
-            // Truncate main MEMORY.md if too long (warn but still return)
             if (fileName.equals(DEFAULT_FILE)) {
                 String[] lines = content.split("\n");
                 if (lines.length > MAX_MAIN_MEMORY_LINES) {
@@ -228,13 +321,13 @@ public class MemoryTool implements CliTool {
                 existing = Files.readString(file, StandardCharsets.UTF_8);
             }
 
-            // Add timestamp marker for appended content
             String timestamped = "\n\n## " + TIMESTAMP_FMT.format(Instant.now()) + "\n" + content;
             String newContent = existing + timestamped;
 
             if (newContent.length() > MAX_MEMORY_FILE_SIZE) {
                 return ToolResult.error("Append would exceed maximum file size ("
-                        + MAX_MEMORY_FILE_SIZE + " chars). Use 'write' to replace or create a topic file.");
+                        + MAX_MEMORY_FILE_SIZE
+                        + " chars). Use 'write' to replace or create a topic file.");
             }
 
             Files.writeString(file, newContent, StandardCharsets.UTF_8);
@@ -252,12 +345,10 @@ public class MemoryTool implements CliTool {
     private ToolResult listMemoryFiles(Path workDir) {
         StringBuilder sb = new StringBuilder();
 
-        // Project memory
         Path projectDir = workDir.resolve(".kompile").resolve(MEMORY_DIR);
         sb.append("Project memory (").append(projectDir).append("):\n");
         listDir(projectDir, sb);
 
-        // Global memory
         Path globalDir = KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
         sb.append("\nGlobal memory (").append(globalDir).append("):\n");
         listDir(globalDir, sb);
@@ -305,11 +396,9 @@ public class MemoryTool implements CliTool {
         StringBuilder sb = new StringBuilder();
         int matchCount = 0;
 
-        // Search project memory
         Path projectDir = workDir.resolve(".kompile").resolve(MEMORY_DIR);
         matchCount += searchDir(projectDir, queryLower, "project", sb);
 
-        // Search global memory
         Path globalDir = KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
         matchCount += searchDir(globalDir, queryLower, "global", sb);
 
@@ -332,10 +421,11 @@ public class MemoryTool implements CliTool {
                     String[] lines = content.split("\n");
                     for (int i = 0; i < lines.length; i++) {
                         if (lines[i].toLowerCase().contains(queryLower)) {
-                            if (matches == 0 || !sb.toString().endsWith(f.getFileName() + ":\n")) {
-                                sb.append("\n").append(scope).append("/").append(f.getFileName()).append(":\n");
+                            if (matches == 0
+                                    || !sb.toString().endsWith(f.getFileName() + ":\n")) {
+                                sb.append("\n").append(scope).append("/")
+                                        .append(f.getFileName()).append(":\n");
                             }
-                            // Context: 1 line before and after
                             int start = Math.max(0, i - 1);
                             int end = Math.min(lines.length - 1, i + 1);
                             for (int j = start; j <= end; j++) {
@@ -358,20 +448,604 @@ public class MemoryTool implements CliTool {
     }
 
     // ========================================================================
+    // Typed memory operations (Claude-Code-style save/forget/recall/types)
+    // ========================================================================
+
+    private ToolResult saveTypedMemory(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        String memoryType = params.path("memoryType").asText("").trim().toLowerCase();
+        if (!MEMORY_TYPES.contains(memoryType)) {
+            return ToolResult.error("memoryType must be one of " + MEMORY_TYPES
+                    + " (got: '" + memoryType + "')");
+        }
+        String name = params.path("name").asText("").trim();
+        if (name.isEmpty()) {
+            return ToolResult.error("'name' is required for save");
+        }
+        String description = params.path("description").asText("").trim();
+        String content = params.path("content").asText("").trim();
+        if (content.isEmpty()) {
+            return ToolResult.error("'content' is required for save");
+        }
+
+        String fileName = slug(name) + ".md";
+        Path file = memDir.resolve(fileName);
+        Files.createDirectories(memDir);
+
+        StringBuilder mem = new StringBuilder();
+        mem.append("---\n");
+        mem.append("name: ").append(yamlEscape(name)).append("\n");
+        mem.append("description: ").append(yamlEscape(description)).append("\n");
+        mem.append("type: ").append(memoryType).append("\n");
+        mem.append("---\n\n");
+        mem.append(content);
+        if (!content.endsWith("\n")) mem.append("\n");
+
+        if (mem.length() > MAX_MEMORY_FILE_SIZE) {
+            return ToolResult.error("Memory content too large (" + mem.length()
+                    + " chars). Max: " + MAX_MEMORY_FILE_SIZE);
+        }
+        Files.writeString(file, mem.toString(), StandardCharsets.UTF_8);
+
+        updateIndex(memDir, fileName, name, description, memoryType, true);
+
+        return ToolResult.success("memory: saved " + scope + "/" + fileName,
+                "Saved typed memory '" + name + "' (type=" + memoryType + ") to " + file,
+                Map.of("scope", scope, "file", fileName, "name", name, "type", memoryType));
+    }
+
+    private ToolResult forgetTypedMemory(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        String explicitFile = params.path("file").asText("").trim();
+        String name = params.path("name").asText("").trim();
+
+        String fileName;
+        if (!explicitFile.isEmpty()) {
+            fileName = sanitizeFileName(explicitFile);
+        } else if (!name.isEmpty()) {
+            fileName = slug(name) + ".md";
+        } else {
+            return ToolResult.error("'name' or 'file' is required for forget");
+        }
+
+        Path file = memDir.resolve(fileName);
+        if (!Files.exists(file)) {
+            return ToolResult.error("No memory file at: " + file);
+        }
+        Files.delete(file);
+
+        updateIndex(memDir, fileName, null, null, null, false);
+
+        return ToolResult.success("memory: forgot " + scope + "/" + fileName,
+                "Removed memory file: " + file,
+                Map.of("scope", scope, "file", fileName));
+    }
+
+    private ToolResult recallTypedMemory(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        String query = params.path("query").asText("").trim().toLowerCase();
+        String typeFilter = params.path("memoryType").asText("").trim().toLowerCase();
+        if (query.isEmpty() && typeFilter.isEmpty()) {
+            return ToolResult.error("'query' or 'memoryType' is required for recall");
+        }
+
+        if (!Files.exists(memDir)) {
+            return ToolResult.success("No memory directory at: " + memDir);
+        }
+
+        List<Map<String, String>> matches = new ArrayList<>();
+        try (var files = Files.list(memDir)) {
+            for (Path f : files.filter(p -> !Files.isDirectory(p)).toList()) {
+                String fn = f.getFileName().toString();
+                if (!fn.endsWith(".md") || fn.equals(INDEX_FILE)) continue;
+                String content;
+                try {
+                    content = Files.readString(f, StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    continue;
+                }
+
+                Frontmatter fm = parseFrontmatter(content);
+                if (fm == null) continue;
+
+                if (!typeFilter.isEmpty() && !typeFilter.equals(fm.type)) continue;
+                if (!query.isEmpty()) {
+                    String hay = (fm.name + " " + fm.description + " " + fm.body).toLowerCase();
+                    if (!hay.contains(query)) continue;
+                }
+
+                Map<String, String> m = new LinkedHashMap<>();
+                m.put("file", fn);
+                m.put("name", fm.name);
+                m.put("type", fm.type);
+                m.put("description", fm.description);
+                m.put("body", fm.body);
+                matches.add(m);
+            }
+        }
+
+        if (matches.isEmpty()) {
+            return ToolResult.success("No memory matches for query='" + query
+                    + "' type='" + typeFilter + "'");
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map<String, String> m : matches) {
+            sb.append("## ").append(m.get("name"))
+                    .append(" (").append(m.get("type"))
+                    .append(", ").append(m.get("file")).append(")\n");
+            if (!m.get("description").isEmpty()) {
+                sb.append(m.get("description")).append("\n\n");
+            }
+            sb.append(m.get("body")).append("\n\n");
+        }
+        return ToolResult.success("memory: recall " + matches.size() + " matches",
+                sb.toString(),
+                Map.of("scope", scope, "matches", matches.size()));
+    }
+
+    private ToolResult listByType(Path memDir, JsonNode params, String scope) throws IOException {
+        String typeFilter = params.path("memoryType").asText("").trim().toLowerCase();
+
+        if (!Files.exists(memDir)) {
+            return ToolResult.success("No memory directory at: " + memDir);
+        }
+
+        Map<String, List<String>> byType = new TreeMap<>();
+        for (String t : MEMORY_TYPES) byType.put(t, new ArrayList<>());
+
+        try (var files = Files.list(memDir)) {
+            for (Path f : files.filter(p -> !Files.isDirectory(p)).toList()) {
+                String fn = f.getFileName().toString();
+                if (!fn.endsWith(".md") || fn.equals(INDEX_FILE)) continue;
+                String content;
+                try {
+                    content = Files.readString(f, StandardCharsets.UTF_8);
+                } catch (IOException e) {
+                    continue;
+                }
+                Frontmatter fm = parseFrontmatter(content);
+                if (fm == null) continue;
+                List<String> bucket = byType.get(fm.type);
+                if (bucket == null) continue;
+                String desc = fm.description.isEmpty() ? "" : " — " + fm.description;
+                bucket.add(fn + ": " + fm.name + desc);
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int total = 0;
+        for (Map.Entry<String, List<String>> e : byType.entrySet()) {
+            if (!typeFilter.isEmpty() && !typeFilter.equals(e.getKey())) continue;
+            sb.append("\n[").append(e.getKey()).append("] (")
+                    .append(e.getValue().size()).append(")\n");
+            if (e.getValue().isEmpty()) {
+                sb.append("  (none)\n");
+            } else {
+                for (String line : e.getValue()) {
+                    sb.append("  ").append(line).append("\n");
+                    total++;
+                }
+            }
+        }
+        return ToolResult.success("memory: types (" + total + ")", sb.toString(),
+                Map.of("scope", scope, "total", total));
+    }
+
+    /**
+     * Maintain MEMORY.md as an index of typed memory files. Each typed memory
+     * has a line like: {@code - [name](file.md) — [type] description}.
+     */
+    private void updateIndex(Path memDir, String fileName, String name,
+                             String description, String type, boolean add) throws IOException {
+        Path indexFile = memDir.resolve(INDEX_FILE);
+        List<String> lines;
+        if (Files.exists(indexFile)) {
+            lines = new ArrayList<>(Files.readAllLines(indexFile, StandardCharsets.UTF_8));
+        } else {
+            lines = new ArrayList<>();
+        }
+
+        // Remove any existing pointer at this file
+        String pointer = "](" + fileName + ")";
+        lines.removeIf(l -> l.trim().startsWith("- [") && l.contains(pointer));
+
+        if (add) {
+            if (lines.isEmpty()) {
+                lines.add("# Kompile Memory Index");
+                lines.add("");
+            }
+            String hook = description == null || description.isEmpty() ? name : description;
+            if (hook.length() > 120) hook = hook.substring(0, 117) + "...";
+            String entry = "- [" + escapeMarkdown(name) + "](" + fileName + ") — ["
+                    + type + "] " + hook;
+            lines.add(entry);
+        }
+
+        Files.createDirectories(memDir);
+        Files.writeString(indexFile, String.join("\n", lines) + "\n", StandardCharsets.UTF_8);
+    }
+
+    // ========================================================================
+    // Knowledge graph operations (MCP memory server API)
+    // ========================================================================
+
+    private static class Entity {
+        String name;
+        String entityType;
+        List<String> observations = new ArrayList<>();
+    }
+
+    private static class Relation {
+        String from;
+        String to;
+        String relationType;
+    }
+
+    private static class Graph {
+        Map<String, Entity> entities = new LinkedHashMap<>();
+        List<Relation> relations = new ArrayList<>();
+    }
+
+    private Graph loadGraph(Path memDir) throws IOException {
+        Graph g = new Graph();
+        Path gf = memDir.resolve(GRAPH_FILE);
+        if (!Files.exists(gf)) return g;
+
+        List<String> lines = Files.readAllLines(gf, StandardCharsets.UTF_8);
+        for (String line : lines) {
+            if (line.isBlank()) continue;
+            try {
+                JsonNode node = MAPPER.readTree(line);
+                String type = node.path("type").asText("");
+                if ("entity".equals(type)) {
+                    Entity e = new Entity();
+                    e.name = node.path("name").asText("");
+                    e.entityType = node.path("entityType").asText("");
+                    JsonNode obsNode = node.path("observations");
+                    if (obsNode.isArray()) {
+                        for (JsonNode o : obsNode) e.observations.add(o.asText(""));
+                    }
+                    if (!e.name.isEmpty()) g.entities.put(e.name, e);
+                } else if ("relation".equals(type)) {
+                    Relation r = new Relation();
+                    r.from = node.path("from").asText("");
+                    r.to = node.path("to").asText("");
+                    r.relationType = node.path("relationType").asText("");
+                    if (!r.from.isEmpty() && !r.to.isEmpty() && !r.relationType.isEmpty()) {
+                        g.relations.add(r);
+                    }
+                }
+            } catch (JsonProcessingException ex) {
+                // Skip corrupted lines
+            }
+        }
+        return g;
+    }
+
+    private void saveGraph(Path memDir, Graph g) throws IOException {
+        Files.createDirectories(memDir);
+        StringBuilder sb = new StringBuilder();
+        for (Entity e : g.entities.values()) {
+            ObjectNode n = MAPPER.createObjectNode();
+            n.put("type", "entity");
+            n.put("name", e.name);
+            n.put("entityType", e.entityType);
+            ArrayNode arr = n.putArray("observations");
+            for (String o : e.observations) arr.add(o);
+            sb.append(MAPPER.writeValueAsString(n)).append("\n");
+        }
+        for (Relation r : g.relations) {
+            ObjectNode n = MAPPER.createObjectNode();
+            n.put("type", "relation");
+            n.put("from", r.from);
+            n.put("to", r.to);
+            n.put("relationType", r.relationType);
+            sb.append(MAPPER.writeValueAsString(n)).append("\n");
+        }
+        Files.writeString(memDir.resolve(GRAPH_FILE), sb.toString(), StandardCharsets.UTF_8);
+    }
+
+    private ToolResult createEntities(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        JsonNode entitiesNode = params.path("entities");
+        // Allow single entity via top-level name/entityType for convenience
+        if ((!entitiesNode.isArray() || entitiesNode.isEmpty())
+                && !params.path("name").asText("").isEmpty()) {
+            ArrayNode fallback = MAPPER.createArrayNode();
+            ObjectNode single = fallback.addObject();
+            single.put("name", params.path("name").asText(""));
+            single.put("entityType", params.path("description").asText(""));
+            entitiesNode = fallback;
+        }
+        if (!entitiesNode.isArray() || entitiesNode.isEmpty()) {
+            return ToolResult.error("'entities' array is required for create_entity");
+        }
+        Graph g = loadGraph(memDir);
+        int added = 0, skipped = 0;
+        for (JsonNode en : entitiesNode) {
+            String name = en.path("name").asText("").trim();
+            if (name.isEmpty()) continue;
+            if (g.entities.containsKey(name)) {
+                skipped++;
+                continue;
+            }
+            Entity e = new Entity();
+            e.name = name;
+            e.entityType = en.path("entityType").asText("");
+            JsonNode obs = en.path("observations");
+            if (obs.isArray()) {
+                for (JsonNode o : obs) {
+                    String v = o.asText("");
+                    if (!v.isEmpty()) e.observations.add(v);
+                }
+            }
+            g.entities.put(name, e);
+            added++;
+        }
+        saveGraph(memDir, g);
+        return ToolResult.success(
+                "memory: created " + added + " entities"
+                        + (skipped > 0 ? " (" + skipped + " already existed)" : ""),
+                "Entities: " + added + " added, " + skipped + " skipped (duplicates). "
+                        + "Total now: " + g.entities.size(),
+                Map.of("scope", scope, "added", added, "skipped", skipped,
+                        "total", g.entities.size()));
+    }
+
+    private ToolResult createRelations(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        JsonNode relsNode = params.path("relations");
+        if (!relsNode.isArray() || relsNode.isEmpty()) {
+            return ToolResult.error("'relations' array is required for create_relation");
+        }
+        Graph g = loadGraph(memDir);
+        int added = 0, skipped = 0;
+        for (JsonNode rn : relsNode) {
+            String from = rn.path("from").asText("").trim();
+            String to = rn.path("to").asText("").trim();
+            String relType = rn.path("relationType").asText("").trim();
+            if (from.isEmpty() || to.isEmpty() || relType.isEmpty()) continue;
+            boolean dup = g.relations.stream().anyMatch(r ->
+                    r.from.equals(from) && r.to.equals(to) && r.relationType.equals(relType));
+            if (dup) {
+                skipped++;
+                continue;
+            }
+            Relation r = new Relation();
+            r.from = from;
+            r.to = to;
+            r.relationType = relType;
+            g.relations.add(r);
+            added++;
+        }
+        saveGraph(memDir, g);
+        return ToolResult.success(
+                "memory: created " + added + " relations"
+                        + (skipped > 0 ? " (" + skipped + " duplicates)" : ""),
+                "Relations: " + added + " added. Total now: " + g.relations.size(),
+                Map.of("scope", scope, "added", added, "skipped", skipped,
+                        "total", g.relations.size()));
+    }
+
+    private ToolResult addObservations(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        JsonNode obsNode = params.path("observations");
+        if (!obsNode.isArray() || obsNode.isEmpty()) {
+            return ToolResult.error("'observations' array is required for add_observation");
+        }
+        Graph g = loadGraph(memDir);
+        int added = 0;
+        List<String> missing = new ArrayList<>();
+        for (JsonNode on : obsNode) {
+            String entityName = on.path("entityName").asText("").trim();
+            if (entityName.isEmpty()) continue;
+            Entity e = g.entities.get(entityName);
+            if (e == null) {
+                missing.add(entityName);
+                continue;
+            }
+            JsonNode contents = on.path("contents");
+            if (contents.isArray()) {
+                for (JsonNode c : contents) {
+                    String v = c.asText("");
+                    if (!v.isEmpty() && !e.observations.contains(v)) {
+                        e.observations.add(v);
+                        added++;
+                    }
+                }
+            }
+        }
+        if (!missing.isEmpty()) {
+            return ToolResult.error("Entity not found: " + missing
+                    + ". Create the entity first with create_entity.");
+        }
+        saveGraph(memDir, g);
+        return ToolResult.success("memory: added " + added + " observations",
+                "Observations added: " + added,
+                Map.of("scope", scope, "added", added));
+    }
+
+    private ToolResult deleteEntities(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        Set<String> toDelete = collectNames(params);
+        if (toDelete.isEmpty()) {
+            return ToolResult.error("'names' array or 'name' is required for delete_entity");
+        }
+        Graph g = loadGraph(memDir);
+        int deleted = 0;
+        for (String name : toDelete) {
+            if (g.entities.remove(name) != null) deleted++;
+        }
+        int relsBefore = g.relations.size();
+        g.relations.removeIf(r -> toDelete.contains(r.from) || toDelete.contains(r.to));
+        int cascaded = relsBefore - g.relations.size();
+        saveGraph(memDir, g);
+        return ToolResult.success(
+                "memory: deleted " + deleted + " entities"
+                        + (cascaded > 0 ? " (+ " + cascaded + " cascaded relations)" : ""),
+                "Deleted " + deleted + " entities and cascaded " + cascaded + " relations",
+                Map.of("scope", scope, "deleted", deleted, "cascadedRelations", cascaded));
+    }
+
+    private ToolResult deleteRelations(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        JsonNode relsNode = params.path("relations");
+        if (!relsNode.isArray() || relsNode.isEmpty()) {
+            return ToolResult.error("'relations' array is required for delete_relation");
+        }
+        Graph g = loadGraph(memDir);
+        int deleted = 0;
+        for (JsonNode rn : relsNode) {
+            String from = rn.path("from").asText("");
+            String to = rn.path("to").asText("");
+            String relType = rn.path("relationType").asText("");
+            boolean removed = g.relations.removeIf(r ->
+                    r.from.equals(from) && r.to.equals(to) && r.relationType.equals(relType));
+            if (removed) deleted++;
+        }
+        saveGraph(memDir, g);
+        return ToolResult.success("memory: deleted " + deleted + " relations",
+                "Relations removed: " + deleted,
+                Map.of("scope", scope, "deleted", deleted));
+    }
+
+    private ToolResult deleteObservations(Path memDir, JsonNode params, String scope)
+            throws IOException {
+        JsonNode delsNode = params.path("deletions");
+        if (!delsNode.isArray() || delsNode.isEmpty()) {
+            // Tolerate the same shape under 'observations'
+            delsNode = params.path("observations");
+        }
+        if (!delsNode.isArray() || delsNode.isEmpty()) {
+            return ToolResult.error(
+                    "'deletions' array is required for delete_observation: "
+                            + "[{entityName, observations[]}]");
+        }
+        Graph g = loadGraph(memDir);
+        int removed = 0;
+        for (JsonNode dn : delsNode) {
+            String entityName = dn.path("entityName").asText("");
+            Entity e = g.entities.get(entityName);
+            if (e == null) continue;
+            JsonNode obsList = dn.path("observations");
+            if (obsList.isArray()) {
+                for (JsonNode o : obsList) {
+                    String v = o.asText("");
+                    if (!v.isEmpty() && e.observations.remove(v)) removed++;
+                }
+            }
+        }
+        saveGraph(memDir, g);
+        return ToolResult.success("memory: deleted " + removed + " observations",
+                "Observations removed: " + removed,
+                Map.of("scope", scope, "removed", removed));
+    }
+
+    private ToolResult readGraph(Path memDir, String scope) throws IOException {
+        Graph g = loadGraph(memDir);
+        String json = graphToJson(g, g.entities.values(), g.relations);
+        return ToolResult.success(
+                "memory: graph (" + g.entities.size() + " entities, "
+                        + g.relations.size() + " relations)",
+                json,
+                Map.of("scope", scope,
+                        "entities", g.entities.size(),
+                        "relations", g.relations.size()));
+    }
+
+    private ToolResult searchNodes(Path memDir, String query, String scope) throws IOException {
+        if (query.isEmpty()) return ToolResult.error("'query' is required for search_nodes");
+        String q = query.toLowerCase();
+        Graph g = loadGraph(memDir);
+        List<Entity> matches = new ArrayList<>();
+        for (Entity e : g.entities.values()) {
+            boolean hit = e.name.toLowerCase().contains(q)
+                    || e.entityType.toLowerCase().contains(q)
+                    || e.observations.stream().anyMatch(o -> o.toLowerCase().contains(q));
+            if (hit) matches.add(e);
+        }
+        Set<String> matchNames = new LinkedHashSet<>();
+        for (Entity e : matches) matchNames.add(e.name);
+        List<Relation> subRels = g.relations.stream()
+                .filter(r -> matchNames.contains(r.from) && matchNames.contains(r.to))
+                .toList();
+        String json = graphToJson(g, matches, subRels);
+        return ToolResult.success(
+                "memory: search_nodes '" + query + "' → " + matches.size() + " matches",
+                json,
+                Map.of("scope", scope, "query", query,
+                        "entities", matches.size(),
+                        "relations", subRels.size()));
+    }
+
+    private ToolResult openNodes(Path memDir, JsonNode params, String scope) throws IOException {
+        Set<String> wanted = collectNames(params);
+        if (wanted.isEmpty()) {
+            return ToolResult.error("'names' array or 'name' is required for open_nodes");
+        }
+        Graph g = loadGraph(memDir);
+        List<Entity> picked = new ArrayList<>();
+        for (String n : wanted) {
+            Entity e = g.entities.get(n);
+            if (e != null) picked.add(e);
+        }
+        List<Relation> rels = g.relations.stream()
+                .filter(r -> wanted.contains(r.from) && wanted.contains(r.to))
+                .toList();
+        String json = graphToJson(g, picked, rels);
+        return ToolResult.success(
+                "memory: open_nodes (" + picked.size() + "/" + wanted.size() + ")",
+                json,
+                Map.of("scope", scope, "requested", wanted.size(), "found", picked.size()));
+    }
+
+    private String graphToJson(Graph g, Iterable<Entity> entities,
+                               Iterable<Relation> relations) throws JsonProcessingException {
+        ObjectNode root = MAPPER.createObjectNode();
+        ArrayNode entArr = root.putArray("entities");
+        for (Entity e : entities) {
+            ObjectNode en = entArr.addObject();
+            en.put("name", e.name);
+            en.put("entityType", e.entityType);
+            ArrayNode obs = en.putArray("observations");
+            for (String o : e.observations) obs.add(o);
+        }
+        ArrayNode relArr = root.putArray("relations");
+        for (Relation r : relations) {
+            ObjectNode rn = relArr.addObject();
+            rn.put("from", r.from);
+            rn.put("to", r.to);
+            rn.put("relationType", r.relationType);
+        }
+        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+    }
+
+    private Set<String> collectNames(JsonNode params) {
+        Set<String> wanted = new LinkedHashSet<>();
+        JsonNode namesNode = params.path("names");
+        if (namesNode.isArray()) {
+            for (JsonNode n : namesNode) {
+                String v = n.asText("");
+                if (!v.isEmpty()) wanted.add(v);
+            }
+        }
+        String singleName = params.path("name").asText("");
+        if (!singleName.isEmpty()) wanted.add(singleName);
+        return wanted;
+    }
+
+    // ========================================================================
     // Static helpers for loading memory content at session start
     // ========================================================================
 
     /**
      * Loads all MEMORY.md content for injection into the system prompt.
      * Reads both global and project-level MEMORY.md files.
-     *
-     * @param workDir current working directory for project-level resolution
-     * @return combined memory content, or null if no memory files exist
      */
     public static String loadMemoryForContext(Path workDir) {
         StringBuilder sb = new StringBuilder();
 
-        // Global MEMORY.md
         Path globalFile = KompileHome.homeDirectory().toPath()
                 .resolve(MEMORY_DIR).resolve(DEFAULT_FILE);
         String globalContent = readFileQuietly(globalFile, MAX_MAIN_MEMORY_LINES);
@@ -381,7 +1055,6 @@ public class MemoryTool implements CliTool {
             sb.append("\n\n");
         }
 
-        // Project MEMORY.md
         Path projectFile = workDir.resolve(".kompile")
                 .resolve(MEMORY_DIR).resolve(DEFAULT_FILE);
         String projectContent = readFileQuietly(projectFile, MAX_MAIN_MEMORY_LINES);
@@ -413,7 +1086,6 @@ public class MemoryTool implements CliTool {
             sb.append(globalCount).append(" global, ").append(projectCount).append(" project files\n");
         }
 
-        // Show MEMORY.md sizes
         Path globalMem = globalDir.resolve(DEFAULT_FILE);
         Path projectMem = projectDir.resolve(DEFAULT_FILE);
         if (Files.exists(globalMem)) {
@@ -434,15 +1106,12 @@ public class MemoryTool implements CliTool {
         if ("global".equalsIgnoreCase(scope)) {
             return KompileHome.homeDirectory().toPath().resolve(MEMORY_DIR);
         }
-        // Project-level: .kompile/memory/ in working directory
         return workDir.resolve(".kompile").resolve(MEMORY_DIR);
     }
 
     private String sanitizeFileName(String name) {
-        // Prevent directory traversal
         Path fileName = Paths.get(name).getFileName();
         name = fileName != null ? fileName.toString() : name;
-        // Ensure it ends with .md
         if (!name.endsWith(".md")) {
             name = name + ".md";
         }
@@ -454,7 +1123,6 @@ public class MemoryTool implements CliTool {
         try {
             String content = Files.readString(file, StandardCharsets.UTF_8);
             if (content.isBlank()) return null;
-            // Truncate to max lines
             String[] lines = content.split("\n");
             if (lines.length > maxLines) {
                 StringBuilder sb = new StringBuilder();
@@ -486,5 +1154,78 @@ public class MemoryTool implements CliTool {
         } catch (IOException e) {
             return 0;
         }
+    }
+
+    // ---- Frontmatter parsing (simple YAML subset) -------------------------
+
+    private static class Frontmatter {
+        String name = "";
+        String description = "";
+        String type = "";
+        String body = "";
+    }
+
+    private Frontmatter parseFrontmatter(String content) {
+        if (content == null || !content.startsWith("---")) return null;
+        int firstNewline = content.indexOf('\n');
+        if (firstNewline < 0) return null;
+        int endMarker = content.indexOf("\n---", firstNewline);
+        if (endMarker < 0) return null;
+        String fmBlock = content.substring(firstNewline + 1, endMarker);
+        int bodyStart = endMarker + 4;
+        while (bodyStart < content.length()
+                && (content.charAt(bodyStart) == '\n' || content.charAt(bodyStart) == '\r')) {
+            bodyStart++;
+        }
+        Frontmatter fm = new Frontmatter();
+        for (String line : fmBlock.split("\n")) {
+            int colon = line.indexOf(':');
+            if (colon < 0) continue;
+            String key = line.substring(0, colon).trim();
+            String val = line.substring(colon + 1).trim();
+            if (val.length() >= 2
+                    && ((val.charAt(0) == '"' && val.charAt(val.length() - 1) == '"')
+                    || (val.charAt(0) == '\'' && val.charAt(val.length() - 1) == '\''))) {
+                val = val.substring(1, val.length() - 1);
+            }
+            switch (key) {
+                case "name":
+                    fm.name = val;
+                    break;
+                case "description":
+                    fm.description = val;
+                    break;
+                case "type":
+                    fm.type = val.toLowerCase();
+                    break;
+                default:
+                    break;
+            }
+        }
+        fm.body = content.substring(bodyStart);
+        return fm;
+    }
+
+    private String yamlEscape(String v) {
+        if (v == null) return "";
+        if (v.contains(":") || v.contains("#") || v.contains("\n")
+                || v.startsWith(" ") || v.endsWith(" ")
+                || v.startsWith("\"") || v.startsWith("'")) {
+            return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        }
+        return v;
+    }
+
+    private String escapeMarkdown(String v) {
+        return v.replace("[", "\\[").replace("]", "\\]");
+    }
+
+    private String slug(String name) {
+        String s = name.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
+        if (s.isEmpty()) s = "memory";
+        if (s.length() > 60) s = s.substring(0, 60);
+        return s;
     }
 }

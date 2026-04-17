@@ -15,6 +15,8 @@
  */
 package ai.kompile.orchestrator.integration.cli;
 
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.AgentLogWriter;
 import ai.kompile.orchestrator.model.event.LlmTokenEvent;
 import lombok.Builder;
 import lombok.Data;
@@ -192,6 +194,8 @@ public class CliAgentExecutor {
         Integer numTurns = null;
         Integer durationMs = null;
 
+        AgentLogWriter logWriter = openLogWriter(request, agent.getName(), processId);
+
         try {
             // Build process
             ProcessBuilder pb = new ProcessBuilder(command);
@@ -212,6 +216,13 @@ public class CliAgentExecutor {
 
             log.debug("Process {} started with PID {}", processId, process.pid());
 
+            startLogWriter(logWriter,
+                    new AgentLogWriter.AgentRunContext(
+                            request.getSessionId(),
+                            command,
+                            request.getWorkingDirectory(),
+                            process.pid()));
+
             // Read output with timeout
             int timeoutSecs = request.getTimeoutSeconds() > 0 ? request.getTimeoutSeconds() : defaultTimeoutSeconds;
 
@@ -222,6 +233,7 @@ public class CliAgentExecutor {
                 while ((line = reader.readLine()) != null) {
                     processInfo.getLinesReceived().incrementAndGet();
                     processInfo.addRecentOutput(line);
+                    appendLogLine(logWriter, AgentLogRecord.Stream.STDOUT, line);
 
                     // Parse with ClaudeStreamParser
                     ClaudeStreamParser.ParseResult result = streamParser.parseLine(processId, line);
@@ -307,6 +319,13 @@ public class CliAgentExecutor {
             // Cleanup
             streamParser.clearSession(processId);
             runningProcesses.remove(processId);
+            finishLogWriter(logWriter,
+                    new AgentLogWriter.AgentRunResult(
+                            processInfo.getState() == null ? null : processInfo.getState().name(),
+                            processInfo.getExitCode(),
+                            processInfo.getErrorMessage(),
+                            costUsd,
+                            numTurns));
         }
 
         long endTime = System.currentTimeMillis();
@@ -352,6 +371,8 @@ public class CliAgentExecutor {
         processInfo.setOutputSink(sink);
         runningProcesses.put(processId, processInfo);
 
+        AgentLogWriter logWriter = openLogWriter(request, agent.getName(), processId);
+
         // Execute in background
         executorService.submit(() -> {
             try {
@@ -369,6 +390,13 @@ public class CliAgentExecutor {
                 processInfo.setPid(process.pid());
                 processInfo.setState(ProcessState.STREAMING);
 
+                startLogWriter(logWriter,
+                        new AgentLogWriter.AgentRunContext(
+                                request.getSessionId(),
+                                command,
+                                request.getWorkingDirectory(),
+                                process.pid()));
+
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
@@ -377,6 +405,8 @@ public class CliAgentExecutor {
                             log.debug("Process {} was cancelled", processId);
                             break;
                         }
+
+                        appendLogLine(logWriter, AgentLogRecord.Stream.STDOUT, line);
 
                         ClaudeStreamParser.ParseResult result = streamParser.parseLine(processId, line);
                         if (result != null && result.textContent() != null) {
@@ -405,10 +435,61 @@ public class CliAgentExecutor {
             } finally {
                 streamParser.clearSession(processId);
                 runningProcesses.remove(processId);
+                finishLogWriter(logWriter,
+                        new AgentLogWriter.AgentRunResult(
+                                processInfo.getState() == null ? null : processInfo.getState().name(),
+                                processInfo.getExitCode(),
+                                processInfo.getErrorMessage(),
+                                null,
+                                null));
             }
         });
 
         return sink.asFlux();
+    }
+
+    /**
+     * Opens a per-run log writer rooted at {@code ~/.kompile/logs/agents}. Returns
+     * {@code null} if the filesystem is unwritable; callers tolerate a null writer
+     * so aggregation failures never break a live agent run.
+     */
+    private AgentLogWriter openLogWriter(ExecutionRequest request, String agentName, String processId) {
+        try {
+            return new AgentLogWriter(request.getOrchestratorInstanceId(), agentName, processId);
+        } catch (Exception e) {
+            log.warn("Failed to open agent log file for process {}: {}", processId, e.getMessage());
+            return null;
+        }
+    }
+
+    private void startLogWriter(AgentLogWriter writer, AgentLogWriter.AgentRunContext ctx) {
+        if (writer == null) return;
+        try {
+            writer.writeStart(ctx);
+        } catch (Exception e) {
+            log.warn("Failed to write agent log start record: {}", e.getMessage());
+        }
+    }
+
+    private void appendLogLine(AgentLogWriter writer, AgentLogRecord.Stream stream, String line) {
+        if (writer == null) return;
+        try {
+            writer.writeLine(stream, line);
+        } catch (Exception e) {
+            // Downgrade to debug — losing a line is preferable to interrupting the agent
+            log.debug("Failed to append agent log line: {}", e.getMessage());
+        }
+    }
+
+    private void finishLogWriter(AgentLogWriter writer, AgentLogWriter.AgentRunResult result) {
+        if (writer == null) return;
+        try {
+            writer.writeEnd(result);
+        } catch (Exception e) {
+            log.warn("Failed to write agent log end record: {}", e.getMessage());
+        } finally {
+            writer.close();
+        }
     }
 
     /**

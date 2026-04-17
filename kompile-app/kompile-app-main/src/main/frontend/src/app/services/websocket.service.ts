@@ -20,6 +20,7 @@ import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
 import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { IngestProgressUpdate, IngestLogEntry, SystemResourcesResponse, ModelStatusUpdate } from '../models/api-models';
+import { MonitorEvent } from '../models/monitor-models';
 import { BaseService, backendUrl } from './base.service';
 import SockJS from 'sockjs-client';
 
@@ -700,6 +701,79 @@ export class WebSocketService extends BaseService implements OnDestroy {
           this.vlmTestLogUpdates.next(logEntry);
         } catch (error) {
           console.error('Failed to parse VLM test log entry:', error);
+        }
+      });
+    });
+
+    this.subscriptions.set(topic, subscription);
+  }
+
+  // ==================== Monitor (Chat Wake-up) WebSocket ====================
+
+  private monitorUpdates = new Subject<MonitorEvent>();
+  public monitorUpdates$ = this.monitorUpdates.asObservable();
+
+  /**
+   * Subscribe to monitor wake-up events for a specific chat session.
+   * Fires when a watched task completes or a scheduled monitor triggers.
+   */
+  subscribeToMonitor(sessionId: string): Observable<MonitorEvent> {
+    const topic = `/topic/monitor/${sessionId}`;
+    this.subscribeToMonitorTopic(topic);
+    return this.monitorUpdates$.pipe(
+      filter(ev => ev.sessionId === sessionId)
+    );
+  }
+
+  /**
+   * Subscribe to all monitor wake-up events (admin / developer-hub view).
+   */
+  subscribeToAllMonitors(): Observable<MonitorEvent> {
+    const topic = '/topic/monitor/all';
+    this.subscribeToMonitorTopic(topic);
+    return this.monitorUpdates$;
+  }
+
+  /**
+   * Unsubscribe from a specific session's monitor events.
+   */
+  unsubscribeFromMonitor(sessionId: string): void {
+    this.unsubscribeFromTopic(`/topic/monitor/${sessionId}`);
+  }
+
+  unsubscribeFromAllMonitors(): void {
+    this.unsubscribeFromTopic('/topic/monitor/all');
+  }
+
+  private subscribeToMonitorTopic(topic: string): void {
+    if (!this.client || this.connectionState.value !== WebSocketConnectionState.CONNECTED) {
+      const sub = this.connectionState$.pipe(
+        filter(state => state === WebSocketConnectionState.CONNECTED)
+      ).subscribe(() => {
+        this.doSubscribeMonitor(topic);
+        sub.unsubscribe();
+      });
+      return;
+    }
+    this.doSubscribeMonitor(topic);
+  }
+
+  private doSubscribeMonitor(topic: string): void {
+    if (this.subscriptions.has(topic)) {
+      return;
+    }
+    if (!this.client) {
+      console.error('Cannot subscribe to monitor: client is null');
+      return;
+    }
+
+    const subscription = this.client.subscribe(topic, (message: IMessage) => {
+      this.ngZone.run(() => {
+        try {
+          const event: MonitorEvent = JSON.parse(message.body);
+          this.monitorUpdates.next(event);
+        } catch (error) {
+          console.error('Failed to parse monitor event:', error);
         }
       });
     });

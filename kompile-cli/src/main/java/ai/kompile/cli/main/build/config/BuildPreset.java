@@ -45,6 +45,7 @@ public enum BuildPreset {
             "embedding-anserini",
             "vectorstore-anserini",
             "loader-pdf-extended",
+            "loader-tika",
             "chunker-sentence",
             "tool-filesystem", "tool-rag", "tool-model-staging",
             "kvcache", "model-manager"
@@ -65,7 +66,7 @@ public enum BuildPreset {
             "llm-openai", "llm-anthropic", "llm-gemini",
             "embedding-openai", "embedding-anserini", "embedding-sentence-transformer",
             "vectorstore-anserini", "vectorstore-chroma", "vectorstore-pgvector",
-            "loader-pdf-extended", "loader-microsoft", "loader-mail",
+            "loader-pdf-extended", "loader-microsoft", "loader-mail", "loader-tika",
             "chunker-sentence", "chunker-recursive-character", "chunker-markdown", "chunker-token",
             "tool-filesystem", "tool-rag", "tool-model-staging",
             "kvcache", "model-staging", "model-manager", "pipeline-management",

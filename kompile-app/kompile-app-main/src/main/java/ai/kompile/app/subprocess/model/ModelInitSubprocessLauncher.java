@@ -22,6 +22,8 @@ import ai.kompile.app.config.SubprocessExecutableConfig;
 import ai.kompile.app.services.DeviceRoutingConfigService;
 import ai.kompile.app.services.ModelLifecycleManager;
 import ai.kompile.app.services.subprocess.SubprocessConfigService;
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import ai.kompile.cli.main.util.NativeImageInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
@@ -256,6 +258,19 @@ public class ModelInitSubprocessLauncher {
         SubprocessHandle handle = new SubprocessHandle(taskId, modelId, process, argsFile);
         activeProcesses.put(taskId, handle);
 
+        // --- Subprocess log aggregation ---
+        SubprocessLogWriter logWriter = null;
+        try {
+            logWriter = new SubprocessLogWriter("model-init", taskId);
+            handle.logWriter = logWriter;
+            logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                    taskId, command, null, process.pid(), heapSize));
+        } catch (Exception _logEx) {
+            logger.debug("SubprocessLogWriter init failed (non-fatal): {}", _logEx.getMessage());
+            logWriter = null;
+        }
+        final SubprocessLogWriter finalLogWriter = logWriter;
+
         // Result holder
         CompletableFuture<ModelInitResult> resultFuture = new CompletableFuture<>();
 
@@ -266,6 +281,13 @@ public class ModelInitSubprocessLauncher {
                 while ((line = reader.readLine()) != null) {
                     processStdoutLine(line, taskId, modelId, progressListener, completionListener,
                             failureListener, resultFuture);
+                    if (finalLogWriter != null) {
+                        try {
+                            finalLogWriter.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                        } catch (Exception _logEx) {
+                            logger.debug("SubprocessLogWriter stdout write failed: {}", _logEx.getMessage());
+                        }
+                    }
                 }
             } catch (IOException e) {
                 if (!handle.isCancelled()) {
@@ -282,6 +304,13 @@ public class ModelInitSubprocessLauncher {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     logger.info("[subprocess:{}] {}", modelId, line);
+                    if (finalLogWriter != null) {
+                        try {
+                            finalLogWriter.writeLine(AgentLogRecord.Stream.STDERR, line);
+                        } catch (Exception _logEx) {
+                            logger.debug("SubprocessLogWriter stderr write failed: {}", _logEx.getMessage());
+                        }
+                    }
                 }
             } catch (IOException e) {
                 if (!handle.isCancelled()) {
@@ -303,6 +332,17 @@ public class ModelInitSubprocessLauncher {
 
             // Release GPU on timeout
             releaseModelInitGpu(taskId, gpuAcquired);
+
+            if (finalLogWriter != null) {
+                try {
+                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "TIMEOUT", null, "Timeout after " + timeoutMinutes + " minutes", false, false));
+                } catch (Exception _logEx) {
+                    logger.debug("SubprocessLogWriter writeEnd (timeout) failed: {}", _logEx.getMessage());
+                } finally {
+                    finalLogWriter.close();
+                }
+            }
 
             if (failureListener != null) {
                 failureListener.accept(ModelInitMessage.failed(taskId, modelId, ModelInitMessage.Phase.CREATING_ENCODER,
@@ -329,17 +369,39 @@ public class ModelInitSubprocessLauncher {
         // Wait for result from parsed messages
         if (exitCode == 0) {
             // Success - result should be set by stdout parser
+            ModelInitResult successResult;
             try {
-                return resultFuture.get(5, TimeUnit.SECONDS);
+                successResult = resultFuture.get(5, TimeUnit.SECONDS);
             } catch (Exception e) {
                 // If we didn't get a result message but exit was 0, consider it success
-                return new ModelInitResult(taskId, modelId, true, null);
+                successResult = new ModelInitResult(taskId, modelId, true, null);
             }
+            if (finalLogWriter != null) {
+                try {
+                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "SUCCESS", exitCode, null, false, false));
+                } catch (Exception _logEx) {
+                    logger.debug("SubprocessLogWriter writeEnd (success) failed: {}", _logEx.getMessage());
+                } finally {
+                    finalLogWriter.close();
+                }
+            }
+            return successResult;
         } else {
             // Failure
             boolean retriable = exitCode == 2 || exitCode == 137; // Retriable errors
             currentStatus = ModelInitStatus.failed(taskId, modelId, null,
                     "Subprocess exited with code " + exitCode, retriable);
+            if (finalLogWriter != null) {
+                try {
+                    finalLogWriter.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "FAILED", exitCode, "Subprocess exited with code " + exitCode, false, false));
+                } catch (Exception _logEx) {
+                    logger.debug("SubprocessLogWriter writeEnd (failure) failed: {}", _logEx.getMessage());
+                } finally {
+                    finalLogWriter.close();
+                }
+            }
             throw new RuntimeException("Subprocess failed with exit code: " + exitCode);
         }
     }
@@ -618,6 +680,7 @@ public class ModelInitSubprocessLauncher {
         private final Process process;
         private final Path argsFile;
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        volatile SubprocessLogWriter logWriter;
 
         SubprocessHandle(String taskId, String modelId, Process process, Path argsFile) {
             this.taskId = taskId;
@@ -634,6 +697,14 @@ public class ModelInitSubprocessLauncher {
             try {
                 java.nio.file.Files.deleteIfExists(argsFile);
             } catch (IOException ignored) {}
+            SubprocessLogWriter lw = logWriter;
+            if (lw != null) {
+                try {
+                    lw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                            "CANCELLED", null, "Subprocess cancelled", false, false));
+                } catch (Exception ignored) {}
+                lw.close();
+            }
         }
 
         boolean isCancelled() {

@@ -16,14 +16,18 @@
 
 package ai.kompile.core.rag;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Defines the input for a query to the RAG system.
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class RagQuery {
     /**
      * The user's natural language query.

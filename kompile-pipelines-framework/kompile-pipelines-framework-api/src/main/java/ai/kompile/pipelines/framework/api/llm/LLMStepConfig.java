@@ -154,7 +154,14 @@ public class LLMStepConfig implements StepConfig {
         this.internalParameters.put("toolCallOutputFormat", this.toolCallOutputFormat.name()); // Store enum as string
 
         this.generationParameters = generationParameters != null ? generationParameters : Collections.emptyMap();
-        if (generationParameters != null && !generationParameters.isEmpty()) this.internalParameters.put("generationParameters", this.generationParameters);
+        // Flatten generation parameters into internalParameters with "gen." prefix
+        // rather than putting a Map (which Data doesn't support as a value type).
+        for (Map.Entry<String, Object> e : this.generationParameters.entrySet()) {
+            Object v = e.getValue();
+            if (v instanceof String || v instanceof Number || v instanceof Boolean) {
+                this.internalParameters.put("gen." + e.getKey(), v);
+            }
+        }
 
         this.conversationContextName = conversationContextName != null ? conversationContextName : "llm_conversation_context";
         this.internalParameters.put("conversationContextName", this.conversationContextName);

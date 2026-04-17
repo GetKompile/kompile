@@ -35,6 +35,12 @@
             <artifactId>kompile-app-core</artifactId>
         </dependency>
 
+        <!-- Shared chat source adapters + aggregation helpers -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+
         <!-- Spring Boot Starter -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

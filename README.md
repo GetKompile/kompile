@@ -1,272 +1,350 @@
-~~~~# Kompile (README is WIP, for questions come to: https://community.konduit.ai)
+# Kompile
 
-Kompile  is a command line interface for interacting with 
-the [eclipse deeplearning4j/nd4j ecosystems](https://github.com/deeplearning4j/deeplearning4j) and [konduit serving](https://github.com/KonduitAI/konduit-serving).
+Kompile is a comprehensive AI/ML platform for building, deploying, and operating retrieval-augmented
+generation (RAG), agentic chat, and model inference workloads on the JVM. It combines a
+Picocli-based developer CLI, a pluggable Spring Boot RAG framework, a pipeline execution engine
+(the former Konduit Serving, now merged into `kompile-pipelines-framework`), Rust-backed
+tokenizers, and GraalVM native-image packaging into a single toolchain built on top of the
+[Eclipse DeepLearning4j / ND4J ecosystem](https://github.com/deeplearning4j/deeplearning4j).
 
+> Status: README is actively maintained. For questions, join the community at
+> <https://community.konduit.ai>.
 
-Building container:
+## What's in the box
+
+Kompile is a monorepo of several cooperating subsystems:
+
+- **`kompile-cli`** — The main developer CLI (`kompile`). Subcommands cover bootstrap, install,
+  config generation, build (RAG apps, native images, ND4J backends), model conversion, pipeline
+  management, ingest/index, chat/REPL, MCP stdio server, and job scheduling. Additional federated
+  CLIs (`kompile-app-cli`, `kompile-agent-cli`, `kompile-model-cli`, `kompile-component-cli`) are
+  discoverable through the `kompile app|agent|model` delegating subcommands.
+- **`kompile-app`** — A 40+ module Spring Boot RAG framework with pluggable embeddings, vector
+  stores, document loaders, data sources, chunkers, LLM providers, tools, chat history, guardrails,
+  and an evaluation harness. See [Architecture](#architecture) below.
+- **`kompile-pipelines-framework`** — A pipeline execution engine (`api`, `core`, `runtime`) with
+  reusable steps for Python, SameDiff, DL4J, ONNX, and VLM workloads.
+- **`kompile-model-importer-{tensorflow,onnx,keras}`** — Model importers that convert TensorFlow,
+  ONNX, and Keras models into DL4J / SameDiff formats for execution on the JVM.
+- **`anserini`** — A vendored fork of Anserini (Lucene-based IR toolkit) with custom SameDiff
+  dense encoders (BGE, Arctic Embed, etc.) and an `AnseriniModelDownloader`.
+- **`tokenizers-rust`** — HuggingFace tokenizers compiled as a Rust static lib with a C++ wrapper
+  and JavaCPP bindings (`tokenizers-native`, `tokenizers-native-preset`) for high-performance
+  tokenization on the JVM.
+- **`kompile-c-library` / `kompile-python` / `kompile-sdk-serving`** — C shim, Python SDK, and
+  serving SDK used by generated pipelines.
+- **`kompile-rag-builds`** — Pre-generated sample RAG projects used during development so you do
+  not have to regenerate every time.
+
+## Prerequisites
+
+- Java 17 (GraalVM 21 required for native-image builds)
+- Maven 3.9+
+- 10 GB RAM minimum; 16 GB+ recommended (native-image builds want 18–32 GB heap)
+- Optional: Docker, Python (Anaconda/Miniconda), CUDA toolkit for GPU workloads
+
+## Building
+
+### Standard JVM build
+
 ```bash
-docker  build -f Dockerfile.rockylinux8 --ulimit nofile=98304:98304 -t konduitai/kompile:latest  .
+# Full build
+mvn clean install
+
+# Faster — skip tests
+mvn clean install -DskipTests
+
+# CLI only
+cd kompile-cli && mvn clean package
+
+# RAG application (UI builds by default)
+cd kompile-app/kompile-app-main && mvn clean package
+
+# RAG application, backend only (~5× faster)
+cd kompile-app/kompile-app-main && mvn clean package -Dskip.ui
+
+# Install or refresh frontend node_modules (first checkout or after package.json changes)
+cd kompile-app/kompile-app-main && mvn clean install -Dui.deps
 ```
 
-Running container cli command:
+### GraalVM native image
+
 ```bash
-docker run --rm -it  konduitai/kompile
+# CLI
+cd kompile-cli && mvn clean package -Pnative
+
+# RAG app (unified executable — routes subprocess types via --subprocess=TYPE)
+JAVA_HOME=~/.sdkman/candidates/java/21.0.10-graal \
+  mvn clean package -DskipTests -Dskip.ui \
+      -pl kompile-app/kompile-app-main -am -Pnative
 ```
 
-Running container interactively:
+Subprocess-specific profiles (`native-ingest`, `native-vector`, `native-embedding`,
+`native-model-init`) are available for building standalone subprocess binaries.
+
+### Rust tokenizers
+
 ```bash
-docker run --ulimit nofile=98304:98304 --rm -it  -v $(pwd):/mnt/:Z --entrypoint /bin/bash konduitai/kompile
+cd tokenizers-rust/libtokenizers
+./buildnativetokenizers.sh                    # current platform
+JAVACPP_PLATFORM=linux-x86_64 ./buildnativetokenizers.sh   # cross target
 ```
 
+### Docker
 
-Usage with docker:
 ```bash
+# Build image
+docker build -f Dockerfile.rockylinux8 --ulimit nofile=98304:98304 \
+  -t konduitai/kompile:latest .
+
+# Pull prebuilt image
 docker pull ghcr.io/konduitai/kompile
+
+# Run the CLI
+docker run --rm -it konduitai/kompile
+
+# Interactive shell with the working dir mounted
+docker run --ulimit nofile=98304:98304 --rm -it \
+  -v "$(pwd):/mnt/:Z" --entrypoint /bin/bash konduitai/kompile
 ```
 
-Overview
---------------
-
-1. kompile-python: The python SDK for use with generated models. The main entry point is a PipelineRunner that allows the execution of konduit serving pipelines.
-2. kompile-c-library: The c library shim for use with a generated model in combination with the kompile-python SDK.
-
-
-In order to build the CLI it is recommended to have 10g of RAM to build the whole CLI.
-
-In order to avoid this, please use docker pull.
-
-The CLI is separated by a number of namespaces.
-The namespaces encapsulate various functionality
-separated by categories. Categories include:
-
-1. Execution: Execution related steps for konduit serving pipeline creation.
-2. Build: Building graalvm native images and python sdks
-3. Config: Generate various configuration objects needed in the exec namespace
-4. Helper: Higher level helpers encapsulating common usage in the API
-5. Info: Information regarding the local kompile install
-6. Install: Install various components used by the CLI. These include components like graalvm, maven and anaconda.
-7. Uninstall: Uninstall various components
-8. Bootstrap: Setup SDK for building images.
-9. Model: Model related functionality including conversion of models to dl4j formats and model debugging utilities.
-
-
-Note that many of these commands may be used in conjunction with each other.
-This is especially true of the exec namespace.
-
-For more comprehensive docs, see the html pages in the [docs directory](./docs)
-or for any command just pass -h or no flags to see help output.
-
-
-Kompile CLI workflow
------------------------
-
-1. Create pipeline steps: Using the exec namespace in conjunction with the [step-create](./docs/step-create.html) namespace create any number of json files that represent steps in your pipeline. This can be anything from running image pre processing to running a model.
-2. Create a pipeline: Using the exec namespace again, pass in any number of pipeline steps to [sequence-pipeline-create](./docs/sequence-pipeline-creator.html)
-3. Generate a [python SDK](./docs/generate-image-and-sdk.html) for your use case that you can pip install as a wheel to any python environment.
-
-
-Kompile Generate SDK setup
------------------------------
-
-Kompile has a number of components that are needed in order to setup and use it properly.
-You can manage this with the [kompile install namespace](./docs/kompile-install.html)
-Simply run:
-```bash
-/kompile/kompile install all
-```
-This will install graalvm, maven, and anaconda under $USER/.kompile.
-All necessary components are under there.
-In order to remove these components a user may run:
-```bash
-/kompile/kompile uninstall all
-```
-
-Optionally a user may also then take an output wheel and install it to their local directory using [sdk-install](./docs/sdk-install.html)
-Using the output wheel, this will install the sdk to the locally managed anaconda under $USER/.kompile/python.
-
-Kompile Model utilities
----------------------------
-A common use case with the eclipse deeplearning4j ecosystem
-is model import to deploy models in production or finetune them in a
-java environment. Kompile also allows users to just run a conversion process
-from the command line interface without writing any code.
-
-Simply specify an input model path, the framework and the model output path.
-For more information see [the model convert command page](./docs/kompile-model-convert.html)
-
-For quick troubleshooting, other utilities for rendering a model file as text are also added.
-This includes printing summaries for [dl4j](./docs/kompile-model-dl4j-summary.html) and [samediff](./docs/samediff-summary.html)
-as well as [tensorflow](./docs/)
-
-Memory management
----------------------------
-
-When running a build such as for android, 
-more memory maybe needed. There are a few potential options
-the user has to combat memory issues when executing a build.
-1. Ensure your docker container has a good amount of memory for running builds.
-```
-docker run --ulimit nofile=98304:98304 --memory="16g" --rm -it  --entrypoint /bin/bash konduitai/kompile
-
-```
-
-Change 16g to whatever you think your memory needed might be. Some builds require > 4g of RAM to run. We recommend
-a large amount of memory for certain builds (especially the SDK builds or ones generating an nd4j backend)
-
-2. Ensure that the CLI has enough heap space to run.
-```
-./kompile build generate-nd4j-backend --nd4jBackend=nd4j-native --nd4jClassifier=android-arm64 --buildPlatform=android-arm64 -Xmx10g -Xms10g
-
-```
-This can be done as above where we are generating an android build and specifying the heap space on the end.
-
-
-
-3. Ensure that builds that involve a generated projects also have enough heap for running.
-
-Finally, set:
-```
-MIN_RAM_MEGS=2000
-MAX_RAM_MEGS=2000
-```
-
-where these are numbers sized in megabytes for SDK builds.
-
-
-Main Use Cases
---------------
-
-1. Run a python script:
-A python script execution pipeline involves setting up
-input and output variables. Each variable will generally have a name
-and a type associated with it. This manifests itself in the form of a python config with the command:
-```bash
-/kompile/kompile config generate-python-variable-config --variableName=test --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_1.json
-/kompile/kompile config generate-python-variable-config --variableName=test2 --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_2.json
-```
-
-For defining a python configuration we can use:
-```bash
-/kompile/kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
-```
-The above configuration generates a python configuration with 2 input variables that runs the embedded python code adding the 2 variables together.
-The variables are read from files generated in the previous step.
-There are other settings such as python path which allows users to incorporate external python libraries as needed.
-
-For more information on the parameters please see the relevant [documentation](./docs/generate-python-config.html)
-
-Next we need to incorporate the python configuration in to a python step.
-An example following the 2 previous steps:
-```bash
-/kompile/kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
-```
-
-Finally, we need to create a pipeline using the above pipeline step.
-An example:
-```bash
-/kompile/kompile exec sequence-pipeline-creator --pipeline=python-step.json >> python-pipeline.json
-```
-
-This creates a pipeline using the above pipeline step. Note that you can chain any number of pipeline steps together.
-In this case, since it's sequence oriented ordering of the pipeline specified does matter.
-
-More information can be found [here](./docs/sequence-pipeline-creator.html)
-
-2. Run an imported model pipeline in python using the SDK
-
-Imported models can either be of the dl4j zip or samediff flatbuffers format.
-In order to import a custom model, a user should use the convert command first.
-This can be done as follows:
+## Testing
 
 ```bash
-/kompile/kompile model convert --inputFile=path/to/model.pb --outputFile=path/to/outputmodel.fb
-```
-From here we can figure out this is a tensorflow model. The same is true for onnx.
+mvn test                                    # all modules
+cd kompile-cli && mvn test                  # one module
+mvn test -Dtest=YourTestClass               # one class
+mvn test -Dtest=YourTestClass#testMethod    # one method
 
-For importing the keras .h5 format in to the dl4j zip file format, do the following:
-```bash
-/kompile/kompile model convert --inputFile=path/to/model.h5 --outputFile=path/to/outputmodel.zip --kerasNetworkType=sequential (or functional)
-```
-The reason for the extra parameter is keras models can be either of the two types
-and aren't always just a graph. Thusly they have slightly different structures.
-
-After a user converts their model, you will want to configure either a dl4j step or a samediff step
-depending on the input framework.
-
-For dl4j do:
-```bash
-/kompile/kompile  --fileFormat=json  --inputNames=... --modelUri=path/to/model.zip --outputNames=...  >> model-step.json
-```
-For samediff do:
-```bash
-/kompile/kompile  --fileFormat=json  --inputNames=... --modelUri=path/to/model.fb --outputNames=...  >> model-step.json
+# Integration tests with Spring profile
+cd kompile-app/kompile-app-main && mvn verify -Dspring.profiles.active=test
 ```
 
-Afterwards, create a sequential step similar to the above python:
+## CLI quick start
+
 ```bash
-/kompile/kompile exec sequence-pipeline-creator --pipeline=model-step.json
-```
-
-The final output will be a valid json file you can pass to the SDK for execution.
-```bash
-docker  build  -t ghcr.io/konduitai/kompile --ulimit nofile=98304:98304   .
-docker run -it --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile
-
-/kompile/kompile build generate-image-and-sdk --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --kompileCPath=/kompile/kompile-c-library/ --kompilePythonPath=/kompile/kompile-python --pythonExecutable=/root/.kompile/python/bin/python
-docker run -it --ulimit nofile=98304:98304    --entrypoint /bin/bash ghcr.io/konduitai/kompile
-
-```
-
-3. Serve a model to communicate over REST
-
-Firstly build a binary: 
-```bash
-/kompile/kompile build generate-serving-binary --protocol=http --kompilePrefix=/kompile --nativeImageFilesPath=/kompile/native-image/ --mainClass=ai.konduit.pipelinegenerator.main.ServingMain --pipelineFile=./inference-server.json
-```
-
-This will produce a binary under /kompile/kompile-image that can serve a pipeline.
-This binary can now serve pipelines via http. In order to serve a pipeline, we need to create an inference configuration.
-Let's reuse the pipeline from step  and create an inference server to go with it:
-```bash
-/kompile/kompile config generate-python-variable-config --variableName=test --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_1.json
-/kompile/kompile config generate-python-variable-config --variableName=test2 --pythonType=numpy.ndarray  --valueType=NDARRAY >> input_2.json
-/kompile/kompile config generate-python-config --inputVariable=input_1.json --inputVariable=input_2.json --pythonCode="out = test + test2" --returnAllInputs >> pythonConfig.json
-/kompile/kompile exec step-create python --fileFormat=json --pythonConfig=pythonConfig.json >> python-step.json
-/kompile/kompile exec sequence-pipeline-creator --pipeline=python-step.json >> python-pipeline.json
-/kompile/kompile exec inference-server-create --protocol=http --port=8080 --pipeline=python-pipeline.json >> inference-server.json
-/kompile-image  --configFile=/kompile/inference-server.json --autoConfigurePythonPath=true
-```
-This will setup the configuration to use the inference-server.json generated earlier.
-We use autoconfigurePath to automatically use the local kompile install's python.
-When using the python runner, we need to handle setting the python path up.
-
-The user should configure this themselves using one of:
-1. --pythonPath: manually specify the python path. Required when user has custom python path requirements
-outside a standard distribution like anaconda or pip.
-
-2. autoConfigurePythonPath: uses the local kompile installs python at $USER/.kompile/python.
-The python path is obtained from the python executable found in the kompile install's python directory.
-
-3. --pythonExecutableForConfigure: configure a custom python executable. A user can either specify an absolute path
-or a python binary found on the user's path with just python.
-
-
-Lastly, depending on the python configuration and python path
-please note that the user may need to also add conda to their path.
-Our python step runner looks up certain metadata when loading the relevant dependencies
-from the python path for execution.
-
-It is recommended the user use the self contained miniconda install that comes with kompile.
-In order to circumvent any issues, a user may use the following formula for python path execution:
-```bash
+# First-time setup: create ~/.kompile and install dependencies
+./kompile bootstrap
+./kompile install all                  # graalvm + maven + python (miniconda)
+./kompile install graalvm              # or install components individually
 ./kompile install python
-export PATH=$HOME/.kompile/python/bin:$PATH
+
+# Ask the CLI what it can do
+./kompile --help
+./kompile <command> --help
 ```
 
-Following these steps allows a user to serve a model that runs a python script.
+Top-level subcommands include:
 
+| Command      | Purpose                                                                      |
+| ------------ | ---------------------------------------------------------------------------- |
+| `bootstrap`  | Initialize `~/.kompile` directory layout                                     |
+| `install`    | Install GraalVM, Maven, Anaconda/Python, native tools, headers               |
+| `uninstall`  | Remove managed components                                                    |
+| `info`       | Report installed versions and environment info                               |
+| `config`     | Generate pipeline, python, server, and variable configs                      |
+| `build`      | Build RAG apps, native images, ND4J backends, serving binaries               |
+| `build-rag-app` | Generate a custom RAG Spring Boot project with chosen modules             |
+| `sdk`        | Operate on the generated Python SDK                                          |
+| `pipeline`   | Manage and run pipelines                                                     |
+| `ingest`     | Load documents into a vector store                                           |
+| `index`      | Build / update a search index                                                |
+| `chat`       | Interactive agentic chat REPL with tools, roles, MCP, and session history    |
+| `lite`       | Self-contained Kompile Lite chat + RAG + Graph RAG app                       |
+| `session`    | List, resume, export, import chat sessions                                   |
+| `passthrough`| Stream a single prompt through the chat runtime                              |
+| `resume`     | Resume a previous chat session                                               |
+| `mcp-stdio`  | Run the MCP (Model Context Protocol) stdio server                            |
+| `jobs`       | Inspect/manage background jobs                                               |
+| `schedule`   | Create and manage scheduled tasks                                            |
+| `subprocess` | Entry point used by the app when spawning helper processes                   |
+| `app`        | Delegates to `kompile-app-cli` (start/stop/status/ingest/query)              |
+| `agent`      | Delegates to `kompile-agent-cli` (workflow, task, channel, session, chat)    |
+| `model`      | Delegates to `kompile-model-cli` (list, download, convert, export, import)   |
 
+Examples:
 
-sudo docker run -it  -v $(pwd):/local --ulimit nofile=98304:98304  --rm  --entrypoint /bin/bash ghcr.io/konduitai/kompile~~~~
+```bash
+# Convert a TensorFlow model to SameDiff flatbuffers
+./kompile model convert \
+  --inputFile=model.pb \
+  --outputFile=model.fb
 
+# Convert a Keras model to DL4J zip
+./kompile model convert \
+  --inputFile=model.h5 \
+  --outputFile=model.zip \
+  --kerasNetworkType=sequential
+
+# Generate a custom RAG application with only the modules you want
+./kompile build-rag-app \
+  --instanceId=myapp \
+  --enableAnserini=true \
+  --enableOpenAi=true \
+  --enablePgvector=false
+
+# Simpler hosted-LLM RAG app
+./kompile build-hosted-llm-rag-app --instanceId=myapp
+
+# SameDiff-embedding RAG app
+./kompile build-samediff-app --instanceId=myapp
+```
+
+## Architecture
+
+### `kompile-app` — RAG framework modules
+
+**Core interfaces** (`kompile-app-core`):
+
+- `EmbeddingModel#embed(text) → INDArray`
+- `VectorStore` — `add`/`search`/`delete` documents
+- `DocumentRetriever#retrieve(query, k) → List<String>`
+- `LanguageModel#generate(prompt)`
+
+**Centralized model management** (`kompile-model-manager`):
+
+- Downloads to `~/.kompile/models/` with SHA256 verification
+- Registry in `ModelConstants`, descriptor in `ModelDescriptor`
+
+**Embeddings**: `kompile-embedding-anserini` (SameDiff: bge-base-en-v1.5, arctic-embed, …),
+`kompile-embedding-openai`, `kompile-embedding-postgresml`,
+`kompile-embedding-sentence-transformer` (Python subprocess), `kompile-embedding-samediff`.
+
+**Vector stores**: `kompile-vectorstore-anserini` (Lucene HNSW, primary),
+`kompile-vectorstore-pgvector`, `kompile-vectorstore-chroma`, `kompile-vectorstore-vespa`.
+
+**Loaders & sources**: PDF (extended, tables), Office, Tika, email (IMAP, mail), web, Slack,
+Confluence, Jira, Notion, Reddit, Google Drive, plus `kompile-app-loaders-orchestrator` to
+coordinate them.
+
+**Chunkers**: token, sentence, recursive-character, markdown, table-aware.
+
+**LLM providers**: `kompile-app-openai-llm`, `kompile-app-anthropic-llm`, `kompile-app-gemini-llm`,
+`kompile-app-springai-llm`, `kompile-pipelines-app-llm` (local SameDiff LLMs).
+
+**Tools & agents**: `kompile-tool-rag`, `kompile-tool-filesystem`, `kompile-tool-model-staging`,
+`kompile-react-agent`, `kompile-orchestrator`, `kompile-query-transformer`, `kompile-guardrails`,
+`kompile-filter-chain`.
+
+**Other subsystems**: `kompile-kvcache` (paged/evictable KV cache for local LLMs),
+`kompile-chat-history`, `kompile-evaluation`, `kompile-graph-neo4j` and `kompile-knowledge-graph`
+(Graph RAG), `kompile-ocr-*` (document OCR pipeline), `kompile-model-staging`,
+`kompile-pipeline-management`, `kompile-oauth2-client`, `kompile-postgres-common`.
+
+**Plugin activation** uses Spring Boot `@ConditionalOnProperty` with `kompile.embedding.type`,
+`kompile.vectorstore.type`, `kompile.llm.type`, etc., so the same binary can be reshaped via
+`application.properties` or generated POMs from `RagPomGenerator`.
+
+### RAG data flow
+
+```
+Documents → Loaders → Chunks → Embeddings → Vector Index
+
+Query → Embed Query → Vector Search → Retrieved Context → LLM → Response
+```
+
+### `kompile-pipelines-framework`
+
+`api` defines `Configuration`, `StepConfig`, `Data`; `core` is the execution engine; `runtime`
+provides runtime support. Step implementations live under `kompile-pipeline-steps-parent`
+(`samediff`, `python`, `onnx`, `vlm`, …).
+
+### Native-image subprocess model
+
+The main application ships as a single native executable that routes subprocess types before
+Spring Boot starts via `--subprocess=TYPE` (`ingest`, `vector-population`, `embedding`,
+`model-init`, `vlm-test`, `training`). `NativeImageInfo` detects the runtime mode and
+`SubprocessExecutableConfig` (`kompile.subprocess.executable.*` properties) configures how
+helper processes are launched in auto / jvm / native modes.
+
+## Repository layout
+
+```
+kompile/
+├── kompile-cli/                    # Main developer CLI (Picocli)
+├── kompile-app/                    # Spring Boot RAG framework (40+ modules)
+│   ├── kompile-app-core/           # Core interfaces
+│   ├── kompile-app-main/           # Main app + web UI (Angular)
+│   ├── kompile-app-lite/           # Self-contained chat + RAG + Graph RAG
+│   ├── kompile-model-manager/      # Model download + cache
+│   ├── kompile-embedding-*/        # Embedding implementations
+│   ├── kompile-vectorstore-*/      # Vector store implementations
+│   ├── kompile-loader-*/           # Document loaders
+│   ├── kompile-source-*/           # Data sources (Slack, Jira, Notion, …)
+│   ├── kompile-chunker-*/          # Chunking strategies
+│   ├── kompile-tool-*/             # Spring AI / MCP tools
+│   ├── kompile-kvcache/            # Paged KV cache for local LLMs
+│   ├── kompile-graph-neo4j/        # Graph RAG
+│   └── kompile-ocr-*/              # OCR pipeline modules
+├── kompile-agent-cli/              # Federated agent CLI
+├── kompile-app-cli/                # Federated app-management CLI
+├── kompile-model-cli/              # Federated model CLI
+├── kompile-component-cli/          # Component management CLI
+├── kompile-pipelines-framework/    # Pipeline execution engine
+│   ├── kompile-pipelines-framework-api/
+│   ├── kompile-pipelines-framework-core/
+│   ├── kompile-pipelines-framework-runtime/
+│   └── kompile-pipeline-steps-parent/ (samediff, python, onnx, vlm, …)
+├── kompile-model-importer-tensorflow/
+├── kompile-model-importer-onnx/
+├── kompile-model-importer-keras/
+├── anserini/                       # Lucene IR toolkit + SameDiff dense encoders
+├── tokenizers-rust/                # HuggingFace tokenizers → JavaCPP bindings
+│   ├── libtokenizers/
+│   ├── cpp-wrapper/
+│   ├── tokenizers-native/
+│   └── tokenizers-native-preset/
+├── kompile-c-library/              # C shim for generated pipelines
+├── kompile-python/                 # Python SDK
+├── kompile-sdk-serving/            # Serving SDK
+├── kompile-rag-builds/             # Pre-generated sample RAG projects
+├── docs/                           # AsciiDoc / HTML docs
+└── pom.xml                         # Parent POM
+```
+
+## Memory management
+
+**Build**
+
+- Standard build: ~4 GB heap
+- Native-image build: 18–32 GB heap
+- Docker: `--memory=16g` recommended
+
+```bash
+docker run --ulimit nofile=98304:98304 --memory=16g --rm -it \
+  --entrypoint /bin/bash konduitai/kompile
+```
+
+**Runtime**
+
+```bash
+java -Xmx4g  -jar kompile-cli.jar
+java -Xmx8g  -jar kompile-app-main.jar
+```
+
+ND4J cleans up workspaces on shutdown, caps OpenBLAS threads via `ND4J_NUM_BLAS_THREADS`, and
+runs with `-Dorg.bytedeco.javacpp.nopointergc=true` in production configurations.
+
+## Common pitfalls
+
+- **Out of memory during build** — raise `MAVEN_OPTS=-Xmx…`.
+- **Native library not found** — verify `JAVACPP_PLATFORM` matches your OS/arch.
+- **Model download fails** — check network access and SHA256 in `ModelConstants`.
+- **Vector search returns nothing** — index and query must use the same embedding model.
+- **Spring bean not found** — double-check `kompile.*.type` in `application.properties` matches a
+  module that is on the classpath.
+- **Frontend changes not visible** — Spring Boot caches static resources at startup; restart the
+  app after rebuilding the Angular UI, and clean `target/classes/static/` if stale hashed
+  bundles linger.
+
+## Key dependencies
+
+Java 17 · Spring Boot 3.2.5 · Spring AI 1.0.0 · Picocli 4.7.6 · ND4J 1.0.0-SNAPSHOT ·
+Lucene (via Anserini) · JavaCPP 1.5.11 · GraalVM SDK 24.0.1 · Jackson 2.15.3 · Lombok 1.18.38
+
+## Links
+
+- Community: <https://community.konduit.ai>
+- Eclipse DeepLearning4j: <https://github.com/deeplearning4j/deeplearning4j>
+- HTML docs: [`./docs/`](./docs)
+- License: see [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE)

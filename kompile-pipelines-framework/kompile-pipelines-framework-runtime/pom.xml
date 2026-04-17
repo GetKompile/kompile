@@ -104,6 +104,11 @@
     <profiles>
         <profile>
             <id>native-library</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>

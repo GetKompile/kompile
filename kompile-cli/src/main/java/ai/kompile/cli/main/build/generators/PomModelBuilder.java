@@ -34,7 +34,8 @@ import java.util.*;
  */
 public class PomModelBuilder {
 
-    public static final String DEFAULT_SPRING_BOOT_VERSION = "3.4.5";
+    public static final String DEFAULT_SPRING_BOOT_VERSION = "3.2.5";
+    public static final String DEFAULT_ND4J_VERSION = "1.0.0-SNAPSHOT";
     public static final String DEFAULT_SPRING_AI_VERSION = "1.0.0";
     public static final String DEFAULT_LOMBOK_VERSION = "1.18.38";
     public static final String DEFAULT_JACKSON_VERSION = "2.15.3";
@@ -76,6 +77,7 @@ public class PomModelBuilder {
         model.setParent(parentPom);
 
         addProperties();
+        addDependencyManagement();
         addDependencies();
         addBuildPlugins();
 
@@ -137,6 +139,13 @@ public class PomModelBuilder {
             props.setProperty("javacpp.platform", config.getJavacppPlatform());
         }
 
+        // ND4J backend property — referenced by the ND4J backend dependencies below.
+        // Defaults to nd4j-cuda-12.9 (see BuildConfiguration.Builder.backend).
+        if (config.getBackend() != null && !config.getBackend().isBlank()) {
+            props.setProperty("backend", config.getBackend());
+        }
+        props.setProperty("nd4j.version", DEFAULT_ND4J_VERSION);
+
         String defaultLang = "en";
         if (config.getSupportedLanguages() != null && !config.getSupportedLanguages().isEmpty()) {
             defaultLang = config.getSupportedLanguages().get(0).toLowerCase().trim();
@@ -146,16 +155,56 @@ public class PomModelBuilder {
         model.setProperties(props);
     }
 
+    /**
+     * Import the kompile-app BOM so transitive kompile dependencies (which may be
+     * declared without an explicit version inside kompile-app-main's installed POM)
+     * resolve cleanly in the generated project.
+     */
+    private void addDependencyManagement() {
+        DependencyManagement dm = model.getDependencyManagement();
+        if (dm == null) {
+            dm = new DependencyManagement();
+            model.setDependencyManagement(dm);
+        }
+        Dependency kompileBom = new Dependency();
+        kompileBom.setGroupId("ai.kompile");
+        kompileBom.setArtifactId("kompile-app");
+        kompileBom.setVersion("${kompile.project.version}");
+        kompileBom.setType("pom");
+        kompileBom.setScope("import");
+        dm.addDependency(kompileBom);
+    }
+
     private void addDependencies() {
         List<Dependency> deps = new ArrayList<>();
         ModuleSelection modules = config.getModules();
 
         boolean isLite = modules.has("app-lite") && !modules.has("app-main");
 
+        // ND4J backend (artifactId selected via ${backend}, e.g. nd4j-cuda-12.9 or
+        // nd4j-native). Both the platform-agnostic jar and the platform-specific
+        // classifier jar are required so the native libs make it onto the classpath.
+        Dependency nd4j = new Dependency();
+        nd4j.setGroupId("org.eclipse.deeplearning4j");
+        nd4j.setArtifactId("${backend}");
+        nd4j.setVersion("${nd4j.version}");
+        deps.add(nd4j);
+
+        if (config.getJavacppPlatform() != null && !config.getJavacppPlatform().isBlank()) {
+            Dependency nd4jClassified = new Dependency();
+            nd4jClassified.setGroupId("org.eclipse.deeplearning4j");
+            nd4jClassified.setArtifactId("${backend}");
+            nd4jClassified.setVersion("${nd4j.version}");
+            nd4jClassified.setClassifier(config.getJavacppPlatform());
+            deps.add(nd4jClassified);
+        }
+
         // Always-included Spring Boot starters
         addDep(deps, "org.springframework.boot", "spring-boot-starter-web", "${spring-boot.version}");
         addDep(deps, "org.springframework.boot", "spring-boot-starter", "${spring-boot.version}");
         addDep(deps, "org.springframework.boot", "spring-boot-starter-validation", "${spring-boot.version}");
+        // Required by kompile-app-main's WebSocket configurer (e.g. ChatBroadcastConfig).
+        addDep(deps, "org.springframework.boot", "spring-boot-starter-websocket", "${spring-boot.version}");
 
         // MCP and Quartz only for non-lite builds
         if (!isLite) {

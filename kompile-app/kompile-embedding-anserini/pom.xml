@@ -75,6 +75,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- CLI common: SubprocessLogWriter for centralized log aggregation -->
+        <dependency>
+            <groupId>ai.kompile</groupId>
+            <artifactId>kompile-cli-common</artifactId>
+        </dependency>
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

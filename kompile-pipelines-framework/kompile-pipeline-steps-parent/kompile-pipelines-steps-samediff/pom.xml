@@ -52,6 +52,13 @@
             <version>${nd4j.version}</version>
         </dependency>
 
+        <!-- HuggingFace tokenizer (BPE/SentencePiece/WordPiece) via DL4J samediff-llm -->
+        <dependency>
+            <groupId>org.eclipse.deeplearning4j</groupId>
+            <artifactId>samediff-llm</artifactId>
+            <version>${nd4j.version}</version>
+        </dependency>
+
 
 
         <dependency>

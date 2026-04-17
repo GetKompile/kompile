@@ -606,7 +606,6 @@ public class EnvironmentController {
             if (request.getBatchZero() != null) { env.setDspBatchZero(request.getBatchZero()); updated++; }
             if (request.getBatchZeroKernel() != null) { env.setDspBatchZeroKernel(request.getBatchZeroKernel()); updated++; }
             if (request.getSymbolicShapes() != null) { env.setDspSymbolicShapes(request.getSymbolicShapes()); updated++; }
-            if (request.getSymbolicShapeWarmup() != null) { env.setDspSymbolicShapeWarmup(request.getSymbolicShapeWarmup()); updated++; }
             if (request.getCapturePoolEnabled() != null) { env.setDspCapturePoolEnabled(request.getCapturePoolEnabled()); updated++; }
             if (request.getCapturePoolMaxBytes() != null) { env.setDspCapturePoolMaxBytes(request.getCapturePoolMaxBytes()); updated++; }
 
@@ -914,7 +913,6 @@ public class EnvironmentController {
                     .batchZero(env.dspBatchZero())
                     .batchZeroKernel(env.dspBatchZeroKernel())
                     .symbolicShapes(env.dspSymbolicShapes())
-                    .symbolicShapeWarmup(env.dspSymbolicShapeWarmup())
                     .capturePoolEnabled(env.dspCapturePoolEnabled())
                     .capturePoolMaxBytes(env.dspCapturePoolMaxBytes())
                     .build();

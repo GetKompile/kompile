@@ -49,6 +49,8 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -413,6 +415,18 @@ public class VectorPopulationSubprocessLauncher {
                     taskId, keywordIndexPath, vectorIndexPath,
                     process, resultFuture, argsFile);
             activeProcesses.put(taskId, handle);
+
+            // Open subprocess log writer (Phase 2 log aggregation)
+            try {
+                SubprocessLogWriter logWriter = new SubprocessLogWriter("vector-population", taskId);
+                String effectiveHeap = memoryOverrides.hasOverrides() && memoryOverrides.heapSize() != null
+                        ? memoryOverrides.heapSize() : getEffectiveHeapSize();
+                logWriter.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                        taskId, command, System.getProperty("user.dir"), process.pid(), effectiveHeap));
+                handle.logWriter = logWriter;
+            } catch (Exception e) {
+                logger.debug("[vector-pop-{}] Failed to open subprocess log writer: {}", taskId, e.getMessage());
+            }
 
             // Start monitoring
             startMonitoring(handle);
@@ -799,6 +813,15 @@ public class VectorPopulationSubprocessLauncher {
                     if (ingestProgressTracker != null) {
                         ingestProgressTracker.sendLog(handle.getTaskId(), "STDOUT", "INFO", line);
                     }
+                    // Write to subprocess log file
+                    SubprocessLogWriter lw = handle.logWriter;
+                    if (lw != null) {
+                        try {
+                            lw.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                        } catch (Exception logEx) {
+                            logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
+                        }
+                    }
                 }
             }
         } catch (IOException e) {
@@ -852,6 +875,15 @@ public class VectorPopulationSubprocessLauncher {
                 }
                 if (ingestProgressTracker != null) {
                     ingestProgressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
+                }
+                // Write to subprocess log file
+                SubprocessLogWriter lw = handle.logWriter;
+                if (lw != null) {
+                    try {
+                        lw.writeLine(AgentLogRecord.Stream.STDERR, line);
+                    } catch (Exception logEx) {
+                        logger.debug("[vector-pop-{}] log write failed: {}", handle.getTaskId(), logEx.getMessage());
+                    }
                 }
             }
         } catch (IOException e) {
@@ -1037,6 +1069,7 @@ public class VectorPopulationSubprocessLauncher {
                 }
 
                 forwardCompletion(handle, completed);
+                closeSubprocessLog(handle, "COMPLETED", 0, null, false, false);
             } else if (message instanceof SubprocessMessage.Failed failed) {
                 logger.error("Task {} failed in phase {}: {}",
                         handle.getTaskId(), failed.phase(), failed.errorMessage());
@@ -1106,6 +1139,7 @@ public class VectorPopulationSubprocessLauncher {
                 }
 
                 forwardFailure(handle, failed);
+                closeSubprocessLog(handle, "FAILED", null, failed.errorMessage(), false, false);
             }
         } catch (Exception e) {
             logger.warn("Failed to parse subprocess message: {}", json, e);
@@ -1278,6 +1312,7 @@ public class VectorPopulationSubprocessLauncher {
             }
 
             broadcastProgress(handle.getTaskId(), "FAILED", 0, "Failed", errorMessage, null);
+            closeSubprocessLog(handle, "FAILED", exitCode, errorMessage, false, false);
         } else {
             String errorMessage;
             boolean isNativeCrash = false;
@@ -1411,6 +1446,8 @@ public class VectorPopulationSubprocessLauncher {
 
             // Also broadcast directly via WebSocket for backward compatibility
             broadcastProgress(handle.getTaskId(), "FAILED", 0, "Failed", uiMessage, null);
+            String logState = isCancelled ? "CANCELLED" : (isNativeCrash ? "CRASHED" : "FAILED");
+            closeSubprocessLog(handle, logState, exitCode, uiMessage, isOomKilled, false);
         }
     }
 
@@ -2012,6 +2049,13 @@ public class VectorPopulationSubprocessLauncher {
             }
         }
 
+        // Safety close for log writer (normally already closed by handleCompletion)
+        SubprocessLogWriter lw = handle.logWriter;
+        if (lw != null) {
+            handle.logWriter = null;
+            try { lw.close(); } catch (Exception ignored) {}
+        }
+
         Path argsFile = handle.getArgsFile();
         if (argsFile != null && Files.exists(argsFile)) {
             try {
@@ -2020,6 +2064,30 @@ public class VectorPopulationSubprocessLauncher {
             } catch (IOException e) {
                 logger.warn("Failed to delete args file: {}", argsFile);
             }
+        }
+    }
+
+    /**
+     * Write the terminal record to the subprocess log and close it.
+     * Swallows all errors so aggregation failures never break a run.
+     */
+    private void closeSubprocessLog(VectorPopulationHandle handle, String state,
+            Integer exitCode, String errorMessage, boolean oomDetected, boolean gpuOomDetected) {
+        SubprocessLogWriter lw = handle.logWriter;
+        if (lw == null) {
+            return;
+        }
+        handle.logWriter = null;
+        try {
+            lw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, errorMessage, oomDetected, gpuOomDetected));
+        } catch (Exception e) {
+            logger.debug("[vector-pop-{}] log writeEnd failed: {}", handle.getTaskId(), e.getMessage());
+        }
+        try {
+            lw.close();
+        } catch (Exception e) {
+            logger.debug("[vector-pop-{}] log close failed: {}", handle.getTaskId(), e.getMessage());
         }
     }
 
@@ -2936,6 +3004,7 @@ public class VectorPopulationSubprocessLauncher {
         private volatile int progressPercent = 0;
         private volatile String lastMessage = "";
         private volatile boolean startupComplete = false;
+        volatile SubprocessLogWriter logWriter;
 
         public VectorPopulationHandle(String taskId, String keywordIndexPath, String vectorIndexPath,
                 Process process, CompletableFuture<VectorPopulationResult> resultFuture,

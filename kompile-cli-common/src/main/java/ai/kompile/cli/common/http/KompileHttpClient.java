@@ -22,11 +22,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 
@@ -204,31 +208,73 @@ public class KompileHttpClient {
     /**
      * Uploads a file via multipart POST.
      */
-    public String uploadFile(String path, java.nio.file.Path filePath) throws IOException, InterruptedException {
+    public String uploadFile(String path, Path filePath) throws IOException, InterruptedException {
+        return uploadMultipart(path, Map.of("file", filePath), null);
+    }
+
+    /**
+     * Sends a multipart upload with one or more named file parts plus optional
+     * text form fields. Useful for endpoints like {@code /api/graph/io/import}
+     * that take both files and parameters.
+     */
+    public String uploadMultipart(String path,
+                                  Map<String, Path> files,
+                                  Map<String, String> formFields) throws IOException, InterruptedException {
         String boundary = "----KompileBoundary" + System.currentTimeMillis();
-        String fileName = filePath.getFileName().toString();
-        byte[] fileBytes = java.nio.file.Files.readAllBytes(filePath);
-
-        String prefix = "--" + boundary + "\r\n"
-                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
-                + "Content-Type: application/octet-stream\r\n\r\n";
-        String suffix = "\r\n--" + boundary + "--\r\n";
-
-        byte[] prefixBytes = prefix.getBytes();
-        byte[] suffixBytes = suffix.getBytes();
-        byte[] body = new byte[prefixBytes.length + fileBytes.length + suffixBytes.length];
-        System.arraycopy(prefixBytes, 0, body, 0, prefixBytes.length);
-        System.arraycopy(fileBytes, 0, body, prefixBytes.length, fileBytes.length);
-        System.arraycopy(suffixBytes, 0, body, prefixBytes.length + fileBytes.length, suffixBytes.length);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (formFields != null) {
+            for (Map.Entry<String, String> e : formFields.entrySet()) {
+                if (e.getValue() == null) continue;
+                out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+                out.write(("Content-Disposition: form-data; name=\"" + e.getKey() + "\"\r\n\r\n")
+                        .getBytes(StandardCharsets.UTF_8));
+                out.write(e.getValue().getBytes(StandardCharsets.UTF_8));
+                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        if (files != null) {
+            for (Map.Entry<String, Path> e : files.entrySet()) {
+                if (e.getValue() == null) continue;
+                String fileName = e.getValue().getFileName().toString();
+                out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+                out.write(("Content-Disposition: form-data; name=\"" + e.getKey() + "\"; filename=\""
+                        + fileName + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+                out.write("Content-Type: application/octet-stream\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                out.write(Files.readAllBytes(e.getValue()));
+                out.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + path))
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray()))
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         checkResponse(response);
         return response.body();
+    }
+
+    /**
+     * Sends a GET request and writes the raw response body to {@code outputFile}.
+     * Returns the {@code Content-Disposition} header (or null) so callers can
+     * derive a default filename when needed.
+     */
+    public String downloadToFile(String path, Path outputFile) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .GET()
+                .build();
+        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() >= 400) {
+            String body = response.body() != null ? new String(response.body(), StandardCharsets.UTF_8) : "";
+            throw new IOException("HTTP " + response.statusCode() + ": " + body);
+        }
+        Path parent = outputFile.toAbsolutePath().getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Files.write(outputFile, response.body());
+        return response.headers().firstValue("Content-Disposition").orElse(null);
     }
 
     private void checkResponse(HttpResponse<String> response) throws IOException {

@@ -970,10 +970,12 @@
 
       <!-- Messages -->
       <div *ngFor="let message of messages; let i = index" class="message-wrapper"
-        [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'">
+        [class.user-wrapper]="message.role === 'user'" [class.bot-wrapper]="message.role === 'assistant'"
+        [class.system-wrapper]="message.role === 'system'">
 
         <div class="message-bubble" [class.user-message]="message.role === 'user'"
-          [class.bot-message]="message.role === 'assistant'" [class.error-message]="message.error"
+          [class.bot-message]="message.role === 'assistant'"
+          [class.system-message]="message.role === 'system'" [class.error-message]="message.error"
           [class.streaming]="message.isStreaming">
 
           <div class="message-header">
@@ -983,6 +985,7 @@
                 {{ message.agent?.displayName || 'Assistant' }}
                 <span class="agent-icon-small" *ngIf="message.agent">{{ getAgentIcon(message.agent.name) }}</span>
               </span>
+              <span *ngIf="message.role === 'system'">Monitor</span>
             </strong>
             <div class="message-header-actions">
               <span *ngIf="message.isStreaming" class="streaming-indicator">typing...</span>

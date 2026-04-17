@@ -22,6 +22,7 @@ import lombok.Builder;
 import lombok.Value;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -39,6 +40,11 @@ public class RoleConfig {
     @Builder.Default int maxSteps = 50;
     @Builder.Default boolean canSpawnSubagents = true;
     @Builder.Default String modelHint = "default";
+    /**
+     * Ordered list of preferred agents for rate-limit fallback when this role is active.
+     * e.g. ["qwen", "claude", "gemini"]. Empty list means use the global default order.
+     */
+    @Builder.Default List<String> agentFallbackPriority = List.of();
     String sourceFile;
     @Builder.Default boolean isBuiltIn = false;
 
@@ -74,6 +80,10 @@ public class RoleConfig {
 
         if (!enabledTools.contains("*")) {
             sb.append("tools: ").append(String.join(", ", enabledTools)).append("\n");
+        }
+
+        if (agentFallbackPriority != null && !agentFallbackPriority.isEmpty()) {
+            sb.append("agent_fallback: ").append(String.join(", ", agentFallbackPriority)).append("\n");
         }
 
         if (!permissionOverrides.isEmpty()) {

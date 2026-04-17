@@ -35,6 +35,8 @@ import ai.kompile.app.services.ServerPortService;
 import ai.kompile.app.subprocess.SubprocessArgs;
 import ai.kompile.app.subprocess.SubprocessMessage;
 import ai.kompile.app.web.dto.IngestProgressUpdate;
+import ai.kompile.cli.common.logs.AgentLogRecord;
+import ai.kompile.cli.common.logs.SubprocessLogWriter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 // NOTE: Do NOT import Nd4j here - it would initialize ND4J native code in parent process
@@ -119,6 +121,9 @@ public class SubprocessIngestLauncher {
     @Autowired(required = false)
     private ModelLifecycleManager modelLifecycleManager;
 
+    @Autowired(required = false)
+    private ai.kompile.app.monitor.service.MonitorService monitorService;
+
     // Active subprocess tracking
     private final Map<String, SubprocessHandle> activeProcesses = new ConcurrentHashMap<>();
 
@@ -146,6 +151,9 @@ public class SubprocessIngestLauncher {
 
     /** Map from taskId to jobId (for looking up job context on completion) */
     private final Map<String, String> taskToJobId = new ConcurrentHashMap<>();
+
+    /** Phase-2 log aggregation: JSON-lines writers keyed by taskId */
+    private final Map<String, SubprocessLogWriter> logWriters = new ConcurrentHashMap<>();
 
     /** Directory for checkpoint storage */
     private Path checkpointBaseDir;
@@ -280,6 +288,9 @@ public class SubprocessIngestLauncher {
             // Store launch context for potential retry
             jobLaunchContexts.put(jobId, new LaunchContext(jobId, filePath, loaderName, chunkerName,
                     options != null ? new java.util.HashMap<>(options) : new java.util.HashMap<>(), resultFuture));
+            // Fire any chat monitors registered for this task when it completes.
+            // Attach exactly once — on the original future only, not on retries.
+            resultFuture.whenComplete((result, error) -> notifyMonitorService(taskId, result, error));
         }
 
         // Store file path for fact creation on completion
@@ -470,6 +481,19 @@ public class SubprocessIngestLauncher {
 
             Process process = processBuilder.start();
             logger.info("Started subprocess with PID: {}", process.pid());
+
+            // Phase-2 log aggregation: open central JSON-lines writer
+            try {
+                SubprocessLogWriter slw = new SubprocessLogWriter("ingest", taskId);
+                slw.writeStart(new SubprocessLogWriter.SubprocessRunContext(
+                        null, command,
+                        processBuilder.directory() != null ? processBuilder.directory().getAbsolutePath() : null,
+                        process.pid(), getEffectiveHeapSize(effectiveOptions)));
+                logWriters.put(taskId, slw);
+                logger.debug("[ingest-{}] SubprocessLogWriter opened: {}", taskId, slw.getLogFile());
+            } catch (Exception _logEx) {
+                logger.debug("[ingest-{}] SubprocessLogWriter init failed (non-fatal): {}", taskId, _logEx.getMessage());
+            }
 
             // Track taskId -> jobId mapping for retry handling
             taskToJobId.put(taskId, jobId);
@@ -1044,6 +1068,15 @@ public class SubprocessIngestLauncher {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                // Write every non-null line to the central log store
+                try {
+                    SubprocessLogWriter slw = logWriters.get(handle.getTaskId());
+                    if (slw != null) {
+                        slw.writeLine(AgentLogRecord.Stream.STDOUT, line);
+                    }
+                } catch (Exception _logEx) {
+                    logger.debug("[ingest-{}] stdout log write failed: {}", handle.getTaskId(), _logEx.getMessage());
+                }
                 // Check for protocol messages
                 if (line.startsWith(SubprocessMessage.MESSAGE_PREFIX)) {
                     String json = line.substring(SubprocessMessage.MESSAGE_PREFIX.length());
@@ -1116,6 +1149,15 @@ public class SubprocessIngestLauncher {
                 // Forward ALL stderr to WebSocket for UI display (with detected level)
                 if (progressTracker != null) {
                     progressTracker.sendLog(handle.getTaskId(), "STDERR", level, line);
+                }
+                // Write to central log store
+                try {
+                    SubprocessLogWriter slw = logWriters.get(handle.getTaskId());
+                    if (slw != null) {
+                        slw.writeLine(AgentLogRecord.Stream.STDERR, line);
+                    }
+                } catch (Exception _logEx) {
+                    logger.debug("[ingest-{}] stderr log write failed: {}", handle.getTaskId(), _logEx.getMessage());
                 }
             }
         } catch (IOException e) {
@@ -1830,6 +1872,33 @@ public class SubprocessIngestLauncher {
     }
 
     /**
+     * Notify MonitorService that a task finished so any chat monitors watching
+     * the task can fire wake-up events. Called from the resultFuture completion
+     * hook — must swallow all errors so completion is never blocked.
+     */
+    private void notifyMonitorService(String taskId, SubprocessHandle.SubprocessResult result, Throwable error) {
+        if (monitorService == null) return;
+        try {
+            boolean success = error == null && result != null && result.success();
+            String summary;
+            if (error != null) {
+                summary = "Task " + taskId + " ended with error: " + error.getMessage();
+            } else if (result == null) {
+                summary = "Task " + taskId + " completed";
+            } else if (result.success()) {
+                summary = String.format("Task %s finished: %d documents, %d chunks indexed in %dms",
+                        taskId, result.documentsLoaded(), result.documentsIndexed(), result.totalDurationMs());
+            } else {
+                summary = "Task " + taskId + " failed: " +
+                        (result.errorMessage() != null ? result.errorMessage() : "unknown error");
+            }
+            monitorService.onTaskCompleted(taskId, success, summary);
+        } catch (Exception e) {
+            logger.warn("Failed to notify monitor service for task {}: {}", taskId, e.getMessage());
+        }
+    }
+
+    /**
      * Forward completion to IngestProgressTracker for WebSocket broadcast.
      * Also creates a Fact in the active sheet for the successfully processed file.
      */
@@ -2206,6 +2275,10 @@ public class SubprocessIngestLauncher {
                     handle.getTaskId(), exitCode, errorMessage, handle.getCurrentPhase(),
                     handle.isCancelled(), handle.isOomDetected(), handle.isGpuOomDetected()));
 
+            // Phase-2 log aggregation: record terminal state
+            closeSubprocessLog(handle.getTaskId(), failureReason, exitCode, errorMessage,
+                    handle.isOomDetected(), handle.isGpuOomDetected());
+
             // Update progress tracker with detailed message
             if (progressTracker != null) {
                 String uiMessage = isNativeCrash
@@ -2394,6 +2467,22 @@ public class SubprocessIngestLauncher {
             }
         }
 
+        // Phase-2 log aggregation: safety-close writer if not already closed
+        // (covers protocol-completed paths where handleCompletion returned early)
+        SubprocessLogWriter slw = logWriters.remove(handle.getTaskId());
+        if (slw != null) {
+            try {
+                // Only write a terminal record if the writer is still open (writeEnd is idempotent)
+                slw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                        "COMPLETED", null, null,
+                        handle.isOomDetected(), handle.isGpuOomDetected()));
+            } catch (Exception _logEx) {
+                logger.debug("[ingest-{}] SubprocessLogWriter safety writeEnd failed: {}", handle.getTaskId(), _logEx.getMessage());
+            } finally {
+                slw.close();
+            }
+        }
+
         // Delete args file
         Path argsFile = handle.getArgsFile();
         if (argsFile != null && Files.exists(argsFile)) {
@@ -2403,6 +2492,26 @@ public class SubprocessIngestLauncher {
             } catch (IOException e) {
                 logger.warn("Failed to delete args file: {}", argsFile);
             }
+        }
+    }
+
+    /**
+     * Write the terminal record and close the SubprocessLogWriter for a task.
+     * Called from the explicit failure path in handleCompletion.
+     * Removes the writer from the map so cleanup()'s safety-close is a no-op.
+     * All failures are swallowed — aggregation must never break an ingest run.
+     */
+    private void closeSubprocessLog(String taskId, String state, Integer exitCode,
+                                    String errorMessage, boolean oomDetected, boolean gpuOomDetected) {
+        SubprocessLogWriter slw = logWriters.remove(taskId);
+        if (slw == null) return;
+        try {
+            slw.writeEnd(new SubprocessLogWriter.SubprocessRunResult(
+                    state, exitCode, errorMessage, oomDetected, gpuOomDetected));
+        } catch (Exception _logEx) {
+            logger.debug("[ingest-{}] SubprocessLogWriter writeEnd failed (non-fatal): {}", taskId, _logEx.getMessage());
+        } finally {
+            slw.close();
         }
     }
 

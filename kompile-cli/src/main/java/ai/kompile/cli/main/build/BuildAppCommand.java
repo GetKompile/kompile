@@ -98,11 +98,19 @@ public class BuildAppCommand implements Callable<Integer> {
     @Option(names = {"--cleanBuild"}, description = "Clean before build", defaultValue = "true", negatable = true)
     private boolean cleanBuild;
 
+    @Option(names = {"--skipMavenBuild"}, description = "Generate POM and application.properties only; do not invoke Maven",
+            defaultValue = "false")
+    private boolean skipMavenBuild;
+
     @Option(names = {"--javacppPlatform"}, description = "JavaCPP platform (e.g., linux-x86_64)")
     private String javacppPlatform = "linux-x86_64";
 
     @Option(names = {"--javacppExtension"}, description = "JavaCPP extension (e.g., avx2, cuda)")
     private String javacppExtension;
+
+    @Option(names = {"--backend"}, description = "ND4J backend artifactId: nd4j-cuda-12.9, nd4j-native, etc. Default: nd4j-cuda-12.9",
+            defaultValue = "nd4j-cuda-12.9")
+    private String backend;
 
     @Option(names = {"--mavenHome"}, description = "Path to Maven installation")
     private File mavenHome;
@@ -221,6 +229,7 @@ public class BuildAppCommand implements Callable<Integer> {
                 .cleanBuild(cleanBuild)
                 .javacppPlatform(javacppPlatform)
                 .javacppExtension(javacppExtension)
+                .backend(backend)
                 .mavenHome(mavenHome)
                 .graalVmHome(graalVmHome)
                 .appTitle(appTitle)
@@ -284,7 +293,12 @@ public class BuildAppCommand implements Callable<Integer> {
         // 10. Print module summary
         printEnabledModules(modules);
 
-        // 11. Invoke Maven build
+        // 11. Invoke Maven build (unless explicitly skipped)
+        if (skipMavenBuild) {
+            System.out.println("\n--skipMavenBuild set; generated POM + application.properties only.");
+            System.out.println("  Project: " + projectBuildDir.getAbsolutePath());
+            return 0;
+        }
         return invokeMaven(projectBuildDir, pomFile);
     }
 

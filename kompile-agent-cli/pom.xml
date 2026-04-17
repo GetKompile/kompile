@@ -71,6 +71,16 @@
                 <configuration>
                     <shadedArtifactAttached>true</shadedArtifactAttached>
                     <createDependencyReducedPom>true</createDependencyReducedPom>
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
                 </configuration>
                 <executions>
                     <execution>
@@ -95,6 +105,11 @@
     <profiles>
         <profile>
             <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>

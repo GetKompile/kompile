@@ -17,6 +17,8 @@
 package ai.kompile.chat.history.service;
 
 import ai.kompile.chat.history.config.ChatHistoryProperties;
+import ai.kompile.cli.common.chat.sources.ChatSourceAdapter;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -28,21 +30,13 @@ import jakarta.annotation.PostConstruct;
 /**
  * Scheduled service that automatically imports new CLI transcripts into the app database.
  * Runs on startup and periodically (default 5 min) to discover and import new conversations
- * from kompile CLI, Claude Code, OpenCode, Codex, and Qwen.
+ * from all registered chat source adapters.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 @ConditionalOnProperty(name = "kompile.chat.history.cli-sync-enabled", havingValue = "true", matchIfMissing = true)
 public class CliTranscriptSyncService {
-
-    private static final String[] ALL_SOURCES = {
-            CliTranscriptService.SOURCE_KOMPILE,
-            CliTranscriptService.SOURCE_CLAUDE_CODE,
-            CliTranscriptService.SOURCE_OPENCODE,
-            CliTranscriptService.SOURCE_CODEX,
-            CliTranscriptService.SOURCE_QWEN
-    };
 
     private final CliTranscriptService cliTranscriptService;
     private final ChatHistoryProperties properties;
@@ -63,15 +57,15 @@ public class CliTranscriptSyncService {
         int totalImported = 0;
         int batchSize = properties.getCliSyncBatchSize();
 
-        for (String source : ALL_SOURCES) {
+        for (ChatSourceAdapter adapter : ChatSourceRegistry.getInstance().all()) {
             try {
-                int count = cliTranscriptService.syncSource(source, batchSize);
+                int count = cliTranscriptService.syncSource(adapter.id(), batchSize);
                 if (count > 0) {
                     totalImported += count;
-                    log.info("CLI transcript sync: imported {} sessions from {}", count, source);
+                    log.info("CLI transcript sync: imported {} sessions from {}", count, adapter.id());
                 }
             } catch (Exception e) {
-                log.warn("CLI transcript sync: failed to sync source {}: {}", source, e.getMessage());
+                log.warn("CLI transcript sync: failed to sync source {}: {}", adapter.id(), e.getMessage());
             }
         }
 

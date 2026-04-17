@@ -16,6 +16,9 @@
 
 package ai.kompile.tool.rag;
 
+import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
+import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
+import ai.kompile.core.mcp.optimization.ResultReferenceCache;
 import ai.kompile.core.retrievers.DocumentRetriever;
 import ai.kompile.core.retrievers.NoOpDocumentRetrieverImpl;
 import ai.kompile.core.retrievers.RetrievedDoc;
@@ -31,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,6 +58,8 @@ public class RagToolImpl {
 
     private DocumentRetriever documentRetriever;
     private final ObjectMapper objectMapper;
+    private final McpOptimizationConfigProvider optimizationProvider;
+    private final ResultReferenceCache resultCache;
 
     @Value("${kompile.retrieval.useFullTableContent:true}")
     private boolean useFullTableContent;
@@ -64,7 +70,10 @@ public class RagToolImpl {
     public record RagQueryInput(String query, Integer maxResults) {}
 
     @Autowired
-    public RagToolImpl(List<DocumentRetriever> documentRetriever, ObjectMapper objectMapper) {
+    public RagToolImpl(List<DocumentRetriever> documentRetriever,
+                       ObjectMapper objectMapper,
+                       @Autowired(required = false) McpOptimizationConfigProvider optimizationProvider,
+                       @Autowired(required = false) ResultReferenceCache resultCache) {
         if (documentRetriever.size() > 1) {
             for (DocumentRetriever retriever : documentRetriever) {
                 if (retriever instanceof NoOpDocumentRetrieverImpl) {
@@ -78,6 +87,10 @@ public class RagToolImpl {
             this.documentRetriever = documentRetriever.get(0);
         }
         this.objectMapper = objectMapper;
+        this.optimizationProvider = optimizationProvider != null
+                ? optimizationProvider
+                : McpOptimizationConfigProvider.ofDefaults();
+        this.resultCache = resultCache;
         logger.debug("RagToolImpl constructed with DocumentRetriever: {}", documentRetriever.getClass().getSimpleName());
     }
 
@@ -93,7 +106,7 @@ public class RagToolImpl {
     @Tool(name = "rag_query",
             description = "Queries the document corpus using the configured retriever and returns relevant information snippets. " +
                          "For table data, returns full table content for accurate answers. " +
-                         "Optionally, provide maxResults to limit document count (default 3, max 10).")
+                         "Long documents are truncated and a result_id is returned; call fetch_result to retrieve full content.")
     public Map<String, Object> executeRagQuery(RagQueryInput input) {
         logger.info("RagTool: Executing RAG Query with input: {}", input);
 
@@ -102,7 +115,15 @@ public class RagToolImpl {
             return Map.of("error", "Query cannot be empty.", "query", input.query(), "retrieved_documents", Collections.emptyList());
         }
 
-        int maxDocs = (input.maxResults() != null && input.maxResults() > 0 && input.maxResults() <= 10) ? input.maxResults() : 3;
+        McpOptimizationConfig cfg = optimizationProvider.getConfiguration();
+        boolean optimizationEnabled = Boolean.TRUE.equals(cfg.getEnabled());
+        int maxDocsCeiling = optimizationEnabled && cfg.getRagMaxDocs() != null && cfg.getRagMaxDocs() > 0
+                ? cfg.getRagMaxDocs()
+                : 10;
+        int defaultDocs = Math.min(3, maxDocsCeiling);
+        int maxDocs = (input.maxResults() != null && input.maxResults() > 0)
+                ? Math.min(input.maxResults(), maxDocsCeiling)
+                : defaultDocs;
 
         try {
             // Use retrieveWithDetails to get full document metadata
@@ -118,12 +139,26 @@ public class RagToolImpl {
 
             // Extract content with multi-vector support (full table content when available)
             List<String> documentContents = new ArrayList<>();
+            List<String> fullDocumentContents = new ArrayList<>();
             List<Map<String, Object>> documentMetadata = new ArrayList<>();
             int tableCount = 0;
             int textCount = 0;
+            int truncatedCount = 0;
+            int maxContentChars = optimizationEnabled && cfg.getRagMaxContentChars() != null
+                    ? cfg.getRagMaxContentChars()
+                    : -1;
 
             for (RetrievedDoc doc : retrievedDocs) {
                 String content = extractFullContent(doc);
+                fullDocumentContents.add(content);
+
+                boolean docTruncated = false;
+                if (maxContentChars > 0 && content != null && content.length() > maxContentChars) {
+                    content = content.substring(0, maxContentChars)
+                            + "…[truncated, full content available via fetch_result]";
+                    docTruncated = true;
+                    truncatedCount++;
+                }
                 documentContents.add(content);
 
                 // Build metadata for the response
@@ -131,6 +166,9 @@ public class RagToolImpl {
                 String contentType = getContentType(doc);
                 meta.put("content_type", contentType);
                 meta.put("id", doc.getId());
+                if (docTruncated) {
+                    meta.put("truncated", true);
+                }
 
                 if (doc.getScore() != null) {
                     meta.put("score", doc.getScore());
@@ -151,16 +189,26 @@ public class RagToolImpl {
                 documentMetadata.add(meta);
             }
 
-            logger.info("RagTool: Successfully retrieved {} documents ({} tables, {} text) for query: {}",
-                       retrievedDocs.size(), tableCount, textCount, input.query());
+            logger.info("RagTool: Successfully retrieved {} documents ({} tables, {} text, {} truncated) for query: {}",
+                       retrievedDocs.size(), tableCount, textCount, truncatedCount, input.query());
 
-            Map<String, Object> result = new HashMap<>();
+            Map<String, Object> result = new LinkedHashMap<>();
             result.put("query", input.query());
             result.put("status", "Successfully retrieved documents.");
             result.put("retrieved_documents", documentContents);
             result.put("metadata", documentMetadata);
             result.put("table_count", tableCount);
             result.put("text_count", textCount);
+
+            if (truncatedCount > 0 && resultCache != null && optimizationEnabled) {
+                Map<String, Object> fullPayload = new LinkedHashMap<>();
+                fullPayload.put("query", input.query());
+                fullPayload.put("retrieved_documents", fullDocumentContents);
+                fullPayload.put("metadata", documentMetadata);
+                String resultId = resultCache.store(fullPayload);
+                result.put("result_id", resultId);
+                result.put("truncated_count", truncatedCount);
+            }
 
             return result;
 

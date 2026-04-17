@@ -18,6 +18,8 @@ package ai.kompile.staging.conversion;
 
 import org.nd4j.autodiff.samediff.SameDiff;
 import org.nd4j.autodiff.samediff.serde.SameDiffSerializer;
+import org.nd4j.ggml.GGMLModelImport;
+import org.nd4j.ggml.convert.ConversionOptions;
 import org.nd4j.samediff.frameworkimport.onnx.importer.OnnxFrameworkImporter;
 import org.nd4j.samediff.frameworkimport.tensorflow.importer.TensorflowFrameworkImporter;
 import org.slf4j.Logger;
@@ -56,18 +58,19 @@ public class ConversionService {
         List<String> warnings = new ArrayList<>();
 
         try {
-            log.info("Converting {} model: {} -> {}", format, inputPath, outputPath);
-
             // Validate input
             if (!Files.exists(inputPath)) {
                 return ConversionResult.failure("Input file does not exist: " + inputPath);
             }
 
+            String resolvedFormat = resolveFormat(inputPath, format);
+            log.info("Converting {} model: {} -> {}", resolvedFormat, inputPath, outputPath);
+
             // Create output directory if needed
             Files.createDirectories(outputPath.getParent());
 
             // Import model based on format
-            SameDiff sameDiff = importModel(inputPath, format.toLowerCase());
+            SameDiff sameDiff = importModel(inputPath, resolvedFormat);
 
             if (sameDiff == null) {
                 return ConversionResult.failure("Failed to import model - null result");
@@ -83,15 +86,18 @@ public class ConversionService {
 
             log.info("Imported model with {} operations and {} variables", numOps, numVars);
 
-            // Save to SameDiff format
+            // Save to SameDiff format. saveAutoShard writes
+            // "{baseName}.shard{i}-of-{N}.sdnb" files next to outputPath (stripping the
+            // extension), not outputPath itself — validate the shard-0 presence instead.
             SameDiffSerializer.saveAutoShard(sameDiff, outputPath.toFile(), true, Collections.emptyMap());
 
-            if (!Files.exists(outputPath)) {
-                return ConversionResult.failure("Output file was not created");
+            Path shard0 = findShard0(outputPath);
+            if (shard0 == null) {
+                return ConversionResult.failure("Output shard files were not created next to " + outputPath);
             }
 
-            // Calculate checksum
-            String checksum = calculateSha256(outputPath);
+            // Calculate checksum on the shard-0 file (representative of the output bundle).
+            String checksum = calculateSha256(shard0);
 
             long duration = System.currentTimeMillis() - startTime;
             log.info("Conversion completed in {}ms", duration);
@@ -99,7 +105,7 @@ public class ConversionService {
             return ConversionResult.builder()
                     .success(true)
                     .outputModelPath(outputPath)
-                    .originalFormat(format)
+                    .originalFormat(resolvedFormat)
                     .checksum(checksum)
                     .numOperations(numOps)
                     .numVariables(numVars)
@@ -137,10 +143,31 @@ public class ConversionService {
             case "tensorflow":
             case "tf":
             case "pb":
+            case "gguf":
+            case "ggml":
                 return true;
             default:
                 return false;
         }
+    }
+
+    /**
+     * Resolve the effective conversion format, preferring the explicit
+     * user-supplied value but falling back to file-extension sniffing so
+     * that misconfigured or missing format strings still work correctly.
+     */
+    private String resolveFormat(Path inputPath, String format) {
+        if (format != null && supportsFormat(format)) {
+            return format.toLowerCase();
+        }
+        String name = inputPath.getFileName().toString().toLowerCase();
+        if (name.endsWith(".gguf")) return "gguf";
+        if (name.endsWith(".ggml")) return "ggml";
+        if (name.endsWith(".onnx")) return "onnx";
+        if (name.endsWith(".pb")) return "tensorflow";
+        if (name.endsWith(".h5")) return "tensorflow";
+        // Fall back to whatever the caller supplied; importModel will throw if unknown.
+        return format == null ? "" : format.toLowerCase();
     }
 
     /**
@@ -154,6 +181,9 @@ public class ConversionService {
             case "tf":
             case "pb":
                 return importTensorFlow(inputPath);
+            case "gguf":
+            case "ggml":
+                return importGgml(inputPath);
             default:
                 throw new IllegalArgumentException("Unsupported format: " + format);
         }
@@ -188,12 +218,33 @@ public class ConversionService {
     }
 
     /**
-     * Validate a SameDiff model file.
+     * Import a GGML/GGUF model, fully loading all weights (dequantized to FP16
+     * by default) into a SameDiff graph. Backed by {@link GGMLModelImport} from
+     * nd4j-ggml.
+     */
+    private SameDiff importGgml(Path inputPath) throws Exception {
+        log.debug("Importing GGML/GGUF model from: {}", inputPath);
+        ConversionOptions options = ConversionOptions.builder()
+                .quantizationMode(ConversionOptions.QuantizationMode.DEQUANTIZE_TO_FLOAT16)
+                .preserveTokenizerInfo(true)
+                .useMemoryMapping(true)
+                .build();
+        return GGMLModelImport.importModel(inputPath.toFile(), options);
+    }
+
+    /**
+     * Validate a SameDiff model file. The path may refer to a single-file model
+     * (existing .sdnb / .fb) or to the base name of a sharded model (in which case
+     * the actual files on disk are "{baseName}.shard{i}-of-{N}.sdnb"); SameDiffSerializer
+     * resolves the shard case internally from the parent directory.
      */
     public ValidationResult validate(Path modelPath) {
         try {
-            if (!Files.exists(modelPath)) {
-                return ValidationResult.failure("Model file does not exist");
+            if (modelPath == null) {
+                return ValidationResult.failure("Model path is null");
+            }
+            if (!Files.exists(modelPath) && findShard0(modelPath) == null) {
+                return ValidationResult.failure("Model file does not exist: " + modelPath);
             }
 
             SameDiff sd = SameDiff.load(modelPath.toFile(), true);
@@ -226,6 +277,31 @@ public class ConversionService {
             sb.append(String.format("%02x", b));
         }
         return sb.toString();
+    }
+
+    /**
+     * Locate the shard-0 file produced by SameDiffSerializer.saveAutoShard for the given
+     * base path. saveAutoShard strips the extension of baseFile and writes
+     * "{baseName}.shard{i}-of-{N}.sdnb" into the same directory.
+     */
+    private Path findShard0(Path basePath) throws IOException {
+        Path parent = basePath.toAbsolutePath().getParent();
+        if (parent == null || !Files.isDirectory(parent)) {
+            return null;
+        }
+        String fileName = basePath.getFileName().toString();
+        int dotIdx = fileName.lastIndexOf('.');
+        String baseName = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+        String prefix = baseName + ".shard0-of-";
+        try (java.util.stream.Stream<Path> entries = Files.list(parent)) {
+            return entries
+                    .filter(p -> {
+                        String n = p.getFileName().toString();
+                        return n.startsWith(prefix) && n.endsWith(".sdnb");
+                    })
+                    .findFirst()
+                    .orElse(null);
+        }
     }
 
     /**

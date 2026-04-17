@@ -95,10 +95,15 @@ public class ResumeTool implements CliTool {
     private String searchQuery = "";
     private String filterAgent = "";
     private String filterSource = "";
-    
+
     // Sort state
     private String sortField = "date"; // date, title, agent
     private boolean sortAscending = false; // default: most recent first for date
+
+    // Scope state: local-only (current directory) vs all projects
+    private boolean localOnly = true;
+    private final String currentWorkingDir = Path.of(System.getProperty("user.dir"))
+            .toAbsolutePath().normalize().toString();
 
     private record LoadedConversation(List<ChatHistory.Turn> turns, String source, Path workingDirectory) {}
 
@@ -179,6 +184,10 @@ public class ResumeTool implements CliTool {
         ObjectNode outputFormat = props.putObject("output_format");
         outputFormat.put("type", "string");
         outputFormat.put("description", "Output format for migration: 'kompile', 'openai', 'anthropic', 'markdown', 'jsonl'");
+
+        ObjectNode targetSessionId = props.putObject("target_session_id");
+        targetSessionId.put("type", "string");
+        targetSessionId.put("description", "UUID to use as the target session ID when resuming (instead of generating a new one)");
 
         schema.putArray("required").add("action");
         return schema;
@@ -394,12 +403,15 @@ public class ResumeTool implements CliTool {
                 case "resume":
                 case "r":
                     if (!rest.isEmpty()) {
-                        String sid = resolveSessionId(rest.trim());
+                        // Support: resume <id> [uuid]
+                        String[] resumeParts = rest.trim().split("\\s+", 2);
+                        String sid = resolveSessionId(resumeParts[0]);
+                        String targetUuid = resumeParts.length > 1 ? resumeParts[1].trim() : null;
                         if (sid == null) {
                             terminal.writer().println(RED + "Invalid selection — number out of range." + RESET);
                             terminal.writer().flush();
                         } else {
-                            resumeConversation(sid, filterAgent);
+                            resumeConversation(sid, filterAgent, targetUuid);
                         }
                     }
                     break;
@@ -420,6 +432,27 @@ public class ResumeTool implements CliTool {
                     if (!rest.isEmpty()) {
                         handleSort(rest.trim());
                     }
+                    break;
+                case "all":
+                case "global":
+                    // Load conversations from ALL projects, not just current directory
+                    localOnly = false;
+                    currentPage = 0;
+                    loadAllConversations();
+                    setFilterForCurrentTab();
+                    refreshView();
+                    terminal.writer().println(GREEN + "  Loaded all conversations across all projects." + RESET);
+                    terminal.writer().flush();
+                    break;
+                case "local":
+                    // Switch back to local-only mode
+                    localOnly = true;
+                    currentPage = 0;
+                    loadAllConversations();
+                    setFilterForCurrentTab();
+                    refreshView();
+                    terminal.writer().println(GREEN + "  Showing conversations for current directory only." + RESET);
+                    terminal.writer().flush();
                     break;
                 case "clear":
                 case "c":
@@ -457,12 +490,13 @@ public class ResumeTool implements CliTool {
     }
 
     /**
-     * Load all conversations from kompile and external sources.
+     * Load conversations from kompile and external sources.
+     * When localOnly is true, only loads sessions associated with the current working directory.
      */
     private void loadAllConversations() {
         allConversations.clear();
 
-        // Load kompile sessions
+        // Load kompile sessions (always loaded - these are local passthrough sessions)
         try {
             List<ChatHistory.ConversationSummary> kompileSessions = ChatHistory.listConversations();
             for (ChatHistory.ConversationSummary session : kompileSessions) {
@@ -488,7 +522,7 @@ public class ResumeTool implements CliTool {
         loadExternalConversations("gemini", "gemini");
 
         // Sort by last modified (most recent first)
-        allConversations.sort(Comparator.comparing(ConversationSummary::lastModified).reversed());
+        allConversations.sort(Comparator.comparing(ConversationSummary::lastModifiedTimestamp).reversed());
     }
 
     /**
@@ -543,6 +577,7 @@ public class ResumeTool implements CliTool {
 
     /**
      * Load conversations from an external agent source.
+     * When localOnly is true, only loads sessions associated with the current working directory.
      * Does NOT read file contents for titles - uses placeholders instead for fast loading.
      */
     private void loadExternalConversations(String source, String agentName) {
@@ -553,27 +588,34 @@ public class ResumeTool implements CliTool {
                 case "claude-code" -> {
                     Path claudeDir = Paths.get(homeDir, ".claude", "projects");
                     if (Files.isDirectory(claudeDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.list(claudeDir)) {
-                            projectDirs.filter(Files::isDirectory).forEach(projectDir -> {
-                                try (java.util.stream.Stream<Path> sessionFiles = Files.list(projectDir)) {
-                                    sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
-                                        .forEach(p -> {
-                                            String id = p.getFileName().toString().replace(".jsonl", "");
-                                            try {
-                                                long lastMod = java.nio.file.Files.getLastModifiedTime(p).toMillis();
-                                                allConversations.add(new ConversationSummary(
-                                                        id,
-                                                        "", // empty = lazy load on demand
-                                                        String.valueOf(lastMod),
-                                                        agentName.toLowerCase(),
-                                                        "claude-code",
-                                                        formatDate(lastMod),
-                                                        lastMod
-                                                ));
-                                            } catch (IOException ignored) {}
-                                        });
-                                } catch (IOException ignored) {}
-                            });
+                        List<Path> projectDirsToScan;
+                        if (localOnly) {
+                            // Only scan project dirs that match the current working directory
+                            projectDirsToScan = findMatchingClaudeProjectDirs(claudeDir, currentWorkingDir);
+                        } else {
+                            try (java.util.stream.Stream<Path> dirs = Files.list(claudeDir)) {
+                                projectDirsToScan = dirs.filter(Files::isDirectory).collect(Collectors.toList());
+                            }
+                        }
+                        for (Path projectDir : projectDirsToScan) {
+                            try (java.util.stream.Stream<Path> sessionFiles = Files.list(projectDir)) {
+                                sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
+                                    .forEach(p -> {
+                                        String id = p.getFileName().toString().replace(".jsonl", "");
+                                        try {
+                                            long lastMod = java.nio.file.Files.getLastModifiedTime(p).toMillis();
+                                            allConversations.add(new ConversationSummary(
+                                                    id,
+                                                    "", // empty = lazy load on demand
+                                                    String.valueOf(lastMod),
+                                                    agentName.toLowerCase(),
+                                                    "claude-code",
+                                                    formatDate(lastMod),
+                                                    lastMod
+                                            ));
+                                        } catch (IOException ignored) {}
+                                    });
+                            } catch (IOException ignored) {}
                         }
                     }
                 }
@@ -584,6 +626,10 @@ public class ResumeTool implements CliTool {
                             files.filter(p -> p.getFileName().toString().startsWith("rollout-") &&
                                             p.toString().endsWith(".jsonl"))
                                 .forEach(p -> {
+                                    // When localOnly, check cwd from session_meta
+                                    if (localOnly && !codexSessionMatchesCwd(p, currentWorkingDir)) {
+                                        return;
+                                    }
                                     String id = readCodexSessionId(p);
                                     if (id == null || id.isBlank()) {
                                         return;
@@ -607,29 +653,21 @@ public class ResumeTool implements CliTool {
                 case "qwen" -> {
                     Path qwenDir = Paths.get(homeDir, ".qwen", "projects");
                     if (Files.isDirectory(qwenDir)) {
-                        try (java.util.stream.Stream<Path> projectDirs = Files.walk(qwenDir, 4)) {
-                            projectDirs.filter(p -> p.toString().endsWith("chats") && Files.isDirectory(p))
-                                .forEach(chatsDir -> {
-                                    try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
-                                        sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
-                                            .forEach(p -> {
-                                                String id = p.getFileName().toString().replace(".jsonl", "");
-                                                try {
-                                                    long lastMod = Files.getLastModifiedTime(p).toMillis();
-                                                    allConversations.add(new ConversationSummary(
-                                                            id,
-                                                            "",
-                                                            String.valueOf(lastMod),
-                                                            agentName.toLowerCase(),
-                                                            "qwen",
-                                                            formatDate(lastMod),
-                                                            lastMod
-                                                    ));
-                                                } catch (IOException ignored) {}
-                                            });
-                                    } catch (IOException ignored) {}
-                                });
-                        } catch (IOException ignored) {}
+                        if (localOnly) {
+                            // Qwen uses same path encoding as Claude Code
+                            List<Path> matchingDirs = findMatchingClaudeProjectDirs(qwenDir, currentWorkingDir);
+                            for (Path projDir : matchingDirs) {
+                                Path chatsDir = projDir.resolve("chats");
+                                if (Files.isDirectory(chatsDir)) {
+                                    loadQwenChatsDir(chatsDir, agentName);
+                                }
+                            }
+                        } else {
+                            try (java.util.stream.Stream<Path> projectDirs = Files.walk(qwenDir, 4)) {
+                                projectDirs.filter(p -> p.toString().endsWith("chats") && Files.isDirectory(p))
+                                    .forEach(chatsDir -> loadQwenChatsDir(chatsDir, agentName));
+                            } catch (IOException ignored) {}
+                        }
                     }
                 }
                 case "opencode" -> {
@@ -640,6 +678,10 @@ public class ResumeTool implements CliTool {
                                 try (java.util.stream.Stream<Path> sessionFiles = Files.list(projDir)) {
                                     sessionFiles.filter(p -> p.toString().endsWith(".json"))
                                         .forEach(p -> {
+                                            // When localOnly, check directory field from JSON
+                                            if (localOnly && !openCodeSessionMatchesCwd(p, currentWorkingDir)) {
+                                                return;
+                                            }
                                             String id = p.getFileName().toString().replace(".json", "");
                                             try {
                                                 long lastMod = Files.getLastModifiedTime(p).toMillis();
@@ -662,39 +704,48 @@ public class ResumeTool implements CliTool {
                 case "gemini" -> {
                     Path geminiDir = Paths.get(homeDir, ".gemini");
                     if (Files.isDirectory(geminiDir)) {
-                        // Scan tmp/*/chats/session-*.json files
                         Path tmpDir = geminiDir.resolve("tmp");
                         if (Files.isDirectory(tmpDir)) {
-                            try (java.util.stream.Stream<Path> projectDirs = Files.list(tmpDir)) {
-                                projectDirs.filter(Files::isDirectory)
-                                    .filter(pd -> !pd.getFileName().toString().equals("bin"))
-                                    .forEach(projDir -> {
-                                        Path chatsDir = projDir.resolve("chats");
-                                        if (Files.isDirectory(chatsDir)) {
-                                            try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
-                                                sessionFiles.filter(p -> p.toString().endsWith(".json"))
-                                                    .forEach(p -> {
-                                                        String id = readGeminiSessionId(p);
-                                                        if (id == null || id.isBlank()) {
-                                                            return;
-                                                        }
-                                                        try {
-                                                            long lastMod = Files.getLastModifiedTime(p).toMillis();
-                                                            allConversations.add(new ConversationSummary(
-                                                                    id,
-                                                                    "",
-                                                                    String.valueOf(lastMod),
-                                                                    agentName.toLowerCase(),
-                                                                    "gemini",
-                                                                    formatDate(lastMod),
-                                                                    lastMod
-                                                            ));
-                                                        } catch (IOException ignored) {}
-                                                    });
-                                            } catch (IOException ignored) {}
-                                        }
-                                    });
-                            } catch (IOException ignored) {}
+                            List<Path> projectDirsToScan;
+                            if (localOnly) {
+                                // Gemini uses SHA256(path) as project directory name
+                                String hash = sha256(currentWorkingDir);
+                                Path matchDir = tmpDir.resolve(hash);
+                                projectDirsToScan = Files.isDirectory(matchDir)
+                                        ? List.of(matchDir) : List.of();
+                            } else {
+                                try (java.util.stream.Stream<Path> dirs = Files.list(tmpDir)) {
+                                    projectDirsToScan = dirs.filter(Files::isDirectory)
+                                            .filter(pd -> !pd.getFileName().toString().equals("bin"))
+                                            .collect(Collectors.toList());
+                                }
+                            }
+                            for (Path projDir : projectDirsToScan) {
+                                Path chatsDir = projDir.resolve("chats");
+                                if (Files.isDirectory(chatsDir)) {
+                                    try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
+                                        sessionFiles.filter(p -> p.toString().endsWith(".json"))
+                                            .forEach(p -> {
+                                                String id = readGeminiSessionId(p);
+                                                if (id == null || id.isBlank()) {
+                                                    return;
+                                                }
+                                                try {
+                                                    long lastMod = Files.getLastModifiedTime(p).toMillis();
+                                                    allConversations.add(new ConversationSummary(
+                                                            id,
+                                                            "",
+                                                            String.valueOf(lastMod),
+                                                            agentName.toLowerCase(),
+                                                            "gemini",
+                                                            formatDate(lastMod),
+                                                            lastMod
+                                                    ));
+                                                } catch (IOException ignored) {}
+                                            });
+                                    } catch (IOException ignored) {}
+                                }
+                            }
                         }
                     }
                 }
@@ -996,6 +1047,9 @@ public class ResumeTool implements CliTool {
 
         // Filters info
         terminal.writer().println(DIM + "Filters: " + RESET);
+        terminal.writer().println(DIM + "  Scope: " + RESET + GREEN
+                + (localOnly ? "local" : "all projects")
+                + RESET + DIM + (localOnly ? " (use 'all' for global)" : " (use 'local' to filter)") + RESET);
         if (!searchQuery.isEmpty()) {
             terminal.writer().println(DIM + "  Search: " + RESET + GREEN + searchQuery + RESET);
         }
@@ -1005,7 +1059,7 @@ public class ResumeTool implements CliTool {
         if (!filterSource.isEmpty()) {
             terminal.writer().println(DIM + "  Source: " + RESET + GREEN + filterSource + RESET);
         }
-        
+
         // Sort info
         String sortDirection = sortAscending ? "asc" : "desc";
         terminal.writer().println(DIM + "  Sort: " + RESET + GREEN + sortField + " " + sortDirection + RESET);
@@ -1020,7 +1074,7 @@ public class ResumeTool implements CliTool {
         terminal.writer().println();
 
         // Commands
-        terminal.writer().println(DIM + "Commands: <agent#> (1-5) or tab <n> | search <query> | filter agent=<name> | sort <field> [asc|desc] | page <n> | view <id> | migrate <id> | resume <id> | next | prev | clear | back | q" + RESET);
+        terminal.writer().println(DIM + "Commands: <agent#> (1-5) or tab <n> | search <query> | filter agent=<name> | sort <field> [asc|desc] | all | local | page <n> | view <id> | resume <id> [uuid] | next | prev | clear | q" + RESET);
         terminal.writer().println();
         terminal.writer().flush();
     }
@@ -1362,8 +1416,13 @@ public class ResumeTool implements CliTool {
     /**
      * Resume a conversation with a designated agent via native session injection.
      * Shows a simple menu first: Resume, Migrate, or View.
+     *
+     * @param sessionId the source session to resume
+     * @param selectedAgent the agent tab currently selected (used as default agent)
+     * @param targetUuid optional UUID to use as the target session ID; if provided and the user
+     *                   chooses option 1, the conversation is exported with this UUID directly
      */
-    private void resumeConversation(String sessionId, String selectedAgent) {
+    private void resumeConversation(String sessionId, String selectedAgent, String targetUuid) {
         try {
             // Find the conversation summary to get the source, and lazily load title
             String convoSource = "external";
@@ -1388,23 +1447,24 @@ public class ResumeTool implements CliTool {
             terminal.writer().println("What would you like to do?");
             terminal.writer().println("  " + CYAN + "1" + RESET + "  Resume normally (launch same agent, continue conversation)");
             terminal.writer().println("  " + CYAN + "2" + RESET + "  Resume with different agent (export & launch with another agent)");
-            terminal.writer().println("  " + CYAN + "3" + RESET + "  Migrate to different format (export only, don't launch)");
-            terminal.writer().println("  " + CYAN + "4" + RESET + "  View transcript");
-            terminal.writer().println("  " + CYAN + "5" + RESET + "  Cancel");
+            terminal.writer().println("  " + CYAN + "3" + RESET + "  Resume with specific UUID (specify the target session ID)");
+            terminal.writer().println("  " + CYAN + "4" + RESET + "  Migrate to different format (export only, don't launch)");
+            terminal.writer().println("  " + CYAN + "5" + RESET + "  View transcript");
+            terminal.writer().println("  " + CYAN + "6" + RESET + "  Cancel");
             terminal.writer().println();
 
-            String choice = lineReader.readLine("Choice [1-5]: ");
+            String choice = lineReader.readLine("Choice [1-6]: ");
 
-            if (choice == null || choice.trim().isEmpty() || choice.trim().equals("5")) {
+            if (choice == null || choice.trim().isEmpty() || choice.trim().equals("6")) {
                 return; // Cancel - go back to main list
             }
 
-            if (choice.trim().equals("4")) {
+            if (choice.trim().equals("5")) {
                 viewConversation(sessionId);
                 return;
             }
 
-            if (choice.trim().equals("3")) {
+            if (choice.trim().equals("4")) {
                 migrateConversation(sessionId);
                 return;
             }
@@ -1432,11 +1492,16 @@ public class ResumeTool implements CliTool {
 
             if (choice.trim().equals("1")) {
                 // Option 1: Resume normally - use the agent selected in the menu
+                // If a targetUuid was provided (e.g. via "resume <id> <uuid>"), use it
                 String agent = (selectedAgent != null && !selectedAgent.isBlank())
                         ? selectedAgent
                         : determineAgentFromSource(conversation.source());
-                terminal.writer().println(CYAN + "Resuming with " + agent + "..." + RESET);
-                launchAgentWithSession(conversation, agent);
+                if (targetUuid != null) {
+                    terminal.writer().println(CYAN + "Resuming with " + agent + " using session " + targetUuid + "..." + RESET);
+                } else {
+                    terminal.writer().println(CYAN + "Resuming with " + agent + "..." + RESET);
+                }
+                launchAgentWithSession(conversation, agent, targetUuid);
                 return;
             }
 
@@ -1448,7 +1513,25 @@ public class ResumeTool implements CliTool {
                     agent = "claude";
                 }
                 terminal.writer().println(CYAN + "Exporting conversation to " + agent + " native format..." + RESET);
-                launchAgentWithSession(conversation, agent);
+                launchAgentWithSession(conversation, agent, null);
+                return;
+            }
+
+            if (choice.trim().equals("3")) {
+                // Option 3: Resume with specific UUID
+                String currentAgent = determineAgentFromSource(conversation.source());
+                String agent = lineReader.readLine("Target agent (current: " + currentAgent + ") [claude]: ");
+                if (agent.isEmpty()) {
+                    agent = "claude";
+                }
+                String inputUuid = lineReader.readLine("Target session UUID: ");
+                if (inputUuid == null || inputUuid.trim().isEmpty()) {
+                    terminal.writer().println(YELLOW + "No UUID provided. Returning to main list." + RESET);
+                    terminal.writer().flush();
+                    return;
+                }
+                terminal.writer().println(CYAN + "Exporting conversation to " + agent + " with session " + inputUuid.trim() + "..." + RESET);
+                launchAgentWithSession(conversation, agent, inputUuid.trim());
                 return;
             }
 
@@ -1489,8 +1572,13 @@ public class ResumeTool implements CliTool {
 
     /**
      * Export conversation and launch agent with native session resume.
+     *
+     * @param conversation the loaded conversation to resume
+     * @param agent the target agent to launch
+     * @param targetSessionId optional UUID to use as the session ID for the exported conversation;
+     *                        if null, a new UUID is generated
      */
-    private void launchAgentWithSession(LoadedConversation conversation, String agent) {
+    private void launchAgentWithSession(LoadedConversation conversation, String agent, String targetSessionId) {
         boolean terminalClosed = false;
         try {
             // Export to agent's native format
@@ -1499,7 +1587,7 @@ public class ResumeTool implements CliTool {
                 exportResult = ConversationExporter.exportToAgent(
                         conversation.turns(),
                         agent,
-                        null,
+                        targetSessionId,
                         conversation.source(),
                         conversation.workingDirectory());
             } catch (Exception e) {
@@ -1517,6 +1605,18 @@ public class ResumeTool implements CliTool {
             terminal.writer().println(DIM + "Launching agent with native session resume..." + RESET);
             terminal.writer().println();
             terminal.writer().flush();
+
+            // Inject MCP tools before launching — same as PassthroughCommand
+            java.nio.file.Path agentWorkingDir = exportResult.getWorkingDirectory() != null
+                    ? exportResult.getWorkingDirectory()
+                    : java.nio.file.Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            java.nio.file.Path injectedSettingsFile = null;
+            try {
+                injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                        agentWorkingDir, agent);
+            } catch (Exception e) {
+                terminal.writer().println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+            }
 
             // Close terminal and launch agent with native resume
             terminal.close();
@@ -1539,6 +1639,18 @@ public class ResumeTool implements CliTool {
                 }
             }
 
+            // Add permission bypass flags — same as PassthroughCommand
+            String name = agent.toLowerCase();
+            if (name.contains("claude")) {
+                agentCommand.add("--dangerously-skip-permissions");
+            } else if (name.contains("codex")) {
+                agentCommand.add("--full-auto");
+            } else if (name.contains("qwen")) {
+                agentCommand.add("--yolo");
+            } else if (name.contains("gemini")) {
+                agentCommand.add("--yolo");
+            }
+
             ProcessBuilder pb = new ProcessBuilder(agentCommand);
             if (exportResult.getWorkingDirectory() != null) {
                 pb.directory(exportResult.getWorkingDirectory().toFile());
@@ -1546,6 +1658,9 @@ public class ResumeTool implements CliTool {
             pb.inheritIO();
             Process process = pb.start();
             int exitCode = process.waitFor();
+
+            // Clean up injected MCP tools
+            ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
 
             // Clean up terminal state after agent exits
             System.out.print("\033[0m"); // reset colors
@@ -1615,13 +1730,22 @@ public class ResumeTool implements CliTool {
     private LoadedConversation loadConversation(String sessionId) throws IOException {
         Path defaultWorkingDirectory = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
 
+        // First, check if this is a known kompile session (file exists)
+        boolean kompileSessionExists = ChatHistory.exists(sessionId);
         try {
             List<ChatHistory.Turn> turns = reader.readKompileSession(sessionId);
             if (turns != null && !turns.isEmpty()) {
                 return new LoadedConversation(turns, "kompile", defaultWorkingDirectory);
             }
         } catch (Exception ignored) {
-            // Fall through to external sources.
+            // Fall through to external sources only if not a known kompile session.
+        }
+
+        // If the kompile session file exists but had no parseable turns (e.g., passthrough
+        // session where transcript harvest failed), don't fall through to external sources
+        // which would produce confusing errors like "Gemini session not found".
+        if (kompileSessionExists) {
+            throw new IOException("Session transcript is empty (transcript harvest may have failed): " + sessionId);
         }
 
         IOException lastError = null;
@@ -1734,6 +1858,125 @@ public class ResumeTool implements CliTool {
         return null;
     }
 
+    // ─── Directory-matching helpers for local-only filtering ───────────────
+
+    /**
+     * Find Claude/Qwen project directories that match the current working directory.
+     * These agents encode the path by replacing '/' with '-'.
+     * Matches the exact path, parent paths, and child paths.
+     */
+    private List<Path> findMatchingClaudeProjectDirs(Path projectsRoot, String cwd) {
+        if (!Files.isDirectory(projectsRoot)) return List.of();
+        String normalized = cwd.replace("\\", "/");
+        String encodedCwd = normalized.replace("/", "-");
+        List<Path> matches = new ArrayList<>();
+
+        try (java.util.stream.Stream<Path> dirs = Files.list(projectsRoot)) {
+            dirs.filter(Files::isDirectory).forEach(dir -> {
+                String name = dir.getFileName().toString();
+                if (!name.startsWith("-")) return;
+                // Decode: -home-user-project -> /home/user/project
+                // (hyphens in actual dir names cause ambiguity, but this matches
+                //  the same logic used by Claude/Qwen for encoding)
+                String decoded = "/" + name.substring(1).replace("-", "/");
+                // Match: same dir, child dir, or parent dir
+                if (normalized.equals(decoded)
+                        || normalized.startsWith(decoded + "/")
+                        || decoded.startsWith(normalized + "/")
+                        || name.equals(encodedCwd)) {
+                    matches.add(dir);
+                }
+            });
+        } catch (IOException ignored) {}
+        return matches;
+    }
+
+    /**
+     * Check if a Codex session file's working directory matches the current cwd.
+     * Reads only the first line (session_meta) for the cwd field.
+     */
+    private boolean codexSessionMatchesCwd(Path file, String cwd) {
+        try (java.io.BufferedReader br = Files.newBufferedReader(file, java.nio.charset.StandardCharsets.UTF_8)) {
+            String line = br.readLine();
+            if (line != null && !line.isBlank()) {
+                JsonNode node = MAPPER.readTree(line);
+                if ("session_meta".equals(node.path("type").asText(""))) {
+                    String sessionCwd = node.path("payload").path("cwd").asText("");
+                    return cwdMatches(sessionCwd, cwd);
+                }
+            }
+        } catch (Exception ignored) {}
+        // If we can't determine cwd, include it (conservative)
+        return !localOnly;
+    }
+
+    /**
+     * Check if an OpenCode session file's directory matches the current cwd.
+     * Reads the "directory" field from the JSON.
+     */
+    private boolean openCodeSessionMatchesCwd(Path file, String cwd) {
+        try {
+            JsonNode root = MAPPER.readTree(file.toFile());
+            String dir = root.path("directory").asText("");
+            return cwdMatches(dir, cwd);
+        } catch (Exception ignored) {}
+        return !localOnly;
+    }
+
+    /**
+     * Check if a session's cwd matches the current working directory.
+     * Matches exact path, parent, or child relationships.
+     */
+    private boolean cwdMatches(String sessionCwd, String cwd) {
+        if (sessionCwd == null || sessionCwd.isBlank()) return false;
+        String normSession = sessionCwd.replace("\\", "/");
+        String normCwd = cwd.replace("\\", "/");
+        return normCwd.equals(normSession)
+                || normCwd.startsWith(normSession + "/")
+                || normSession.startsWith(normCwd + "/");
+    }
+
+    /**
+     * Compute SHA256 hex digest of a string (used for Gemini project hash matching).
+     */
+    private String sha256(String input) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * Load sessions from a Qwen chats directory.
+     */
+    private void loadQwenChatsDir(Path chatsDir, String agentName) {
+        try (java.util.stream.Stream<Path> sessionFiles = Files.list(chatsDir)) {
+            sessionFiles.filter(p -> p.toString().endsWith(".jsonl"))
+                .forEach(p -> {
+                    String id = p.getFileName().toString().replace(".jsonl", "");
+                    try {
+                        long lastMod = Files.getLastModifiedTime(p).toMillis();
+                        allConversations.add(new ConversationSummary(
+                                id,
+                                "",
+                                String.valueOf(lastMod),
+                                agentName.toLowerCase(),
+                                "qwen",
+                                formatDate(lastMod),
+                                lastMod
+                        ));
+                    } catch (IOException ignored) {}
+                });
+        } catch (IOException ignored) {}
+    }
+
     /**
      * Run search with parameters.
      */
@@ -1808,6 +2051,7 @@ public class ResumeTool implements CliTool {
     private ToolResult runResume(JsonNode params) {
         String sessionId = params.has("session_id") ? params.get("session_id").asText() : "";
         String agent = params.has("target_agent") ? params.get("target_agent").asText() : "claude";
+        String targetSessionId = params.has("target_session_id") ? params.get("target_session_id").asText() : null;
 
         if (sessionId.isEmpty()) {
             return ToolResult.error("session_id is required for resume action");
@@ -1824,6 +2068,9 @@ public class ResumeTool implements CliTool {
             ObjectNode result = om.createObjectNode();
             result.put("session_id", sessionId);
             result.put("target_agent", agent);
+            if (targetSessionId != null && !targetSessionId.isBlank()) {
+                result.put("target_session_id", targetSessionId);
+            }
             result.put("source", conversation.source());
             result.put("message_count", turns.size());
             result.put("conversation_history", conversationJson);
@@ -1888,6 +2135,9 @@ public class ResumeTool implements CliTool {
         terminal.writer().println("  " + GREEN + "view <session-id>" + RESET + "             View conversation transcript");
         terminal.writer().println("  " + GREEN + "migrate <session-id>" + RESET + "          Migrate conversation to different format");
         terminal.writer().println("  " + GREEN + "resume <session-id>" + RESET + "           Resume conversation with designated agent");
+        terminal.writer().println("  " + GREEN + "resume <session-id> <uuid>" + RESET + "    Resume with a specific target session UUID");
+        terminal.writer().println("  " + GREEN + "all" + RESET + "                           Load conversations from ALL projects");
+        terminal.writer().println("  " + GREEN + "local" + RESET + "                         Show only current directory's conversations");
         terminal.writer().println("  " + GREEN + "next" + RESET + "                          Next page of conversations");
         terminal.writer().println("  " + GREEN + "prev" + RESET + "                          Previous page of conversations");
         terminal.writer().println("  " + GREEN + "clear" + RESET + "                         Clear all filters and reset sort");
