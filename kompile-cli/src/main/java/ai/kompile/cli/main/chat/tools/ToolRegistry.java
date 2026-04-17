@@ -40,6 +40,10 @@ public class ToolRegistry {
         tools.put(tool.id(), tool);
     }
 
+    public void unregister(String id) {
+        tools.remove(id);
+    }
+
     public CliTool get(String id) {
         return tools.get(id);
     }

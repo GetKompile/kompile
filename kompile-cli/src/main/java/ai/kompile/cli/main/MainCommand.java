@@ -30,6 +30,7 @@ import ai.kompile.cli.main.mcp.McpStdioCommand;
 import ai.kompile.cli.main.build.BuildMain;
 import ai.kompile.cli.main.build.KompileApplicationBuilder;
 import ai.kompile.cli.main.config.ConfigMain;
+import ai.kompile.cli.main.graph.GraphCommand;
 import ai.kompile.cli.main.install.InstallMain;
 import ai.kompile.cli.main.manage.ManageComponents;
 import ai.kompile.cli.main.pipeline.PipelineMain;
@@ -49,6 +50,7 @@ import java.util.concurrent.Callable;
         subcommands = {
                 Info.class,
                 Bootstrap.class,
+                Init.class,
                 ConfigMain.class,
                 BuildMain.class,
                 KompileApplicationBuilder.BuildKompileAppCommand.class,
@@ -67,7 +69,8 @@ import java.util.concurrent.Callable;
                 IndexCommand.class,
                 JobsCommand.class,
                 ScheduleCommand.class,
-                SubprocessCommand.class
+                SubprocessCommand.class,
+                GraphCommand.class
         },
         mixinStandardHelpOptions = true,
         versionProvider = VersionProvider.class,

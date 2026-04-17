@@ -19,6 +19,7 @@ package ai.kompile.cli.main.chat.agent;
 import ai.kompile.cli.main.chat.config.DirectLlmClient;
 import ai.kompile.cli.main.chat.permission.PermissionService;
 import ai.kompile.cli.main.chat.render.CompactionService;
+import ai.kompile.cli.main.chat.render.ConversationSummarizer;
 import ai.kompile.cli.main.chat.render.OutputTruncator;
 import ai.kompile.cli.main.chat.render.TerminalRenderer;
 import ai.kompile.cli.main.chat.tools.*;
@@ -77,6 +78,10 @@ public class AgenticChatLoop {
     private ToolResultStore toolResultStore; // persists tool outputs to disk
     private ai.kompile.cli.main.chat.ChatSessionMetrics sessionMetrics; // session metrics
     private volatile AgentConfig currentAgentConfig; // currently active agent config (can be updated with roles)
+
+    // Planning mode state
+    private volatile boolean planningMode = false;
+    private ExitPlanModeTool exitPlanModeTool;
 
     // Conversation history for compaction
     private final List<CompactionService.ConversationEntry> conversationHistory = new ArrayList<>();
@@ -215,6 +220,29 @@ public class AgenticChatLoop {
     }
 
     /**
+     * Enable or disable planning mode. When enabled, the agent first runs a
+     * read-only planning pass (planner agent), then asks the user to approve
+     * before executing with the coder agent.
+     */
+    public void setPlanningMode(boolean planningMode) {
+        this.planningMode = planningMode;
+        if (planningMode) {
+            this.exitPlanModeTool = new ExitPlanModeTool();
+            toolRegistry.register(exitPlanModeTool);
+        } else if (exitPlanModeTool != null) {
+            toolRegistry.unregister("exit_plan_mode");
+            exitPlanModeTool = null;
+        }
+    }
+
+    /**
+     * Whether planning mode is currently active.
+     */
+    public boolean isPlanningMode() {
+        return planningMode;
+    }
+
+    /**
      * Check if cancellation has been requested.
      */
     private boolean isCancelled() {
@@ -293,10 +321,242 @@ public class AgenticChatLoop {
     }
 
     /**
+     * Current estimated token count of the tracked conversation history.
+     * Uses the heuristic char/4 estimate from CompactionService.
+     */
+    public int estimateConversationTokens() {
+        return compactionService.estimateTokens(conversationHistory);
+    }
+
+    /**
+     * Number of tracked conversation entries (user, assistant, tool calls, tool results).
+     */
+    public int conversationEntryCount() {
+        return conversationHistory.size();
+    }
+
+    /**
+     * Whether LLM-driven compaction is available. Requires a DirectLlmClient
+     * (local mode); in server mode the CLI does not hold LLM credentials.
+     */
+    public boolean supportsForceCompact() {
+        return directLlmClient != null;
+    }
+
+    /**
+     * Force a manual LLM-based compaction of the conversation. Produces a
+     * structured summary via the configured LLM, then replaces the history
+     * (both this loop's tracked history and the DirectLlmClient's own
+     * message list) with that summary.
+     * <p>
+     * Recent turns are preserved in full to keep continuity: the last two
+     * user turns plus any assistant response immediately following them
+     * survive compaction intact.
+     *
+     * @param focusInstruction optional user focus hint (e.g. "preserve API
+     *                          changes"). Null/blank is fine.
+     * @return result describing tokens before/after and the summary text
+     */
+    public ForceCompactResult forceCompact(String focusInstruction) {
+        if (directLlmClient == null) {
+            return ForceCompactResult.unsupported(
+                    "LLM-based /compact requires local mode (no DirectLlmClient configured).");
+        }
+        if (conversationHistory.isEmpty()) {
+            return ForceCompactResult.noop("Nothing to compact — conversation is empty.");
+        }
+
+        int tokensBefore = compactionService.estimateTokens(conversationHistory);
+
+        // Split off recent turns to preserve after summarization
+        int preserveIndex = findRecentPreservationCutoff(conversationHistory);
+        List<CompactionService.ConversationEntry> toSummarize =
+                new ArrayList<>(conversationHistory.subList(0, preserveIndex));
+        List<CompactionService.ConversationEntry> toPreserve =
+                new ArrayList<>(conversationHistory.subList(preserveIndex, conversationHistory.size()));
+
+        if (toSummarize.isEmpty()) {
+            return ForceCompactResult.noop(
+                    "Nothing to compact — all turns are within the preserved recent window.");
+        }
+
+        ConversationSummarizer summarizer = new ConversationSummarizer(directLlmClient);
+        String modelOverride = currentAgentConfig != null ? currentAgentConfig.getModelOverride() : null;
+
+        ConversationSummarizer.SummaryResult summary =
+                summarizer.summarize(toSummarize, focusInstruction, modelOverride);
+
+        if (summary.isEmpty()) {
+            return ForceCompactResult.failed("Summarization returned empty output; history unchanged.");
+        }
+
+        // Rebuild conversationHistory: summary as a system entry + preserved tail
+        conversationHistory.clear();
+        conversationHistory.add(CompactionService.ConversationEntry.system(
+                "[Compacted summary of prior conversation]\n" + summary.getSummary()));
+        conversationHistory.addAll(toPreserve);
+
+        // Rebuild DirectLlmClient's message list so the next LLM call sends
+        // the compacted summary instead of the full prior history
+        directLlmClient.replaceHistoryWithSummary(summary.getSummary());
+        // Replay preserved tail into DirectLlmClient so recent context is
+        // still visible to the model on the next turn
+        for (CompactionService.ConversationEntry entry : toPreserve) {
+            if (entry.type == CompactionService.EntryType.USER) {
+                directLlmClient.addToHistory("user", entry.content);
+            } else if (entry.type == CompactionService.EntryType.ASSISTANT) {
+                directLlmClient.addToHistory("assistant", entry.content);
+            }
+            // Tool calls/results in the preserved window are dropped from the
+            // DirectLlmClient replay: they are paired and reconstructing the
+            // exact tool_use/tool_result wiring post-compaction is fragile.
+            // The structured summary already captures what those tools did.
+        }
+
+        int tokensAfter = compactionService.estimateTokens(conversationHistory);
+
+        if (sessionMetrics != null) {
+            sessionMetrics.recordCompaction(tokensBefore, tokensAfter);
+            sessionMetrics.recordTokenUsage(
+                    summary.getInputTokens(), summary.getOutputTokens(), 0, 0);
+        }
+
+        return ForceCompactResult.ok(tokensBefore, tokensAfter, toPreserve.size(),
+                summary.getSummary());
+    }
+
+    /**
+     * Find the index at which to split history: entries before this index
+     * are summarized, entries from this index onward are preserved in full.
+     * Strategy: preserve the last user turn plus any trailing assistant/tool
+     * entries, so the summary boundary never cuts mid-exchange.
+     */
+    private int findRecentPreservationCutoff(
+            List<CompactionService.ConversationEntry> entries) {
+        // Walk backward to find the start of the most recent user turn.
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            if (entries.get(i).type == CompactionService.EntryType.USER) {
+                return i;
+            }
+        }
+        // No user turns found — summarize everything.
+        return entries.size();
+    }
+
+    /**
+     * Result of a forced compaction invocation.
+     */
+    public static class ForceCompactResult {
+        public enum Status { OK, NOOP, UNSUPPORTED, FAILED }
+
+        private final Status status;
+        private final String message;
+        private final int tokensBefore;
+        private final int tokensAfter;
+        private final int preservedTurns;
+        private final String summary;
+
+        private ForceCompactResult(Status status, String message, int tokensBefore,
+                                   int tokensAfter, int preservedTurns, String summary) {
+            this.status = status;
+            this.message = message;
+            this.tokensBefore = tokensBefore;
+            this.tokensAfter = tokensAfter;
+            this.preservedTurns = preservedTurns;
+            this.summary = summary;
+        }
+
+        public static ForceCompactResult ok(int before, int after, int preserved, String summary) {
+            return new ForceCompactResult(Status.OK, null, before, after, preserved, summary);
+        }
+
+        public static ForceCompactResult noop(String msg) {
+            return new ForceCompactResult(Status.NOOP, msg, 0, 0, 0, null);
+        }
+
+        public static ForceCompactResult unsupported(String msg) {
+            return new ForceCompactResult(Status.UNSUPPORTED, msg, 0, 0, 0, null);
+        }
+
+        public static ForceCompactResult failed(String msg) {
+            return new ForceCompactResult(Status.FAILED, msg, 0, 0, 0, null);
+        }
+
+        public Status getStatus() { return status; }
+        public String getMessage() { return message; }
+        public int getTokensBefore() { return tokensBefore; }
+        public int getTokensAfter() { return tokensAfter; }
+        public int getPreservedTurns() { return preservedTurns; }
+        public String getSummary() { return summary; }
+        public boolean isSuccess() { return status == Status.OK; }
+    }
+
+    /**
      * Run the agentic chat loop for a single user message.
+     * When planning mode is active, first runs a read-only planning pass,
+     * then returns the plan for user approval before executing.
      */
     public String chat(String message, String sessionId, String agentName,
                         String serverAgent, boolean ragEnabled) {
+        if (planningMode && exitPlanModeTool != null) {
+            return chatWithPlanning(message, sessionId, agentName, serverAgent, ragEnabled);
+        }
+
+        return chatInternal(message, sessionId, agentName, serverAgent, ragEnabled);
+    }
+
+    private String chatWithPlanning(String message, String sessionId, String agentName,
+                                     String serverAgent, boolean ragEnabled) {
+        exitPlanModeTool.reset();
+
+        // Phase 1: Planning pass with planner agent
+        AgentConfig plannerAgent = agentRegistry.get("planner");
+        if (plannerAgent == null) {
+            plannerAgent = agentRegistry.getDefault();
+        }
+
+        System.out.println(renderer.bold(renderer.cyan("  ╭─ Planning Mode ─────────────────────────────────────╮")));
+        System.out.println(renderer.cyan("  │") + renderer.dim("  Analyzing task with read-only tools...              ") + renderer.cyan("│"));
+        System.out.println(renderer.cyan("  │") + renderer.dim("  Call exit_plan_mode when plan is ready.             ") + renderer.cyan("│"));
+        System.out.println(renderer.bold(renderer.cyan("  ╰───────────────────────────────────────────────────────╯")));
+        System.out.println();
+
+        String planResponse = chatInternal(message, sessionId, "planner", serverAgent, ragEnabled);
+
+        // Show the checklist after planning
+        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(sessionId);
+        if (!todos.isEmpty()) {
+            System.out.println();
+            System.out.println(renderer.bold(renderer.cyan("  ── Plan Checklist ──")));
+            System.out.println(renderer.renderTodoList(todos));
+            System.out.println();
+        }
+
+        // Check if plan was approved via exit_plan_mode tool
+        if (exitPlanModeTool.isPlanApproved()) {
+            System.out.println(renderer.bold(renderer.yellow("  Plan ready for approval.")));
+            System.out.println(renderer.dim("  The agent will now proceed with execution."));
+            System.out.println();
+
+            // Phase 2: Execution pass with coder agent
+            System.out.println(renderer.bold(renderer.green("  ╭─ Execution Mode ────────────────────────────────────╮")));
+            System.out.println(renderer.green("  │") + renderer.dim("  Executing plan with full tool access...             ") + renderer.green("│"));
+            System.out.println(renderer.bold(renderer.green("  ╰───────────────────────────────────────────────────────╯")));
+            System.out.println();
+
+            String executionPrompt = "Execute the plan you just created. "
+                    + "Update each task status as you complete it using todowrite. "
+                    + "Here was the plan:\n\n" + planResponse;
+            String executionResponse = chatInternal(executionPrompt, sessionId, agentName, serverAgent, ragEnabled);
+
+            return planResponse + "\n\n--- Execution ---\n\n" + executionResponse;
+        }
+
+        return planResponse;
+    }
+
+    private String chatInternal(String message, String sessionId, String agentName,
+                                 String serverAgent, boolean ragEnabled) {
         AgentConfig agent = agentRegistry.get(agentName);
         if (agent == null) agent = agentRegistry.getDefault();
 
@@ -352,7 +612,8 @@ public class AgenticChatLoop {
             StreamResult result;
             if (isDirectMode()) {
                 result = streamDirectTurn(
-                        currentMessage, systemPrompt, toolDefs, pendingToolResults);
+                        currentMessage, systemPrompt, toolDefs, pendingToolResults,
+                        agent.getModelOverride());
             } else {
                 result = streamServerTurn(
                         currentMessage, sessionId, serverAgent, ragEnabled,
@@ -441,6 +702,22 @@ public class AgenticChatLoop {
                         System.out.println(renderer.renderToolCallComplete(call.name, toolResult));
                     }
 
+                    // Render inline todo updates after todowrite calls
+                    if ("todowrite".equals(call.name) && !toolResult.isError()) {
+                        List<TodoWriteTool.TodoItem> todos = TodoWriteTool.getTodos(toolContext.getSessionId());
+                        if (!todos.isEmpty()) {
+                            System.out.println(renderer.renderTodoList(todos));
+                        }
+                    }
+
+                    // Check if exit_plan_mode was called — stop tool loop
+                    if ("exit_plan_mode".equals(call.name) && exitPlanModeTool != null
+                            && exitPlanModeTool.isPlanApproved()) {
+                        toolResults.add(new ToolCallResult(call.id, call.name,
+                                toolResult.getOutput(), toolResult.isError()));
+                        break;
+                    }
+
                     // Save result to disk for later access
                     String argsStr = call.arguments != null ? call.arguments.toString() : "";
                     Path savedPath = toolResultStore.save(
@@ -487,6 +764,11 @@ public class AgenticChatLoop {
                 System.out.println(renderer.renderContextGroup(readOnlyToolCounts));
             }
 
+            // Stop the loop if exit_plan_mode was called
+            if (exitPlanModeTool != null && exitPlanModeTool.isPlanApproved()) {
+                break;
+            }
+
             // Set up next iteration with tool results
             pendingToolResults = toolResults;
             currentMessage = null;
@@ -526,7 +808,8 @@ public class AgenticChatLoop {
     // ========================================================================
 
     private StreamResult streamDirectTurn(String message, String systemPrompt,
-                                           ArrayNode toolDefs, List<ToolCallResult> toolResults) {
+                                           ArrayNode toolDefs, List<ToolCallResult> toolResults,
+                                           String modelOverride) {
         StreamResult result = new StreamResult();
 
         // Convert tool results to DirectLlmClient format
@@ -540,7 +823,7 @@ public class AgenticChatLoop {
         }
 
         DirectLlmClient.StreamResult directResult =
-                directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults);
+                directLlmClient.streamChat(message, systemPrompt, toolDefs, directToolResults, modelOverride);
 
         // Record token usage from API response
         if (sessionMetrics != null) {

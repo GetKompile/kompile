@@ -31,7 +31,7 @@ public class KompileLocalModelService {
     private final AgentRegistryService agentRegistryService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Value("${kompile.staging.url:http://localhost:8081}")
+    @Value("${kompile.staging.url:http://localhost:8090}")
     private String stagingUrl;
 
     private volatile boolean connected = false;

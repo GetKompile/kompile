@@ -73,10 +73,23 @@ public class DirectLlmClient {
      */
     public StreamResult streamChat(String userMessage, String systemPrompt,
                                     ArrayNode toolDefs, List<ToolCallResultInput> toolResults) {
+        return streamChat(userMessage, systemPrompt, toolDefs, toolResults, null);
+    }
+
+    /**
+     * Stream a chat completion turn with optional model override.
+     *
+     * @param modelOverride if non-null, use this model instead of the configured default
+     */
+    public StreamResult streamChat(String userMessage, String systemPrompt,
+                                    ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                    String modelOverride) {
+        String effectiveModel = (modelOverride != null && !modelOverride.isBlank())
+                ? modelOverride : config.getModel();
         if (config.isAnthropicFormat()) {
-            return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults);
+            return streamAnthropic(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
         } else {
-            return streamOpenAi(userMessage, systemPrompt, toolDefs, toolResults);
+            return streamOpenAi(userMessage, systemPrompt, toolDefs, toolResults, effectiveModel);
         }
     }
 
@@ -97,19 +110,67 @@ public class DirectLlmClient {
         conversationHistory.add(msg);
     }
 
+    /**
+     * One-shot streaming completion that does NOT mutate conversation history.
+     * Used for utility calls like summarization where we want the model's
+     * output but must not pollute the ongoing chat with the request/response.
+     * <p>
+     * Internally: snapshot history, clear, call streamChat (which would add
+     * the request turn), then restore the snapshot — yielding a clean call.
+     */
+    public StreamResult streamOneShot(String prompt, String systemPrompt, String modelOverride) {
+        List<ObjectNode> saved = new ArrayList<>(conversationHistory);
+        conversationHistory.clear();
+        try {
+            return streamChat(prompt, systemPrompt, null, null, modelOverride);
+        } finally {
+            conversationHistory.clear();
+            conversationHistory.addAll(saved);
+        }
+    }
+
+    /**
+     * Replace the entire conversation history with a summary of prior turns.
+     * The summary is injected as a user/assistant exchange so the next real
+     * user turn continues normally. Used by the /compact command.
+     */
+    public void replaceHistoryWithSummary(String summary) {
+        conversationHistory.clear();
+        if (summary == null || summary.isBlank()) return;
+
+        ObjectNode userMsg = objectMapper.createObjectNode();
+        userMsg.put("role", "user");
+        userMsg.put("content",
+                "This session was compacted. Below is a structured summary of our "
+                        + "prior conversation. Treat it as authoritative context for "
+                        + "continuing the work:\n\n" + summary);
+        conversationHistory.add(userMsg);
+
+        ObjectNode assistantMsg = objectMapper.createObjectNode();
+        assistantMsg.put("role", "assistant");
+        assistantMsg.put("content",
+                "Understood. I have the compacted summary and will continue from here.");
+        conversationHistory.add(assistantMsg);
+    }
+
+    public int getHistorySize() {
+        return conversationHistory.size();
+    }
+
     // ========================================================================
     // OpenAI-compatible Chat Completions
     // ========================================================================
 
     private StreamResult streamOpenAi(String userMessage, String systemPrompt,
-                                       ArrayNode toolDefs, List<ToolCallResultInput> toolResults) {
+                                       ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                       String effectiveModel) {
         StreamResult result = new StreamResult();
 
         try {
             ArrayNode messages = buildOpenAiMessages(userMessage, systemPrompt, toolResults);
 
             ObjectNode request = objectMapper.createObjectNode();
-            request.put("model", config.getModel());
+            request.put("model", effectiveModel);
             request.set("messages", messages);
             request.put("stream", true);
 
@@ -351,12 +412,13 @@ public class DirectLlmClient {
     // ========================================================================
 
     private StreamResult streamAnthropic(String userMessage, String systemPrompt,
-                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults) {
+                                          ArrayNode toolDefs, List<ToolCallResultInput> toolResults,
+                                          String effectiveModel) {
         StreamResult result = new StreamResult();
 
         try {
             ObjectNode request = objectMapper.createObjectNode();
-            request.put("model", config.getModel());
+            request.put("model", effectiveModel);
             request.put("max_tokens", 8192);
             request.put("stream", true);
 

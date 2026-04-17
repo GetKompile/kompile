@@ -26,8 +26,8 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -39,24 +39,26 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnClass(name = "org.neo4j.driver.Driver")
 public class Neo4jGraphBeans {
 
+    private static final String URI_EXPR = "'${kompile.graph.neo4j.uri:${neo4j.uri:}}' != ''";
+
     @Bean
     @ConditionalOnMissingBean(Driver.class)
-    @ConditionalOnProperty(prefix = "neo4j", name = "uri")
+    @ConditionalOnExpression(URI_EXPR)
     public Driver neo4jDriver(
-            @Value("${neo4j.uri}") String uri,
-            @Value("${neo4j.username}") String username,
-            @Value("${neo4j.password}") String password) {
+            @Value("${kompile.graph.neo4j.uri:${neo4j.uri:}}") String uri,
+            @Value("${kompile.graph.neo4j.username:${neo4j.username:neo4j}}") String username,
+            @Value("${kompile.graph.neo4j.password:${neo4j.password:}}") String password) {
         return GraphDatabase.driver(uri, AuthTokens.basic(username, password));
     }
 
     @Bean
-    @ConditionalOnProperty(prefix = "neo4j", name = "uri")
+    @ConditionalOnExpression(URI_EXPR)
     public Neo4jGraphStorage neo4jGraphStorage(Driver driver) {
         return new Neo4jGraphStorage(driver);
     }
 
     @Bean
-    @ConditionalOnProperty(prefix = "neo4j", name = "uri")
+    @ConditionalOnExpression(URI_EXPR)
     public Neo4jGraphRagService neo4jGraphRagService(
             Driver driver,
             EmbeddingModel embeddingModel,
@@ -66,7 +68,7 @@ public class Neo4jGraphBeans {
     }
 
     @Bean
-    @ConditionalOnProperty(prefix = "neo4j", name = "uri")
+    @ConditionalOnExpression(URI_EXPR)
     public Neo4jGraphConstructor neo4jGraphConstructor(
             Driver driver,
             LLMChat llmChat,

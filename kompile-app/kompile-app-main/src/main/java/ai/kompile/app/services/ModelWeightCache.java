@@ -287,7 +287,7 @@ public class ModelWeightCache {
     /**
      * Periodic pressure check. Demotes least-recently-accessed GPU weights when pool is pressured.
      */
-    @Scheduled(fixedDelayString = "#{@modelWeightCache.configuration.pressureCheckIntervalSeconds * 1000}")
+    @Scheduled(fixedDelayString = "${kompile.model-weight-cache.pressure-check-interval-ms:30000}")
     public void checkPressure() {
         if (!currentConfig.isEnabled()) return;
 

@@ -85,6 +85,12 @@ public class DownloadRequest {
     private String expectedChecksum;
 
     /**
+     * Optional URL to download a tokenizer.json for models (e.g. GGUF) that
+     * don't bundle a HuggingFace-format tokenizer file.
+     */
+    private String tokenizerUrl;
+
+    /**
      * Add a file to download.
      */
     public DownloadRequest addFile(String key, String path) {

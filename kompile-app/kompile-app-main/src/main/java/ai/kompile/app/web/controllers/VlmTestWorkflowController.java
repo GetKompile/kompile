@@ -75,7 +75,8 @@ public class VlmTestWorkflowController {
             @RequestParam(value = "pageBatchSize", required = false) Integer pageBatchSize,
             @RequestParam(value = "cudaPinnedHostLimitMb", required = false) Integer cudaPinnedHostLimitMb,
             @RequestParam(value = "kvCacheStrategy", required = false) String kvCacheStrategy,
-            @RequestParam(value = "maxKvLen", required = false) Integer maxKvLen) {
+            @RequestParam(value = "maxKvLen", required = false) Integer maxKvLen,
+            @RequestParam(value = "maxPages", required = false) Integer maxPages) {
 
         try {
             if (file.isEmpty()) {
@@ -102,6 +103,7 @@ public class VlmTestWorkflowController {
             if (cudaPinnedHostLimitMb != null) options.put("cudaPinnedHostLimitMb", String.valueOf(cudaPinnedHostLimitMb));
             if (kvCacheStrategy != null) options.put("kvCacheStrategy", kvCacheStrategy);
             if (maxKvLen != null) options.put("maxKvLen", String.valueOf(maxKvLen));
+            if (maxPages != null) options.put("maxPages", String.valueOf(maxPages));
 
             // Launch subprocess
             CompletableFuture<VlmTestResult> future = launcher.launchTest(

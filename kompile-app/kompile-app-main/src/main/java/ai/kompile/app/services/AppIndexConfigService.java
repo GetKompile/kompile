@@ -95,7 +95,7 @@ public class AppIndexConfigService {
         this.currentEncoderModelId = getActiveEncoderModelId();
         this.currentRerankerModelId = null;
 
-        this.currentConfig = AppIndexConfig.defaults();
+        this.currentConfig = AppIndexConfig.defaults(this.dataDir);
         log.info("AppIndexConfigService initialized, config path: {}", configFilePath);
         log.info("Using VectorStore: {}", vectorStore != null ? vectorStore.getClass().getSimpleName() : "null");
         log.info("Using IndexerService: {}",
@@ -149,7 +149,7 @@ public class AppIndexConfigService {
         // Skip loading if dataDir is not configured
         if (configFilePath == null) {
             log.warn("Cannot load app index config - kompile.data.dir not configured. Using defaults.");
-            currentConfig = AppIndexConfig.defaults();
+            currentConfig = AppIndexConfig.defaults(this.dataDir);
             return;
         }
 
@@ -157,7 +157,7 @@ public class AppIndexConfigService {
 
         if (!Files.exists(configFilePath)) {
             log.info("No persisted app index config found at {} - using defaults", configFilePath);
-            currentConfig = AppIndexConfig.defaults();
+            currentConfig = AppIndexConfig.defaults(this.dataDir);
         } else {
             try {
                 String json = Files.readString(configFilePath);
@@ -166,7 +166,7 @@ public class AppIndexConfigService {
                 AppIndexConfig loaded = objectMapper.readValue(json, AppIndexConfig.class);
 
                 // Merge with defaults
-                currentConfig = AppIndexConfig.defaults().merge(loaded);
+                currentConfig = AppIndexConfig.defaults(this.dataDir).merge(loaded);
 
                 // MANDATORY: Ensure paths are present
                 if (currentConfig.getVectorStorePath() == null || currentConfig.getVectorStorePath().isBlank()) {
@@ -183,7 +183,7 @@ public class AppIndexConfigService {
                     log.error("CRITICAL: vectorStorePath and keywordIndexPath are identical: {}. " +
                             "This will cause data corruption. Resetting to defaults.",
                             currentConfig.getVectorStorePath());
-                    currentConfig = AppIndexConfig.defaults();
+                    currentConfig = AppIndexConfig.defaults(this.dataDir);
                 }
 
                 log.info("Loaded app index config: vectorStorePath={}, keywordIndexPath={}",
@@ -309,7 +309,7 @@ public class AppIndexConfigService {
      * Resets configuration to defaults.
      */
     public AppIndexConfig resetConfiguration() {
-        currentConfig = AppIndexConfig.defaults();
+        currentConfig = AppIndexConfig.defaults(this.dataDir);
         applyConfiguration();
         persistConfig();
         log.info("App index configuration reset to defaults");

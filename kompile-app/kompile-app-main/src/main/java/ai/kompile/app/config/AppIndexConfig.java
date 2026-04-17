@@ -162,11 +162,15 @@ public class AppIndexConfig {
     private String chromaCollectionName;
 
     /**
-     * Creates a default configuration with system defaults.
-     * Uses ~/.kompile/models/anserini/indexes/ as the default location for indexes.
+     * Creates a default configuration scoped to the given kompile data dir. Index
+     * paths land under {@code <dataDir>/anserini/indexes/} so isolated instances
+     * (set via {@code kompile.data.dir}) don't leak into user-global state.
      */
-    public static AppIndexConfig defaults() {
-        String baseDir = System.getProperty("user.home") + "/.kompile/models/anserini/indexes";
+    public static AppIndexConfig defaults(String dataDir) {
+        String effectiveDataDir = (dataDir == null || dataDir.isBlank())
+                ? System.getProperty("user.home") + "/.kompile"
+                : dataDir;
+        String baseDir = effectiveDataDir + "/anserini/indexes";
         return AppIndexConfig.builder()
                 // Default to Anserini (embedded)
                 .vectorStoreType(VectorStoreType.ANSERINI)

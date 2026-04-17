@@ -143,6 +143,11 @@
         <!-- Native image profile -->
         <profile>
             <id>native</id>
+            <activation>
+                <property>
+                    <name>kompile.dist</name>
+                </property>
+            </activation>
             <build>
                 <plugins>
                     <plugin>

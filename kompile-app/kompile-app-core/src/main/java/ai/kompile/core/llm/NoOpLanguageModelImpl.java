@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Collections;
 
 @Service
+@ConditionalOnMissingBean(value = LanguageModel.class, ignored = NoOpLanguageModelImpl.class)
 public class NoOpLanguageModelImpl implements LanguageModel {
     private static final Logger logger = LoggerFactory.getLogger(NoOpLanguageModelImpl.class);
 

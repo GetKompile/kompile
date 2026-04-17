@@ -292,6 +292,75 @@ public class StagingController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    /**
+     * List all files in a registered model's directory.
+     * Clients use this to discover shard files for sharded models.
+     */
+    @GetMapping("/registry/model/{modelId}/files")
+    public ResponseEntity<?> listModelFiles(@PathVariable String modelId) {
+        return registryService.getModel(modelId)
+                .map(entry -> {
+                    Path modelDir = registryService.getModelDir().resolve(
+                            entry.getPath() != null ? entry.getPath() : modelId);
+                    if (!Files.exists(modelDir) || !Files.isDirectory(modelDir)) {
+                        return ResponseEntity.notFound().<Object>build();
+                    }
+                    try {
+                        List<Map<String, Object>> files = new java.util.ArrayList<>();
+                        try (java.util.stream.Stream<Path> stream = Files.list(modelDir)) {
+                            stream.filter(Files::isRegularFile).forEach(p -> {
+                                try {
+                                    Map<String, Object> info = new java.util.LinkedHashMap<>();
+                                    info.put("name", p.getFileName().toString());
+                                    info.put("size", Files.size(p));
+                                    files.add(info);
+                                } catch (IOException ignored) {}
+                            });
+                        }
+                        Map<String, Object> result = new java.util.LinkedHashMap<>();
+                        result.put("modelId", modelId);
+                        result.put("files", files);
+                        return ResponseEntity.ok((Object) result);
+                    } catch (IOException e) {
+                        log.error("Failed to list files for model {}: {}", modelId, e.getMessage());
+                        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Object>build();
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Download any file by name from a registered model's directory.
+     * Supports shard files, tokenizer files, etc.
+     */
+    @GetMapping("/registry/model/{modelId}/download/file/{fileName:.+}")
+    public ResponseEntity<?> downloadFile(@PathVariable String modelId, @PathVariable String fileName) {
+        if (fileName.contains("..") || fileName.contains("/") || fileName.contains("\\")) {
+            return ResponseEntity.badRequest().build();
+        }
+        return registryService.getModel(modelId)
+                .map(entry -> {
+                    Path modelDir = registryService.getModelDir().resolve(
+                            entry.getPath() != null ? entry.getPath() : modelId);
+                    Path filePath = modelDir.resolve(fileName);
+                    if (!Files.exists(filePath) || !filePath.startsWith(modelDir)) {
+                        return ResponseEntity.notFound().<Void>build();
+                    }
+                    try {
+                        org.springframework.core.io.Resource resource =
+                                new org.springframework.core.io.FileSystemResource(filePath);
+                        return ResponseEntity.ok()
+                                .header("Content-Disposition", "attachment; filename=\"" + fileName + "\"")
+                                .header("Content-Type", "application/octet-stream")
+                                .body(resource);
+                    } catch (Exception e) {
+                        log.error("Failed to serve file {} for model {}: {}", fileName, modelId, e.getMessage());
+                        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+                    }
+                })
+                .orElse(ResponseEntity.notFound().build());
+    }
+
     // ==================== Catalog Endpoints ====================
 
     /**
@@ -503,6 +572,7 @@ public class StagingController {
                 .format(request.getFormat())
                 .revision(request.getRevision())
                 .authToken(request.getAuthToken())
+                .tokenizerUrl(request.getTokenizerUrl())
                 .build();
 
         // Start async staging

@@ -21,6 +21,7 @@ import ai.kompile.pipelines.framework.api.StepConfig;
 import ai.kompile.pipelines.framework.api.context.Context;
 import ai.kompile.pipelines.framework.api.data.*;
 import ai.kompile.pipelines.framework.api.llm.LLMStepConfig;
+import ai.kompile.pipelines.steps.samediff.nlp.SameDiffHuggingFaceTokenizer;
 import ai.kompile.pipelines.steps.samediff.nlp.SameDiffLLMTokenizer; // Using the SameDiff specific tokenizer
 import ai.kompile.pipelines.steps.samediff.nlp.SameDiffWordPieceTokenizer; // Concrete SameDiff tokenizer
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -81,7 +82,7 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
             }
 
             File modelFile = new File(new URI(this.config.getModelUri()));
-            if (!modelFile.exists() || !modelFile.isFile()){
+            if (!modelFile.exists() && !hasShardFiles(modelFile)) {
                 throw new IOException("SameDiff model file not found at: " + modelFile.getAbsolutePath());
             }
             this.sameDiffModel = SameDiff.load(modelFile, true);
@@ -91,11 +92,20 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
                 throw new IllegalArgumentException("Tokenizer URI must be specified in LLMStepConfig for step '" + config.getName() + "'.");
             }
             String tokenizerType = this.config.getTokenizerType() != null ? this.config.getTokenizerType().toLowerCase() : "samediff_wordpiece";
-            if ("samediff_wordpiece".equals(tokenizerType) || "wordpiece".equals(tokenizerType)) {
-                this.tokenizer = new SameDiffWordPieceTokenizer();
-            } else {
-                throw new IllegalArgumentException("Unsupported tokenizerType for step '" + config.getName() + "': " + tokenizerType +
-                        ". Expected 'samediff_wordpiece' or 'wordpiece'.");
+            switch (tokenizerType) {
+                case "samediff_wordpiece":
+                case "wordpiece":
+                    this.tokenizer = new SameDiffWordPieceTokenizer();
+                    break;
+                case "huggingface":
+                case "hf":
+                case "bpe":
+                    // BPE/SentencePiece/WordPiece via DL4J's HuggingFaceTokenizer (Rust JNI)
+                    this.tokenizer = new SameDiffHuggingFaceTokenizer();
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported tokenizerType for step '" + config.getName() + "': " + tokenizerType +
+                            ". Expected one of: 'samediff_wordpiece', 'wordpiece', 'huggingface', 'hf', 'bpe'.");
             }
             this.tokenizer.initialize(this.config.getTokenizerUri(), this.config.getTokenizerConfig());
 
@@ -496,5 +506,16 @@ public class SameDiffLanguageModelStepRunner implements PipelineStepRunner {
         }
         initialized = false;
         log.info("SameDiffLanguageModelStepRunner for step '{}' closed.", config != null ? config.getName() : "UNKNOWN");
+    }
+
+    private static boolean hasShardFiles(File modelFile) {
+        File parent = modelFile.getAbsoluteFile().getParentFile();
+        if (parent == null || !parent.isDirectory()) return false;
+        String baseName = modelFile.getName();
+        int dotIdx = baseName.lastIndexOf('.');
+        if (dotIdx > 0) baseName = baseName.substring(0, dotIdx);
+        String prefix = baseName + ".shard0-of-";
+        File[] matches = parent.listFiles((dir, name) -> name.startsWith(prefix) && name.endsWith(".sdnb"));
+        return matches != null && matches.length > 0;
     }
 }

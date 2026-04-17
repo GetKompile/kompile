@@ -175,6 +175,23 @@ public class ApplicationPropertiesGenerator {
             writer.write("# Anserini Configuration\n");
             writer.write("kompile.anserini.models.basepath=${kompile.runtime.model.cache.path}/anserini\n");
 
+            // Wire kompile-app to the Anserini-backed embedding + vector store. These two
+            // properties are required for the embedding/vectorstore @ConditionalOnProperty
+            // beans to register; without them the app boots but ingest / query no-op.
+            writer.write("kompile.embedding.type=anserini\n");
+            writer.write("kompile.vectorstore.type=anserini\n");
+            writer.write("kompile.embedding.anserini.enabled=true\n");
+
+            // Default to the model id that lives in the demo staging registry. The hard
+            // default in AnseriniEmbeddingProperties is "bge-base-en-v1.5-onnx", which the
+            // demo staging server does not have; override here so the generated app talks
+            // to the staging registry out of the box.
+            writer.write("kompile.embedding.anserini.model-identifier=bge-base-en-v1.5\n");
+
+            // Point the generated app at the local staging server by default. Override at
+            // runtime with --kompile.staging.url=... or an environment variable if needed.
+            writer.write("kompile.staging.url=${KOMPILE_STAGING_URL:http://localhost:8090}\n");
+
             if (config.getAnseriniIndexIds() != null && !config.getAnseriniIndexIds().isEmpty()) {
                 for (String indexId : config.getAnseriniIndexIds()) {
                     String trimmed = indexId.trim();
@@ -200,6 +217,11 @@ public class ApplicationPropertiesGenerator {
             }
             writer.write("\n");
         }
+
+        writer.write("# Chunker (recursive splitter is a sensible default for markdown / mixed text).\n");
+        writer.write("kompile.chunker.type=recursive\n");
+        writer.write("kompile.chunker.chunkSize=400\n");
+        writer.write("kompile.chunker.chunkOverlap=40\n\n");
 
         writer.write("# Application Paths\n");
         writer.write("app.document.sources=./data/input_documents/sample.txt,./data/input_documents/sample.pdf\n");

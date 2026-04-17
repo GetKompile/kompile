@@ -72,7 +72,7 @@ public final class ModuleCatalog {
         register("loaders-orchestrator", "ai.kompile", "kompile-app-loaders-orchestrator", Category.CORE, "Document loader orchestration");
         register("app-anserini", "ai.kompile", "kompile-app-anserini", Category.CORE, "Anserini search integration");
         register("chat-history", "ai.kompile", "kompile-chat-history", Category.CORE, "Chat history persistence");
-        register("pipelines-llm", "ai.kompile", "kompile-pipelines-app-llm", Category.CORE, "Pipeline LLM auto-configuration");
+        register("pipelines-llm", "ai.kompile", "kompile-app-llm-pipeline", Category.CORE, "Pipeline LLM auto-configuration");
 
         // LLM providers
         register("llm-openai", "ai.kompile", "kompile-app-openai-llm", Category.LLM, "OpenAI LLM provider");
@@ -93,6 +93,7 @@ public final class ModuleCatalog {
         register("loader-pdf-extended", "ai.kompile", "kompile-loader-pdf-extended", Category.LOADER, "Advanced PDF processing");
         register("loader-microsoft", "ai.kompile", "kompile-loader-microsoft", Category.LOADER, "Microsoft Office documents");
         register("loader-mail", "ai.kompile", "kompile-loader-mail", Category.LOADER, "Email/mail parsing");
+        register("loader-tika", "ai.kompile", "kompile-loader-tika", Category.LOADER, "Apache Tika multi-format loader (text, markdown, html, etc.)");
 
         // Chunkers
         register("chunker-sentence", "ai.kompile", "kompile-chunker-sentence", Category.CHUNKER, "OpenNLP sentence chunker");

@@ -179,6 +179,16 @@ public class RoleLoader {
         int maxSteps = parseIntOrDefault(fields.get("max_steps"), 50);
         boolean canSpawn = "true".equalsIgnoreCase(fields.getOrDefault("can_spawn", "true"));
 
+        // Parse agent fallback priority
+        List<String> agentFallbackPriority = new ArrayList<>();
+        String fallbackStr = fields.get("agent_fallback");
+        if (fallbackStr != null && !fallbackStr.isBlank()) {
+            for (String a : fallbackStr.split(",")) {
+                String trimmed = a.trim().toLowerCase();
+                if (!trimmed.isEmpty()) agentFallbackPriority.add(trimmed);
+            }
+        }
+
         // Parse tools
         Set<String> enabledTools;
         String toolsStr = fields.get("tools");
@@ -214,6 +224,7 @@ public class RoleLoader {
                 .enabledTools(enabledTools)
                 .permissionOverrides(overrides)
                 .canSpawnSubagents(canSpawn)
+                .agentFallbackPriority(agentFallbackPriority)
                 .sourceFile(file.toString())
                 .isBuiltIn(isBuiltIn)
                 .maxSteps(maxSteps)

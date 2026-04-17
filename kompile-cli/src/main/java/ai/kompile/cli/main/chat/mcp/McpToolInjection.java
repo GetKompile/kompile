@@ -47,6 +47,12 @@ public class McpToolInjection {
     private static final ObjectMapper OM = new ObjectMapper();
     private static final String BACKUP_SUFFIX = ".kompile-backup";
 
+    /** JVM shutdown hook for crash-safe cleanup of injected tools. */
+    private static volatile Thread shutdownHook;
+
+    /** Tracks which settings file needs cleanup on shutdown. */
+    private static volatile Path pendingCleanupFile;
+
     /**
      * Inject kompile MCP tools into the appropriate agent's settings file.
      * Automatically selects stdio mode (embedded MCP server).
@@ -74,6 +80,14 @@ public class McpToolInjection {
      */
     public static Path injectTools(Path agentWorkingDir, String agentName, String sseUrl) throws IOException {
         Path normalizedWd = agentWorkingDir.toAbsolutePath().normalize();
+
+        // Clean up any leaked kompile entries from prior crashed sessions
+        try {
+            cleanupLeakedEntries(normalizedWd);
+        } catch (Exception e) {
+            System.err.println("[MCP] Warning: Could not clean leaked entries from prior sessions: " + e.getMessage());
+        }
+
         String agent = agentName != null ? agentName.toLowerCase(Locale.ROOT) : "qwen";
         String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
 
@@ -88,17 +102,25 @@ public class McpToolInjection {
         }
 
         if (agent.contains("claude")) {
-            return injectForClaude(normalizedWd, launcher, sseUrl);
+            return registerAndReturn(injectForClaude(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("codex")) {
-            return injectForCodex(normalizedWd, launcher, sseUrl);
+            return registerAndReturn(injectForCodex(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("gemini")) {
-            return injectForGemini(normalizedWd, launcher, sseUrl);
+            return registerAndReturn(injectForGemini(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("opencode")) {
-            return injectForOpenCode(normalizedWd, launcher, sseUrl);
+            return registerAndReturn(injectForOpenCode(normalizedWd, launcher, sseUrl));
         } else {
             // Default: Qwen Code format
-            return injectForQwen(normalizedWd, launcher, sseUrl);
+            return registerAndReturn(injectForQwen(normalizedWd, launcher, sseUrl));
         }
+    }
+
+    /** Helper to register shutdown hook and return the settings file path. */
+    private static Path registerAndReturn(Path settingsFile) {
+        if (settingsFile != null) {
+            registerShutdownHook(settingsFile);
+        }
+        return settingsFile;
     }
 
     /**
@@ -109,6 +131,9 @@ public class McpToolInjection {
      * @param settingsFile the path returned by {@link #injectTools}
      */
     public static void removeTools(Path settingsFile) {
+        // Deregister the shutdown hook to avoid double-cleanup
+        deregisterShutdownHook();
+
         if (settingsFile == null) return;
         try {
             Path backup = settingsFile.resolveSibling(settingsFile.getFileName() + BACKUP_SUFFIX);
@@ -171,14 +196,14 @@ public class McpToolInjection {
             if (toml.length() > 0) toml.append("\n\n");
         }
 
-        // Append the kompile MCP server section
+        // Append the kompile MCP server section.
+        // Codex infers stdio from presence of command/args — do NOT add type = "stdio".
+        // For SSE, codex uses url key (no type key needed either).
         toml.append("[mcp_servers.kompile]\n");
         if (sseUrl != null && !sseUrl.isBlank()) {
-            toml.append("type = \"sse\"\n");
             toml.append("url = \"").append(escapeToml(sseUrl)).append("\"\n");
         } else {
             List<String> fullArgs = launcher.buildArgs(workingDir);
-            toml.append("type = \"stdio\"\n");
             toml.append("command = \"").append(escapeToml(launcher.command())).append("\"\n");
             toml.append("args = [");
             for (int i = 0; i < fullArgs.size(); i++) {
@@ -280,15 +305,175 @@ public class McpToolInjection {
 
     /**
      * Create a backup of the settings file if it exists.
-     * Preserves the original backup — never overwrites an existing .kompile-backup
-     * to avoid destroying the original clean backup on rapid re-injection.
+     *
+     * <p>If a backup already exists, it is checked for contamination (a "kompile" MCP entry).
+     * If contaminated, the backup is overwritten with a clean copy from the current file
+     * (with the kompile entry stripped out). If the backup is clean, it is preserved.</p>
      */
     private static void backupIfExists(Path settingsFile) throws IOException {
-        if (Files.exists(settingsFile)) {
-            Path backup = settingsFile.resolveSibling(settingsFile.getFileName() + BACKUP_SUFFIX);
-            if (!Files.exists(backup)) {
-                Files.copy(settingsFile, backup, StandardCopyOption.REPLACE_EXISTING);
+        if (!Files.exists(settingsFile)) return;
+
+        Path backup = settingsFile.resolveSibling(settingsFile.getFileName() + BACKUP_SUFFIX);
+
+        if (Files.exists(backup)) {
+            // Check if backup is contaminated (contains kompile entry)
+            if (isContaminated(backup)) {
+                // Backup is contaminated — create a clean backup from the current file
+                String cleanContent = stripKompileEntry(settingsFile);
+                if (cleanContent != null) {
+                    Files.writeString(backup, cleanContent);
+                }
             }
+            // If backup exists and is clean, keep it (don't overwrite)
+        } else {
+            Files.copy(settingsFile, backup, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Check whether a settings file contains a kompile MCP entry.
+     *
+     * @param file the settings file to check
+     * @return true if the file has a kompile mcpServers entry (JSON) or [mcp_servers.kompile] section (TOML)
+     */
+    private static boolean isContaminated(Path file) {
+        if (!Files.exists(file)) return false;
+        try {
+            String fileName = file.getFileName().toString();
+            if (fileName.endsWith(".toml")) {
+                String content = Files.readString(file);
+                // Check for [mcp_servers.kompile] section
+                return content.matches("(?s).*\\[mcp_servers\\.kompile\\].*");
+            }
+            // JSON files: check if mcpServers.kompile exists
+            String content = Files.readString(file);
+            ObjectNode root = (ObjectNode) OM.readTree(content);
+            return root.has("mcpServers")
+                    && root.get("mcpServers").isObject()
+                    && root.get("mcpServers").has("kompile");
+        } catch (Exception e) {
+            // If we can't parse the file, assume it's not contaminated
+            return false;
+        }
+    }
+
+    /**
+     * Read a settings file and return its content with the kompile entry removed.
+     *
+     * @param file the settings file to clean
+     * @return the cleaned content string, or null if the file cannot be parsed
+     */
+    private static String stripKompileEntry(Path file) {
+        try {
+            if (!Files.exists(file)) return null;
+            String fileName = file.getFileName().toString();
+            if (fileName.endsWith(".toml")) {
+                String content = Files.readString(file);
+                String cleaned = content.replaceAll(
+                    "(?ms)^\\[mcp_servers\\.kompile\\].*?(?=\\n\\[[^.]|\\z)", "").trim();
+                cleaned = cleaned.replaceAll("\\n+$", "");
+                return cleaned.isEmpty() ? null : cleaned + "\n";
+            }
+            // JSON file
+            String content = Files.readString(file);
+            ObjectNode root = (ObjectNode) OM.readTree(content);
+            if (root.has("mcpServers") && root.get("mcpServers").isObject()) {
+                ((ObjectNode) root.get("mcpServers")).remove("kompile");
+                if (root.get("mcpServers").isEmpty()) {
+                    root.remove("mcpServers");
+                }
+            }
+            if (root.isEmpty()) return null;
+            return OM.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+        } catch (Exception e) {
+            System.err.println("[MCP] Warning: Could not strip kompile entry from " + file + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Clean up any leaked kompile entries from known config file locations.
+     * Called at the start of {@link #injectTools} to recover from prior crashes.
+     *
+     * @param projectDir the project/working directory used to resolve local config files
+     */
+    public static void cleanupLeakedEntries(Path projectDir) {
+        List<Path> candidates = List.of(
+            projectDir.resolve(".mcp.json"),
+            projectDir.resolve(".qwen/settings.json"),
+            projectDir.resolve(".opencode.json"),
+            Path.of(System.getProperty("user.home"), ".codex", "config.toml"),
+            Path.of(System.getProperty("user.home"), ".gemini", "settings.json")
+        );
+
+        for (Path candidate : candidates) {
+            try {
+                if (Files.exists(candidate) && isContaminated(candidate)) {
+                    Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
+                    if (Files.exists(backup) && !isContaminated(backup)) {
+                        // Restore clean backup
+                        Files.move(backup, candidate, StandardCopyOption.REPLACE_EXISTING);
+                        System.err.println("[MCP] Restored clean backup for: " + candidate);
+                    } else {
+                        // No clean backup — strip kompile entry in place
+                        removeKompileEntry(candidate);
+                        // Also clean up any contaminated backup
+                        if (Files.exists(backup)) Files.deleteIfExists(backup);
+                    }
+                }
+            } catch (IOException e) {
+                System.err.println("[MCP] Warning: Could not clean leaked entry from " + candidate + ": " + e.getMessage());
+            }
+            // Clean up orphaned backups (backup exists but original doesn't)
+            Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
+            try {
+                if (Files.exists(backup) && !Files.exists(candidate)) {
+                    Files.deleteIfExists(backup);
+                }
+            } catch (IOException e) {
+                System.err.println("[MCP] Warning: Could not delete orphaned backup " + backup + ": " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Register a JVM shutdown hook to clean up injected tools if the JVM is killed unexpectedly.
+     * Called after successful injection in {@link #injectTools}.
+     */
+    private static void registerShutdownHook(Path settingsFile) {
+        // Remove any prior hook first
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // Hook already running or JVM shutting down
+            }
+        }
+        pendingCleanupFile = settingsFile;
+        shutdownHook = new Thread(() -> {
+            System.err.println("[MCP] Shutdown hook: cleaning up injected tools");
+            removeTools(pendingCleanupFile);
+        }, "kompile-mcp-cleanup");
+        try {
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
+        } catch (IllegalStateException ignored) {
+            // JVM is already shutting down
+        }
+    }
+
+    /**
+     * Remove the shutdown hook registered by {@link #registerShutdownHook}.
+     * Called at the start of {@link #removeTools} to avoid double-cleanup.
+     */
+    private static void deregisterShutdownHook() {
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // Hook already running or JVM shutting down
+            }
+            shutdownHook = null;
+            pendingCleanupFile = null;
         }
     }
 

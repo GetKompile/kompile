@@ -195,6 +195,7 @@ public class RoleManager {
                 .maxSteps(existing.getMaxSteps())
                 .canSpawnSubagents(existing.isCanSpawnSubagents())
                 .modelHint(existing.getModelHint())
+                .agentFallbackPriority(existing.getAgentFallbackPriority())
                 .sourceFile(existing.getSourceFile())
                 .isBuiltIn(false)
                 .build();
@@ -346,6 +347,40 @@ public class RoleManager {
         }
 
         return files;
+    }
+
+    /**
+     * Default agent fallback order used when a role does not define its own.
+     */
+    private static final List<String> DEFAULT_FALLBACK_ORDER = List.of(
+        "qwen", "claude", "codex", "gemini", "opencode"
+    );
+
+    /**
+     * Get the agent fallback order for a role. If the role defines an
+     * {@code agentFallbackPriority}, that list is returned (with any remaining
+     * default agents appended). Otherwise the global default order is returned.
+     *
+     * @param roleName the role name (may be null)
+     * @return ordered list of agent names to try on rate-limit fallback
+     */
+    public List<String> getAgentFallbackOrder(String roleName) {
+        if (roleName == null || roleName.isBlank()) {
+            return DEFAULT_FALLBACK_ORDER;
+        }
+        RoleConfig role = roles.get(roleName);
+        if (role == null || role.getAgentFallbackPriority() == null
+                || role.getAgentFallbackPriority().isEmpty()) {
+            return DEFAULT_FALLBACK_ORDER;
+        }
+        // Role-defined priority first, then any remaining default agents
+        List<String> order = new ArrayList<>(role.getAgentFallbackPriority());
+        for (String agent : DEFAULT_FALLBACK_ORDER) {
+            if (!order.contains(agent)) {
+                order.add(agent);
+            }
+        }
+        return order;
     }
 
     // ── Agent-role persistence ──────────────────────────────────────────────

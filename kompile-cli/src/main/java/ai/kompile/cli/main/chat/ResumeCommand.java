@@ -20,6 +20,7 @@ import ai.kompile.cli.main.chat.tools.ResumeTool;
 import picocli.CommandLine;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,10 +46,11 @@ import java.util.concurrent.Callable;
  * 4. Launch the agent with the conversation context injected
  * <p>
  * Examples:
- *   kompile resume                          # Launch interactive TUI
- *   kompile resume --search "database"      # Search for conversations
- *   kompile resume --session-id abc123      # Resume specific conversation
- *   kompile resume --agent claude           # Resume with specific agent
+ *   kompile resume                                          # Launch interactive TUI
+ *   kompile resume --search "database"                      # Search for conversations
+ *   kompile resume --session-id abc123                      # Resume specific conversation
+ *   kompile resume --session-id abc123 --agent claude       # Resume with specific agent
+ *   kompile resume --session-id abc123 -t target-uuid-here  # Resume with a specific target session UUID
  */
 @CommandLine.Command(
         name = "resume",
@@ -59,6 +61,9 @@ public class ResumeCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"--session-id", "-s"}, description = "Resume a specific conversation by session ID")
     private String sessionId;
+
+    @CommandLine.Option(names = {"--target-session-id", "-t"}, description = "UUID to use as the target session ID when resuming (instead of generating a new one)")
+    private String targetSessionId;
 
     @CommandLine.Option(names = {"--agent", "-a"}, description = "Target agent for resume (claude/codex/qwen/opencode/gemini)", defaultValue = "claude")
     private String agent;
@@ -255,9 +260,18 @@ public class ResumeCommand implements Callable<Integer> {
                     .toAbsolutePath()
                     .normalize();
 
+            // Check if this is a known kompile session first
+            boolean kompileSessionExists = ai.kompile.cli.main.chat.ChatHistory.exists(sessionId);
+
             try {
                 turns = reader.readKompileSession(sessionId);
             } catch (Exception kompileError) {
+                // If the kompile file exists but couldn't be parsed or is empty,
+                // don't fall through to external sources (produces confusing errors)
+                if (kompileSessionExists) {
+                    throw new IOException("Session transcript is empty (transcript harvest may have failed): " + sessionId, kompileError);
+                }
+
                 Exception lastExternalError = null;
                 for (String externalSource : java.util.List.of("claude-code", "codex", "qwen", "opencode", "gemini")) {
                     try {
@@ -295,10 +309,14 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println();
 
             // Export to agent's native format
-            System.out.println("Exporting to " + agent + " native format...");
+            if (targetSessionId != null && !targetSessionId.isBlank()) {
+                System.out.println("Exporting to " + agent + " native format with session " + targetSessionId + "...");
+            } else {
+                System.out.println("Exporting to " + agent + " native format...");
+            }
             ai.kompile.cli.main.chat.format.ConversationExporter.ExportResult exportResult =
                     ai.kompile.cli.main.chat.format.ConversationExporter.exportToAgent(
-                            turns, agent, null, source, workingDirectory);
+                            turns, agent, targetSessionId, source, workingDirectory);
 
             System.out.println();
             System.out.println("✓ Exported to " + agent + " native format");
@@ -306,9 +324,7 @@ public class ResumeCommand implements Callable<Integer> {
             System.out.println("  Saved to: " + exportResult.getSessionPath());
             System.out.println();
 
-            // Build the agent command (no tool injection here — done below)
-            List<String> agentCommand = buildAgentCommand(agent, exportResult);
-
+            // Inject MCP tools FIRST so .mcp.json exists before building the agent command
             Path injectedSettingsFile = null;
             if (injectTools) {
                 Path agentWorkingDir = exportResult.getWorkingDirectory() != null
@@ -328,8 +344,14 @@ public class ResumeCommand implements Callable<Integer> {
                 }
             }
 
+            // Build the agent command AFTER injection so --mcp-config can reference the written file
+            List<String> agentCommand = buildAgentCommand(agent, exportResult, injectTools);
+
             System.out.println();
             System.out.println("Launching agent with native session resume...");
+            System.out.println(DIM + "  Command: " + String.join(" ", agentCommand) + RESET);
+            System.out.println(DIM + "  Working dir: " + exportResult.getWorkingDirectory() + RESET);
+            System.out.println(DIM + "  MCP injected: " + injectedSettingsFile + RESET);
             System.out.println();
 
             int exitCode;
@@ -357,10 +379,16 @@ public class ResumeCommand implements Callable<Integer> {
     }
 
     /**
-     * Build the agent command with optional tool injection.
+     * Build the agent command for resume.
+     * <p>
+     * Tool injection is handled the same way as PassthroughCommand: we write
+     * .mcp.json (or equivalent) to the working directory and let the agent
+     * auto-discover it. We do NOT pass --mcp-config or --system-prompt flags
+     * because those can conflict with --resume on some agents.
      */
     private List<String> buildAgentCommand(String agent,
-                                           ai.kompile.cli.main.chat.format.ConversationExporter.ExportResult exportResult) {
+                                           ai.kompile.cli.main.chat.format.ConversationExporter.ExportResult exportResult,
+                                           boolean toolsInjected) {
         List<String> cmd = new ArrayList<>();
         String name = agent.toLowerCase();
 
@@ -382,7 +410,7 @@ public class ResumeCommand implements Callable<Integer> {
             }
         }
 
-        // Add permission bypass flags for different agents
+        // Add permission bypass flags — same as PassthroughCommand.buildCommand()
         if (name.contains("claude")) {
             cmd.add("--dangerously-skip-permissions");
         } else if (name.contains("codex")) {
@@ -393,8 +421,8 @@ public class ResumeCommand implements Callable<Integer> {
             cmd.add("--yolo");
         }
 
-        // Tool injection is handled by the caller (resumeConversation) — not here,
-        // to avoid double-injection and to allow proper cleanup after agent exit.
+        // MCP tools are auto-discovered from .mcp.json / .qwen/settings.json / etc.
+        // written by McpToolInjection.injectTools() — no extra flags needed.
 
         return cmd;
     }

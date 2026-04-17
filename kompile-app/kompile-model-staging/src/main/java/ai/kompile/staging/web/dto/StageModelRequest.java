@@ -37,4 +37,5 @@ public class StageModelRequest {
     private String format = "onnx";
     private String revision;
     private String authToken;
+    private String tokenizerUrl;
 }

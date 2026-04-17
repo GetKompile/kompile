@@ -91,7 +91,7 @@ public class ComponentListCommand implements Callable<Integer> {
                 "Kompile Model Staging",
                 "Model lifecycle management service",
                 "staging",
-                8081,
+                8090,
                 "ai.kompile.staging.ModelStagingApplication"
         ));
 

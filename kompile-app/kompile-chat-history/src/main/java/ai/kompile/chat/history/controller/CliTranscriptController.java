@@ -18,16 +18,24 @@ package ai.kompile.chat.history.controller;
 
 import ai.kompile.chat.history.domain.ChatSession;
 import ai.kompile.chat.history.dto.ChatSessionDto;
+import ai.kompile.chat.history.service.CliTranscriptRetentionService;
 import ai.kompile.chat.history.service.CliTranscriptService;
 import ai.kompile.chat.history.service.CliTranscriptService.*;
-import lombok.RequiredArgsConstructor;
+import ai.kompile.cli.common.chat.aggregate.AggregateChatSourceService;
+import ai.kompile.cli.common.chat.aggregate.ChatTranscriptRetention;
+import ai.kompile.cli.common.chat.aggregate.ChatTranscriptSearch;
+import ai.kompile.cli.common.chat.sources.ChatSourceRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.File;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,11 +46,23 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/chat-history/cli")
-@RequiredArgsConstructor
 @ConditionalOnBean(CliTranscriptService.class)
 public class CliTranscriptController {
 
     private final CliTranscriptService cliTranscriptService;
+    private final AggregateChatSourceService aggregateService;
+    private final ChatTranscriptSearch searchService;
+    private final CliTranscriptRetentionService retentionService;
+
+    @Autowired
+    public CliTranscriptController(CliTranscriptService cliTranscriptService,
+                                   CliTranscriptRetentionService retentionService) {
+        this.cliTranscriptService = cliTranscriptService;
+        this.retentionService = retentionService;
+        ChatSourceRegistry registry = ChatSourceRegistry.getInstance();
+        this.aggregateService = new AggregateChatSourceService(registry);
+        this.searchService = new ChatTranscriptSearch(registry);
+    }
 
     /**
      * Discover available conversation sources with counts.
@@ -124,5 +144,90 @@ public class CliTranscriptController {
             return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Export failed: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Cross-source grep-style search over transcripts. Accepts repeated
+     * {@code source=} params or a comma-separated list.
+     */
+    @GetMapping("/search")
+    public ResponseEntity<List<ChatTranscriptSearch.Hit>> search(
+            @RequestParam("q") String pattern,
+            @RequestParam(name = "source", required = false) List<String> sources,
+            @RequestParam(name = "ctx", defaultValue = "0") int contextLines,
+            @RequestParam(name = "limit", defaultValue = "500") int limit,
+            @RequestParam(name = "regex", defaultValue = "false") boolean regex,
+            @RequestParam(name = "ignoreCase", defaultValue = "false") boolean ignoreCase) {
+        log.debug("Search: q='{}' sources={} ctx={} limit={} regex={} ignoreCase={}",
+                pattern, sources, contextLines, limit, regex, ignoreCase);
+        List<String> expandedSources = expandSources(sources);
+        ChatTranscriptSearch.Query query = new ChatTranscriptSearch.Query()
+                .pattern(pattern)
+                .sources(expandedSources)
+                .contextLines(contextLines)
+                .limit(limit)
+                .regex(regex)
+                .caseInsensitive(ignoreCase);
+        return ResponseEntity.ok(searchService.search(query));
+    }
+
+    /**
+     * Aggregate counts + discovery info for every known chat source.
+     */
+    @GetMapping("/aggregate")
+    public ResponseEntity<Map<String, Object>> aggregate() {
+        log.debug("Aggregate: collecting per-source counts + discovery");
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("sources", aggregateService.discoveryBySource());
+        out.put("counts", aggregateService.countsBySource());
+        out.put("knownSourceIds", aggregateService.knownSourceIds());
+        return ResponseEntity.ok(out);
+    }
+
+    /**
+     * Trigger a retention pass over Kompile transcript files. Caps come from
+     * {@link ChatHistoryProperties} unless overridden via query params.
+     */
+    @DeleteMapping("/retention")
+    public ResponseEntity<Map<String, Object>> runRetention(
+            @RequestParam(name = "dryRun", defaultValue = "false") boolean dryRun,
+            @RequestParam(name = "maxAgeDays", required = false) Long maxAgeDays,
+            @RequestParam(name = "maxTotalMb", required = false) Long maxTotalMb,
+            @RequestParam(name = "maxPerSource", required = false) Integer maxPerSource) {
+        log.info("Retention: dryRun={} maxAgeDays={} maxTotalMb={} maxPerSource={}",
+                dryRun, maxAgeDays, maxTotalMb, maxPerSource);
+        ChatTranscriptRetention.Result result;
+        if (maxAgeDays != null || maxTotalMb != null || maxPerSource != null) {
+            result = retentionService.runCleanup(
+                    maxAgeDays != null ? maxAgeDays : 0L,
+                    maxTotalMb != null ? maxTotalMb : 0L,
+                    maxPerSource != null ? maxPerSource : 0,
+                    dryRun);
+        } else {
+            result = retentionService.runCleanup(dryRun);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("dryRun", dryRun);
+        body.put("totalDeleted", result.totalDeleted());
+        body.put("deletedByAge", result.deletedByAge());
+        body.put("deletedByCount", result.deletedByCount());
+        body.put("deletedBySize", result.deletedBySize());
+        List<String> paths = new ArrayList<>();
+        for (File f : result.deletedFiles()) paths.add(f.getAbsolutePath());
+        body.put("deletedFiles", paths);
+        return ResponseEntity.ok(body);
+    }
+
+    private static List<String> expandSources(List<String> raw) {
+        if (raw == null || raw.isEmpty()) return List.of();
+        List<String> out = new ArrayList<>();
+        for (String s : raw) {
+            if (s == null) continue;
+            for (String part : s.split(",")) {
+                String trimmed = part.trim();
+                if (!trimmed.isEmpty()) out.add(trimmed);
+            }
+        }
+        return out;
     }
 }

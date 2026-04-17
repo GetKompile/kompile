@@ -66,7 +66,8 @@ public class TerminalRenderer {
             Map.entry("websearch", "🔎"),
             Map.entry("task", "🤖"),
             Map.entry("todowrite", "📝"),
-            Map.entry("todoread", "📝")
+            Map.entry("todoread", "📝"),
+            Map.entry("exit_plan_mode", "✅")
     );
 
     private final boolean ansiEnabled;

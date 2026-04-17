@@ -1,0 +1,221 @@
+<!--
+  ~   Copyright 2025 Kompile Inc.
+  ~
+  ~  Licensed under the Apache License, Version 2.0 (the "License");
+  ~  you may not use this file except in compliance with the License.
+  ~  You may obtain a copy of the License at
+  ~
+  ~  http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~  Unless required by applicable law or agreed to in writing, software
+  ~   distributed under the License is distributed on an "AS IS" BASIS,
+  ~  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~  See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
+                              http://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>bundle</id>
+    <formats>
+        <format>zip</format>
+        <format>tar.gz</format>
+    </formats>
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>kompile-${project.version}</baseDirectory>
+
+    <files>
+        <!-- ============ CLI native executables (renamed for friendlier UX) ============ -->
+        <file>
+            <source>${project.parent.basedir}/kompile-cli/target/kompile-cli</source>
+            <outputDirectory>bin</outputDirectory>
+            <destName>kompile</destName>
+            <fileMode>0755</fileMode>
+        </file>
+        <file>
+            <source>${project.parent.basedir}/kompile-agent-cli/target/kompile-agent</source>
+            <outputDirectory>bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </file>
+        <file>
+            <source>${project.parent.basedir}/kompile-app-cli/target/kompile-app-cli</source>
+            <outputDirectory>bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </file>
+        <file>
+            <source>${project.parent.basedir}/kompile-model-cli/target/kompile-model</source>
+            <outputDirectory>bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </file>
+        <file>
+            <source>${project.parent.basedir}/kompile-component-cli/target/kompile-component</source>
+            <outputDirectory>bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </file>
+
+        <!-- ============ kompile-app-main: unified server binary ============
+             The `kompile-server` binary handles both the main RAG server and all
+             subprocess types (ingest, vector-population, embedding, model-init,
+             vlm-test, training) via the subprocess-type flag. See
+             MainApplication.main() for the routing logic. -->
+        <file>
+            <source>${project.parent.basedir}/kompile-app/kompile-app-main/target/kompile-app</source>
+            <outputDirectory>bin</outputDirectory>
+            <destName>kompile-server</destName>
+            <fileMode>0755</fileMode>
+        </file>
+
+        <!-- ============ kompile-app-lite native ============ -->
+        <file>
+            <source>${project.parent.basedir}/kompile-app/kompile-app-lite/target/kompile-app-lite-native</source>
+            <outputDirectory>bin</outputDirectory>
+            <destName>kompile-app-lite</destName>
+            <fileMode>0755</fileMode>
+        </file>
+
+        <!-- ============ kompile-sdk-serving shaded JAR (Vert.x OpenAI-compatible server) ============ -->
+        <file>
+            <source>${project.parent.basedir}/kompile-sdk-serving/target/kompile-sdk-serving-${project.version}-shaded.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-sdk-serving.jar</destName>
+        </file>
+
+        <!-- ============ kompile-model-staging Spring Boot exec JAR ============
+             The staging service runs as a separate Spring Boot process on port 8090.
+             It is shipped as the Spring Boot fat (exec) jar by default; the launcher
+             script `bin/kompile-model-staging.sh` will auto-prefer a native binary
+             at `bin/kompile-model-staging` if one is later added. The exec jar is
+             copied into ${project.build.directory}/staging-deps by the
+             maven-dependency-plugin (see kompile-dist/pom.xml). -->
+        <file>
+            <source>${project.build.directory}/staging-deps/kompile-model-staging-${project.version}-exec.jar</source>
+            <outputDirectory>lib</outputDirectory>
+            <destName>kompile-model-staging.jar</destName>
+        </file>
+    </files>
+
+    <fileSets>
+        <!-- ============ GraalVM-generated Java runtime shared libs ============
+             Native images that use AWT/fonts emit lib*.so files next to the binary;
+             these must ship alongside `kompile-server` for runtime loading. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>lib*.so</include>
+                <include>lib*.dylib</include>
+                <include>lib*.dll</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ Optional extra subprocess native images (vlm-test, training) ============
+             These are only emitted when their opt-in profiles are explicitly
+             activated. The fileSet pattern lets them be skipped silently when
+             absent, which is what we want for a default dist build. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>kompile-vlm-test</include>
+                <include>kompile-training</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ Optional kompile-model-staging native binary ============
+             If the staging module has been built with `-Pnative`, the resulting
+             `kompile-model-staging` binary is picked up here. When absent, the
+             launcher script falls back to the Spring Boot exec JAR shipped at
+             lib/kompile-model-staging.jar. -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-model-staging/target</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>kompile-model-staging</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ GraalVM shared library + generated headers ============ -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-pipelines-framework/kompile-pipelines-framework-runtime/target</directory>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>libkompile_pipelines.so</include>
+                <include>libkompile_pipelines.dylib</include>
+                <include>libkompile_pipelines.dll</include>
+                <include>graal_isolate.h</include>
+                <include>graal_isolate_dynamic.h</include>
+                <include>libkompile_pipelines.h</include>
+                <include>libkompile_pipelines_dynamic.h</include>
+            </includes>
+        </fileSet>
+
+        <!-- ============ kompile-c-library (CMake-built C wrapper) ============ -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-c-library</directory>
+            <outputDirectory>lib</outputDirectory>
+            <includes>
+                <include>libkompile_c_library.so</include>
+                <include>libkompile_c_library.dylib</include>
+                <include>libkompile_c_library.dll</include>
+            </includes>
+        </fileSet>
+
+        <!-- ============ kompile-python sdx_runtime wheel ============ -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-python/dist</directory>
+            <outputDirectory>python</outputDirectory>
+            <includes>
+                <include>*.whl</include>
+            </includes>
+        </fileSet>
+
+        <!-- ============ Launcher scripts (wrapper for the Vert.x JAR) ============ -->
+        <fileSet>
+            <directory>${project.basedir}/src/main/scripts</directory>
+            <outputDirectory>bin</outputDirectory>
+            <includes>
+                <include>*.sh</include>
+            </includes>
+            <fileMode>0755</fileMode>
+        </fileSet>
+
+        <!-- ============ Default application configuration ============ -->
+        <fileSet>
+            <directory>${project.parent.basedir}/kompile-app/kompile-app-main/src/main/resources</directory>
+            <outputDirectory>conf</outputDirectory>
+            <includes>
+                <include>application.properties</include>
+                <include>application-*.properties</include>
+                <include>log4j2*.xml</include>
+                <include>log4j2.component.properties</include>
+            </includes>
+        </fileSet>
+
+        <!-- ============ Empty runtime directories ============ -->
+        <fileSet>
+            <directory>${project.basedir}/src/main/assembly</directory>
+            <outputDirectory>data</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/src/main/assembly</directory>
+            <outputDirectory>logs</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+        <fileSet>
+            <directory>${project.basedir}/src/main/assembly</directory>
+            <outputDirectory>models</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+    </fileSets>
+</assembly>

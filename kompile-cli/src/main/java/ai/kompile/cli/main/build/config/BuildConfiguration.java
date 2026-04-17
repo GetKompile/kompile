@@ -37,6 +37,7 @@ public final class BuildConfiguration {
     private final String javacppExtension;
     private final String device;
     private final String cudaVersion;
+    private final String backend;
     private final File mavenHome;
     private final File graalVmHome;
 
@@ -79,6 +80,7 @@ public final class BuildConfiguration {
         this.javacppExtension = b.javacppExtension;
         this.device = b.device;
         this.cudaVersion = b.cudaVersion;
+        this.backend = b.backend;
         this.mavenHome = b.mavenHome;
         this.graalVmHome = b.graalVmHome;
         this.appTitle = b.appTitle;
@@ -112,6 +114,7 @@ public final class BuildConfiguration {
     public String getJavacppExtension() { return javacppExtension; }
     public String getDevice() { return device; }
     public String getCudaVersion() { return cudaVersion; }
+    public String getBackend() { return backend; }
     public File getMavenHome() { return mavenHome; }
     public File getGraalVmHome() { return graalVmHome; }
     public String getAppTitle() { return appTitle; }
@@ -148,6 +151,7 @@ public final class BuildConfiguration {
         private String javacppExtension;
         private String device = "CPU";
         private String cudaVersion;
+        private String backend = "nd4j-cuda-12.9";
         private File mavenHome;
         private File graalVmHome;
         private String appTitle = "Kompile RAG Console";
@@ -179,6 +183,7 @@ public final class BuildConfiguration {
         public Builder javacppExtension(String v) { this.javacppExtension = v; return this; }
         public Builder device(String v) { this.device = v; return this; }
         public Builder cudaVersion(String v) { this.cudaVersion = v; return this; }
+        public Builder backend(String v) { if (v != null && !v.isBlank()) this.backend = v; return this; }
         public Builder mavenHome(File v) { this.mavenHome = v; return this; }
         public Builder graalVmHome(File v) { this.graalVmHome = v; return this; }
         public Builder appTitle(String v) { this.appTitle = v; return this; }

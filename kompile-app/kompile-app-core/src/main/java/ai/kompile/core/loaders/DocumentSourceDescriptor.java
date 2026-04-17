@@ -49,7 +49,9 @@ public class DocumentSourceDescriptor {
         CONFLUENCE,    // Represents Confluence pages/spaces for document ingestion
         EMAIL,         // Represents generic email source (IMAP or POP3)
         IMAP,          // Represents IMAP mail server connection
-        POP3           // Represents POP3 mail server connection
+        POP3,          // Represents POP3 mail server connection
+        GDRIVE,        // Represents Google Drive files/folders accessed via Google OAuth
+        ONEDRIVE       // Represents Microsoft OneDrive files/folders accessed via Microsoft OAuth
     }
 
     private SourceType type;

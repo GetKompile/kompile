@@ -57,8 +57,7 @@ import java.util.Properties;
         "ai.kompile.knowledgegraph.builder.repository",
         "ai.kompile.knowledgegraph.embedding.repository",
         "ai.kompile.oauth.repository",
-        "ai.kompile.orchestrator.repository",
-        "ai.kompile.notebook.repository"
+        "ai.kompile.orchestrator.repository"
     },
     entityManagerFactoryRef = "entityManagerFactory",
     transactionManagerRef = "transactionManager"
@@ -75,8 +74,7 @@ import java.util.Properties;
     "ai.kompile.knowledgegraph.builder.domain",
     "ai.kompile.knowledgegraph.embedding.domain",
     "ai.kompile.oauth.domain",
-    "ai.kompile.orchestrator.model",
-    "ai.kompile.notebook.domain"
+    "ai.kompile.orchestrator.model"
 })
 public class PrimaryDataSourceConfig {
 
@@ -116,8 +114,7 @@ public class PrimaryDataSourceConfig {
         "ai.kompile.knowledgegraph.builder.domain",
         "ai.kompile.knowledgegraph.embedding.domain",
         "ai.kompile.oauth.domain",
-        "ai.kompile.orchestrator.model",
-        "ai.kompile.notebook.domain"
+        "ai.kompile.orchestrator.model"
     };
 
     @Bean

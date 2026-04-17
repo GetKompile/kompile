@@ -56,6 +56,7 @@ import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 // import org.springframework.ai.model.function.ToolCall;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -74,6 +75,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service("kompilePipelineLanguageModel")
+// Legacy dummy-echo pipeline LanguageModel. Only registered when the user explicitly
+// opts in via kompile.langmodel.pipeline.enabled=true. The real on-demand SameDiff
+// LanguageModel (SameDiffLanguageModelImpl) is registered as @Primary by default.
+@ConditionalOnProperty(prefix = "kompile.langmodel.pipeline", name = "enabled", havingValue = "true", matchIfMissing = false)
 public class KompilePipelineLanguageModelImpl implements LanguageModel {
 
     private static final Logger logger = LoggerFactory.getLogger(KompilePipelineLanguageModelImpl.class);
@@ -449,6 +454,7 @@ public class KompilePipelineLanguageModelImpl implements LanguageModel {
     }
 
     @Service
+    @ConditionalOnProperty(prefix = "kompile.langmodel.pipeline", name = "enabled", havingValue = "true", matchIfMissing = false)
     public static class KompilePipelineProviderService {
         private static final Logger logger = LoggerFactory.getLogger(KompilePipelineProviderService.class);
         private final Map<String, PipelineMetadataWrapper> pipelines = new ConcurrentHashMap<>();

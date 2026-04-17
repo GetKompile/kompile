@@ -99,6 +99,10 @@ public class HttpDownloader implements DownloadService {
 
                 // Find extracted files
                 findExtractedFiles(destination, downloadedFiles);
+            } else {
+                // Raw single-file download (.gguf, .ggml, .onnx, .pb, .h5, .sdz, .fb, ...).
+                // StagingService routes on modelPath, so the downloaded file IS the model.
+                downloadedFiles.put("model", downloadPath);
             }
 
             // Calculate checksum

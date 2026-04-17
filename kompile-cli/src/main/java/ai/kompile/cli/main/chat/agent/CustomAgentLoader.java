@@ -60,6 +60,7 @@ import java.util.stream.Stream;
  *   <li><b>tools</b>: Comma-separated tool IDs, or "*" for all (default: "*")</li>
  *   <li><b>deny_tools</b>: Comma-separated tools to deny (e.g. "edit, write, patch")</li>
  *   <li><b>can_spawn</b>: Whether this agent can spawn subagents (default: false)</li>
+ *   <li><b>allowed_models</b>: Comma-separated list of models this agent may use (default: all)</li>
  * </ul>
  */
 public class CustomAgentLoader {
@@ -210,11 +211,24 @@ public class CustomAgentLoader {
             }
         }
 
+        // Parse allowed_models
+        List<String> allowedModels = List.of();
+        String allowedModelsStr = fields.get("allowed_models");
+        if (allowedModelsStr != null && !allowedModelsStr.isBlank()) {
+            List<String> models = new ArrayList<>();
+            for (String m : allowedModelsStr.split(",")) {
+                String trimmed = m.trim();
+                if (!trimmed.isEmpty()) models.add(trimmed);
+            }
+            allowedModels = List.copyOf(models);
+        }
+
         return AgentConfig.builder(name)
                 .displayName(fields.getOrDefault("display_name", name))
                 .description(description)
                 .systemPrompt(body)
                 .modelHint(modelHint)
+                .allowedModels(allowedModels)
                 .enabledTools(enabledTools)
                 .permissionOverrides(overrides)
                 .isSubagent("subagent".equalsIgnoreCase(mode))

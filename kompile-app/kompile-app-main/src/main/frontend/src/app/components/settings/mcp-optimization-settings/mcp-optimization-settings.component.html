@@ -1,0 +1,279 @@
+<!--
+     Copyright 2025 Kompile Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+
+<div class="mcp-optimization-settings">
+  <!-- Header -->
+  <div class="settings-header">
+    <div class="header-info">
+      <h3>
+        <mat-icon>compress</mat-icon>
+        MCP Token Optimization
+      </h3>
+      <p>
+        Limit the token footprint of tools exposed over MCP. Applies surgical caps to the
+        largest offenders (RAG, filesystem, knowledge graph), wraps oversized responses in
+        a result-reference cache, and optionally collapses the advertised tool surface to
+        three meta-tools.
+      </p>
+    </div>
+    <button mat-icon-button matTooltip="Reload from server" (click)="loadConfiguration()">
+      <mat-icon>refresh</mat-icon>
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div *ngIf="loading" class="loading-container">
+    <mat-spinner diameter="40"></mat-spinner>
+    <span>Loading configuration...</span>
+  </div>
+
+  <!-- Error -->
+  <div *ngIf="error" class="error-message">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+    <button mat-button color="primary" (click)="loadConfiguration()">Retry</button>
+  </div>
+
+  <!-- Success -->
+  <div *ngIf="successMessage" class="success-message">
+    <mat-icon>check_circle</mat-icon>
+    <span>{{ successMessage }}</span>
+  </div>
+
+  <ng-container *ngIf="!loading">
+    <!-- Master toggle -->
+    <mat-card class="master-toggle-card">
+      <mat-card-content>
+        <div class="config-row toggle-row">
+          <div class="config-info">
+            <span class="config-label">Enable MCP Optimization</span>
+            <span class="config-description">
+              Master switch. When off every layer short-circuits to passthrough.
+            </span>
+          </div>
+          <mat-slide-toggle
+            [(ngModel)]="config.enabled"
+            [ngModelOptions]="{standalone: true}"
+            color="primary">
+          </mat-slide-toggle>
+        </div>
+        <div class="config-file-path" *ngIf="configFilePath">
+          <mat-icon>description</mat-icon>
+          <span>Persisted to <code>{{ configFilePath }}</code></span>
+        </div>
+      </mat-card-content>
+    </mat-card>
+
+    <ng-container *ngIf="config.enabled">
+      <!-- RAG caps -->
+      <mat-card class="section-card">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>search</mat-icon>
+            RAG Tool Caps
+          </mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="two-column-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Max content characters per doc</mat-label>
+              <input matInput type="number" min="100" step="100"
+                     [(ngModel)]="config.ragMaxContentChars"
+                     [ngModelOptions]="{standalone: true}">
+              <mat-hint>Truncated docs gain a result_id for fetch_result.</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Max docs per query</mat-label>
+              <input matInput type="number" min="1" max="50"
+                     [(ngModel)]="config.ragMaxDocs"
+                     [ngModelOptions]="{standalone: true}">
+              <mat-hint>Upper bound; requests still may ask for fewer.</mat-hint>
+            </mat-form-field>
+          </div>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Filesystem caps -->
+      <mat-card class="section-card">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>folder</mat-icon>
+            Filesystem Tool Caps
+          </mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="config-row toggle-row">
+            <div class="config-info">
+              <span class="config-label">Stash previous content in cache</span>
+              <span class="config-description">
+                Writes and deletes return an undo_token instead of inlining the previous file contents.
+              </span>
+            </div>
+            <mat-slide-toggle
+              [(ngModel)]="config.filesystemStorePreviousContentInCache"
+              [ngModelOptions]="{standalone: true}"
+              color="primary">
+            </mat-slide-toggle>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width"
+                          *ngIf="config.filesystemStorePreviousContentInCache">
+            <mat-label>Undo TTL (seconds)</mat-label>
+            <input matInput type="number" min="60" step="60"
+                   [(ngModel)]="config.filesystemUndoTtlSeconds"
+                   [ngModelOptions]="{standalone: true}">
+            <mat-hint>How long fs_undo / fs_get_previous_content handles stay valid.</mat-hint>
+          </mat-form-field>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Knowledge graph caps -->
+      <mat-card class="section-card">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>hub</mat-icon>
+            Knowledge Graph Tool Caps
+          </mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Description truncation length (chars)</mat-label>
+            <input matInput type="number" min="50" step="50"
+                   [(ngModel)]="config.knowledgeGraphTruncateChars"
+                   [ngModelOptions]="{standalone: true}">
+            <mat-hint>Applied to node description fields across all KG tools.</mat-hint>
+          </mat-form-field>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Compression + cache -->
+      <mat-card class="section-card">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>compress</mat-icon>
+            Response Compression &amp; Result Cache
+          </mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="two-column-grid">
+            <mat-form-field appearance="outline">
+              <mat-label>Compression threshold (chars)</mat-label>
+              <input matInput type="number" min="500" step="500"
+                     [(ngModel)]="config.compressionThresholdChars"
+                     [ngModelOptions]="{standalone: true}">
+              <mat-hint>Responses smaller than this skip compression.</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Result cache max entries</mat-label>
+              <input matInput type="number" min="10" step="10"
+                     [(ngModel)]="config.resultCacheMaxEntries"
+                     [ngModelOptions]="{standalone: true}">
+              <mat-hint>LRU eviction once this cap is reached.</mat-hint>
+            </mat-form-field>
+          </div>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Result cache TTL (seconds)</mat-label>
+            <input matInput type="number" min="60" step="60"
+                   [(ngModel)]="config.resultCacheTtlSeconds"
+                   [ngModelOptions]="{standalone: true}">
+            <mat-hint>fetch_result handles expire after this window.</mat-hint>
+          </mat-form-field>
+        </mat-card-content>
+      </mat-card>
+
+      <!-- Meta-tool mode -->
+      <mat-card class="section-card">
+        <mat-card-header>
+          <mat-card-title>
+            <mat-icon>widgets</mat-icon>
+            Dynamic Toolsets
+          </mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Tool exposure mode</mat-label>
+            <mat-select [(ngModel)]="config.metaToolMode"
+                        [ngModelOptions]="{standalone: true}">
+              <mat-option *ngFor="let mode of metaToolModes" [value]="mode.value">
+                {{ mode.label }} — {{ mode.description }}
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+
+          <div class="always-exposed-section"
+               *ngIf="config.metaToolMode === 'DYNAMIC' || config.metaToolMode === 'HYBRID'">
+            <label class="section-label">Always-exposed tools</label>
+            <p class="section-hint">
+              Tool names that remain directly visible alongside the meta-tools.
+              HYBRID mode already exposes rag_query, read_file, list_files by default.
+            </p>
+
+            <div class="chip-list"
+                 *ngIf="(config.alwaysExposedTools?.length ?? 0) > 0">
+              <mat-chip-set>
+                <mat-chip *ngFor="let tool of config.alwaysExposedTools"
+                          (removed)="removeAlwaysExposedTool(tool)">
+                  {{ tool }}
+                  <button matChipRemove [attr.aria-label]="'Remove ' + tool">
+                    <mat-icon>cancel</mat-icon>
+                  </button>
+                </mat-chip>
+              </mat-chip-set>
+            </div>
+
+            <div class="add-tool-row">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Add tool name</mat-label>
+                <input matInput
+                       [(ngModel)]="newAlwaysExposedTool"
+                       [ngModelOptions]="{standalone: true}"
+                       (keyup.enter)="addAlwaysExposedTool()"
+                       placeholder="e.g. fetch_result">
+              </mat-form-field>
+              <button mat-stroked-button color="primary"
+                      (click)="addAlwaysExposedTool()"
+                      [disabled]="!newAlwaysExposedTool.trim()">
+                <mat-icon>add</mat-icon>
+                Add
+              </button>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </ng-container>
+
+    <!-- Actions -->
+    <div class="form-actions">
+      <button mat-raised-button color="primary"
+              (click)="saveConfiguration()"
+              [disabled]="saving">
+        <mat-icon>save</mat-icon>
+        Save Configuration
+      </button>
+      <button mat-stroked-button
+              (click)="resetConfiguration()"
+              [disabled]="saving">
+        <mat-icon>restart_alt</mat-icon>
+        Reset to Defaults
+      </button>
+      <mat-progress-spinner *ngIf="saving" diameter="24" mode="indeterminate">
+      </mat-progress-spinner>
+    </div>
+  </ng-container>
+</div>

@@ -573,6 +573,10 @@ public class ChatRepl {
                 }
                 return true;
 
+            case "/compact":
+                handleCompact(rest);
+                return true;
+
             case "/rag":
                 if (localMode) {
                     System.out.println(renderer.dim("RAG is not available in local mode. "
@@ -659,6 +663,10 @@ public class ChatRepl {
                 showTodos();
                 return true;
 
+            case "/plan":
+                togglePlanMode(rest);
+                return true;
+
             // Queue management commands
             case "/queue":
                 enqueueMessage(rest);
@@ -743,6 +751,10 @@ public class ChatRepl {
                 } else {
                     assignRole(rest.trim());
                 }
+                return true;
+
+            case "/model":
+                handleModelCommand(rest.trim());
                 return true;
 
             default:
@@ -1131,14 +1143,16 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/subagents")).append("          List available subagents for delegation\n");
             body.append("  ").append(renderer.cyan("/agents")).append("             List local agent types\n");
             body.append("  ").append(renderer.cyan("/agent")).append(" name         Switch agent type\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
+            body.append("  ").append(renderer.cyan("/plan")).append(" [on|off]       Toggle planning mode (plan → approve → execute)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Navigation"))).append("\n");
             body.append("  ").append(renderer.cyan("/menu")).append("               Main menu (chat, passthrough, resume, setup)\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
-            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough)\n");
+            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Message Queue"))).append("\n");
@@ -1168,6 +1182,9 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/role")).append("               Show current active role\n");
             body.append("  ").append(renderer.cyan("/role <name>")).append("        Assign a role to the current agent\n");
             body.append("\n");
+            body.append(renderer.bold(renderer.cyan("Context"))).append("\n");
+            body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation, freeing context\n");
+            body.append("\n");
             body.append(renderer.bold(renderer.cyan("General"))).append("\n");
             body.append("  ").append(renderer.cyan("/stats")).append("              Session statistics (tokens, timing, tools)\n");
             body.append("  ").append(renderer.cyan("/help")).append("               This help message\n");
@@ -1183,8 +1200,10 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/local-tool")).append(" name    Invoke a local tool directly\n");
             body.append("  ").append(renderer.cyan("/local-agents")).append("       List local agent types\n");
             body.append("  ").append(renderer.cyan("/local-agent")).append(" name   Switch local agent type\n");
+            body.append("  ").append(renderer.cyan("/model")).append(" [name]       Show/switch LLM model\n");
             body.append("  ").append(renderer.cyan("/permissions")).append("        View or set tool permissions\n");
             body.append("  ").append(renderer.cyan("/todos")).append("              Show the session task list\n");
+            body.append("  ").append(renderer.cyan("/plan")).append(" [on|off]       Toggle planning mode (plan → approve → execute)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Memory & Recall"))).append("\n");
             body.append("  ").append(renderer.cyan("/memory")).append("             Show memory status / toggle\n");
@@ -1195,13 +1214,14 @@ public class ChatRepl {
             body.append("  ").append(renderer.cyan("/transcript")).append("         Local transcript file\n");
             body.append("  ").append(renderer.cyan("/conversations")).append("      List all saved conversations\n");
             body.append("  ").append(renderer.cyan("/clear")).append("              Clear server history\n");
+            body.append("  ").append(renderer.cyan("/compact [focus]")).append("    LLM-summarize conversation (local mode only)\n");
             body.append("  ").append(renderer.cyan("/config")).append("             Show/update session config\n");
             body.append("  ").append(renderer.cyan("/setup")).append("              Reconfigure LLM provider\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("Modes"))).append("\n");
             body.append("  ").append(renderer.cyan("/passthrough [agent]")).append("  Launch external CLI agent\n");
             body.append("  ").append(renderer.cyan("/resume")).append("               Browse & resume conversations\n");
-            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough)\n");
+            body.append("  ").append(renderer.cyan("/mode <mode>")).append("          Switch mode (standard/passthrough/plan)\n");
             body.append("\n");
             body.append(renderer.bold(renderer.cyan("RAG & Server Agents"))).append("\n");
             body.append("  ").append(renderer.cyan("/rag")).append(" on|off         Toggle RAG retrieval\n");
@@ -1428,6 +1448,98 @@ public class ChatRepl {
         System.out.println(renderer.dim("  Switch with: " + switchCmd));
     }
 
+    // ========================================================================
+    // Model switching
+    // ========================================================================
+
+    private void handleModelCommand(String rest) {
+        if (!localMode) {
+            System.out.println(renderer.dim("Model switching is only available in local mode."));
+            return;
+        }
+        if (chatConfig == null) {
+            System.out.println("No LLM configuration. Run /setup to configure.");
+            return;
+        }
+
+        String provider = chatConfig.getProvider();
+        String currentModel = chatConfig.getModel();
+
+        // Get all models for the provider
+        String[] providerModels = ChatConfig.getDefaultModels(provider);
+
+        // Get the active agent's allowed models
+        AgentConfig activeAgent = agentRegistry.get(localAgentName);
+        if (activeAgent == null) activeAgent = agentRegistry.getDefault();
+        java.util.List<String> allowedModels = activeAgent.getAllowedModels();
+
+        if (rest.isEmpty()) {
+            // Show current model and list available models
+            System.out.println(ascii.sectionHeader("Model"));
+            System.out.println("  Current model: " + renderer.cyan(currentModel));
+            System.out.println("  Provider:      " + renderer.dim(provider));
+            System.out.println("  Agent:         " + renderer.dim(localAgentName));
+            System.out.println();
+
+            if (providerModels.length == 0 && (allowedModels == null || allowedModels.isEmpty())) {
+                System.out.println(renderer.dim("  No predefined models for provider '" + provider + "'."));
+                System.out.println(renderer.dim("  Use /model <model-name> to set any model."));
+            } else {
+                // Merge: show all provider models + mark which are allowed for this agent
+                java.util.LinkedHashSet<String> allModels = new java.util.LinkedHashSet<>();
+                for (String m : providerModels) allModels.add(m);
+                if (allowedModels != null) {
+                    for (String m : allowedModels) allModels.add(m);
+                }
+
+                java.util.List<String> headers = java.util.List.of("Model", "Status", "Agent Access");
+                java.util.List<java.util.List<String>> rows = new java.util.ArrayList<>();
+                for (String m : allModels) {
+                    String status = m.equals(currentModel) ? renderer.green("● active") : "";
+                    String access;
+                    if (allowedModels == null || allowedModels.isEmpty()) {
+                        access = renderer.green("allowed");
+                    } else if (allowedModels.contains(m)) {
+                        access = renderer.green("allowed");
+                    } else {
+                        access = renderer.dim("not in allowlist");
+                    }
+                    rows.add(java.util.List.of(m, status, access));
+                }
+                System.out.println(ascii.table(headers, rows));
+            }
+            System.out.println();
+            System.out.println(renderer.dim("  Usage: /model <model-name>"));
+            System.out.println(renderer.dim("  Example: /model claude-opus-4-20250514"));
+            return;
+        }
+
+        // Switch model
+        String newModel = rest;
+
+        // Warn if not in the agent's allowlist (but still allow it)
+        if (allowedModels != null && !allowedModels.isEmpty() && !allowedModels.contains(newModel)) {
+            System.out.println(renderer.yellow("  ⚠ Model '" + newModel + "' is not in the allowlist for agent '" +
+                    localAgentName + "'."));
+            System.out.println(renderer.dim("    Allowed: " + String.join(", ", allowedModels)));
+            System.out.println(renderer.dim("    Switching anyway — use /model to see recommended models."));
+        }
+
+        chatConfig.setModel(newModel);
+        try {
+            chatConfig.save();
+        } catch (Exception e) {
+            // Non-fatal — config will still be used in memory this session
+        }
+
+        // Update session metrics
+        sessionMetrics.setModel(newModel);
+
+        chatHistory.logSystem("Switched model to: " + newModel);
+        System.out.println(renderer.green("  Switched model to: ") + renderer.cyan(newModel));
+        System.out.println(renderer.dim("  Note: the new model will be used for subsequent messages."));
+    }
+
     private void switchLocalAgent(String name) {
         if (name.isBlank()) {
             System.out.println("Current local agent: " + localAgentName);
@@ -1632,6 +1744,42 @@ public class ChatRepl {
         System.out.println(renderer.renderTodoList(todos));
     }
 
+    private void togglePlanMode(String arg) {
+        if (arg == null || arg.isBlank()) {
+            boolean current = agenticLoop.isPlanningMode();
+            System.out.println("Planning mode: " + (current ? renderer.green("on") : renderer.dim("off")));
+            System.out.println();
+            System.out.println(renderer.dim("  When enabled, the agent first creates a read-only plan"));
+            System.out.println(renderer.dim("  using todowrite, then executes after approval."));
+            System.out.println();
+            System.out.println("  Usage: " + renderer.cyan("/plan on") + "  or  " + renderer.cyan("/plan off"));
+            return;
+        }
+
+        String normalizedArg = arg.toLowerCase().trim();
+        switch (normalizedArg) {
+            case "on":
+            case "enable":
+            case "true":
+                agenticLoop.setPlanningMode(true);
+                System.out.println(renderer.green("  ✓ Planning mode enabled"));
+                System.out.println(renderer.dim("    Next message will go through plan → approve → execute flow."));
+                chatHistory.logSystem("Planning mode enabled");
+                break;
+            case "off":
+            case "disable":
+            case "false":
+                agenticLoop.setPlanningMode(false);
+                System.out.println(renderer.yellow("  ○ Planning mode disabled"));
+                System.out.println(renderer.dim("    Messages will go directly to the agentic loop."));
+                chatHistory.logSystem("Planning mode disabled");
+                break;
+            default:
+                System.out.println("Usage: " + renderer.cyan("/plan on") + " | " + renderer.cyan("/plan off"));
+                break;
+        }
+    }
+
     private void invokeTool(String rest) {
         if (rest.isBlank()) {
             System.out.println("Usage: /tool <tool_name> [json_arguments]");
@@ -1774,6 +1922,68 @@ public class ChatRepl {
             System.out.println("Chat session cleared.");
         } catch (Exception e) {
             System.err.println("Error clearing session: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Handle the /compact slash command. Runs an LLM-driven summarization of
+     * the current conversation and replaces the in-memory history with the
+     * summary, freeing context while preserving what the model needs to
+     * continue the work. Optionally accepts a focus instruction.
+     */
+    private void handleCompact(String focusInstruction) {
+        if (!agenticLoop.supportsForceCompact()) {
+            System.out.println(renderer.yellow("  /compact requires local mode."));
+            System.out.println(renderer.dim("  In server mode, use /clear to reset the server session, "
+                    + "or run kompile chat in local mode for LLM-based compaction."));
+            return;
+        }
+
+        int tokensBefore = agenticLoop.estimateConversationTokens();
+        int entriesBefore = agenticLoop.conversationEntryCount();
+        if (entriesBefore == 0) {
+            System.out.println(renderer.dim("  Nothing to compact — conversation is empty."));
+            return;
+        }
+
+        System.out.println();
+        System.out.println(renderer.cyan("  ─── compacting context ───"));
+        if (focusInstruction != null && !focusInstruction.isBlank()) {
+            System.out.println(renderer.dim("  focus: " + focusInstruction.trim()));
+        }
+        System.out.println(renderer.dim("  before: " + entriesBefore + " entries, ~"
+                + tokensBefore + " tokens. Summarizing…"));
+        System.out.println();
+
+        AgenticChatLoop.ForceCompactResult result;
+        try {
+            result = agenticLoop.forceCompact(focusInstruction);
+        } catch (Exception e) {
+            System.out.println(renderer.red("  /compact failed: " + e.getMessage()));
+            return;
+        }
+
+        System.out.println();
+        switch (result.getStatus()) {
+            case OK:
+                int after = result.getTokensAfter();
+                int before = result.getTokensBefore();
+                double ratio = before > 0 ? (1.0 - ((double) after / before)) * 100.0 : 0.0;
+                System.out.println(renderer.renderCompactionNotice(before, after));
+                System.out.println(renderer.dim(String.format(
+                        "  Compaction complete — saved %.1f%% (%d → %d tokens), preserved %d recent turn(s).",
+                        ratio, before, after, result.getPreservedTurns())));
+                chatHistory.logSystem("Context compacted: " + before + " → " + after + " tokens.");
+                break;
+            case NOOP:
+                System.out.println(renderer.dim("  " + result.getMessage()));
+                break;
+            case UNSUPPORTED:
+                System.out.println(renderer.yellow("  " + result.getMessage()));
+                break;
+            case FAILED:
+                System.out.println(renderer.red("  " + result.getMessage()));
+                break;
         }
     }
 
@@ -2176,6 +2386,11 @@ public class ChatRepl {
             int current = backgroundTaskManager.getQueueChainCurrent();
             int total = backgroundTaskManager.getQueueChainTotal();
             prompt.append(renderer.dim("(" + current + "/" + total + ")"));
+        }
+
+        // Show planning mode indicator
+        if (agenticLoop.isPlanningMode()) {
+            prompt.append(renderer.cyan("[plan]"));
         }
 
         prompt.append("> ");
@@ -2827,29 +3042,41 @@ public class ChatRepl {
      */
     private void handleModeSwitch(String mode) {
         if (mode == null || mode.isBlank()) {
-            String currentMode = localMode ? "local" : 
+            String currentMode = localMode ? "local" :
                                 (chatConfig != null && "passthrough".equals(chatConfig.getChatMode()) ? "passthrough" : "standard");
+            if (agenticLoop.isPlanningMode()) {
+                currentMode += " + plan";
+            }
             System.out.println("Current mode: " + renderer.bold(currentMode));
-            System.out.println("Usage: /mode <standard|passthrough|local>");
+            System.out.println("Usage: /mode <standard|passthrough|local|plan>");
             return;
         }
-        
+
         String normalizedMode = mode.toLowerCase().trim();
-        
+
         switch (normalizedMode) {
             case "passthrough":
                 System.out.println("Switching to passthrough mode...");
                 System.out.println("Use " + renderer.cyan("/passthrough") + " to launch an external agent.");
                 chatHistory.logSystem("Mode switched to: passthrough");
                 break;
-                
+
             case "standard":
             case "normal":
+                agenticLoop.setPlanningMode(false);
                 System.out.println("Switching to standard mode...");
                 System.out.println("Use " + renderer.cyan("/resume") + " to browse past conversations.");
                 chatHistory.logSystem("Mode switched to: standard");
                 break;
-                
+
+            case "plan":
+            case "planning":
+                agenticLoop.setPlanningMode(true);
+                System.out.println(renderer.green("  ✓ Planning mode enabled"));
+                System.out.println(renderer.dim("    Agent will plan before executing. Use /plan off to disable."));
+                chatHistory.logSystem("Mode switched to: plan");
+                break;
+
             case "local":
                 if (!localMode) {
                     System.out.println(renderer.yellow("  Note: Already in server mode."));
@@ -2858,10 +3085,10 @@ public class ChatRepl {
                     System.out.println("Already in local mode.");
                 }
                 break;
-                
+
             default:
                 System.out.println("Unknown mode: " + renderer.bold(mode));
-                System.out.println("Available modes: standard, passthrough, local");
+                System.out.println("Available modes: standard, passthrough, local, plan");
                 break;
         }
     }

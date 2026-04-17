@@ -32,6 +32,8 @@ import { ChatHistoryService, ChatMessageDto } from '../../services/chat-history.
 import { CliTranscriptService, CliSessionSummary, CliTranscriptDetail, CliSourceInfo } from '../../services/cli-transcript.service';
 import { FolderService } from '../../services/folder.service';
 import { ModelContextService } from '../../services/model-context.service';
+import { WebSocketService } from '../../services/websocket.service';
+import { MonitorEvent } from '../../models/monitor-models';
 
 // Models
 import {
@@ -326,6 +328,10 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   private subscriptions: Subscription[] = [];
   private streamingSubscription: Subscription | null = null;
 
+  // Monitor wake-up subscription (re-bound whenever currentSession changes)
+  private monitorSubscription: Subscription | null = null;
+  private monitorSubscribedSessionId: string | null = null;
+
   // Action UI state
   copiedIndex: number | null = null;
   isProcessing: boolean = false;
@@ -339,6 +345,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     private cliTranscriptService: CliTranscriptService,
     private folderService: FolderService,
     private modelContextService: ModelContextService,
+    private webSocketService: WebSocketService,
     private http: HttpClient,
     private cdr: ChangeDetectorRef,
     private ngZone: NgZone,
@@ -402,6 +409,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     if (this.streamingSubscription) {
       this.streamingSubscription.unsubscribe();
     }
+    this.teardownMonitorSubscription();
     this.destroy$.next();
     this.destroy$.complete();
 
@@ -419,6 +427,60 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
   ngAfterViewInit(): void {
     // Set up scroll listener for auto-loading older messages
     this.setupScrollListener();
+  }
+
+  /**
+   * Ensure we are subscribed to /topic/monitor/{sessionId} for the currently
+   * active chat session. Called after every session switch. When a monitor
+   * fires (watched task completes, schedule triggers) we render a system-role
+   * message inline in the chat so the user sees the wake-up without needing
+   * to refresh.
+   */
+  private updateMonitorSubscription(): void {
+    const sessionId = this.currentSession?.id ?? null;
+    if (sessionId === this.monitorSubscribedSessionId) {
+      return;
+    }
+    this.teardownMonitorSubscription();
+    if (!sessionId) {
+      return;
+    }
+    this.webSocketService.connect();
+    this.monitorSubscribedSessionId = sessionId;
+    this.monitorSubscription = this.webSocketService.subscribeToMonitor(sessionId)
+      .subscribe((event: MonitorEvent) => {
+        this.handleMonitorEvent(event);
+      });
+  }
+
+  private teardownMonitorSubscription(): void {
+    if (this.monitorSubscription) {
+      this.monitorSubscription.unsubscribe();
+      this.monitorSubscription = null;
+    }
+    if (this.monitorSubscribedSessionId) {
+      this.webSocketService.unsubscribeFromMonitor(this.monitorSubscribedSessionId);
+      this.monitorSubscribedSessionId = null;
+    }
+  }
+
+  private handleMonitorEvent(event: MonitorEvent): void {
+    const prefix = event.success ? '🔔' : '⚠️';
+    const body = event.payload ? `${event.message}\n\n${event.payload}` : event.message;
+    const systemMsg: UnifiedMessage = {
+      id: 'monitor-' + event.monitorId + '-' + Date.now(),
+      role: 'system',
+      content: `${prefix} **${event.title}**\n\n${body}`,
+      timestamp: event.firedAt ? new Date(event.firedAt) : new Date()
+    };
+    this.messages.push(systemMsg);
+    if (this.currentSession) {
+      this.currentSession.messages = [...this.messages];
+      this.currentSession.updatedAt = new Date().toISOString();
+      this.saveSessions();
+    }
+    this.shouldScrollToBottom = true;
+    this.cdr.markForCheck();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -619,6 +681,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         this.currentSession = session;
         this.messages = messages;
         this.shouldScrollToBottom = true;
+        this.updateMonitorSubscription();
         this.cdr.markForCheck();
       },
       error: (err) => {
@@ -647,6 +710,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.currentConversationId = null;
     this.agentSession = null; // Reset agent session for new chat
     this.saveSessions();
+    this.updateMonitorSubscription();
   }
 
   loadSession(session: ChatSession): void {
@@ -661,6 +725,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     // Reset agent session when loading a different session
     this.agentSession = null;
     this.shouldScrollToBottom = true;
+    this.updateMonitorSubscription();
   }
 
   deleteSession(session: ChatSession): void {
@@ -680,6 +745,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
         if (this.currentSession?.id === session.id) {
           this.currentSession = null;
           this.messages = [];
+          this.updateMonitorSubscription();
         }
         this.saveSessions();
         this.cdr.detectChanges();
@@ -2082,6 +2148,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentSession = null; // Reset agent session for forked chat
     this.saveSessions();
     this.shouldScrollToBottom = true;
+    this.updateMonitorSubscription();
   }
 
   private createForkFromLocalMessages(messageIndex: number): void {
@@ -2106,6 +2173,7 @@ export class UnifiedChatComponent implements OnInit, OnDestroy, AfterViewChecked
     this.agentSession = null;
     this.saveSessions();
     this.shouldScrollToBottom = true;
+    this.updateMonitorSubscription();
   }
 
   /**

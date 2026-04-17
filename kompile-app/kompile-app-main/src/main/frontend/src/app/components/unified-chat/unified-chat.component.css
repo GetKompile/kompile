@@ -1682,6 +1682,22 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
+.message-wrapper.system-wrapper {
+  justify-content: center;
+}
+
+.system-message {
+  background-color: #fff8e1;
+  color: #5d4037;
+  border: 1px solid #ffecb3;
+  border-left: 4px solid #ffb300;
+  max-width: 85%;
+}
+
+.system-message .message-header {
+  color: #8d6e63;
+}
+
 .error-message {
   background-color: #ffebee;
   color: #c62828;

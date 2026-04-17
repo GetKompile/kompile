@@ -109,6 +109,10 @@
         </dependency>
         <dependency>
             <groupId>ai.kompile</groupId>
+            <artifactId>kompile-graph-algorithms</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.kompile</groupId>
             <artifactId>kompile-react-agent</artifactId>
         </dependency>
         <dependency>
@@ -267,12 +271,6 @@
         <dependency>
             <groupId>ai.kompile</groupId>
             <artifactId>kompile-kvcache</artifactId>
-        </dependency>
-
-        <!-- Research Notebook: logical grouping of sources + notes + per-session context -->
-        <dependency>
-            <groupId>ai.kompile</groupId>
-            <artifactId>kompile-notebook</artifactId>
         </dependency>
 
         <!-- LLM: pipeline-backed LanguageModel and on-demand /api/llm/* endpoints -->

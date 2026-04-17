@@ -237,13 +237,13 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
-      <artifactId>kompile-kvcache</artifactId>
+      <artifactId>kompile-graph-algorithms</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
-      <artifactId>kompile-notebook</artifactId>
+      <artifactId>kompile-kvcache</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>
     </dependency>

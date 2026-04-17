@@ -1,0 +1,189 @@
+/*
+ *   Copyright 2025 Kompile Inc.
+ *  Licensed under the Apache License, Version 2.0
+ */
+
+.mcp-optimization-settings {
+  padding: 16px;
+  max-width: 900px;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+
+  .header-info {
+    h3 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px 0;
+      font-size: 1.25rem;
+    }
+
+    p {
+      margin: 0;
+      color: rgba(0, 0, 0, 0.6);
+    }
+  }
+}
+
+.loading-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin-bottom: 16px;
+
+  mat-icon {
+    color: #666;
+  }
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #ffebee;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  color: #c62828;
+
+  mat-icon {
+    color: #c62828;
+  }
+}
+
+.success-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #e8f5e9;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  color: #2e7d32;
+
+  mat-icon {
+    color: #2e7d32;
+  }
+}
+
+.master-toggle-card {
+  margin-bottom: 24px;
+}
+
+.section-card {
+  margin-bottom: 16px;
+
+  mat-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1rem;
+  }
+
+  mat-card-header {
+    margin-bottom: 12px;
+  }
+}
+
+.config-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.toggle-row {
+  align-items: center;
+}
+
+.config-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  .config-label {
+    font-weight: 500;
+  }
+
+  .config-description {
+    color: rgba(0, 0, 0, 0.6);
+    font-size: 0.85rem;
+  }
+}
+
+.config-file-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: rgba(0, 0, 0, 0.7);
+
+  code {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.8rem;
+  }
+}
+
+.two-column-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.always-exposed-section {
+  margin-top: 16px;
+
+  .section-label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+
+  .section-hint {
+    color: rgba(0, 0, 0, 0.6);
+    font-size: 0.85rem;
+    margin: 0 0 12px 0;
+  }
+
+  .chip-list {
+    margin-bottom: 12px;
+  }
+
+  .add-tool-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+
+    mat-form-field {
+      flex: 1;
+    }
+
+    button {
+      margin-top: 8px;
+    }
+  }
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+}

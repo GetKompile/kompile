@@ -22,7 +22,10 @@ import ai.kompile.cli.main.chat.roles.RoleManager;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,8 +44,8 @@ public class DirectSubagentRunnerStdio {
     private static final String DIM = "\033[2m";
     private static final String RED = "\033[31m";
 
-    /** Max bytes to capture from subprocess stdout+stderr combined. */
-    private static final int MAX_OUTPUT_BYTES = 512_000; // 512KB
+    /** Max chars to hold in memory for the summary. Full output streams to file. */
+    private static final int MAX_MEMORY_CHARS = 128_000; // ~128KB for summary extraction
 
     private final Path workDir;
     private final RoleManager roleManager;
@@ -119,6 +122,13 @@ public class DirectSubagentRunnerStdio {
                     "), skipping MCP tool injection to prevent recursion" + RESET);
         }
 
+        // Codex exec mode cannot use MCP tools (calls are auto-cancelled).
+        // It has its own shell exec tool which works fine in non-interactive mode.
+        if (agentName.toLowerCase().contains("codex")) {
+            injectMcpTools = false;
+            System.err.println(DIM + "  Skipping MCP injection for codex (exec mode does not support MCP tools)" + RESET);
+        }
+
         // Inject MCP tools and track the settings file for cleanup
         Path settingsFile = null;
         if (injectMcpTools) {
@@ -145,7 +155,22 @@ public class DirectSubagentRunnerStdio {
         }
     }
 
-    private String executeSubagentProcess(String agentName, String effectivePrompt, String binary,
+    /**
+     * Check if the subprocess output indicates a rate limit or token limit error.
+     */
+    private static boolean isRateLimited(String output, int exitCode) {
+        if (exitCode == 0) return false; // successful completion is never rate limited
+        if (output == null || output.isEmpty()) return false;
+
+        String lower = output.toLowerCase();
+        return lower.contains("rate limit") || lower.contains("rate_limit")
+            || lower.contains("too many requests") || lower.contains("429")
+            || lower.contains("token limit") || lower.contains("token_limit")
+            || lower.contains("quota exceeded") || lower.contains("overloaded")
+            || lower.contains("capacity") || lower.contains("resource_exhausted");
+    }
+
+    String executeSubagentProcess(String agentName, String effectivePrompt, String binary,
                                           String prompt, int currentDepth) throws Exception {
         List<String> cmd = buildAgentCommand(binary, agentName, effectivePrompt);
 
@@ -168,25 +193,49 @@ public class DirectSubagentRunnerStdio {
         Process process = pb.start();
         long startTime = System.currentTimeMillis();
 
-        // Capture subprocess output in a background thread to prevent pipe buffer deadlock
-        StringBuffer outputBuilder = new StringBuffer();
+        // Stream full output to a temp file while keeping a bounded buffer for summary.
+        // This ensures nothing is lost even for very large outputs (multi-MB codex sessions).
+        Path outputTempFile;
+        try {
+            Path resultsDir = workDir.resolve(".kompile").resolve("task-results");
+            Files.createDirectories(resultsDir);
+            outputTempFile = Files.createTempFile(resultsDir, "capture-" + agentName + "-", ".tmp");
+        } catch (IOException e) {
+            outputTempFile = Files.createTempFile("kompile-capture-", ".tmp");
+        }
+        final Path captureFile = outputTempFile;
+
+        StringBuffer headBuffer = new StringBuffer();  // first N chars for summary
+        StringBuffer tailBuffer = new StringBuffer();   // last N chars for summary
+        final int TAIL_SIZE = 16_000;
+        long[] totalCharsHolder = {0};
+
         Thread outputReader = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+                 java.io.BufferedWriter fileWriter = Files.newBufferedWriter(captureFile, StandardCharsets.UTF_8)) {
                 char[] buf = new char[8192];
-                int totalRead = 0;
                 int n;
                 while ((n = reader.read(buf)) != -1) {
-                    if (totalRead < MAX_OUTPUT_BYTES) {
-                        int toAppend = Math.min(n, MAX_OUTPUT_BYTES - totalRead);
-                        outputBuilder.append(buf, 0, toAppend);
+                    // Always write full output to file
+                    fileWriter.write(buf, 0, n);
+
+                    // Keep head buffer (first MAX_MEMORY_CHARS chars)
+                    long total = totalCharsHolder[0];
+                    if (total < MAX_MEMORY_CHARS) {
+                        int toAppend = (int) Math.min(n, MAX_MEMORY_CHARS - total);
+                        headBuffer.append(buf, 0, toAppend);
                     }
-                    totalRead += n;
+
+                    // Keep rolling tail buffer (last TAIL_SIZE chars)
+                    tailBuffer.append(buf, 0, n);
+                    if (tailBuffer.length() > TAIL_SIZE * 2) {
+                        tailBuffer.delete(0, tailBuffer.length() - TAIL_SIZE);
+                    }
+
+                    totalCharsHolder[0] += n;
                 }
-                if (totalRead > MAX_OUTPUT_BYTES) {
-                    outputBuilder.append("\n... (output truncated, ")
-                        .append(totalRead).append(" chars total)");
-                }
+                fileWriter.flush();
             } catch (IOException e) {
                 // Process ended, stream closed
             }
@@ -198,7 +247,8 @@ public class DirectSubagentRunnerStdio {
         outputReader.join(5000); // wait up to 5s for output thread to finish
 
         long elapsed = System.currentTimeMillis() - startTime;
-        String output = outputBuilder.toString().trim();
+        long totalChars = totalCharsHolder[0];
+        String output = headBuffer.toString().trim();
 
         if (exitCode == 0) {
             System.err.println(DIM + "✓ Subagent '" + agentName + "' completed in " +
@@ -209,18 +259,42 @@ public class DirectSubagentRunnerStdio {
         }
         System.err.flush();
 
+        // Check for rate limiting before returning output
+        if (isRateLimited(output, exitCode)) {
+            System.err.println(RED + "⚠ Subagent '" + agentName + "' hit rate limit" + RESET);
+            System.err.flush();
+            throw new RateLimitException(agentName, output);
+        }
+
         // Return the captured output as the tool result (not "check output above")
-        if (output.isEmpty()) {
+        if (output.isEmpty() && totalChars == 0) {
+            // Clean up empty capture file
+            try { Files.deleteIfExists(captureFile); } catch (IOException ignored) {}
             return exitCode == 0
                 ? String.format("Subagent '%s' completed successfully in %.1fs (no output captured).", agentName, elapsed / 1000.0)
                 : String.format("Subagent '%s' exited with code %d after %.1fs (no output captured).", agentName, exitCode, elapsed / 1000.0);
         }
 
         String header = exitCode == 0
-            ? String.format("Subagent '%s' completed in %.1fs:\n\n", agentName, elapsed / 1000.0)
-            : String.format("Subagent '%s' exited with code %d after %.1fs:\n\n", agentName, exitCode, elapsed / 1000.0);
+            ? String.format("Subagent '%s' completed in %.1fs", agentName, elapsed / 1000.0)
+            : String.format("Subagent '%s' exited with code %d after %.1fs", agentName, exitCode, elapsed / 1000.0);
 
-        return header + output;
+        // Rename capture file to final result file (full untruncated output)
+        Path resultFile = renameResultFile(captureFile, agentName, header);
+        System.err.println(DIM + "  Full output (" + totalChars + " chars) written to: " + resultFile + RESET);
+        System.err.flush();
+
+        // Build summary from head + tail buffers
+        String tail = tailBuffer.toString();
+        String summary = buildSummaryFromBuffers(output, tail, totalChars);
+
+        StringBuilder result = new StringBuilder();
+        result.append(header).append("\n\n");
+        result.append("## Summary\n").append(summary).append("\n\n");
+        result.append("**Full output (").append(totalChars).append(" chars) written to:** `")
+              .append(resultFile.toAbsolutePath()).append("`\n");
+        result.append("Use the `read` tool to access the full result if needed.");
+        return result.toString();
     }
 
     private String resolveAgentBinary(String agentName) {
@@ -310,5 +384,78 @@ public class DirectSubagentRunnerStdio {
             sb.append(role.getDescription());
         }
         return sb.toString();
+    }
+
+    /** Max chars for summary sections. */
+    private static final int SUMMARY_MAX_CHARS = 2000;
+
+    /**
+     * Rename the temp capture file to a permanent result file with header prepended.
+     * The capture file already contains the full untruncated subprocess output.
+     */
+    Path renameResultFile(Path captureFile, String agentName, String header) {
+        try {
+            Path resultsDir = workDir.resolve(".kompile").resolve("task-results");
+            Files.createDirectories(resultsDir);
+
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            String sanitizedName = agentName.replaceAll("[^a-zA-Z0-9_-]", "_");
+            Path resultFile = resultsDir.resolve(sanitizedName + "-" + timestamp + ".md");
+
+            // Prepend header to the capture file content
+            String headerBlock = "# Task Result: " + agentName + "\n\n" + header + "\n\n---\n\n";
+            Path tempResult = resultFile.resolveSibling(resultFile.getFileName() + ".tmp");
+            try (java.io.BufferedWriter writer = Files.newBufferedWriter(tempResult, StandardCharsets.UTF_8)) {
+                writer.write(headerBlock);
+                // Stream the capture file content (may be very large)
+                try (java.io.BufferedReader reader = Files.newBufferedReader(captureFile, StandardCharsets.UTF_8)) {
+                    char[] buf = new char[8192];
+                    int n;
+                    while ((n = reader.read(buf)) != -1) {
+                        writer.write(buf, 0, n);
+                    }
+                }
+            }
+            Files.move(tempResult, resultFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.deleteIfExists(captureFile);
+            return resultFile;
+        } catch (IOException e) {
+            System.err.println(RED + "  Warning: Could not rename result file: " + e.getMessage() + RESET);
+            // Fall back — the capture file itself has the full output
+            return captureFile;
+        }
+    }
+
+    /**
+     * Build a concise summary from head and tail buffers.
+     * The head buffer has the first ~128K chars, the tail buffer has the last ~16K chars.
+     */
+    String buildSummaryFromBuffers(String head, String tail, long totalChars) {
+        if (totalChars <= SUMMARY_MAX_CHARS) {
+            return head; // Small enough to return as-is
+        }
+
+        String[] headLines = head.split("\n");
+        StringBuilder summary = new StringBuilder();
+
+        // Take first ~20 lines
+        int headLineCount = Math.min(20, headLines.length);
+        int charCount = 0;
+        for (int i = 0; i < headLineCount && charCount < SUMMARY_MAX_CHARS * 2 / 3; i++) {
+            summary.append(headLines[i]).append("\n");
+            charCount += headLines[i].length() + 1;
+        }
+
+        // Add truncation marker
+        summary.append("\n... (").append(totalChars).append(" chars total) ...\n\n");
+
+        // Take last ~10 lines from the tail buffer
+        String[] tailLines = tail.split("\n");
+        int tailStart = Math.max(0, tailLines.length - 10);
+        for (int i = tailStart; i < tailLines.length; i++) {
+            summary.append(tailLines[i]).append("\n");
+        }
+
+        return summary.toString().trim();
     }
 }

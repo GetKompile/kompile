@@ -95,6 +95,7 @@ public class ConversationExporter {
 
         String effectiveSessionId = sessionId != null ? sessionId : UUID.randomUUID().toString();
         String modelId = getModelIdForAgent(sourceAgent, agent);
+        String providerId = getProviderIdForAgent(sourceAgent);
         Path effectiveWorkingDirectory = normalizeWorkingDirectory(workingDirectory);
 
         switch (agent.toLowerCase()) {
@@ -106,7 +107,7 @@ public class ConversationExporter {
             case "qwen":
                 return exportToQwen(turns, effectiveSessionId, effectiveWorkingDirectory);
             case "opencode":
-                return exportToOpenCode(turns, effectiveSessionId, modelId, effectiveWorkingDirectory);
+                return exportToOpenCode(turns, effectiveSessionId, providerId, modelId, effectiveWorkingDirectory);
             case "gemini":
                 return exportToGemini(turns, effectiveSessionId, effectiveWorkingDirectory);
             default:
@@ -120,20 +121,55 @@ public class ConversationExporter {
      */
     private static String getModelIdForAgent(String sourceAgent, String targetAgent) {
         if (sourceAgent == null || sourceAgent.isEmpty()) {
-            return "gpt-4";
+            return "gpt-4o";
         }
         switch (sourceAgent.toLowerCase()) {
             case "qwen":
-                return "qwen-coder";
+                return "qwen/qwen3-coder";
             case "claude-code":
             case "claude":
                 return "claude-sonnet-4-20250514";
             case "codex":
-                return "claude-sonnet-4-20250514";
+                return "gpt-4o";
             case "gemini":
                 return "gemini-2.5-pro";
             default:
-                return "gpt-4";
+                return "gpt-4o";
+        }
+    }
+
+    /**
+     * Maps the source agent to a valid OpenCode providerID that matches the
+     * modelID returned by {@link #getModelIdForAgent(String, String)}.
+     * <p>
+     * OpenCode validates providerID as a string, but downstream resume fails
+     * unless the provider is actually registered. Hard-coding "opencode" as
+     * the provider (as the previous implementation did) only works for users
+     * authenticated through OpenCode's hosted proxy. Mapping to the real
+     * upstream provider ("anthropic", "openai", "google", "openrouter") works
+     * for the common self-hosted setup.
+     * <p>
+     * Valid provider IDs per
+     * <a href="https://github.com/sst/opencode/blob/dev/packages/opencode/src/provider/schema.ts">OpenCode's provider schema</a>:
+     * opencode, anthropic, openai, google, google-vertex, github-copilot,
+     * amazon-bedrock, azure, openrouter, mistral, gitlab.
+     */
+    private static String getProviderIdForAgent(String sourceAgent) {
+        if (sourceAgent == null || sourceAgent.isEmpty()) {
+            return "openai";
+        }
+        switch (sourceAgent.toLowerCase()) {
+            case "claude-code":
+            case "claude":
+                return "anthropic";
+            case "gemini":
+                return "google";
+            case "qwen":
+                return "openrouter";
+            case "codex":
+            case "opencode":
+            default:
+                return "openai";
         }
     }
 
@@ -514,6 +550,7 @@ public class ConversationExporter {
      */
     private static ExportResult exportToOpenCode(List<ChatHistory.Turn> turns,
                                                  String sessionId,
+                                                 String providerId,
                                                  String modelId,
                                                  Path workingDirectory) throws IOException {
         String homeDir = System.getProperty("user.home");
@@ -583,6 +620,10 @@ public class ConversationExporter {
         // ── Messages array ──
         com.fasterxml.jackson.databind.node.ArrayNode messagesArray = exportJson.putArray("messages");
 
+        // Resolve once: both fields are invocation-scoped, not per-turn.
+        String effectiveProviderId = providerId != null && !providerId.isEmpty() ? providerId : "openai";
+        String effectiveModelId = modelId != null && !modelId.isEmpty() ? modelId : "gpt-4o";
+
         String lastMsgId = null;
         long msgTimestamp = now;
         for (ChatHistory.Turn turn : turns) {
@@ -600,8 +641,8 @@ public class ConversationExporter {
                 // User message structure
                 msgInfo.put("agent", "build");
                 com.fasterxml.jackson.databind.node.ObjectNode model = msgInfo.putObject("model");
-                model.put("providerID", "opencode");
-                model.put("modelID", modelId != null ? modelId : "openai/gpt-4");
+                model.put("providerID", effectiveProviderId);
+                model.put("modelID", effectiveModelId);
                 msgInfo.put("variant", "high");
 
                 // Summary with diffs array (required for user messages)
@@ -627,8 +668,8 @@ public class ConversationExporter {
 
                 // Cost and tokens
                 msgInfo.put("cost", 0);
-                msgInfo.put("modelID", modelId != null ? modelId : "openai/gpt-4");
-                msgInfo.put("providerID", "opencode");
+                msgInfo.put("modelID", effectiveModelId);
+                msgInfo.put("providerID", effectiveProviderId);
 
                 com.fasterxml.jackson.databind.node.ObjectNode tokens = msgInfo.putObject("tokens");
                 tokens.put("input", 0);

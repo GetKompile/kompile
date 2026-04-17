@@ -18,6 +18,7 @@ package ai.kompile.cli.main.chat.agent;
 
 import ai.kompile.cli.main.chat.permission.PermissionService;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,6 +44,8 @@ public class AgentConfig {
     private final int maxSteps;
     private final boolean canSpawnSubagents;
     private final String modelHint; // e.g. "fast", "default", "powerful" - guides model selection
+    private final List<String> allowedModels; // models this agent is allowed to use (empty = all)
+    private final String modelOverride; // explicit model override for this agent (null = use default)
     private final boolean isCustom; // loaded from .kompile/agents/ file
     private final String roleName; // optional role to apply to this agent
 
@@ -57,6 +60,8 @@ public class AgentConfig {
         this.maxSteps = builder.maxSteps;
         this.canSpawnSubagents = builder.canSpawnSubagents;
         this.modelHint = builder.modelHint;
+        this.allowedModels = builder.allowedModels;
+        this.modelOverride = builder.modelOverride;
         this.isCustom = builder.isCustom;
         this.roleName = builder.roleName;
     }
@@ -71,8 +76,27 @@ public class AgentConfig {
     public int getMaxSteps() { return maxSteps; }
     public boolean canSpawnSubagents() { return canSpawnSubagents; }
     public String getModelHint() { return modelHint; }
+    public List<String> getAllowedModels() { return allowedModels; }
+    public String getModelOverride() { return modelOverride; }
     public boolean isCustom() { return isCustom; }
     public String getRoleName() { return roleName; }
+
+    /**
+     * Check if a specific model is allowed for this agent.
+     * If allowedModels is empty, all models are allowed.
+     */
+    public boolean isModelAllowed(String model) {
+        if (allowedModels == null || allowedModels.isEmpty()) return true;
+        return allowedModels.contains(model);
+    }
+
+    /**
+     * Resolve the model to use: explicit override > default config model.
+     */
+    public String resolveModel(String defaultModel) {
+        if (modelOverride != null && !modelOverride.isBlank()) return modelOverride;
+        return defaultModel;
+    }
 
     public static Builder builder(String name) {
         return new Builder(name);
@@ -89,6 +113,8 @@ public class AgentConfig {
         private int maxSteps = 50;
         private boolean canSpawnSubagents = false;
         private String modelHint = "default";
+        private List<String> allowedModels = List.of();
+        private String modelOverride = null;
         private boolean isCustom = false;
         private String roleName = null;
 
@@ -139,6 +165,16 @@ public class AgentConfig {
 
         public Builder modelHint(String modelHint) {
             this.modelHint = modelHint;
+            return this;
+        }
+
+        public Builder allowedModels(List<String> allowedModels) {
+            this.allowedModels = allowedModels;
+            return this;
+        }
+
+        public Builder modelOverride(String modelOverride) {
+            this.modelOverride = modelOverride;
             return this;
         }
 

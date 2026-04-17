@@ -97,4 +97,29 @@ public class ChatHistoryProperties {
      * Maximum number of sessions to import per source per sync cycle.
      */
     private int cliSyncBatchSize = 50;
+
+    /**
+     * Enable scheduled retention cleanup of Kompile transcript .txt files.
+     */
+    private boolean cleanupEnabled = true;
+
+    /**
+     * Interval in milliseconds between retention cleanup runs. Default 1 hour.
+     */
+    private long cleanupIntervalMs = 3600000;
+
+    /**
+     * Delete transcripts older than this (days). 0 disables age-based cleanup.
+     */
+    private long cleanupMaxAgeDays = 90;
+
+    /**
+     * Cap total transcript directory size (MB). 0 disables size-based cleanup.
+     */
+    private long cleanupMaxTotalMb = 2048;
+
+    /**
+     * Maximum number of transcripts to keep (newest first). 0 disables count-based cleanup.
+     */
+    private int cleanupMaxPerSource = 1000;
 }
