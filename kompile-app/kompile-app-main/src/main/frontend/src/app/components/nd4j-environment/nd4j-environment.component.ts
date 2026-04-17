@@ -42,12 +42,6 @@ import {
   Nd4jConfigResponse,
   PresetsResponse
 } from '../../services/nd4j-environment.service';
-import {
-  OpTimingService,
-  OpTimingStatus,
-  OpTimingStat,
-  FlushResponse
-} from '../../services/op-timing.service';
 
 @Component({
   selector: 'app-nd4j-environment',
@@ -69,9 +63,7 @@ import {
     MatSnackBarModule,
     MatSliderModule,
     MatSlideToggleModule,
-    MatSelectModule,
-    MatTableModule,
-    MatProgressBarModule
+    MatSelectModule
   ],
   templateUrl: './nd4j-environment.component.html',
   styleUrls: ['./nd4j-environment.component.css']
@@ -158,17 +150,6 @@ export class Nd4jEnvironmentComponent implements OnInit, OnDestroy {
   tritonDumpDir: string = '';
   tritonOverrideArch: string = '';
 
-  // Op Timing state
-  opTimingStatus: OpTimingStatus | null = null;
-  opTimingEnabled: boolean = false;
-  opTimingDetailedMode: boolean = true;
-  opTimingTraceMode: boolean = false;
-  opTimingStats: OpTimingStat[] = [];
-  opTimingLoading: boolean = false;
-  opTimingColumns: string[] = ['rank', 'opName', 'calls', 'totalMs', 'avgUs', 'minUs', 'maxUs'];
-  lastFlushTime: Date | null = null;
-  opTimingNativeAvailable: boolean = true;
-
   private destroy$ = new Subject<void>();
 
   // Debounce subjects for slider changes
@@ -182,7 +163,6 @@ export class Nd4jEnvironmentComponent implements OnInit, OnDestroy {
 
   constructor(
     private nd4jService: Nd4jEnvironmentService,
-    private opTimingService: OpTimingService,
     private snackBar: MatSnackBar,
     @Optional() private dialogRef: MatDialogRef<Nd4jEnvironmentComponent>,
     @Optional() @Inject(MAT_DIALOG_DATA) public data: any
@@ -193,7 +173,6 @@ export class Nd4jEnvironmentComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadConfiguration();
     this.loadPresets();
-    this.loadOpTimingStatus();
     this.setupDebouncedUpdates();
   }
 
@@ -640,150 +619,6 @@ export class Nd4jEnvironmentComponent implements OnInit, OnDestroy {
     if (mb === 0) return 'Unlimited';
     if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
     return `${mb} MB`;
-  }
-
-  // ========== Op Timing Methods ==========
-
-  loadOpTimingStatus(): void {
-    // Subscribe to shared state from service - keeps this component in sync with rag-tester
-    this.opTimingService.state$
-      .pipe(takeUntil(this.destroy$))
-      .subscribe(state => {
-        this.opTimingEnabled = state.enabled;
-        this.opTimingDetailedMode = state.detailedMode;
-        this.opTimingTraceMode = state.traceMode;
-        this.opTimingStats = state.stats;
-        this.opTimingNativeAvailable = state.nativeAvailable;
-      });
-  }
-
-  toggleOpTiming(): void {
-    this.opTimingLoading = true;
-    // Note: ngModel updates opTimingEnabled BEFORE this handler runs
-    // So if opTimingEnabled is true, user just clicked to enable it
-    if (this.opTimingEnabled) {
-      // Use trace mode method if trace is enabled, otherwise regular enable
-      const enableRequest = this.opTimingTraceMode
-        ? this.opTimingService.enableTimingWithTrace(this.opTimingDetailedMode)
-        : this.opTimingService.enableTiming(this.opTimingDetailedMode);
-
-      enableRequest
-        .pipe(takeUntil(this.destroy$))
-        .subscribe({
-          next: () => {
-            // State is updated via the service's state$ observable
-            this.snackBar.open('Op profiling enabled', 'Close', { duration: 2000 });
-            this.opTimingLoading = false;
-          },
-          error: (err) => {
-            this.snackBar.open(`Failed to enable profiling: ${err.message}`, 'Close', { duration: 3000 });
-            this.opTimingEnabled = false;
-            this.opTimingLoading = false;
-          }
-        });
-    } else {
-      this.opTimingService.disableTiming()
-        .pipe(takeUntil(this.destroy$))
-        .subscribe({
-          next: () => {
-            // State is updated via the service's state$ observable
-            this.snackBar.open('Op profiling disabled', 'Close', { duration: 2000 });
-            this.opTimingLoading = false;
-          },
-          error: (err) => {
-            this.snackBar.open(`Failed to disable profiling: ${err.message}`, 'Close', { duration: 3000 });
-            this.opTimingEnabled = true;
-            this.opTimingLoading = false;
-          }
-        });
-    }
-  }
-
-  flushOpTimingStats(): void {
-    this.opTimingLoading = true;
-    this.opTimingService.flushAndGetStats(20)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response: FlushResponse) => {
-          this.opTimingStats = response.hotspots || [];
-          this.lastFlushTime = new Date();
-          this.snackBar.open(`Flushed ${response.numOps || 0} ops`, 'Close', { duration: 2000 });
-          this.opTimingLoading = false;
-        },
-        error: (err) => {
-          this.snackBar.open(`Failed to flush stats: ${err.message}`, 'Close', { duration: 3000 });
-          this.opTimingLoading = false;
-        }
-      });
-  }
-
-  resetOpTiming(): void {
-    this.opTimingLoading = true;
-    this.opTimingService.reset()
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: () => {
-          this.opTimingStats = [];
-          this.lastFlushTime = null;
-          this.snackBar.open('Op timing reset', 'Close', { duration: 2000 });
-          this.opTimingLoading = false;
-          this.loadOpTimingStatus();
-        },
-        error: (err) => {
-          this.snackBar.open(`Failed to reset: ${err.message}`, 'Close', { duration: 3000 });
-          this.opTimingLoading = false;
-        }
-      });
-  }
-
-  exportChromeTrace(): void {
-    this.opTimingService.exportChromeTrace()
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response) => {
-          if (response.path) {
-            this.snackBar.open(`Exported to ${response.path}`, 'Close', { duration: 3000 });
-          } else if (response.message) {
-            this.snackBar.open(`Export: ${response.message}`, 'Close', { duration: 3000 });
-          }
-        },
-        error: (err) => {
-          this.snackBar.open(`Export failed: ${err.message}`, 'Close', { duration: 3000 });
-        }
-      });
-  }
-
-  exportCSV(): void {
-    this.opTimingService.exportCSV()
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response) => {
-          if (response.path) {
-            this.snackBar.open(`Exported to ${response.path}`, 'Close', { duration: 3000 });
-          } else if (response.message) {
-            this.snackBar.open(`Export: ${response.message}`, 'Close', { duration: 3000 });
-          }
-        },
-        error: (err) => {
-          this.snackBar.open(`Export failed: ${err.message}`, 'Close', { duration: 3000 });
-        }
-      });
-  }
-
-  formatNumber(value: number | undefined, decimals: number = 2): string {
-    if (value === undefined || value === null) return '-';
-    return value.toFixed(decimals);
-  }
-
-  getHelperClass(percent: number | undefined): string {
-    if (percent === undefined) return '';
-    if (percent >= 80) return 'helper-high';
-    if (percent >= 50) return 'helper-medium';
-    return 'helper-low';
-  }
-
-  getTotalExecutions(): number {
-    return this.opTimingStats.reduce((sum, stat) => sum + (stat.calls || 0), 0);
   }
 
   // ========== Debug Settings Methods ==========

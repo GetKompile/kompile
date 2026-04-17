@@ -17,10 +17,6 @@
 import { Component, OnInit, ViewChild, AfterViewInit } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { MatTabChangeEvent, MatTabGroup } from '@angular/material/tabs';
-import { MatDialog } from '@angular/material/dialog';
-import { SystemDiagnosticsComponent } from '../system-diagnostics/system-diagnostics.component';
-import { Nd4jEnvironmentComponent } from '../nd4j-environment/nd4j-environment.component';
-import { Nd4jFrameworkComponent } from '../nd4j-framework/nd4j-framework.component';
 
 @Component({
   standalone: false,
@@ -30,7 +26,6 @@ import { Nd4jFrameworkComponent } from '../nd4j-framework/nd4j-framework.compone
 })
 export class DeveloperHubComponent implements OnInit, AfterViewInit {
   selectedTabIndex = 0;
-  showDiagnosticsInline = false;
 
   // Keep track of the subtab index to set after view init
   private pendingSubtabIndex: number | null = null;
@@ -39,7 +34,6 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
   @ViewChild('systemInnerTabs') systemInnerTabs?: MatTabGroup;
 
   constructor(
-    private dialog: MatDialog,
     private route: ActivatedRoute
   ) {}
 
@@ -73,7 +67,7 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
   }
 
   /**
-   * Set the subtab index for the System tab (index 3).
+   * Set the subtab index for the System tab (index 4).
    * Currently only supports System tab subtab navigation.
    */
   private setSubtab(index: number): void {
@@ -85,36 +79,5 @@ export class DeveloperHubComponent implements OnInit, AfterViewInit {
 
   onTabChange(event: MatTabChangeEvent): void {
     this.selectedTabIndex = event.index;
-  }
-
-  openDiagnosticsDialog(): void {
-    this.dialog.open(SystemDiagnosticsComponent, {
-      width: '900px',
-      maxWidth: '95vw',
-      maxHeight: '90vh',
-      panelClass: 'diagnostics-dialog'
-    });
-  }
-
-  openNd4jEnvironmentDialog(): void {
-    this.dialog.open(Nd4jEnvironmentComponent, {
-      width: '800px',
-      maxWidth: '95vw',
-      maxHeight: '90vh',
-      panelClass: 'nd4j-environment-dialog'
-    });
-  }
-
-  openNd4jFrameworkDialog(): void {
-    this.dialog.open(Nd4jFrameworkComponent, {
-      width: '800px',
-      maxWidth: '95vw',
-      maxHeight: '90vh',
-      panelClass: 'nd4j-framework-dialog'
-    });
-  }
-
-  toggleDiagnosticsInline(): void {
-    this.showDiagnosticsInline = !this.showDiagnosticsInline;
   }
 }

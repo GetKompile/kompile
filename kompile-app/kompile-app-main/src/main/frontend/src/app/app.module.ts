@@ -109,6 +109,10 @@ import { MonitorsManagerComponent } from './components/monitors-manager/monitors
 import { PassthroughChatComponent } from './components/passthrough-chat/passthrough-chat.component';
 import { Nd4jFrameworkComponent } from './components/nd4j-framework/nd4j-framework.component';
 import { SameDiffLLMModelsComponent } from './components/samediff-llm-models/samediff-llm-models.component';
+import { VlmManagementComponent } from './components/developer-hub/vlm-management/vlm-management.component';
+import { GpuManagementComponent } from './components/developer-hub/gpu-management/gpu-management.component';
+import { ModelStagingComponent } from './components/developer-hub/model-staging/model-staging.component';
+import { IngestHistoryComponent } from './components/developer-hub/ingest-history/ingest-history.component';
 
 // Angular Material Modules
 import { MatButtonModule } from '@angular/material/button';
@@ -190,7 +194,11 @@ import { MatNativeDateModule } from '@angular/material/core';
     OpenClawHeartbeatManagerComponent,
     OpenClawPermissionManagerComponent,
     PipelineHubComponent,
-    VlmTestWorkflowComponent
+    VlmTestWorkflowComponent,
+    VlmManagementComponent,
+    GpuManagementComponent,
+    ModelStagingComponent,
+    IngestHistoryComponent
   ],
   imports: [
     BrowserModule,

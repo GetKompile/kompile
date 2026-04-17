@@ -163,7 +163,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Write a hello world program", "/tmp",
-                    false, false, true, true, 60, null, null));
+                    false, false, true, true, 60, null, null, null));
 
             assertEquals("success", result.get("status"));
             assertEquals("claude-cli", result.get("agentName"));
@@ -180,7 +180,7 @@ class AgentDelegationToolTest {
 
             tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Search for info", "/work",
-                    true, true, false, true, 120, 10, 0.7));
+                    true, true, false, true, 120, 10, 0.7, null));
 
             assertEquals(1, chatService.getReceivedRequests().size());
             AgentChatRequest req = chatService.getReceivedRequests().get(0);
@@ -205,7 +205,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     null, "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("success", result.get("status"));
             assertEquals("claude-cli", result.get("agentName"));
@@ -216,7 +216,7 @@ class AgentDelegationToolTest {
         void shouldErrorOnEmptyMessage() {
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("empty"));
@@ -227,7 +227,7 @@ class AgentDelegationToolTest {
         void shouldErrorOnNullMessage() {
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", null, null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
         }
@@ -237,7 +237,7 @@ class AgentDelegationToolTest {
         void shouldErrorOnUnknownAgent() {
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "unknown-agent", "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("not found"));
@@ -255,7 +255,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "offline-cli", "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("not available"));
@@ -274,7 +274,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "openai-api", "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("API agents"));
@@ -289,7 +289,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Bad task", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertEquals("partial output", result.get("response"));
@@ -310,7 +310,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Search question", null,
-                    true, null, null, null, null, null, null));
+                    true, null, null, null, null, null, null, null));
 
             assertEquals("success", result.get("status"));
             assertEquals(2, result.get("sourcesUsed"));
@@ -326,7 +326,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Task", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("success", result.get("status"));
             assertNotNull(result.get("stats"));
@@ -348,7 +348,7 @@ class AgentDelegationToolTest {
 
             var result = nullTool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("not available"));
@@ -361,7 +361,7 @@ class AgentDelegationToolTest {
 
             var result = nullTool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     "claude-cli", "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
             assertTrue(result.get("error").toString().contains("not available"));
@@ -375,7 +375,7 @@ class AgentDelegationToolTest {
 
             var result = emptyTool.delegateTask(new AgentDelegationTool.DelegateTaskInput(
                     null, "Do something", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
         }
@@ -398,7 +398,7 @@ class AgentDelegationToolTest {
 
             var result = tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "Async task", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("success", result.get("status"));
             assertNotNull(result.get("delegationId"));
@@ -415,7 +415,7 @@ class AgentDelegationToolTest {
 
             var asyncResult = tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "Async task", null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
             String delegationId = asyncResult.get("delegationId").toString();
 
             // Give it time to complete
@@ -437,7 +437,7 @@ class AgentDelegationToolTest {
 
             var asyncResult = tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "Long task", null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
             String delegationId = asyncResult.get("delegationId").toString();
 
             var pollResult = tool.getDelegationResult(
@@ -471,7 +471,7 @@ class AgentDelegationToolTest {
         void shouldRejectAsyncEmptyMessage() {
             var result = tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "", null,
-                    null, null, null, null, null, null, null));
+                    null, null, null, null, null, null, null, null));
 
             assertEquals("error", result.get("status"));
         }
@@ -494,7 +494,7 @@ class AgentDelegationToolTest {
 
             var asyncResult = tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "Long task to cancel", null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
             String delegationId = asyncResult.get("delegationId").toString();
 
             var cancelResult = tool.cancelDelegation(
@@ -550,10 +550,10 @@ class AgentDelegationToolTest {
 
             tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "Task one", null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
             tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "codex-cli", "Task two", null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
 
             var result = tool.listDelegations(new AgentDelegationTool.ListDelegationsInput());
 
@@ -581,7 +581,7 @@ class AgentDelegationToolTest {
 
             tool.delegateTaskAsync(new AgentDelegationTool.DelegateTaskAsyncInput(
                     "claude-cli", "A".repeat(200), null,
-                    null, null, null, null, 60, null, null));
+                    null, null, null, null, 60, null, null, null));
 
             var result = tool.listDelegations(new AgentDelegationTool.ListDelegationsInput());
 

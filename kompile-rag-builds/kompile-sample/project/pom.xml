@@ -249,6 +249,12 @@
     </dependency>
     <dependency>
       <groupId>ai.kompile</groupId>
+      <artifactId>kompile-rag-pipeline</artifactId>
+      <version>${kompile.project.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>ai.kompile</groupId>
       <artifactId>kompile-app-llm-pipeline</artifactId>
       <version>${kompile.project.version}</version>
       <scope>compile</scope>

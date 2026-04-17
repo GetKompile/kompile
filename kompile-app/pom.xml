@@ -103,6 +103,7 @@
     <module>kompile-ocr-datapipeline</module>
     <module>kompile-openclaw</module>
     <module>kompile-pipeline-management</module>
+    <module>kompile-rag-pipeline</module>
     <module>kompile-kvcache</module>
     <module>kompile-tool-model-staging</module>
     <module>kompile-app-lite</module>
@@ -552,6 +553,11 @@
       <dependency>
         <groupId>ai.kompile</groupId>
         <artifactId>kompile-pipeline-management</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.kompile</groupId>
+        <artifactId>kompile-rag-pipeline</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>

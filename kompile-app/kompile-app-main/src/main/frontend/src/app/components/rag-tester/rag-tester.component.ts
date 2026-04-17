@@ -18,12 +18,10 @@ import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { PageEvent } from '@angular/material/paginator';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
 import { WebSocketService } from '../../services/websocket.service';
 import { ModelStatusUpdate } from '../../models/api-models';
-import { OpTimingService, OpTimingStatus, OpTimingStat, FlushResponse, SubprocessOpTimingStats } from '../../services/op-timing.service';
 
 interface RagStatus {
   keywordRetriever: { class: string; available: boolean };
@@ -243,32 +241,6 @@ export class RagTesterComponent implements OnInit, OnDestroy {
     crossEncoderModel: 'ms-marco-MiniLM-L-6-v2'
   };
 
-  // Op Timing
-  opTimingEnabled = false;
-  opTimingStatus: OpTimingStatus | null = null;
-  opTimingStats: OpTimingStat[] = [];
-  opTimingStatsAll: OpTimingStat[] = []; // All stats for pagination
-  opTimingLoading = false;
-  showOpTimingPanel = false;
-  opTimingTotalExecutions = 0;
-  opTimingNumOps = 0;
-
-  // Subprocess Op Timing (where actual inference runs!)
-  subprocessOpTiming: SubprocessOpTimingStats | null = null;
-  subprocessOpTimingStats: OpTimingStat[] = [];
-  subprocessOpTimingStatsAll: OpTimingStat[] = [];
-  subprocessOpTimingTotalExecutions = 0;
-  subprocessOpTimingNumOps = 0;
-
-  // Op Timing Pagination
-  opTimingPageSize = 10;
-  opTimingPageIndex = 0;
-  opTimingPageSizeOptions = [5, 10, 25, 50];
-
-  // Subprocess Op Timing Pagination
-  subprocessOpTimingPageSize = 10;
-  subprocessOpTimingPageIndex = 0;
-
   // Graph RAG
   graphRagInfo: GraphRagInfo | null = null;
   graphRagQuery = '';
@@ -284,8 +256,7 @@ export class RagTesterComponent implements OnInit, OnDestroy {
     private router: Router,
     private snackBar: MatSnackBar,
     private websocketService: WebSocketService,
-    private cdr: ChangeDetectorRef,
-    private opTimingService: OpTimingService
+    private cdr: ChangeDetectorRef
   ) {
     if (typeof window !== 'undefined' && window.location) {
       const protocol = window.location.protocol;
@@ -300,7 +271,6 @@ export class RagTesterComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadStatus();
     this.loadRerankers();
-    this.loadOpTimingStatus();
     this.loadGraphRagInfo();
     // Subscribe to WebSocket model status updates for real-time UI updates
     this.subscribeToModelStatusUpdates();
@@ -784,150 +754,6 @@ export class RagTesterComponent implements OnInit, OnDestroy {
     });
   }
 
-  // Op Timing Methods
-  loadOpTimingStatus(): void {
-    // Subscribe to shared state from service - keeps this component in sync with nd4j-environment
-    this.opTimingService.state$
-      .pipe(takeUntil(this.destroy$))
-      .subscribe(state => {
-        this.opTimingEnabled = state.enabled;
-        // Sort by totalMs descending (highest times first) and store all stats
-        this.opTimingStatsAll = [...state.stats].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
-        this.updateOpTimingPage();
-        if (state.stats.length > 0) {
-          this.showOpTimingPanel = true;
-        }
-      });
-  }
-
-  // Update displayed page of op timing stats
-  updateOpTimingPage(): void {
-    const start = this.opTimingPageIndex * this.opTimingPageSize;
-    const end = start + this.opTimingPageSize;
-    this.opTimingStats = this.opTimingStatsAll.slice(start, end);
-  }
-
-  // Handle page change event
-  onOpTimingPageChange(event: PageEvent): void {
-    this.opTimingPageIndex = event.pageIndex;
-    this.opTimingPageSize = event.pageSize;
-    this.updateOpTimingPage();
-  }
-
-  toggleOpTiming(): void {
-    this.opTimingLoading = true;
-    // Note: ngModel updates opTimingEnabled BEFORE this handler runs
-    // So if opTimingEnabled is true, user just clicked to enable it
-    const action$ = this.opTimingEnabled
-      ? this.opTimingService.enableTiming(true)  // Enable detailed mode
-      : this.opTimingService.disableTiming();
-
-    action$.pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response) => {
-          // State is updated via the service's state$ observable
-          this.opTimingLoading = false;
-          this.showSnackbar(response.message || (this.opTimingEnabled ? 'Op timing enabled' : 'Op timing disabled'));
-        },
-        error: (err) => {
-          // Revert toggle on error
-          this.opTimingEnabled = !this.opTimingEnabled;
-          this.showSnackbar('Failed to toggle op timing: ' + (err.message || err), true);
-          this.opTimingLoading = false;
-        }
-      });
-  }
-
-  flushOpTimingStats(): void {
-    this.opTimingLoading = true;
-    // Request more stats for pagination (up to 100)
-    this.opTimingService.flushAndGetStats(100)
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: (response: FlushResponse) => {
-          // Main JVM op timing (usually empty since inference runs in subprocess)
-          const sortedStats = [...(response.hotspots || [])].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
-          sortedStats.forEach((stat, index) => stat.rank = index + 1);
-          this.opTimingStatsAll = sortedStats;
-          this.opTimingPageIndex = 0;
-          this.updateOpTimingPage();
-          this.opTimingTotalExecutions = response.totalExecutions;
-          this.opTimingNumOps = response.numOps;
-
-          // Subprocess op timing (where actual inference runs!)
-          this.subprocessOpTiming = response.subprocess || null;
-          if (response.subprocess?.hotspots) {
-            const subSortedStats = [...response.subprocess.hotspots].sort((a, b) => (b.totalMs || 0) - (a.totalMs || 0));
-            subSortedStats.forEach((stat, index) => stat.rank = index + 1);
-            this.subprocessOpTimingStatsAll = subSortedStats;
-            this.subprocessOpTimingPageIndex = 0;
-            this.updateSubprocessOpTimingPage();
-            this.subprocessOpTimingTotalExecutions = response.subprocess.totalExecutions || 0;
-            this.subprocessOpTimingNumOps = response.subprocess.numOps || 0;
-          }
-
-          this.opTimingLoading = false;
-          this.showOpTimingPanel = true;
-
-          // Build message showing both main and subprocess stats
-          let message = `Main JVM: ${response.numOps} ops, ${response.totalExecutions} executions`;
-          if (response.subprocess?.available && response.subprocess?.success) {
-            message += ` | Subprocess: ${response.subprocess.numOps} ops, ${response.subprocess.totalExecutions} executions`;
-          }
-          this.showSnackbar(message);
-        },
-        error: (err) => {
-          this.showSnackbar('Failed to flush op timing: ' + (err.message || err), true);
-          this.opTimingLoading = false;
-        }
-      });
-  }
-
-  updateSubprocessOpTimingPage(): void {
-    const start = this.subprocessOpTimingPageIndex * this.subprocessOpTimingPageSize;
-    const end = start + this.subprocessOpTimingPageSize;
-    this.subprocessOpTimingStats = this.subprocessOpTimingStatsAll.slice(start, end);
-  }
-
-  onSubprocessOpTimingPageChange(event: PageEvent): void {
-    this.subprocessOpTimingPageSize = event.pageSize;
-    this.subprocessOpTimingPageIndex = event.pageIndex;
-    this.updateSubprocessOpTimingPage();
-  }
-
-  resetOpTiming(): void {
-    this.opTimingLoading = true;
-    this.opTimingService.reset()
-      .pipe(takeUntil(this.destroy$))
-      .subscribe({
-        next: () => {
-          this.opTimingStats = [];
-          this.opTimingStatsAll = [];
-          this.opTimingPageIndex = 0;
-          this.opTimingTotalExecutions = 0;
-          this.opTimingNumOps = 0;
-          this.opTimingLoading = false;
-          this.showSnackbar('Op timing data reset');
-        },
-        error: (err) => {
-          this.showSnackbar('Failed to reset op timing: ' + (err.message || err), true);
-          this.opTimingLoading = false;
-        }
-      });
-  }
-
-  formatOpTimingNumber(value: number, decimals: number = 2): string {
-    if (value === undefined || value === null) return 'N/A';
-    return value.toFixed(decimals);
-  }
-
-  getHelperPercentClass(percent: number): string {
-    if (percent >= 90) return 'helper-high';
-    if (percent >= 50) return 'helper-medium';
-    if (percent > 0) return 'helper-low';
-    return 'helper-none';
-  }
-
   // Graph RAG Methods
   loadGraphRagInfo(): void {
     this.http.get<GraphRagInfo>(`${this.backendUrl}/rag/test/graph/info`).subscribe({
@@ -1010,12 +836,12 @@ export class RagTesterComponent implements OnInit, OnDestroy {
    * This helps users diagnose embedding model failures.
    */
   navigateToEmbeddingLogs(): void {
-    // Navigate to developer-hub with query params to select the System tab (index 3)
-    // and the Embedding Subprocess sub-tab (index 2)
+    // Navigate to developer-hub with query params to select the System tab (index 4)
+    // and the Embedding Subprocess sub-tab (index 3)
     this.router.navigate(['/developer-hub'], {
       queryParams: {
-        tab: 3,       // System tab
-        subtab: 2     // Embedding Subprocess sub-tab
+        tab: 4,       // System tab
+        subtab: 3     // Embedding Subprocess sub-tab
       }
     });
     this.showSnackbar('Navigate to Developer Hub > System > Embedding Subprocess to view logs');
