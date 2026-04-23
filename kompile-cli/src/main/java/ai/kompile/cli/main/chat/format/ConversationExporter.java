@@ -32,9 +32,13 @@ import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -94,9 +98,16 @@ public class ConversationExporter {
         }
 
         String effectiveSessionId = sessionId != null ? sessionId : UUID.randomUUID().toString();
-        String modelId = getModelIdForAgent(sourceAgent, agent);
-        String providerId = getProviderIdForAgent(sourceAgent);
         Path effectiveWorkingDirectory = normalizeWorkingDirectory(workingDirectory);
+
+        // Dynamic provider/model resolution: discovers authenticated providers
+        // from OpenCode's auth.json and session history, then maps the source
+        // agent to the best available provider/model combination.
+        ProviderModel pm = resolveProviderModel(sourceAgent, effectiveWorkingDirectory);
+        String modelId = pm.modelId();
+        String providerId = pm.providerId();
+
+        System.err.println("[ConversationExporter] Resolved provider=" + providerId + " model=" + modelId + " for source=" + sourceAgent);
 
         switch (agent.toLowerCase()) {
             case "claude-code":
@@ -117,60 +128,263 @@ public class ConversationExporter {
     }
 
     /**
-     * Maps the source agent to an appropriate model ID for the target agent.
+     * Resolves the best provider/model pair for importing INTO OpenCode.
+     * Uses dynamic discovery: reads OpenCode's auth.json and message history
+     * to find actually authenticated providers, then maps the source agent
+     * to the best available provider/model combination.
      */
-    private static String getModelIdForAgent(String sourceAgent, String targetAgent) {
-        if (sourceAgent == null || sourceAgent.isEmpty()) {
-            return "gpt-4o";
+    private static ProviderModel resolveProviderModel(String sourceAgent, Path workingDirectory) {
+        String cwd = workingDirectory.toAbsolutePath().normalize().toString();
+        Map<String, String> authProviders = discoverAuthProviders();
+
+        // Try to find provider/model from existing OpenCode session history
+        ProviderModel fromHistory = findProviderFromSessionHistory(cwd, authProviders);
+        if (fromHistory != null) {
+            return fromHistory;
         }
-        switch (sourceAgent.toLowerCase()) {
-            case "qwen":
-                return "qwen/qwen3-coder";
-            case "claude-code":
-            case "claude":
-                return "claude-sonnet-4-20250514";
-            case "codex":
-                return "gpt-4o";
-            case "gemini":
-                return "gemini-2.5-pro";
-            default:
-                return "gpt-4o";
+
+        // Fall back to affinity-based resolution using authenticated providers
+        ProviderModel fromAffinity = resolveFromAuth(sourceAgent, authProviders);
+        if (fromAffinity != null) {
+            return fromAffinity;
+        }
+
+        // Last resort: hardcoded fallback preferring OpenCode Zen
+        return fallbackProviderModel(sourceAgent);
+    }
+
+    /**
+     * Scans OpenCode's message history for the most recent authenticated provider/model.
+     */
+    private static ProviderModel findProviderFromSessionHistory(String cwd, Map<String, String> authProviders) {
+        String homeDir = System.getProperty("user.home");
+        Path opencodeDb = Paths.get(homeDir, ".local", "share", "opencode", "opencode.db");
+        if (!Files.exists(opencodeDb)) {
+            return null;
+        }
+
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + opencodeDb.toAbsolutePath())) {
+            String findProjectSql = "SELECT id FROM project WHERE worktree = ?";
+            String projectId = null;
+            try (PreparedStatement stmt = conn.prepareStatement(findProjectSql)) {
+                stmt.setString(1, cwd);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) projectId = rs.getString("id");
+                }
+            }
+
+            List<String> projectSearch = new ArrayList<>();
+            if (projectId != null) projectSearch.add(projectId);
+            if (!"global".equals(projectId)) projectSearch.add("global");
+
+            for (String projId : projectSearch) {
+                String sql = "SELECT m.data FROM message m INNER JOIN session s ON m.session_id = s.id WHERE s.project_id = ? AND m.data IS NOT NULL AND m.data != '' ORDER BY m.time_created DESC LIMIT 100";
+                try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                    stmt.setString(1, projId);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            String data = rs.getString("data");
+                            if (data == null || data.isBlank()) continue;
+                            try {
+                                JsonNode node = MAPPER.readTree(data);
+                                String providerId = null;
+                                String modelId = null;
+                                JsonNode modelNode = node.get("model");
+                                if (modelNode != null && modelNode.isObject()) {
+                                    JsonNode pid = modelNode.get("providerID");
+                                    JsonNode mid = modelNode.get("modelID");
+                                    if (pid != null && !pid.asText().isBlank()) providerId = pid.asText();
+                                    if (mid != null && !mid.asText().isBlank()) modelId = mid.asText();
+                                }
+                                if (providerId == null) {
+                                    JsonNode pid = node.get("providerID");
+                                    if (pid != null && !pid.asText().isBlank()) providerId = pid.asText();
+                                }
+                                if (modelId == null) {
+                                    JsonNode mid = node.get("modelID");
+                                    if (mid != null && !mid.asText().isBlank()) modelId = mid.asText();
+                                }
+                                if (providerId != null && modelId != null && authProviders.containsKey(providerId)) {
+                                    return new ProviderModel(providerId, modelId);
+                                }
+                            } catch (Exception e) { /* skip malformed */ }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) { /* non-fatal */ }
+        return null;
+    }
+
+    /**
+     * Reads ~/.local/share/opencode/auth.json to discover authenticated providers.
+     */
+    private static Map<String, String> discoverAuthProviders() {
+        String homeDir = System.getProperty("user.home");
+        Path authFile = Paths.get(homeDir, ".local", "share", "opencode", "auth.json");
+        if (!Files.exists(authFile)) return Map.of();
+        try {
+            JsonNode root = MAPPER.readTree(authFile.toFile());
+            Map<String, String> providers = new LinkedHashMap<>();
+            if (root.isObject()) {
+                root.fields().forEachRemaining(entry -> {
+                    String providerId = entry.getKey();
+                    JsonNode auth = entry.getValue();
+                    String type = auth.has("type") ? auth.get("type").asText() : "unknown";
+                    providers.put(providerId, type);
+                });
+            }
+            return providers;
+        } catch (Exception e) {
+            return Map.of();
         }
     }
 
     /**
-     * Maps the source agent to a valid OpenCode providerID that matches the
-     * modelID returned by {@link #getModelIdForAgent(String, String)}.
-     * <p>
-     * OpenCode validates providerID as a string, but downstream resume fails
-     * unless the provider is actually registered. Hard-coding "opencode" as
-     * the provider (as the previous implementation did) only works for users
-     * authenticated through OpenCode's hosted proxy. Mapping to the real
-     * upstream provider ("anthropic", "openai", "google", "openrouter") works
-     * for the common self-hosted setup.
-     * <p>
-     * Valid provider IDs per
-     * <a href="https://github.com/sst/opencode/blob/dev/packages/opencode/src/provider/schema.ts">OpenCode's provider schema</a>:
-     * opencode, anthropic, openai, google, google-vertex, github-copilot,
-     * amazon-bedrock, azure, openrouter, mistral, gitlab.
+     * Maps source agent affinity to the best available authenticated provider.
+     * OpenCode Zen providers (opencode, opencode-go, kimi-for-coding) are always
+     * tried first since we're importing INTO opencode.
      */
+    private static ProviderModel resolveFromAuth(String sourceAgent, Map<String, String> authProviders) {
+        String source = sourceAgent != null ? sourceAgent.toLowerCase() : "";
+
+        List<List<String>> affinityChains = switch (source) {
+            case "claude-code", "claude" -> List.of(
+                    List.of("opencode", "opencode-go", "kimi-for-coding"),
+                    List.of("anthropic"),
+                    List.of("github-copilot"),
+                    List.of("openrouter"),
+                    List.of("openai")
+            );
+            case "codex" -> List.of(
+                    List.of("opencode", "opencode-go", "kimi-for-coding"),
+                    List.of("github-copilot"),
+                    List.of("openrouter"),
+                    List.of("openai"),
+                    List.of("anthropic")
+            );
+            case "qwen" -> List.of(
+                    List.of("opencode", "opencode-go", "kimi-for-coding"),
+                    List.of("openrouter"),
+                    List.of("github-copilot"),
+                    List.of("openai")
+            );
+            case "gemini" -> List.of(
+                    List.of("opencode", "opencode-go", "kimi-for-coding"),
+                    List.of("google", "google-vertex"),
+                    List.of("github-copilot"),
+                    List.of("openrouter")
+            );
+            default -> List.of(
+                    List.of("opencode", "opencode-go", "kimi-for-coding"),
+                    List.of("github-copilot"),
+                    List.of("openrouter"),
+                    List.of("openai"),
+                    List.of("anthropic"),
+                    List.of("google")
+            );
+        };
+
+        String matchedProvider = null;
+        for (List<String> chain : affinityChains) {
+            for (String candidate : chain) {
+                if (authProviders.containsKey(candidate)) {
+                    matchedProvider = candidate;
+                    break;
+                }
+            }
+            if (matchedProvider != null) break;
+        }
+
+        if (matchedProvider == null) return null;
+
+        String modelId = getModelForProvider(matchedProvider, source);
+        return new ProviderModel(matchedProvider, modelId);
+    }
+
+    /**
+     * Returns a sensible model ID for a given provider and source agent.
+     */
+    private static String getModelForProvider(String provider, String sourceAgent) {
+        String source = sourceAgent != null ? sourceAgent.toLowerCase() : "";
+        return switch (provider) {
+            case "opencode", "opencode-go", "kimi-for-coding" -> {
+                if ("claude".equals(source) || "claude-code".equals(source)) yield "claude-sonnet-4-20250514";
+                else if ("qwen".equals(source)) yield "qwen/qwen3-coder";
+                else if ("gemini".equals(source)) yield "gemini-2.5-pro";
+                else yield "kimi-k2.5-free";
+            }
+            case "github-copilot" -> {
+                if ("claude".equals(source) || "claude-code".equals(source)) yield "claude-sonnet-4-20250514";
+                else if ("qwen".equals(source)) yield "qwen/qwen3-coder";
+                else if ("gemini".equals(source)) yield "gemini-2.5-pro";
+                else yield "gpt-4o";
+            }
+            case "openrouter" -> {
+                if ("qwen".equals(source)) yield "qwen/qwen3-coder";
+                else if ("claude".equals(source) || "claude-code".equals(source)) yield "anthropic/claude-sonnet-4-20250514";
+                else yield "openai/gpt-4o";
+            }
+            case "openai" -> "gpt-4o";
+            case "anthropic" -> "claude-sonnet-4-20250514";
+            case "google", "google-vertex" -> "gemini-2.5-pro";
+            default -> "kimi-k2.5-free";
+        };
+    }
+
+    /**
+     * Fallback provider/model when no dynamic discovery succeeds.
+     * Prefers OpenCode Zen since we are importing INTO opencode.
+     */
+    private static ProviderModel fallbackProviderModel(String sourceAgent) {
+        String source = sourceAgent != null ? sourceAgent.toLowerCase() : "";
+        return switch (source) {
+            case "claude-code", "claude" -> new ProviderModel("opencode", "claude-sonnet-4-20250514");
+            case "qwen" -> new ProviderModel("opencode", "qwen/qwen3-coder");
+            case "gemini" -> new ProviderModel("opencode", "gemini-2.5-pro");
+            default -> new ProviderModel("opencode", "kimi-k2.5-free");
+        };
+    }
+
+    /**
+     * Simple holder for a resolved provider/model pair.
+     */
+    private record ProviderModel(String providerId, String modelId) {}
+
+    /**
+     * Maps the source agent to an appropriate model ID for the target agent.
+     * @deprecated Use {@link #resolveProviderModel(String, Path)} instead.
+     */
+    @Deprecated
+    private static String getModelIdForAgent(String sourceAgent, String targetAgent) {
+        if (sourceAgent == null || sourceAgent.isEmpty()) {
+            return "kimi-k2.5-free";
+        }
+        return switch (sourceAgent.toLowerCase()) {
+            case "qwen" -> "qwen/qwen3-coder";
+            case "claude-code", "claude" -> "claude-sonnet-4-20250514";
+            case "codex" -> "gpt-4o";
+            case "gemini" -> "gemini-2.5-pro";
+            default -> "kimi-k2.5-free";
+        };
+    }
+
+    /**
+     * Maps the source agent to a valid OpenCode providerID.
+     * @deprecated Use {@link #resolveProviderModel(String, Path)} instead.
+     */
+    @Deprecated
     private static String getProviderIdForAgent(String sourceAgent) {
         if (sourceAgent == null || sourceAgent.isEmpty()) {
-            return "openai";
+            return "opencode";
         }
-        switch (sourceAgent.toLowerCase()) {
-            case "claude-code":
-            case "claude":
-                return "anthropic";
-            case "gemini":
-                return "google";
-            case "qwen":
-                return "openrouter";
-            case "codex":
-            case "opencode":
-            default:
-                return "openai";
-        }
+        return switch (sourceAgent.toLowerCase()) {
+            case "claude-code", "claude" -> "anthropic";
+            case "gemini" -> "google";
+            case "qwen" -> "openrouter";
+            case "codex", "opencode" -> "opencode";
+            default -> "opencode";
+        };
     }
 
     // ─── Claude Code Export ───────────────────────────────────────────────
@@ -615,51 +829,97 @@ public class ConversationExporter {
         long now = Instant.now().toEpochMilli();
         com.fasterxml.jackson.databind.node.ObjectNode time = info.putObject("time");
         time.put("created", now);
-        time.put("updated", now + (turns.size() * 10000L));
+        // updated will be set after the message loop to the actual last timestamp
+        time.put("updated", now);
 
         // ── Messages array ──
         com.fasterxml.jackson.databind.node.ArrayNode messagesArray = exportJson.putArray("messages");
 
         // Resolve once: both fields are invocation-scoped, not per-turn.
-        String effectiveProviderId = providerId != null && !providerId.isEmpty() ? providerId : "openai";
-        String effectiveModelId = modelId != null && !modelId.isEmpty() ? modelId : "gpt-4o";
+        String effectiveProviderId = providerId != null && !providerId.isEmpty() ? providerId : "opencode";
+        String effectiveModelId = modelId != null && !modelId.isEmpty() ? modelId : "kimi-k2.5-free";
 
+        String lastUserMsgId = null;
         String lastMsgId = null;
         long msgTimestamp = now;
+        long lastTimestamp = now;
+
+        // Pre-scan: if first turn is assistant, inject a synthetic user message
+        // so every assistant message has a valid parentID (required by OpenCode Zod schema)
+        boolean needsSyntheticUser = !turns.isEmpty() && "assistant".equals(turns.get(0).role());
+        if (needsSyntheticUser) {
+            String syntheticUserId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+            com.fasterxml.jackson.databind.node.ObjectNode syntheticMsg = MAPPER.createObjectNode();
+            syntheticMsg.put("role", "user");
+            com.fasterxml.jackson.databind.node.ObjectNode synthInfo = syntheticMsg.putObject("info");
+            synthInfo.put("id", syntheticUserId);
+            synthInfo.put("sessionID", sessId);
+            synthInfo.put("role", "user");
+            synthInfo.put("agent", "general");
+            com.fasterxml.jackson.databind.node.ObjectNode synthModel = synthInfo.putObject("model");
+            synthModel.put("providerID", effectiveProviderId);
+            synthModel.put("modelID", effectiveModelId);
+            synthInfo.putObject("summary").putArray("diffs");
+            com.fasterxml.jackson.databind.node.ObjectNode synthTools = synthInfo.putObject("tools");
+            synthTools.put("task", false);
+            synthInfo.putObject("time").put("created", msgTimestamp);
+            com.fasterxml.jackson.databind.node.ArrayNode synthParts = syntheticMsg.putArray("parts");
+            com.fasterxml.jackson.databind.node.ObjectNode synthPart = MAPPER.createObjectNode();
+            synthPart.put("type", "text");
+            synthPart.put("text", "[Imported conversation — original user prompt not available]");
+            synthPart.put("id", "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26));
+            synthPart.put("sessionID", sessId);
+            synthPart.put("messageID", syntheticUserId);
+            com.fasterxml.jackson.databind.node.ObjectNode synthPartTime = synthPart.putObject("time");
+            synthPartTime.put("start", msgTimestamp);
+            synthPartTime.put("end", msgTimestamp + 1000);
+            synthParts.add(synthPart);
+            messagesArray.add(syntheticMsg);
+            lastUserMsgId = syntheticUserId;
+            lastMsgId = syntheticUserId;
+            msgTimestamp += 10000;
+        }
+
         for (ChatHistory.Turn turn : turns) {
+            String content = turn.content();
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+
             String msgId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+            String role = "assistant".equals(turn.role()) ? "assistant" : "user";
 
             com.fasterxml.jackson.databind.node.ObjectNode msgObj = MAPPER.createObjectNode();
+            msgObj.put("role", role);
 
             // Message info
             com.fasterxml.jackson.databind.node.ObjectNode msgInfo = msgObj.putObject("info");
             msgInfo.put("id", msgId);
             msgInfo.put("sessionID", sessId);
-            msgInfo.put("role", turn.role());
+            msgInfo.put("role", role);
 
-            if ("user".equals(turn.role())) {
-                // User message structure
-                msgInfo.put("agent", "build");
+            if ("user".equals(role)) {
+                msgInfo.put("agent", "general");
                 com.fasterxml.jackson.databind.node.ObjectNode model = msgInfo.putObject("model");
                 model.put("providerID", effectiveProviderId);
                 model.put("modelID", effectiveModelId);
-                msgInfo.put("variant", "high");
 
                 // Summary with diffs array (required for user messages)
                 com.fasterxml.jackson.databind.node.ObjectNode msgSummary = msgInfo.putObject("summary");
                 msgSummary.putArray("diffs");
 
+                com.fasterxml.jackson.databind.node.ObjectNode tools = msgInfo.putObject("tools");
+                tools.put("task", false);
+
                 // Time
                 com.fasterxml.jackson.databind.node.ObjectNode msgTime = msgInfo.putObject("time");
                 msgTime.put("created", msgTimestamp);
+                lastUserMsgId = msgId;
             } else {
-                // Assistant message structure
-                if (lastMsgId != null) {
-                    msgInfo.put("parentID", lastMsgId);
-                }
-                msgInfo.put("mode", "build");
-                msgInfo.put("agent", "build");
-                msgInfo.put("variant", "high");
+                // Chain each message to the immediately preceding one
+                if (lastMsgId != null) msgInfo.put("parentID", lastMsgId);
+                msgInfo.put("mode", "general");
+                msgInfo.put("agent", "general");
 
                 // Path (required for assistant messages)
                 com.fasterxml.jackson.databind.node.ObjectNode path = msgInfo.putObject("path");
@@ -667,7 +927,7 @@ public class ConversationExporter {
                 path.put("root", cwd);
 
                 // Cost and tokens
-                msgInfo.put("cost", 0);
+                msgInfo.put("cost", 0.0);
                 msgInfo.put("modelID", effectiveModelId);
                 msgInfo.put("providerID", effectiveProviderId);
 
@@ -688,11 +948,11 @@ public class ConversationExporter {
             }
             lastMsgId = msgId;
 
-            // Parts array - text only (FIX: removed duplicate insertion)
+            // Parts array - text only
             com.fasterxml.jackson.databind.node.ArrayNode partsArray = msgObj.putArray("parts");
             com.fasterxml.jackson.databind.node.ObjectNode part = MAPPER.createObjectNode();
             part.put("type", "text");
-            part.put("text", turn.content());
+            part.put("text", content);
             part.put("id", "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26));
             part.put("sessionID", sessId);
             part.put("messageID", msgId);
@@ -702,8 +962,12 @@ public class ConversationExporter {
             partsArray.add(part);
 
             messagesArray.add(msgObj);
-            msgTimestamp += 10000; // 10 seconds between messages
+            lastTimestamp = msgTimestamp + 3000;
+            msgTimestamp += 10000;
         }
+
+        // Set the session's updated time to the actual last message timestamp
+        time.put("updated", lastTimestamp);
 
         // Write to temp file and import via opencode CLI
         Path tempFile = Files.createTempFile("opencode-import-", ".json");
@@ -763,8 +1027,11 @@ public class ConversationExporter {
             }
         }
 
-        // Return result - use --continue to properly resume
-        String resumeCommand = "opencode -s " + sessId + " --continue";
+        // Also write file-based storage entries so the TUI can find the session
+        writeOpenCodeFileStorage(sessId, storedProjectId, cwd, title, turns, effectiveProviderId, effectiveModelId, now);
+
+        // Return result - use -s without --continue (--continue causes hang on imported sessions)
+        String resumeCommand = "opencode -s " + sessId;
 
         Path sessionPath = Paths.get(homeDir, ".local/share/opencode/storage/session/" + storedProjectId + "/" + sessId + ".json");
         return new ExportResult(sessId, "opencode", sessionPath, resumeCommand, workingDirectory);
@@ -801,6 +1068,174 @@ public class ConversationExporter {
         } catch (Exception e) {
             System.err.println("[OpenCode Export] Warning: Could not fix project assignment: " + e.getMessage());
             // Non-fatal - session may still be usable
+        }
+    }
+
+    /**
+     * Writes file-based storage entries so the TUI can display the imported session.
+     */
+    private static void writeOpenCodeFileStorage(String sessId, String projectId, String cwd, String title,
+                                                   List<ChatHistory.Turn> turns, String providerId, String modelId,
+                                                   long now) {
+        String homeDir = System.getProperty("user.home");
+        Path storageBase = Paths.get(homeDir, ".local", "share", "opencode", "storage");
+
+        try {
+            // Session file
+            Path sessionDir = storageBase.resolve("session").resolve(projectId);
+            Files.createDirectories(sessionDir);
+            Path sessionFile = sessionDir.resolve(sessId + ".json");
+
+            ObjectNode sessionJson = MAPPER.createObjectNode();
+            sessionJson.put("id", sessId);
+            sessionJson.put("slug", generateOpenCodeSlug());
+            sessionJson.put("version", "1.14.20");
+            sessionJson.put("projectID", projectId);
+            sessionJson.put("directory", cwd);
+            sessionJson.put("title", title);
+            ObjectNode sessTime = sessionJson.putObject("time");
+            sessTime.put("created", now);
+            // updated will be set after the message loop to the actual last timestamp
+            sessTime.put("updated", now);
+            ObjectNode sessSummary = sessionJson.putObject("summary");
+            sessSummary.put("additions", 0);
+            sessSummary.put("deletions", 0);
+            sessSummary.put("files", 0);
+
+            Files.writeString(sessionFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(sessionJson), StandardCharsets.UTF_8);
+
+            // Message and part files
+            String lastUserMsgId = null;
+            String lastMsgId = null;
+            long msgTimestamp = now;
+            long lastTimestamp = now;
+
+            // Pre-scan: if first turn is assistant, inject a synthetic user message
+            boolean needsSyntheticUser = !turns.isEmpty() && "assistant".equals(turns.get(0).role());
+            if (needsSyntheticUser) {
+                String syntheticUserId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+                Path msgDir = storageBase.resolve("message").resolve(sessId);
+                Files.createDirectories(msgDir);
+                Path msgFile = msgDir.resolve(syntheticUserId + ".json");
+
+                ObjectNode synthMsgJson = MAPPER.createObjectNode();
+                synthMsgJson.put("id", syntheticUserId);
+                synthMsgJson.put("sessionID", sessId);
+                synthMsgJson.put("role", "user");
+                synthMsgJson.put("agent", "general");
+                ObjectNode synthModel = synthMsgJson.putObject("model");
+                synthModel.put("providerID", providerId);
+                synthModel.put("modelID", modelId);
+                synthMsgJson.putObject("summary").putArray("diffs");
+                synthMsgJson.putObject("tools").put("task", false);
+                synthMsgJson.putObject("time").put("created", msgTimestamp);
+                Files.writeString(msgFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(synthMsgJson), StandardCharsets.UTF_8);
+
+                String synthPartId = "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+                Path partDir = storageBase.resolve("part").resolve(syntheticUserId);
+                Files.createDirectories(partDir);
+                Path partFile = partDir.resolve(synthPartId + ".json");
+                ObjectNode synthPartJson = MAPPER.createObjectNode();
+                synthPartJson.put("id", synthPartId);
+                synthPartJson.put("sessionID", sessId);
+                synthPartJson.put("messageID", syntheticUserId);
+                synthPartJson.put("type", "text");
+                synthPartJson.put("text", "[Imported conversation — original user prompt not available]");
+                ObjectNode synthPartTime = synthPartJson.putObject("time");
+                synthPartTime.put("start", msgTimestamp);
+                synthPartTime.put("end", msgTimestamp + 1000);
+                Files.writeString(partFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(synthPartJson), StandardCharsets.UTF_8);
+
+                lastUserMsgId = syntheticUserId;
+                lastMsgId = syntheticUserId;
+                msgTimestamp += 10000;
+            }
+
+            for (ChatHistory.Turn turn : turns) {
+                String content = turn.content();
+                if (content == null || content.isBlank()) {
+                    continue;
+                }
+
+                String msgId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+                String role = "assistant".equals(turn.role()) ? "assistant" : "user";
+
+                Path msgDir = storageBase.resolve("message").resolve(sessId);
+                Files.createDirectories(msgDir);
+                Path msgFile = msgDir.resolve(msgId + ".json");
+
+                ObjectNode msgJson = MAPPER.createObjectNode();
+                msgJson.put("id", msgId);
+                msgJson.put("sessionID", sessId);
+                msgJson.put("role", role);
+                ObjectNode msgTime = msgJson.putObject("time");
+                msgTime.put("created", msgTimestamp);
+
+                if ("user".equals(role)) {
+                    msgJson.put("agent", "general");
+                    ObjectNode model = msgJson.putObject("model");
+                    model.put("providerID", providerId);
+                    model.put("modelID", modelId);
+                    ObjectNode summary = msgJson.putObject("summary");
+                    summary.putArray("diffs");
+                    ObjectNode tools = msgJson.putObject("tools");
+                    tools.put("task", false);
+                    lastUserMsgId = msgId;
+                } else {
+                    // Chain each message to the immediately preceding one
+                    if (lastMsgId != null) msgJson.put("parentID", lastMsgId);
+                    msgJson.put("mode", "general");
+                    msgJson.put("agent", "general");
+                    ObjectNode path = msgJson.putObject("path");
+                    path.put("cwd", cwd);
+                    path.put("root", cwd);
+                    msgJson.put("cost", 0.0);
+                    msgJson.put("modelID", modelId);
+                    msgJson.put("providerID", providerId);
+                    ObjectNode tokens = msgJson.putObject("tokens");
+                    tokens.put("input", 0);
+                    tokens.put("output", 0);
+                    tokens.put("reasoning", 0);
+                    tokens.put("total", 0);
+                    ObjectNode cache = tokens.putObject("cache");
+                    cache.put("read", 0);
+                    cache.put("write", 0);
+                    msgTime.put("completed", msgTimestamp + 5000);
+                    msgJson.put("finish", "stop");
+                }
+                lastMsgId = msgId;
+
+                Files.writeString(msgFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(msgJson), StandardCharsets.UTF_8);
+
+                // Part file
+                String partId = "prt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 26);
+                Path partDir = storageBase.resolve("part").resolve(msgId);
+                Files.createDirectories(partDir);
+                Path partFile = partDir.resolve(partId + ".json");
+
+                ObjectNode partJson = MAPPER.createObjectNode();
+                partJson.put("id", partId);
+                partJson.put("sessionID", sessId);
+                partJson.put("messageID", msgId);
+                partJson.put("type", "text");
+                partJson.put("text", content);
+                ObjectNode partTime = partJson.putObject("time");
+                partTime.put("start", msgTimestamp);
+                partTime.put("end", msgTimestamp + 3000);
+
+                Files.writeString(partFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(partJson), StandardCharsets.UTF_8);
+
+                lastTimestamp = msgTimestamp + 3000;
+                msgTimestamp += 10000;
+            }
+
+            // Rewrite session file with correct updated timestamp
+            sessTime.put("updated", lastTimestamp);
+            Files.writeString(sessionFile, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(sessionJson), StandardCharsets.UTF_8);
+
+            System.err.println("[OpenCode Export] Wrote file-based storage for session " + sessId);
+        } catch (Exception e) {
+            System.err.println("[OpenCode Export] Warning: File storage write failed: " + e.getMessage());
         }
     }
 
