@@ -51,7 +51,7 @@ import java.util.Map;
  * or the application shuts down.</p>
  *
  * @see KvCacheManager
- * @see StaticKvCacheManager
+ * @see UnifiedKvCacheManager
  * @see VlmKvCacheIntegrationService
  */
 @Slf4j
@@ -102,7 +102,7 @@ public class KompileKvCacheAdapter implements KvCacheManager {
 
     @Override
     public void initializeFromPrefill(Map<String, INDArray> prefillOutputs,
-                                       DecoderUtils.KVCacheNames kvNames,
+                                       ModelIOConfig.KVCacheNames kvNames,
                                        int maxNewTokens, long prefillSeqLen) {
         delegate.initializeFromPrefill(prefillOutputs, kvNames, maxNewTokens, prefillSeqLen);
         inferenceCount++;
@@ -127,14 +127,14 @@ public class KompileKvCacheAdapter implements KvCacheManager {
 
     @Override
     public void scatterNewEntries(Map<String, INDArray> decoderOutputs,
-                                   DecoderUtils.KVCacheNames kvNames) {
+                                   ModelIOConfig.KVCacheNames kvNames) {
         delegate.scatterNewEntries(decoderOutputs, kvNames);
         statsCollector.recordAppend(cacheName);
     }
 
     @Override
     public void scatterMultipleEntries(Map<String, INDArray> decoderOutputs,
-                                        DecoderUtils.KVCacheNames kvNames,
+                                        ModelIOConfig.KVCacheNames kvNames,
                                         int numEntries) {
         delegate.scatterMultipleEntries(decoderOutputs, kvNames, numEntries);
         // Record each entry as an append
