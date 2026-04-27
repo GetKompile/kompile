@@ -21,12 +21,16 @@ import ai.kompile.app.services.mcp.McpActionLogService;
 import ai.kompile.app.services.mcp.ToolDefinitionService;
 import ai.kompile.app.services.mcp.ToolPermissionService;
 import ai.kompile.app.services.mcp.optimization.ToolResponseCompressorRegistry;
+import ai.kompile.toolgateway.model.GatewayAction;
+import ai.kompile.toolgateway.model.GatewayDecision;
+import ai.kompile.toolgateway.service.ToolGatewayService;
 import ai.kompile.app.tools.*;
 import ai.kompile.core.mcp.EnhancedToolDefinition;
 import ai.kompile.core.mcp.ToolChangeEvent;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfig.MetaToolMode;
 import ai.kompile.core.mcp.optimization.McpOptimizationConfigProvider;
+import ai.kompile.codeindexer.tool.CodeIndexerToolImpl;
 import ai.kompile.tool.filesystem.FilesystemToolImpl;
 import ai.kompile.tool.rag.RagToolImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -214,10 +218,19 @@ public class McpToolRegistry {
     private CrossIndexTool crossIndexTool;
 
     @Autowired(required = false)
+    private CodeIndexerToolImpl codeIndexerTool;
+
+    @Autowired(required = false)
     private AgentDelegationTool agentDelegationTool;
 
     @Autowired(required = false)
     private NoteTool noteTool;
+
+    @Autowired(required = false)
+    private AgentTaskTool agentTaskTool;
+
+    @Autowired(required = false)
+    private DiffTrackerTool diffTrackerTool;
 
     @Autowired(required = false)
     private ToolPermissionService toolPermissionService;
@@ -236,6 +249,9 @@ public class McpToolRegistry {
 
     @Autowired(required = false)
     private McpOptimizationConfigProvider optimizationConfigProvider;
+
+    @Autowired(required = false)
+    private ToolGatewayService toolGatewayService;
 
     @Autowired
     public McpToolRegistry(ObjectMapper objectMapper,
@@ -486,8 +502,11 @@ public class McpToolRegistry {
         addBeanIfAvailable(archiveTool, "Archive");
         addBeanIfAvailable(chunkManagementTool, "Chunk Management");
         addBeanIfAvailable(crossIndexTool, "Cross Index");
+        addBeanIfAvailable(codeIndexerTool, "Code Indexer");
         addBeanIfAvailable(agentDelegationTool, "Agent Delegation");
         addBeanIfAvailable(noteTool, "Note");
+        addBeanIfAvailable(agentTaskTool, "Agent Task");
+        addBeanIfAvailable(diffTrackerTool, "Diff Tracker");
 
         // MCP-optimization meta-tools (visible in all modes; the mode filter
         // later decides which other tools survive).
@@ -560,9 +579,29 @@ public class McpToolRegistry {
                         }
                     }
 
+                    // Tool gateway evaluation (when enabled)
+                    Map<String, Object> effectiveArgs = args;
+                    if (toolGatewayService != null) {
+                        try {
+                            GatewayDecision decision = toolGatewayService.evaluate(toolName, args);
+                            if (decision.action() == GatewayAction.BLOCK) {
+                                String msg = "Tool '" + toolName + "' blocked by gateway: " + decision.reason();
+                                actionLogService.logActionFailure(logEntry.getId(), msg);
+                                return errorResult(msg);
+                            } else if (decision.action() == GatewayAction.REWRITE && decision.rewrittenArgs() != null) {
+                                effectiveArgs = decision.rewrittenArgs();
+                                log.info("Tool gateway rewrote args for '{}': rule={}", toolName, decision.matchedRuleId());
+                            }
+                        } catch (Exception ge) {
+                            log.error("Tool gateway evaluation error for '{}': {}", toolName, ge.getMessage());
+                            // Fail-open/close is handled inside ToolGatewayService;
+                            // if it propagates here, treat as pass-through.
+                        }
+                    }
+
                     try {
-                        // Invoke the method
-                        Object result = invokeToolMethod(bean, method, args);
+                        // Invoke the method with (possibly rewritten) arguments
+                        Object result = invokeToolMethod(bean, method, effectiveArgs);
 
                         // Log success with the full pre-compression payload so
                         // audit logs retain everything.

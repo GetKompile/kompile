@@ -101,6 +101,12 @@ public class McpSseServerConfiguration {
     private AgentDelegationTool agentDelegationTool;
 
     @Autowired(required = false)
+    private AgentTaskTool agentTaskTool;
+
+    @Autowired(required = false)
+    private DiffTrackerTool diffTrackerTool;
+
+    @Autowired(required = false)
     private ToolResponseCompressorRegistry compressorRegistry;
 
     @Autowired
@@ -142,6 +148,8 @@ public class McpSseServerConfiguration {
         addToolIfAvailable(toolObjects, systemDiagnosticsTool, "System Diagnostics");
         addToolIfAvailable(toolObjects, modelManagementTool, "Model Management");
         addToolIfAvailable(toolObjects, agentDelegationTool, "Agent Delegation");
+        addToolIfAvailable(toolObjects, agentTaskTool, "Agent Task");
+        addToolIfAvailable(toolObjects, diffTrackerTool, "Diff Tracker");
 
         // Meta-tools are always registered; the mode filter below decides which
         // tool *names* the MCP client actually sees.
