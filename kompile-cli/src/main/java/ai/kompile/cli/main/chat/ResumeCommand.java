@@ -380,6 +380,11 @@ public class ResumeCommand implements Callable<Integer> {
                 if (exportResult.getWorkingDirectory() != null) {
                     pb.directory(exportResult.getWorkingDirectory().toFile());
                 }
+                // Set MCP_TIMEOUT to give the kompile MCP server time to connect
+                // before Claude fires the first API request. Default is 30s which
+                // races with slow tool init; 60s provides headroom.
+                // See: https://github.com/anthropics/claude-code/issues/36060
+                pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
                 pb.inheritIO();
                 Process process = pb.start();
                 exitCode = process.waitFor();
@@ -439,6 +444,7 @@ public class ResumeCommand implements Callable<Integer> {
             try {
                 ProcessBuilder pb = new ProcessBuilder(cmd);
                 pb.directory(workingDir.toFile());
+                pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
                 pb.inheritIO();
                 Process process = pb.start();
                 exitCode = process.waitFor();
@@ -497,6 +503,21 @@ public class ResumeCommand implements Callable<Integer> {
             cmd.add("--yolo");
         } else if (name.contains("gemini")) {
             cmd.add("--yolo");
+        }
+
+        // On resume, inject a system prompt directive to verify MCP tools are
+        // connected before proceeding. Claude Code has a race condition where
+        // the first API request fires before MCP servers finish connecting
+        // (see https://github.com/anthropics/claude-code/issues/36060).
+        // The --append-system-prompt tells the model to check tool availability,
+        // which also gives the MCP server time to complete initialization.
+        if (toolsInjected && name.contains("claude")) {
+            cmd.add("--append-system-prompt");
+            cmd.add("This is a resumed session with kompile MCP tools. "
+                    + "If you need to use kompile tools (mcp__kompile__*) and they appear "
+                    + "unavailable, run /mcp to check MCP server status and reconnect if needed. "
+                    + "The kompile MCP server should be connected — if it shows as disconnected, "
+                    + "wait a moment and retry /mcp.");
         }
 
         // MCP tools are auto-discovered from .mcp.json / .qwen/settings.json / etc.
