@@ -54,6 +54,14 @@ public class McpToolInjection {
     private static volatile Path pendingCleanupFile;
 
     /**
+     * Tracks whether the settings file existed before injection.
+     * If true, removeTools() must restore the file (not delete it) even when
+     * the backup is missing or the file only contained a kompile entry.
+     * This prevents persistent configs created by {@code kompile init} from being destroyed.
+     */
+    private static volatile boolean fileExistedBeforeInjection;
+
+    /**
      * Inject kompile MCP tools into the appropriate agent's settings file.
      * Automatically selects stdio mode (embedded MCP server).
      *
@@ -101,6 +109,11 @@ public class McpToolInjection {
             }
         }
 
+        // Track whether the settings file already exists before injection.
+        // This determines cleanup behavior: pre-existing files are restored, not deleted.
+        Path preCheckPath = resolveSettingsPath(normalizedWd, agent);
+        fileExistedBeforeInjection = preCheckPath != null && Files.exists(preCheckPath);
+
         if (agent.contains("claude")) {
             return registerAndReturn(injectForClaude(normalizedWd, launcher, sseUrl));
         } else if (agent.contains("codex")) {
@@ -135,19 +148,145 @@ public class McpToolInjection {
         deregisterShutdownHook();
 
         if (settingsFile == null) return;
+        boolean preExisted = fileExistedBeforeInjection;
         try {
             Path backup = settingsFile.resolveSibling(settingsFile.getFileName() + BACKUP_SUFFIX);
             if (Files.exists(backup)) {
                 Files.move(backup, settingsFile, StandardCopyOption.REPLACE_EXISTING);
                 System.err.println("[MCP] Restored original settings: " + settingsFile);
+            } else if (preExisted) {
+                // The file existed before injection (e.g. created by "kompile init")
+                // but no backup was needed because injection overwrote it in place.
+                // Leave the file as-is — it still has a valid kompile entry which is
+                // the persistent config the user expects for future sessions.
+                System.err.println("[MCP] Preserved existing settings: " + settingsFile);
             } else {
-                // No backup means we created the file fresh — remove the kompile entry
-                // but leave the file if it has other content
+                // No backup and file didn't exist before — we created it fresh.
+                // Remove the kompile entry, and delete the file if empty.
                 removeKompileEntry(settingsFile);
             }
         } catch (IOException e) {
             System.err.println("[MCP] Warning: Could not restore settings: " + e.getMessage());
         }
+    }
+
+    /**
+     * Pre-configure Claude Code hooks in settings.local.json BEFORE launching the agent.
+     *
+     * <p>This MUST be called before starting Claude Code, not from the MCP subprocess.
+     * Claude Code monitors settings.local.json via inotify — writing to it after Claude
+     * starts causes it to kill and restart MCP connections, creating a death spiral.</p>
+     *
+     * @param workingDir the project working directory (contains .claude/)
+     */
+    public static void ensureHooksPreConfigured(Path workingDir) {
+        try {
+            Path settingsDir = workingDir.resolve(".claude");
+            Path settingsFile = settingsDir.resolve("settings.local.json");
+
+            ObjectNode settings;
+            if (Files.exists(settingsFile)) {
+                String existing = Files.readString(settingsFile);
+                com.fasterxml.jackson.databind.JsonNode parsed = OM.readTree(existing);
+                if (parsed.isObject()) {
+                    settings = (ObjectNode) parsed;
+                } else {
+                    settings = OM.createObjectNode();
+                }
+                // Remove any existing kompile hooks so we always write the latest version
+                com.fasterxml.jackson.databind.JsonNode hooks = settings.get("hooks");
+                if (hooks != null && hooks.isObject()) {
+                    removeKompileMatchersFromArray((ObjectNode) hooks, "PreToolUse");
+                    removeKompileMatchersFromArray((ObjectNode) hooks, "PostToolUse");
+                }
+            } else {
+                settings = OM.createObjectNode();
+            }
+
+            // Per-project temp file for timing
+            String wdHash = Integer.toHexString(workingDir.toAbsolutePath().toString().hashCode() & 0x7fffffff);
+            String tsFile = "/tmp/.kompile_hook_ts_" + wdHash;
+
+            String preCmd = "bash -c '"
+                    + "INPUT=$(cat); "
+                    + "TN=$(echo \"$INPUT\" | jq -r \".tool_name // \\\"unknown\\\"\"); "
+                    + "SHORT=${TN#mcp__kompile__}; "
+                    + "PARAMS=$(echo \"$INPUT\" | jq -rc \".tool_input // {}\" | head -c 120); "
+                    + "echo \"$(($(date +%s%N)/1000000))\" > " + tsFile + "; "
+                    + "echo >&2 \"[kompile] $SHORT | $PARAMS\""
+                    + "'";
+
+            String postCmd = "bash -c '"
+                    + "INPUT=$(cat); "
+                    + "TN=$(echo \"$INPUT\" | jq -r \".tool_name // \\\"unknown\\\"\"); "
+                    + "SHORT=${TN#mcp__kompile__}; "
+                    + "END=$(($(date +%s%N)/1000000)); "
+                    + "START=$(cat " + tsFile + " 2>/dev/null || echo $END); "
+                    + "MS=$((END - START)); "
+                    + "if [ $MS -gt 1000 ]; then FMT=\"$((MS/1000)).$((MS%1000/100))s\"; else FMT=\"${MS}ms\"; fi; "
+                    + "echo >&2 \"[kompile] $SHORT done ($FMT)\""
+                    + "'";
+
+            ObjectNode hooks = settings.has("hooks") && settings.get("hooks").isObject()
+                    ? (ObjectNode) settings.get("hooks")
+                    : settings.putObject("hooks");
+
+            com.fasterxml.jackson.databind.node.ArrayNode preArray = hooks.has("PreToolUse") && hooks.get("PreToolUse").isArray()
+                    ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PreToolUse")
+                    : hooks.putArray("PreToolUse");
+            ObjectNode preMatcher = OM.createObjectNode();
+            preMatcher.put("matcher", "mcp__kompile__.*");
+            preMatcher.putArray("hooks").addObject().put("type", "command").put("command", preCmd);
+            preArray.add(preMatcher);
+
+            com.fasterxml.jackson.databind.node.ArrayNode postArray = hooks.has("PostToolUse") && hooks.get("PostToolUse").isArray()
+                    ? (com.fasterxml.jackson.databind.node.ArrayNode) hooks.get("PostToolUse")
+                    : hooks.putArray("PostToolUse");
+            ObjectNode postMatcher = OM.createObjectNode();
+            postMatcher.put("matcher", "mcp__kompile__.*");
+            postMatcher.putArray("hooks").addObject().put("type", "command").put("command", postCmd);
+            postArray.add(postMatcher);
+
+            Files.createDirectories(settingsDir);
+            String newContent = OM.writerWithDefaultPrettyPrinter().writeValueAsString(settings);
+            String existingContent = Files.exists(settingsFile) ? Files.readString(settingsFile) : "";
+            if (!newContent.equals(existingContent)) {
+                Files.writeString(settingsFile, newContent);
+                System.err.println("[MCP] Pre-configured Claude Code hooks in " + settingsFile);
+            }
+        } catch (Exception e) {
+            System.err.println("[MCP] Warning: Could not pre-configure hooks: " + e.getMessage());
+        }
+    }
+
+    /** Remove kompile-managed matcher entries from a hook event array. */
+    private static void removeKompileMatchersFromArray(ObjectNode hooks, String event) {
+        com.fasterxml.jackson.databind.JsonNode arr = hooks.get(event);
+        if (arr == null || !arr.isArray()) return;
+        com.fasterxml.jackson.databind.node.ArrayNode array = (com.fasterxml.jackson.databind.node.ArrayNode) arr;
+        for (int i = array.size() - 1; i >= 0; i--) {
+            com.fasterxml.jackson.databind.JsonNode entry = array.get(i);
+            if (entry.isObject() && entry.has("matcher")) {
+                String matcher = entry.get("matcher").asText("");
+                if (matcher.contains("kompile")) {
+                    array.remove(i);
+                }
+            }
+        }
+    }
+
+    /**
+     * Resolve the settings file path for the given agent without modifying anything.
+     * Used to check if the file exists before injection begins.
+     */
+    private static Path resolveSettingsPath(Path workingDir, String agent) {
+        if (agent.contains("claude")) return workingDir.resolve(".mcp.json");
+        if (agent.contains("codex")) return Path.of(System.getProperty("user.home"), ".codex", "config.toml");
+        if (agent.contains("gemini")) return Path.of(System.getProperty("user.home"), ".gemini", "settings.json");
+        if (agent.contains("opencode")) {
+            return isCrushFormat() ? workingDir.resolve("opencode.json") : workingDir.resolve(".opencode.json");
+        }
+        return workingDir.resolve(".qwen").resolve("settings.json"); // default: qwen
     }
 
     // ── Claude Code ────────────────────────────────────────────────────────
@@ -237,10 +376,130 @@ public class McpToolInjection {
 
     // ── OpenCode ───────────────────────────────────────────────────────────
 
+    /**
+     * Detects whether the installed OpenCode binary is the newer "Crush" fork
+     * (which uses {@code "mcp"} key with {@code "type"} field) or the original
+     * OpenCode (which uses {@code "mcpServers"} format).
+     *
+     * @return true if Crush format should be used
+     */
+    static boolean isCrushFormat() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("opencode", "--version");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String output;
+            try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                output = sb.toString().trim();
+            }
+            p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+
+            // Crush reports version as "crush" or any numeric version.
+            // The original OpenCode was archived at 0.0.55 and continued as Crush.
+            // The Crush fork was later rebranded back to "opencode" but kept the
+            // Crush config format ("mcp" key with "type" field).
+            // Any version >= 1.0 is Crush format; original OpenCode never exceeded 0.0.55.
+            if (output.toLowerCase().contains("crush")) return true;
+            if (output.matches("\\d+.*")) {
+                String[] parts = output.split("\\.");
+                int major = Integer.parseInt(parts[0]);
+                int minor = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+                // Original OpenCode maxed out at 0.0.55; anything >= 0.1 is Crush format
+                return major > 0 || minor >= 1;
+            }
+            return false;
+        } catch (Exception e) {
+            return false; // default to legacy format
+        }
+    }
+
+    /**
+     * Injects kompile MCP tools into OpenCode's project-local config.
+     * <p>
+     * OpenCode 1.x reads from {@code opencode.json} (no dot prefix) in the working directory.
+     * The schema uses the {@code "mcp"} key with {@code "type"} field ({@code "local"} for
+     * stdio, {@code "remote"} for URL-based) and requires an {@code "enabled"} field.
+     * <p>
+     * The original OpenCode 0.x (archived at 0.0.55) used {@code .opencode.json} with
+     * the {@code "mcpServers"} key — we still support that format for legacy installs.
+     */
     private static Path injectForOpenCode(Path workingDir, McpToolInjectionSupport.CliLauncher launcher,
-                                           String sseUrl) throws IOException {
+                                             String sseUrl) throws IOException {
+        if (isCrushFormat()) {
+            // OpenCode 1.x: opencode.json (no dot prefix)
+            Path settingsFile = workingDir.resolve("opencode.json");
+            Files.createDirectories(settingsFile.getParent());
+            return writeCrushConfig(settingsFile, workingDir, launcher, sseUrl);
+        }
+        // Legacy OpenCode 0.x: .opencode.json (dot prefix)
         Path settingsFile = workingDir.resolve(".opencode.json");
+        Files.createDirectories(settingsFile.getParent());
         return writeConfig(settingsFile, workingDir, launcher, sseUrl);
+    }
+
+    /**
+     * Writes OpenCode 1.x config using the {@code "mcp"} key.
+     * <p>
+     * OpenCode 1.x schema:
+     * <ul>
+     *   <li>{@code "type": "local"} for stdio servers (with command/args)</li>
+     *   <li>{@code "type": "remote"} for URL-based servers</li>
+     *   <li>{@code "enabled": true} required on each entry</li>
+     * </ul>
+     */
+    private static Path writeCrushConfig(Path settingsFile, Path workingDir,
+                                            McpToolInjectionSupport.CliLauncher launcher,
+                                            String sseUrl) throws IOException {
+        backupIfExists(settingsFile);
+
+        ObjectNode root;
+        if (Files.exists(settingsFile)) {
+            String existing = Files.readString(settingsFile);
+            try {
+                root = (ObjectNode) OM.readTree(existing);
+            } catch (Exception e) {
+                System.err.println("[MCP] Warning: Could not parse existing " + settingsFile.getFileName() + ", creating new: " + e.getMessage());
+                root = OM.createObjectNode();
+            }
+        } else {
+            root = OM.createObjectNode();
+        }
+
+        ObjectNode mcpServers;
+        if (root.has("mcp") && root.get("mcp").isObject()) {
+            mcpServers = (ObjectNode) root.get("mcp");
+        } else {
+            mcpServers = root.putObject("mcp");
+        }
+
+        ObjectNode kompile = mcpServers.putObject("kompile");
+        kompile.put("enabled", true);
+
+        String mode;
+        if (sseUrl != null && !sseUrl.isBlank()) {
+            kompile.put("type", "remote");
+            kompile.put("url", sseUrl);
+            mode = "remote";
+        } else {
+            kompile.put("type", "local");
+            kompile.put("command", launcher.command());
+            List<String> fullArgs = launcher.buildArgs(workingDir);
+            ArrayNode argsArray = kompile.putArray("args");
+            for (String arg : fullArgs) {
+                argsArray.add(arg);
+            }
+            mode = "local";
+        }
+
+        Files.writeString(settingsFile, OM.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+
+        System.err.println("[MCP] Injected kompile MCP tools (" + mode + ") into " + settingsFile);
+        System.err.flush();
+
+        return settingsFile;
     }
 
     // ── Shared config writer ───────────────────────────────────────────────
@@ -309,6 +568,11 @@ public class McpToolInjection {
      * <p>If a backup already exists, it is checked for contamination (a "kompile" MCP entry).
      * If contaminated, the backup is overwritten with a clean copy from the current file
      * (with the kompile entry stripped out). If the backup is clean, it is preserved.</p>
+     *
+     * <p>Always creates a verbatim backup of the original file. The backup is used by
+     * {@link #removeTools(Path)} to restore the file to its pre-injection state. Even if
+     * the file only contains a kompile entry (e.g. from {@code kompile init}), the backup
+     * preserves it so the persistent config survives the injection/cleanup cycle.</p>
      */
     private static void backupIfExists(Path settingsFile) throws IOException {
         if (!Files.exists(settingsFile)) return;
@@ -318,14 +582,20 @@ public class McpToolInjection {
         if (Files.exists(backup)) {
             // Check if backup is contaminated (contains kompile entry)
             if (isContaminated(backup)) {
-                // Backup is contaminated — create a clean backup from the current file
+                // Backup is contaminated — try to create a clean backup from the current file.
+                // If stripping kompile leaves nothing (file only had kompile), keep the
+                // verbatim backup so the persistent config can be restored.
                 String cleanContent = stripKompileEntry(settingsFile);
                 if (cleanContent != null) {
                     Files.writeString(backup, cleanContent);
                 }
+                // If cleanContent is null, keep the existing (contaminated) backup.
+                // removeTools() will handle this via the fileExistedBeforeInjection flag.
             }
             // If backup exists and is clean, keep it (don't overwrite)
         } else {
+            // Always create a verbatim backup — even if the file only has a kompile entry.
+            // This preserves persistent configs created by "kompile init".
             Files.copy(settingsFile, backup, StandardCopyOption.REPLACE_EXISTING);
         }
     }
@@ -342,17 +612,16 @@ public class McpToolInjection {
             String fileName = file.getFileName().toString();
             if (fileName.endsWith(".toml")) {
                 String content = Files.readString(file);
-                // Check for [mcp_servers.kompile] section
                 return content.matches("(?s).*\\[mcp_servers\\.kompile\\].*");
             }
-            // JSON files: check if mcpServers.kompile exists
             String content = Files.readString(file);
             ObjectNode root = (ObjectNode) OM.readTree(content);
-            return root.has("mcpServers")
-                    && root.get("mcpServers").isObject()
-                    && root.get("mcpServers").has("kompile");
+            if (root.has("mcpServers") && root.get("mcpServers").isObject()
+                    && root.get("mcpServers").has("kompile")) return true;
+            if (root.has("mcp") && root.get("mcp").isObject()
+                    && root.get("mcp").has("kompile")) return true;
+            return false;
         } catch (Exception e) {
-            // If we can't parse the file, assume it's not contaminated
             return false;
         }
     }
@@ -374,14 +643,15 @@ public class McpToolInjection {
                 cleaned = cleaned.replaceAll("\\n+$", "");
                 return cleaned.isEmpty() ? null : cleaned + "\n";
             }
-            // JSON file
             String content = Files.readString(file);
             ObjectNode root = (ObjectNode) OM.readTree(content);
+            if (root.has("mcp") && root.get("mcp").isObject()) {
+                ((ObjectNode) root.get("mcp")).remove("kompile");
+                if (root.get("mcp").isEmpty()) root.remove("mcp");
+            }
             if (root.has("mcpServers") && root.get("mcpServers").isObject()) {
                 ((ObjectNode) root.get("mcpServers")).remove("kompile");
-                if (root.get("mcpServers").isEmpty()) {
-                    root.remove("mcpServers");
-                }
+                if (root.get("mcpServers").isEmpty()) root.remove("mcpServers");
             }
             if (root.isEmpty()) return null;
             return OM.writerWithDefaultPrettyPrinter().writeValueAsString(root);
@@ -402,6 +672,10 @@ public class McpToolInjection {
             projectDir.resolve(".mcp.json"),
             projectDir.resolve(".qwen/settings.json"),
             projectDir.resolve(".opencode.json"),
+            projectDir.resolve("opencode.json"),
+            Path.of(System.getProperty("user.home"), ".config", "opencode", "opencode.json"),
+            Path.of(System.getProperty("user.home"), ".opencode", "opencode.json"),
+            Path.of(System.getProperty("user.home"), ".opencode.json"),
             Path.of(System.getProperty("user.home"), ".codex", "config.toml"),
             Path.of(System.getProperty("user.home"), ".gemini", "settings.json")
         );
@@ -411,15 +685,18 @@ public class McpToolInjection {
                 if (Files.exists(candidate) && isContaminated(candidate)) {
                     Path backup = candidate.resolveSibling(candidate.getFileName() + BACKUP_SUFFIX);
                     if (Files.exists(backup) && !isContaminated(backup)) {
-                        // Restore clean backup
+                        // Restore clean backup — a prior injection crashed before cleanup
                         Files.move(backup, candidate, StandardCopyOption.REPLACE_EXISTING);
                         System.err.println("[MCP] Restored clean backup for: " + candidate);
-                    } else {
-                        // No clean backup — strip kompile entry in place
+                    } else if (Files.exists(backup)) {
+                        // Backup is also contaminated — both got the kompile entry somehow.
+                        // Strip kompile from the main file and discard the bad backup.
                         removeKompileEntry(candidate);
-                        // Also clean up any contaminated backup
-                        if (Files.exists(backup)) Files.deleteIfExists(backup);
+                        Files.deleteIfExists(backup);
                     }
+                    // If NO backup exists, the file is a persistent config (e.g. from
+                    // "kompile init") — leave it alone. Only the presence of a backup
+                    // indicates a prior injection that didn't clean up properly.
                 }
             } catch (IOException e) {
                 System.err.println("[MCP] Warning: Could not clean leaked entry from " + candidate + ": " + e.getMessage());
@@ -474,36 +751,38 @@ public class McpToolInjection {
             }
             shutdownHook = null;
             pendingCleanupFile = null;
+            // Note: fileExistedBeforeInjection is intentionally NOT reset here —
+            // it is read by removeTools() which calls this method first.
         }
     }
 
     /**
-     * Remove only the "kompile" entry from mcpServers in a JSON settings file,
-     * or remove the [mcp_servers.kompile] section from a TOML config file.
+     * Remove only the "kompile" entry from mcpServers (or "mcp" for Crush)
+     * in a JSON settings file, or remove the [mcp_servers.kompile] section from a TOML config file.
      * If the file was created fresh by injection and has no other content, delete it.
      */
     private static void removeKompileEntry(Path settingsFile) throws IOException {
         if (!Files.exists(settingsFile)) return;
 
         String fileName = settingsFile.getFileName().toString();
-        // Handle TOML files (e.g., Codex config.toml)
         if (fileName.endsWith(".toml")) {
             removeKompileTomlEntry(settingsFile);
             return;
         }
 
-        // Handle JSON settings files
         try {
             String content = Files.readString(settingsFile);
             ObjectNode root = (ObjectNode) OM.readTree(content);
+            if (root.has("mcp") && root.get("mcp").isObject()) {
+                ObjectNode mcp = (ObjectNode) root.get("mcp");
+                mcp.remove("kompile");
+                if (mcp.isEmpty()) root.remove("mcp");
+            }
             if (root.has("mcpServers") && root.get("mcpServers").isObject()) {
                 ObjectNode mcpServers = (ObjectNode) root.get("mcpServers");
                 mcpServers.remove("kompile");
-                if (mcpServers.isEmpty()) {
-                    root.remove("mcpServers");
-                }
+                if (mcpServers.isEmpty()) root.remove("mcpServers");
             }
-            // If the root only had mcpServers and it's now empty, delete the file
             if (root.isEmpty()) {
                 Files.deleteIfExists(settingsFile);
                 System.err.println("[MCP] Removed injected settings file: " + settingsFile);

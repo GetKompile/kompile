@@ -16,6 +16,11 @@
 
 package ai.kompile.cli.main.chat;
 
+import ai.kompile.cli.main.chat.config.SystemPromptManager;
+import ai.kompile.cli.main.chat.skill.CustomSkillLoader;
+import ai.kompile.cli.main.chat.skill.SkillConfig;
+import ai.kompile.cli.main.chat.skill.SkillRegistry;
+import ai.kompile.cli.main.chat.skill.SkillsInjection;
 import ai.kompile.cli.main.chat.render.AsciiRenderer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,11 +70,17 @@ public class PassthroughCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--inject-tools"}, description = "Inject kompile tools (RAG, Graph RAG, etc.) into the agent via MCP", defaultValue = "true")
     boolean injectTools;
 
+    @CommandLine.Option(names = {"--inject-skills"}, description = "Inject skills.md listing into the agent's system prompt", defaultValue = "true")
+    boolean injectSkills;
+
     @CommandLine.Option(names = {"--url", "-u"}, description = "Kompile-app base URL for MCP tools", defaultValue = "")
     String kompileUrl;
 
     @CommandLine.Option(names = {"--mcp-port"}, description = "Port for embedded MCP server (0 = auto-detect kompile-app)", defaultValue = "0")
     int mcpPort;
+
+    /** System prompt manager — set by ChatCommand when launching passthrough mode. */
+    SystemPromptManager systemPromptManager;
 
     // Cached resolved MCP URL (to avoid double-probing)
     private McpUrlResolver mcpUrlResolver = new McpUrlResolver();
@@ -107,6 +118,12 @@ public class PassthroughCommand implements Callable<Integer> {
                 System.out.println(CYAN + "Starting " + agent + " session..." + RESET);
                 Path injectedSettingsFile = null;
                 if (injectTools) {
+                    // Pre-configure Claude Code hooks BEFORE injection/launch so that
+                    // settings.local.json is stable when Claude starts watching it.
+                    if (agent.toLowerCase(Locale.ROOT).contains("claude")) {
+                        ai.kompile.cli.main.chat.mcp.McpToolInjection.ensureHooksPreConfigured(
+                                Path.of(workingDir).toAbsolutePath().normalize());
+                    }
                     try {
                         String sseUrl = resolveMcpUrl();
                         injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
@@ -118,6 +135,29 @@ public class PassthroughCommand implements Callable<Integer> {
                         }
                     } catch (java.io.IOException e) {
                         System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+                    }
+                }
+                // Inject system prompt instruction files (for Codex/OpenCode AGENTS.md)
+                if (systemPromptManager != null) {
+                    Path injectedPromptFile = systemPromptManager.injectInstructionFile(
+                            agent, Path.of(workingDir).toAbsolutePath());
+                    if (injectedPromptFile != null) {
+                        System.out.println(GREEN + "System prompt injected" + RESET
+                                + DIM + " (" + injectedPromptFile + ")" + RESET);
+                    }
+                }
+                // Install skills into the agent's native command/skill infrastructure
+                SkillsInjection skillsInjection = null;
+                if (injectSkills) {
+                    SkillRegistry skillRegistry = new SkillRegistry();
+                    CustomSkillLoader loader = new CustomSkillLoader(Path.of(workingDir).toAbsolutePath());
+                    for (SkillConfig custom : loader.loadAll().values()) {
+                        skillRegistry.register(custom);
+                    }
+                    skillsInjection = new SkillsInjection(skillRegistry, Path.of(workingDir));
+                    int installed = skillsInjection.installSkills(agent);
+                    if (installed > 0) {
+                        System.out.println(GREEN + "Skills installed (" + installed + " into " + agent + " native commands)" + RESET);
                     }
                 }
                 System.out.println();
@@ -140,6 +180,14 @@ public class PassthroughCommand implements Callable<Integer> {
                     pb.directory(new File(workingDir).getAbsoluteFile());
                     pb.inheritIO();
 
+                    // Inject system prompt env vars (Gemini: GEMINI_SYSTEM_MD)
+                    if (systemPromptManager != null) {
+                        Map<String, String> extraEnv = systemPromptManager.getExtraEnv(agent);
+                        if (!extraEnv.isEmpty()) {
+                            pb.environment().putAll(extraEnv);
+                        }
+                    }
+
                     Process process = pb.start();
                     lastExitCode = process.waitFor();
                 } catch (Exception e) {
@@ -148,6 +196,14 @@ public class PassthroughCommand implements Callable<Integer> {
                 } finally {
                     // Restore original settings to prevent pollution
                     ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+                    // Restore instruction files modified by system prompt injection
+                    if (systemPromptManager != null) {
+                        systemPromptManager.cleanup();
+                    }
+                    // Restore instruction files modified by skills injection
+                    if (skillsInjection != null) {
+                        skillsInjection.cleanup();
+                    }
                 }
 
                 // Clean up terminal state after agent exits
@@ -522,6 +578,11 @@ public class PassthroughCommand implements Callable<Integer> {
                                     String toolName = payload.path("name").asText("unknown");
                                     history.logToolCall(toolName, false, 0);
                                     metrics.recordToolCall(toolName, false, 0);
+                                    ToolCallIndex.getInstance().record(
+                                            metrics.getSessionId(), toolName,
+                                            payload.path("arguments").toString(),
+                                            agent, "passthrough", false, 0,
+                                            absWorkDir());
                                 }
                                 case "custom_tool_call" -> {
                                     String toolName = payload.path("name").asText("unknown");
@@ -529,6 +590,11 @@ public class PassthroughCommand implements Callable<Integer> {
                                     boolean isError = "error".equalsIgnoreCase(status);
                                     history.logToolCall(toolName, isError, 0);
                                     metrics.recordToolCall(toolName, isError, 0);
+                                    ToolCallIndex.getInstance().record(
+                                            metrics.getSessionId(), toolName,
+                                            payload.path("arguments").toString(),
+                                            agent, "passthrough", isError, 0,
+                                            absWorkDir());
                                 }
                             }
                         }
@@ -546,6 +612,8 @@ public class PassthroughCommand implements Callable<Integer> {
                                     history.logAgentResponse(agent, msg, 0);
                                     metrics.recordAssistantTurn(msg, 0);
                                 }
+                            } else if ("turn_aborted".equals(payloadType)) {
+                                history.logSystem("[codex] Turn aborted — session ended mid-turn");
                             }
                         }
                     }
@@ -657,6 +725,11 @@ public class PassthroughCommand implements Callable<Integer> {
                                         String toolName = funcCall.path("name").asText("unknown");
                                         history.logToolCall(toolName, false, 0);
                                         metrics.recordToolCall(toolName, false, 0);
+                                        ToolCallIndex.getInstance().record(
+                                                metrics.getSessionId(), toolName,
+                                                funcCall.path("args").toString(),
+                                                agent, "passthrough", false, 0,
+                                                absWorkDir());
                                     }
                                 }
                                 if (textContent.length() > 0) {
@@ -723,14 +796,158 @@ public class PassthroughCommand implements Callable<Integer> {
     // ── OpenCode harvester ──────────────────────────────────────────────────
 
     /**
-     * OpenCode session harvesting stub.
-     * OpenCode doesn't appear to store structured session logs in a known location.
-     * If a log format is discovered in the future, implement parsing here.
+     * Locate and parse OpenCode session data from its SQLite database.
+     * OpenCode stores sessions in ~/.local/share/opencode/opencode.db with tables:
+     * session (id, project_id, directory, title, time_created, time_updated),
+     * message (id, session_id, role, data, time_created).
+     * Message.data is a JSON blob containing model info, parts (text/tool_use/tool_result), etc.
      */
     private void harvestOpenCodeTranscript(ChatHistory history, ChatSessionMetrics metrics, Instant sessionStart) {
-        // OpenCode (~/.opencode/) currently stores only binaries and node_modules.
-        // No known session log format. Metrics will show zeros.
-        history.logSystem("OpenCode session - no structured logs available for harvesting.");
+        Path opencodeDb = Path.of(System.getProperty("user.home"), ".local", "share", "opencode", "opencode.db");
+        if (!Files.exists(opencodeDb)) {
+            history.logSystem("OpenCode session - no database found.");
+            return;
+        }
+
+        String absWorkDir = new File(workingDir).getAbsoluteFile().toPath().normalize().toString();
+
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + opencodeDb.toAbsolutePath())) {
+            try (java.sql.Statement pragmaStmt = conn.createStatement()) {
+                pragmaStmt.execute("PRAGMA busy_timeout = 5000");
+            }
+
+            // Find project ID for current working directory
+            String projectId = null;
+            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+                    "SELECT id FROM project WHERE worktree = ?")) {
+                stmt.setString(1, absWorkDir);
+                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) projectId = rs.getString("id");
+                }
+            }
+
+            if (projectId == null) {
+                history.logSystem("OpenCode session - no project found for: " + absWorkDir);
+                return;
+            }
+
+            // Find the most recent session modified after our passthrough started
+            long startMs = sessionStart.toEpochMilli();
+            String openCodeSessionId = null;
+            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+                    "SELECT id FROM session WHERE project_id = ? AND time_updated >= ? ORDER BY time_updated DESC LIMIT 1")) {
+                stmt.setString(1, projectId);
+                stmt.setLong(2, startMs - 30000); // 30s tolerance
+                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) openCodeSessionId = rs.getString("id");
+                }
+            }
+
+            if (openCodeSessionId == null) {
+                history.logSystem("OpenCode session - no session found after passthrough start time.");
+                return;
+            }
+
+            // Read all messages for this session, ordered by creation time
+            try (java.sql.PreparedStatement stmt = conn.prepareStatement(
+                    "SELECT role, data FROM message WHERE session_id = ? ORDER BY time_created ASC")) {
+                stmt.setString(1, openCodeSessionId);
+                try (java.sql.ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        String role = rs.getString("role");
+                        String data = rs.getString("data");
+                        parseOpenCodeMessage(role, data, history, metrics);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            history.logSystem("OpenCode session - error reading database: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Parse a single OpenCode message row. The data column is a JSON blob with:
+     * model: { providerID, modelID }, parts: [ { type, text/toolName/... } ], usage: { input, output }.
+     */
+    private void parseOpenCodeMessage(String role, String data, ChatHistory history, ChatSessionMetrics metrics) {
+        if (data == null || data.isBlank()) return;
+        try {
+            JsonNode node = objectMapper.readTree(data);
+
+            // Extract model info
+            JsonNode model = node.path("model");
+            if (!model.isMissingNode()) {
+                String providerId = model.path("providerID").asText("");
+                String modelId = model.path("modelID").asText("");
+                if (!providerId.isEmpty() && metrics.getProvider() == null) metrics.setProvider(providerId);
+                if (!modelId.isEmpty() && metrics.getModel() == null) metrics.setModel(modelId);
+            }
+
+            // Extract token usage
+            JsonNode usage = node.path("usage");
+            if (!usage.isMissingNode()) {
+                long inputTokens = usage.path("input").asLong(0);
+                long outputTokens = usage.path("output").asLong(0);
+                long cacheRead = usage.path("cacheRead").asLong(0);
+                long cacheWrite = usage.path("cacheWrite").asLong(0);
+                if (inputTokens > 0 || outputTokens > 0) {
+                    metrics.recordTokenUsage(inputTokens, outputTokens, cacheRead, cacheWrite);
+                }
+            }
+
+            // Extract text and tool calls from parts array
+            JsonNode parts = node.path("parts");
+            if (!parts.isArray()) {
+                // Fallback: some messages store content directly
+                String content = node.path("content").asText("");
+                if (!content.isBlank()) {
+                    if ("user".equals(role)) {
+                        history.logUserMessage(content);
+                        metrics.recordUserTurn(content);
+                    } else if ("assistant".equals(role)) {
+                        history.logAgentResponse(agent, content, 0);
+                        metrics.recordAssistantTurn(content, 0);
+                    }
+                }
+                return;
+            }
+
+            StringBuilder textContent = new StringBuilder();
+            for (JsonNode part : parts) {
+                String type = part.path("type").asText("");
+                switch (type) {
+                    case "text" -> {
+                        String text = part.path("text").asText("");
+                        if (!text.isBlank()) textContent.append(text);
+                    }
+                    case "tool-invocation" -> {
+                        String toolName = part.path("toolName").asText(
+                                part.path("name").asText("unknown"));
+                        boolean isError = "error".equals(part.path("state").asText(""));
+                        history.logToolCall(toolName, isError, 0);
+                        metrics.recordToolCall(toolName, isError, 0);
+                        ToolCallIndex.getInstance().record(
+                                metrics.getSessionId(), toolName,
+                                part.path("input").toString(),
+                                agent, "passthrough", isError, 0,
+                                absWorkDir());
+                    }
+                }
+            }
+
+            String text = textContent.toString().trim();
+            if (!text.isEmpty()) {
+                if ("user".equals(role)) {
+                    history.logUserMessage(text);
+                    metrics.recordUserTurn(text);
+                } else if ("assistant".equals(role)) {
+                    history.logAgentResponse(agent, text, 0);
+                    metrics.recordAssistantTurn(text, 0);
+                }
+            }
+        } catch (Exception e) {
+            // Skip unparseable message
+        }
     }
 
     /**
@@ -808,6 +1025,11 @@ public class PassthroughCommand implements Callable<Integer> {
                             boolean isError = node.path("error").asBoolean(false);
                             history.logToolCall(toolName, isError, 0);
                             metrics.recordToolCall(toolName, isError, 0);
+                            ToolCallIndex.getInstance().record(
+                                    metrics.getSessionId(), toolName,
+                                    node.path("input").toString(),
+                                    agent, "passthrough", isError, 0,
+                                    absWorkDir());
                         }
                         default -> {
                             // system, etc. — skip
@@ -1027,6 +1249,11 @@ public class PassthroughCommand implements Callable<Integer> {
                             history.logSubagent(subagentType, subagentDesc, 0, false);
                             metrics.recordToolCall("Agent:" + subagentType, false, 0);
                             metrics.recordAgenticStep();
+                            // Index subagent tool call
+                            ToolCallIndex.getInstance().record(
+                                    metrics.getSessionId(), "Agent:" + subagentType,
+                                    toolInput.toString(), agent, "passthrough", false, 0,
+                                    absWorkDir());
                         } else {
                             // Regular tool use — log with input summary
                             String inputSummary = summarizeToolInput(toolName, toolInput);
@@ -1035,6 +1262,11 @@ public class PassthroughCommand implements Callable<Integer> {
                                 history.logSystem("  " + toolName + ": " + inputSummary);
                             }
                             metrics.recordToolCall(toolName, false, 0);
+                            // Index tool call for catalog search
+                            ToolCallIndex.getInstance().record(
+                                    metrics.getSessionId(), toolName,
+                                    toolInput.toString(), agent, "passthrough", false, 0,
+                                    absWorkDir());
                         }
                     }
                     // Skip: thinking, tool_result, etc.
@@ -1113,6 +1345,11 @@ public class PassthroughCommand implements Callable<Integer> {
         return null;
     }
 
+    /** Resolve the working directory to an absolute path for indexing. */
+    private String absWorkDir() {
+        return new File(workingDir).getAbsoluteFile().toPath().normalize().toString();
+    }
+
     // ── Agent resolution & command building ─────────────────────────────────
 
     private String resolveAgent(String name) {
@@ -1150,13 +1387,18 @@ public class PassthroughCommand implements Callable<Integer> {
             if (name.contains("claude")) {
                 cmd.add("--dangerously-skip-permissions");
             } else if (name.contains("codex")) {
-                cmd.add("--full-auto");
+                cmd.add("--dangerously-bypass-approvals-and-sandbox");
             } else if (name.contains("qwen")) {
                 cmd.add("--yolo");
             } else if (name.contains("gemini")) {
                 cmd.add("--yolo");
             }
             // opencode: auto-approves in interactive TUI and in `run` mode
+        }
+
+        // Append system prompt args (Claude: --append-system-prompt-file, Qwen: --append-system-prompt)
+        if (systemPromptManager != null) {
+            cmd.addAll(systemPromptManager.getExtraArgs(agent));
         }
 
         return cmd;

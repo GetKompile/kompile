@@ -251,6 +251,12 @@ public class ResumeCommand implements Callable<Integer> {
      */
     private int resumeConversation(String sessionId, String agent) {
         try {
+            // Short-circuit: if the target agent is opencode and a target session UUID
+            // is specified directly, just launch `opencode -s <uuid>` without exporting.
+            if ("opencode".equalsIgnoreCase(agent) && targetSessionId != null && !targetSessionId.isBlank()) {
+                return resumeOpenCodeDirect(targetSessionId);
+            }
+
             ai.kompile.cli.main.chat.format.ConversationReader reader =
                     new ai.kompile.cli.main.chat.format.ConversationReader();
 
@@ -302,6 +308,16 @@ public class ResumeCommand implements Callable<Integer> {
                 return 1;
             }
 
+            // Short-circuit: opencode→opencode needs no export/import.
+            // The session already lives in OpenCode's DB/storage; re-importing
+            // would create a duplicate with a mangled session ID.
+            if ("opencode".equalsIgnoreCase(agent) && "opencode".equalsIgnoreCase(source)) {
+                String nativeId = (targetSessionId != null && !targetSessionId.isBlank())
+                        ? targetSessionId
+                        : sessionId;
+                return resumeOpenCodeDirect(nativeId);
+            }
+
             System.out.println("✓ Resuming conversation: " + sessionId);
             System.out.println("  Target agent: " + agent);
             System.out.println("  Source: " + source);
@@ -330,6 +346,10 @@ public class ResumeCommand implements Callable<Integer> {
                 Path agentWorkingDir = exportResult.getWorkingDirectory() != null
                         ? exportResult.getWorkingDirectory()
                         : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+                // Pre-configure Claude Code hooks BEFORE injection/launch
+                if (agent.toLowerCase(java.util.Locale.ROOT).contains("claude")) {
+                    ai.kompile.cli.main.chat.mcp.McpToolInjection.ensureHooksPreConfigured(agentWorkingDir);
+                }
                 try {
                     String sseUrl = resolveMcpUrl();
                     injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
@@ -379,6 +399,64 @@ public class ResumeCommand implements Callable<Integer> {
     }
 
     /**
+     * Directly resume an existing OpenCode session by UUID without exporting.
+     * Uses {@code opencode -s <uuid>} to attach to the session.
+     */
+    private int resumeOpenCodeDirect(String opencodeSessionId) {
+        try {
+            Path workingDir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+
+            System.out.println("Resuming OpenCode session directly: " + opencodeSessionId);
+
+            // Inject MCP tools
+            Path injectedSettingsFile = null;
+            if (injectTools) {
+                try {
+                    String sseUrl = resolveMcpUrl();
+                    injectedSettingsFile = ai.kompile.cli.main.chat.mcp.McpToolInjection.injectTools(
+                            workingDir, "opencode", sseUrl);
+                    if (injectedSettingsFile != null) {
+                        String mode = (sseUrl != null && !sseUrl.isBlank()) ? "sse" : "stdio";
+                        System.out.println(GREEN + "Kompile tools injected (" + mode + ")" + RESET
+                                + DIM + " (" + injectedSettingsFile + ")" + RESET);
+                    }
+                } catch (java.io.IOException e) {
+                    System.err.println(YELLOW + "Warning: Could not inject MCP tools: " + e.getMessage() + RESET);
+                }
+            }
+
+            List<String> cmd = new ArrayList<>();
+            cmd.add("opencode");
+            cmd.add("-s");
+            cmd.add(opencodeSessionId);
+
+            System.out.println();
+            System.out.println("Launching OpenCode with session resume...");
+            System.out.println(DIM + "  Command: " + String.join(" ", cmd) + RESET);
+            System.out.println();
+
+            int exitCode;
+            try {
+                ProcessBuilder pb = new ProcessBuilder(cmd);
+                pb.directory(workingDir.toFile());
+                pb.inheritIO();
+                Process process = pb.start();
+                exitCode = process.waitFor();
+            } finally {
+                ai.kompile.cli.main.chat.mcp.McpToolInjection.removeTools(injectedSettingsFile);
+            }
+
+            System.out.println();
+            System.out.println("Agent session completed (exit code: " + exitCode + ")");
+            return exitCode;
+        } catch (Exception e) {
+            System.err.println("Error resuming OpenCode session: " + e.getMessage());
+            e.printStackTrace();
+            return 1;
+        }
+    }
+
+    /**
      * Build the agent command for resume.
      * <p>
      * Tool injection is handled the same way as PassthroughCommand: we write
@@ -414,7 +492,7 @@ public class ResumeCommand implements Callable<Integer> {
         if (name.contains("claude")) {
             cmd.add("--dangerously-skip-permissions");
         } else if (name.contains("codex")) {
-            cmd.add("--full-auto");
+            cmd.add("--dangerously-bypass-approvals-and-sandbox");
         } else if (name.contains("qwen")) {
             cmd.add("--yolo");
         } else if (name.contains("gemini")) {
