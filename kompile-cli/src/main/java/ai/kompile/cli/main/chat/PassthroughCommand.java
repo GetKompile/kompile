@@ -180,6 +180,12 @@ public class PassthroughCommand implements Callable<Integer> {
                     pb.directory(new File(workingDir).getAbsoluteFile());
                     pb.inheritIO();
 
+                    // Set MCP_TIMEOUT to give the kompile MCP server time to connect
+                    // before the agent fires the first API request. Claude Code's default
+                    // 30s races with slow tool init; 60s provides headroom.
+                    // See: https://github.com/anthropics/claude-code/issues/36060
+                    pb.environment().putIfAbsent("MCP_TIMEOUT", "60000");
+
                     // Inject system prompt env vars (Gemini: GEMINI_SYSTEM_MD)
                     if (systemPromptManager != null) {
                         Map<String, String> extraEnv = systemPromptManager.getExtraEnv(agent);
