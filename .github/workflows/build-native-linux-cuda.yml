@@ -1,0 +1,337 @@
+name: "Build SDK - Linux CUDA"
+
+on:
+  workflow_call:
+    inputs:
+      buildThreads:
+        type: string
+        default: '2'
+      dl4jBranch:
+        type: string
+        default: 'master'
+      cudaVersion:
+        type: string
+        default: '12.6'
+      runsOn:
+        type: string
+        default: 'ubuntu-22.04'
+      swapSize:
+        type: string
+        default: '12'
+      releaseVersion:
+        type: string
+        default: ''
+      prerelease:
+        type: string
+        default: 'true'
+  workflow_dispatch:
+    inputs:
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: true
+        default: '2'
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      cudaVersion:
+        description: 'CUDA version to build (12.6 or 12.9)'
+        required: false
+        default: '12.6'
+      runsOn:
+        description: 'Runner to use'
+        required: false
+        default: 'ubuntu-22.04'
+      swapSize:
+        description: 'Swap file size in GB'
+        required: false
+        default: '12'
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). When set, uploads artifacts to GitHub Release v<version>'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'false'
+
+jobs:
+  build-nd4j-cuda:
+    name: "nd4j-cuda-${{ inputs.cudaVersion || '12.6' }} ${{ matrix.helper || 'base' }}"
+    runs-on: ${{ inputs.runsOn || 'ubuntu-22.04' }}
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [cudnn, compile, ""]
+        extension: [""]
+    env:
+      CUDA_PATH: /usr/local/cuda-${{ inputs.cudaVersion || '12.6' }}
+      CUDNN_ROOT_DIR: /usr/local/cuda-${{ inputs.cudaVersion || '12.6' }}
+    steps:
+      - uses: AutoModality/action-clean@v1
+
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.8.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Configure swap space
+        shell: bash
+        run: |
+          SWAP_SIZE="${{ inputs.swapSize || '12' }}G"
+          echo "Creating ${SWAP_SIZE} swap file..."
+          if swapon --show | grep -q "/"; then
+            echo "Swap already configured:"
+            swapon --show
+          else
+            sudo fallocate -l ${SWAP_SIZE} /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1G count=${{ inputs.swapSize || '12' }}
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+            echo "Swap configured:"
+            swapon --show
+          fi
+          sudo sysctl vm.swappiness=80
+          sudo sysctl vm.overcommit_memory=2
+          sudo sysctl vm.overcommit_ratio=80
+
+      - name: Checkout DL4J
+        uses: actions/checkout@v4
+        with:
+          repository: deeplearning4j/deeplearning4j
+          ref: ${{ inputs.dl4jBranch || 'master' }}
+          path: deeplearning4j
+
+      - name: Checkout kompile (for actions)
+        uses: actions/checkout@v4
+        with:
+          path: kompile
+
+      - name: Set Linux distro version
+        uses: ./deeplearning4j/.github/actions/set-linux-distro-version
+
+      - name: Update Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential make zlib1g-dev wget pinentry-curses ca-certificates libgomp1
+          sudo apt-get install -y libdw-dev libelf-dev libdwarf-dev
+
+      - name: Install CUDA ${{ inputs.cudaVersion || '12.6' }}
+        uses: konduitai/cuda-install/.github/actions/install-cuda-ubuntu@master
+        with:
+          cuda: '${{ inputs.cudaVersion || ''12.6'' }}.0'
+          GCC: 11
+
+      - name: Debug CUDA Installation
+        shell: bash
+        run: |
+          CUDA_VER="${{ inputs.cudaVersion || '12.6' }}"
+          echo "CUDA_PATH=${CUDA_PATH}"
+          echo "Checking nvcc..."
+          which nvcc 2>/dev/null || echo "nvcc not in PATH"
+          ls -la /usr/local/cuda-${CUDA_VER}/bin/nvcc 2>/dev/null || echo "nvcc not at expected path"
+          /usr/local/cuda-${CUDA_VER}/bin/nvcc --version 2>/dev/null || echo "nvcc --version failed"
+
+          # Create symlinks if needed
+          if [ ! -f /usr/local/cuda-${CUDA_VER}/bin/nvcc ] && [ -f /usr/local/cuda/bin/nvcc ]; then
+            echo "Creating symlink from /usr/local/cuda to /usr/local/cuda-${CUDA_VER}"
+            sudo ln -sf /usr/local/cuda /usr/local/cuda-${CUDA_VER}
+          fi
+
+      - name: Verify CUDA Setup
+        shell: bash
+        run: |
+          CUDA_VER="${{ inputs.cudaVersion || '12.6' }}"
+          export PATH="/usr/local/cuda-${CUDA_VER}/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda-${CUDA_VER}/lib64:${LD_LIBRARY_PATH}"
+          nvcc --version
+
+      - name: Install LLVM/MLIR (compile variant)
+        if: matrix.helper == 'compile'
+        shell: bash
+        run: |
+          sudo apt-get install -y llvm-18-dev mlir-18-tools
+
+      - name: Setup ccache
+        id: setup-ccache
+        uses: ./deeplearning4j/.github/actions/setup-ccache-linux
+        with:
+          cache-suffix: cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper }}
+          cache-family: cuda-${{ inputs.cudaVersion || '12.6' }}
+          max-size: '8G'
+
+      - name: Cache protobuf
+        id: cache-protobuf
+        uses: actions/cache@v4
+        with:
+          path: /opt/protobuf
+          key: ${{ runner.os }}-${{ runner.arch }}-protobuf
+
+      - name: Install protobuf
+        if: steps.cache-protobuf.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz | tar xz
+          cd protobuf-3.8.0
+          ./configure --prefix=/opt/protobuf
+          make -j2
+          sudo make install
+          cd ..
+          rm -rf protobuf-3.8.0
+
+      - name: Cache cmake
+        id: cache-cmake
+        uses: actions/cache@v4
+        with:
+          path: /opt/cmake
+          key: ${{ runner.os }}-${{ runner.arch }}-cmake
+
+      - name: Install cmake
+        if: steps.cache-cmake.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          CMAKE_VERSION=3.28.3
+          sudo rm -rf /opt/cmake
+          curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" | sudo tar xz -C /opt
+          sudo mv "/opt/cmake-${CMAKE_VERSION}-linux-x86_64" /opt/cmake
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: 11
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Set mvn build command based on matrix
+        shell: bash
+        run: |
+          CUDA_VER="${{ inputs.cudaVersion || '12.6' }}"
+          modules=":nd4j-cuda-${CUDA_VER},:nd4j-cuda-${CUDA_VER}-preset,:libnd4j"
+
+          command="mvn -Pcuda -Dlibnd4j.generate.flatc=ON --no-transfer-progress \
+            -pl ${modules} \
+            -Dlibnd4j.chip=cuda \
+            -Dlibnd4j.compute='8.6 9.0' \
+            -Dlibnd4j.cpu.compile.skip=true \
+            -Dlibnd4j.cuda.compile.skip=false \
+            -Dlibnd4j.oom.memory.threshold=95 \
+            -Dlibnd4j.oom.velocity.threshold=40 \
+            -Dlibnd4j.buildthreads=${{ inputs.buildThreads || '2' }} \
+            -Djavacpp.platform=linux-x86_64 \
+            -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false \
+            -Dmaven.wagon.http.retryHandler.count=3 \
+            -DskipTestResourceEnforcement=true -Dmaven.javadoc.failOnError=false \
+            --also-make --batch-mode install -DskipTests"
+
+          if [ "${{ matrix.helper }}" == 'compile' ]; then
+            mvn_ext=" -Djavacpp.platform.extension=-compile -Dlibnd4j.classifier=linux-x86_64-cuda-${CUDA_VER}-compile -Dlibnd4j.helpers=mlir -Dlibnd4j.mlir=ON"
+          elif [ "${{ matrix.helper }}" == 'cudnn' ]; then
+            mvn_ext=" -Dlibnd4j.helper=cudnn -Djavacpp.platform.extension=-cudnn -Dlibnd4j.classifier=linux-x86_64-cuda-${CUDA_VER}-cudnn"
+          elif [ -n "${{ matrix.helper }}" ]; then
+            mvn_ext=" -Dlibnd4j.helper=${{ matrix.helper }} -Djavacpp.platform.extension=-${{ matrix.helper }} -Dlibnd4j.classifier=linux-x86_64-cuda-${CUDA_VER}-${{ matrix.helper }}"
+          else
+            mvn_ext=" -Dlibnd4j.classifier=linux-x86_64-cuda-${CUDA_VER}"
+          fi
+
+          command="${command} ${mvn_ext}"
+          echo "COMMAND=${command}" >> $GITHUB_ENV
+
+      - name: Switch CUDA version in DL4J source
+        shell: bash
+        run: |
+          CUDA_VER="${{ inputs.cudaVersion || '12.6' }}"
+          cd deeplearning4j
+          bash ./change-cuda-versions.sh "${CUDA_VER}"
+
+      - name: Build nd4j-cuda
+        shell: bash
+        timeout-minutes: 300
+        env:
+          MAVEN_OPTS: "-Xmx2g"
+        run: |
+          CUDA_VER="${{ inputs.cudaVersion || '12.6' }}"
+          export PATH="/usr/local/cuda-${CUDA_VER}/bin:/opt/protobuf/bin:/opt/cmake/bin:$PATH"
+          export LD_LIBRARY_PATH="/usr/local/cuda-${CUDA_VER}/lib64:${LD_LIBRARY_PATH}"
+          cd deeplearning4j
+          eval "${COMMAND}" 2>&1 | tee /tmp/nd4j-cuda-build.log
+
+      - name: Publish SDX runtime SDK artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdx-runtime-sdk
+        with:
+          artifact-name: sdx-runtime-sdk-linux-x86_64-cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          build-root: deeplearning4j/libnd4j/blasbuild
+          threads: ${{ inputs.buildThreads || '2' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Publish SDK JAR artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdk-jars
+        with:
+          artifact-name: sdk-jars-linux-x86_64-cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          backend: cuda
+          platform: linux-x86_64
+          cuda-version: ${{ inputs.cudaVersion || '12.6' }}
+          platform-extension: ${{ matrix.helper != '' && format('-{0}', matrix.helper) || '' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Show ccache stats
+        if: always()
+        shell: bash
+        run: ccache --show-stats --verbose || ccache -sv || ccache -s
+
+      - name: Save ccache
+        if: always() && steps.setup-ccache.outputs.save-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.setup-ccache.outputs.save-key }}
+
+      - name: Upload nd4j-cuda artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-cuda-${{ inputs.cudaVersion || '12.6' }}-linux-x86_64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          path: |
+            ~/.m2/repository/org/nd4j/nd4j-cuda-*/**
+            ~/.m2/repository/org/nd4j/nd4j-api/**
+            ~/.m2/repository/org/nd4j/nd4j-common/**
+            ~/.m2/repository/org/nd4j/libnd4j/**
+            ~/.m2/repository/org/bytedeco/**
+            ~/.m2/repository/org/eclipse/deeplearning4j/**
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-cuda-build-log-linux-x86_64-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper || 'default' }}
+          path: /tmp/nd4j-cuda-build.log
+          retention-days: 3
+
+      - name: Cleanup swap
+        if: always()
+        shell: bash
+        run: |
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
