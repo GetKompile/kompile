@@ -66,3 +66,71 @@ kompile-app/kompile-model-staging/src/main/resources/staging-static/
 
 # Compiled native binaries at root
 /kompile
+
+# SameDiff/DL4J model files
+*.fb
+
+# Database files
+*.mv.db
+
+# Log files
+*.log
+screenlog.*
+
+# Valgrind/debug output
+valgrind_*/
+svm_err_*.md
+
+# Session/demo artifacts
+session-*.md
+demo.txt
+ops.txt
+
+# Temp scripts
+test-file.sh
+run-with-valgrind.sh
+mcp_client.sh
+new-script.sh
+scripts/cleanup-tmp.sh
+
+# PostgreSQL data
+index/pg_wal/
+index2/pg_wal/
+
+# Maven wrapper (bundled)
+.maven/
+
+# CMake downloads
+cmake-*.tar.gz
+
+# GCC downloads
+gcc-*/
+
+# Compiled shared libraries at root
+*.so
+*.dylib
+*.dll
+
+# Java class files outside target
+*.class
+
+# Source maps (frontend)
+*.js.map
+
+# PDF uploads
+data/input_documents/
+
+# Node binary
+kompile-app/kompile-app-main/node/
+
+# Frontend node_modules (deep paths)
+**/node_modules/
+
+# kompile-demo logs
+kompile-demo/logs/
+
+# tokenizers build intermediates
+tokenizers-rust/libt
+
+# glibc builds
+glibc-*/
