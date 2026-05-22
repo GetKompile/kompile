@@ -1,0 +1,511 @@
+name: "Build Native Images - Windows x86_64"
+
+on:
+  workflow_call:
+    inputs:
+      buildThreads:
+        type: string
+        default: '4'
+      dl4jBranch:
+        type: string
+        default: 'master'
+      skipNd4jBuild:
+        type: string
+        default: 'false'
+      nativeTargets:
+        type: string
+        default: 'all'
+      runsOn:
+        type: string
+        default: 'windows-2022'
+      releaseVersion:
+        type: string
+        default: ''
+      prerelease:
+        type: string
+        default: 'true'
+  workflow_dispatch:
+    inputs:
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: true
+        default: '4'
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      skipNd4jBuild:
+        description: 'Skip nd4j-native build (use snapshots from Maven Central instead)'
+        required: false
+        default: 'false'
+      nativeTargets:
+        description: 'Comma-separated native targets to build (cli,agent,app-cli,model,component or all)'
+        required: false
+        default: 'all'
+      runsOn:
+        description: 'Runner to use'
+        required: false
+        default: 'windows-2022'
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). When set, uploads binaries to GitHub Release v<version>'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'false'
+
+jobs:
+  build-nd4j-native:
+    name: "nd4j ${{ matrix.helper || 'base' }}-${{ matrix.extension || 'base' }}"
+    runs-on: ${{ inputs.runsOn || 'windows-2022' }}
+    if: ${{ inputs.skipNd4jBuild != 'true' }}
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [onednn, compile, ""]
+        extension: [avx2, avx512, ""]
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.8.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Checkout DL4J
+        uses: actions/checkout@v4
+        with:
+          repository: deeplearning4j/deeplearning4j
+          ref: ${{ inputs.dl4jBranch || 'master' }}
+          path: deeplearning4j
+
+      - name: Checkout kompile (for actions)
+        uses: actions/checkout@v4
+        with:
+          path: kompile
+
+      - name: Setup ccache
+        id: setup-ccache
+        continue-on-error: true
+        uses: ./deeplearning4j/.github/actions/setup-ccache-windows
+        with:
+          cache-suffix: nd4j-x86_64-${{ matrix.helper }}-${{ matrix.extension }}
+          cache-family: nd4j-x86_64
+          max-size: '8G'
+
+      - name: Disable Windows Defender real-time monitoring
+        continue-on-error: true
+        shell: powershell
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          $excludePaths = @("$env:GITHUB_WORKSPACE", "C:\msys64", "$env:USERPROFILE\.m2", "$env:USERPROFILE\ccache")
+          foreach ($path in $excludePaths) {
+            Add-MpPreference -ExclusionPath $path -ErrorAction SilentlyContinue
+          }
+          $excludeProcesses = @("gcc.exe", "g++.exe", "make.exe", "cmake.exe", "java.exe", "ccache.exe", "native-image.exe")
+          foreach ($proc in $excludeProcesses) {
+            Add-MpPreference -ExclusionProcess $proc -ErrorAction SilentlyContinue
+          }
+          $excludeExtensions = @(".obj", ".o", ".h", ".hpp", ".cpp", ".lib", ".dll", ".exe", ".jar")
+          foreach ($ext in $excludeExtensions) {
+            Add-MpPreference -ExclusionExtension $ext -ErrorAction SilentlyContinue
+          }
+
+      - name: Free Disk Space (Windows)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "Initial disk space:"
+          Get-PSDrive C | Select-Object Used,Free
+          try {
+            wmic computersystem set AutomaticManagedPagefile=False 2>$null
+            $currentPagefile = Get-WmiObject -Query "SELECT * FROM Win32_PageFileSetting WHERE Name='C:\\pagefile.sys'" -ErrorAction SilentlyContinue
+            if ($currentPagefile) { $currentPagefile.Delete() }
+            wmic pagefileset create name="C:\\pagefile.sys" 2>$null
+            wmic pagefileset where "name='C:\\pagefile.sys'" set InitialSize=24576,MaximumSize=24576 2>$null
+            Write-Host "Pagefile configured to 24 GB"
+          } catch { Write-Host "Pagefile configuration failed. Continuing..." }
+          Remove-Item -Path "$env:ProgramData\Microsoft\Windows Defender\Scans\History\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
+          choco cache remove -y 2>$null
+          try {
+            if (Get-Command "docker" -ErrorAction SilentlyContinue) {
+              docker image prune -a -f 2>$null
+              docker container prune -f 2>$null
+              docker volume prune -f 2>$null
+            }
+          } catch {}
+          Write-Host "Final disk space:"
+          Get-PSDrive C | Select-Object Used,Free
+
+      - name: Install MSYS2 and dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel git tar pkg-config unzip p7zip zip autoconf autoconf-archive automake libtool make patch gnupg
+            mingw-w64-x86_64-nasm mingw-w64-x86_64-toolchain mingw-w64-x86_64-libtool
+            mingw-w64-x86_64-gcc mingw-w64-i686-gcc mingw-w64-x86_64-gcc-fortran mingw-w64-i686-gcc-fortran
+            mingw-w64-x86_64-libwinpthread-git mingw-w64-i686-libwinpthread-git
+            mingw-w64-x86_64-SDL2 mingw-w64-i686-SDL2 mingw-w64-x86_64-ragel
+
+      - name: Remove conflicting MSYS2 binaries
+        shell: cmd
+        run: |
+          del /f "C:\msys64\usr\bin\link.exe" 2>nul
+          del /f "C:\msys64\usr\bin\timeout.exe" 2>nul
+
+      - name: Install Apache Maven
+        shell: cmd
+        run: |
+          curl -LO https://archive.apache.org/dist/maven/maven-3/3.6.3/binaries/apache-maven-3.6.3-bin.tar.gz
+          bash -c "tar -xzf apache-maven-3.6.3-bin.tar.gz -C 'C:/Program Files/'"
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: 11
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Add MSYS2 to PATH
+        shell: powershell
+        run: echo "C:\msys64\mingw64\bin;C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup OpenBLAS
+        shell: powershell
+        run: |
+          mkdir "$env:GITHUB_WORKSPACE\openblas_home" -Force
+          cd "$env:GITHUB_WORKSPACE\openblas_home"
+          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.28-1.5.11/openblas-0.3.28-1.5.11-windows-x86_64.jar" -OutFile "openblas.jar"
+          jar -xf openblas.jar
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENBLAS_PATH=$env:GITHUB_WORKSPACE\openblas_home\org\bytedeco\openblas\windows-x86_64\"
+
+      - name: Set mvn build command based on matrix
+        shell: powershell
+        run: |
+          if ( "${{ matrix.helper }}" -eq "" -And "${{ matrix.extension }}" -eq "" ) {
+            $modules=":nd4j-native,:nd4j-native-preset,:libnd4j,:nd4j-native-platform"
+          } else {
+            $modules=":nd4j-native,:nd4j-native-preset,:libnd4j"
+          }
+
+          $command = "mvn -Dlibnd4j.generate.flatc=ON --no-transfer-progress -pl $modules -Pcpu -Dlibnd4j.buildthreads=${{ inputs.buildThreads || '4' }} -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.count=3 -Djavacpp.platform=windows-x86_64 -Dlibnd4j.platform=windows-x86_64 --also-make --batch-mode install -DskipTests"
+
+          if ( "${{ matrix.helper }}" -eq "compile" ) {
+            $mvn_ext = " -Djavacpp.platform.extension=-compile -Dlibnd4j.classifier=windows-x86_64-compile -Dlibnd4j.helpers=mlir -Dlibnd4j.mlir=ON"
+          } elseif ( "${{ matrix.helper }}" -ne "" -And "${{ matrix.extension }}" -ne "" ) {
+            $mvn_ext = " -Dlibnd4j.helper=${{ matrix.helper }} -Dlibnd4j.extension=${{ matrix.extension }} -Djavacpp.platform.extension=-${{ matrix.helper }}-${{ matrix.extension }} -Dlibnd4j.classifier=windows-x86_64-${{ matrix.helper }}-${{ matrix.extension }}"
+          } elseif ( "${{ matrix.helper }}" -ne "" ) {
+            $mvn_ext = " -Dlibnd4j.helper=${{ matrix.helper }} -Dlibnd4j.extension=${{ matrix.helper }} -Djavacpp.platform.extension=-${{ matrix.helper }} -Dlibnd4j.classifier=windows-x86_64-${{ matrix.helper }}"
+          } elseif ( "${{ matrix.extension }}" -ne "" ) {
+            $mvn_ext = " -Dlibnd4j.extension=${{ matrix.extension }} -Djavacpp.platform.extension=-${{ matrix.extension }} -Dlibnd4j.classifier=windows-x86_64-${{ matrix.extension }}"
+          } else {
+            $mvn_ext = " -Dlibnd4j.classifier=windows-x86_64"
+          }
+
+          $command2 = "$command$mvn_ext"
+          echo $command2 | Out-File -FilePath "$env:GITHUB_WORKSPACE\mvn-command.bat" -Encoding utf8
+
+      - name: Build nd4j-native
+        shell: cmd
+        timeout-minutes: 300
+        env:
+          MAVEN_OPTS: "-Xmx3g -XX:+UseG1GC"
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          set MSYSTEM=MINGW64
+          set "PATH=C:\hostedtoolcache\windows\Python\3.10.11\x64;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin;%ProgramFiles%\apache-maven-3.6.3\bin;%PATH%"
+          set "CMAKE_BUILD_PARALLEL_LEVEL=4"
+          set "CCACHE_DIR=%USERPROFILE%\.ccache"
+
+          cd deeplearning4j
+          call "%GITHUB_WORKSPACE%\mvn-command.bat"
+          set MVN_EXIT=%ERRORLEVEL%
+          exit /b %MVN_EXIT%
+
+      - name: Publish SDX runtime SDK artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdx-runtime-sdk
+        with:
+          artifact-name: sdx-runtime-sdk-windows-x86_64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          build-root: deeplearning4j/libnd4j/blasbuild
+          threads: ${{ inputs.buildThreads || '4' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Publish SDK JAR artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdk-jars
+        with:
+          artifact-name: sdk-jars-windows-x86_64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          backend: cpu
+          platform: windows-x86_64
+          platform-extension: ${{ matrix.helper != '' && matrix.extension != '' && format('-{0}-{1}', matrix.helper, matrix.extension) || matrix.helper != '' && format('-{0}', matrix.helper) || matrix.extension != '' && format('-{0}', matrix.extension) || '' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Show ccache stats
+        if: always()
+        continue-on-error: true
+        shell: cmd
+        run: '%USERPROFILE%\ccache\ccache.exe -sv'
+
+      - name: Save ccache
+        if: always() && steps.setup-ccache.outputs.save-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.setup-ccache.outputs.save-key }}
+
+      - name: Upload nd4j-native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-native-windows-x86_64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          path: |
+            ~/.m2/repository/org/nd4j/nd4j-native/**
+            ~/.m2/repository/org/nd4j/nd4j-native-preset/**
+            ~/.m2/repository/org/nd4j/nd4j-api/**
+            ~/.m2/repository/org/nd4j/nd4j-common/**
+            ~/.m2/repository/org/nd4j/libnd4j/**
+            ~/.m2/repository/org/bytedeco/**
+            ~/.m2/repository/org/eclipse/deeplearning4j/**
+          retention-days: 7
+
+  build-kompile-native:
+    name: Build kompile native images (windows-x86_64)
+    runs-on: ${{ inputs.runsOn || 'windows-2022' }}
+    needs: [build-nd4j-native]
+    if: always() && (needs.build-nd4j-native.result == 'success' || inputs.skipNd4jBuild == 'true')
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Disable Windows Defender
+        continue-on-error: true
+        shell: powershell
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          $excludePaths = @("$env:GITHUB_WORKSPACE", "$env:USERPROFILE\.m2")
+          foreach ($path in $excludePaths) {
+            Add-MpPreference -ExclusionPath $path -ErrorAction SilentlyContinue
+          }
+          $excludeProcesses = @("java.exe", "native-image.exe", "mvn.exe")
+          foreach ($proc in $excludeProcesses) {
+            Add-MpPreference -ExclusionProcess $proc -ErrorAction SilentlyContinue
+          }
+
+      - name: Free Disk Space
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try {
+            wmic computersystem set AutomaticManagedPagefile=False 2>$null
+            wmic pagefileset create name="C:\\pagefile.sys" 2>$null
+            wmic pagefileset where "name='C:\\pagefile.sys'" set InitialSize=24576,MaximumSize=24576 2>$null
+          } catch {}
+          Remove-Item -Path "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          try {
+            if (Get-Command "docker" -ErrorAction SilentlyContinue) {
+              docker image prune -a -f 2>$null
+            }
+          } catch {}
+
+      - name: Checkout kompile
+        uses: actions/checkout@v4
+
+      - name: Download nd4j-native artifacts (base variant)
+        if: ${{ inputs.skipNd4jBuild != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: nd4j-native-windows-x86_64-default-base
+          path: ~/.m2/repository
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      - name: Verify GraalVM installation
+        shell: cmd
+        run: |
+          echo JAVA_HOME=%JAVA_HOME%
+          java -version
+          native-image --version
+
+      - name: Install MSYS2 (for shell utilities)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            base-devel git tar unzip
+
+      - name: Setup MSVC environment
+        shell: powershell
+        run: |
+          # Find Visual Studio installation
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vsWhere -latest -property installationPath
+          $vcvarsPath = "$vsPath\VC\Auxiliary\Build\vcvars64.bat"
+
+          # Run vcvars64.bat and capture environment
+          cmd /c "`"$vcvarsPath`" && set" | ForEach-Object {
+            if ($_ -match "^([^=]+)=(.*)$") {
+              $name = $matches[1]
+              $value = $matches[2]
+              Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
+            }
+          }
+
+      - name: Configure Maven settings for snapshots
+        shell: bash
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'SETTINGS_EOF'
+          <settings>
+            <profiles>
+              <profile>
+                <id>snapshot-repos</id>
+                <activation><activeByDefault>true</activeByDefault></activation>
+                <repositories>
+                  <repository>
+                    <id>central-portal-snapshots</id>
+                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                  <repository>
+                    <id>sonatype-snapshots</id>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+          </settings>
+          SETTINGS_EOF
+
+      - name: Build kompile (Java modules)
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          mvn clean install -DskipTests -Dskip.ui --no-transfer-progress --batch-mode
+
+      - name: Determine native targets
+        id: targets
+        shell: bash
+        run: |
+          TARGETS="${{ inputs.nativeTargets || 'all' }}"
+          if [ "$TARGETS" == "all" ]; then
+            echo "build_cli=true" >> $GITHUB_OUTPUT
+            echo "build_agent=true" >> $GITHUB_OUTPUT
+            echo "build_app_cli=true" >> $GITHUB_OUTPUT
+            echo "build_model=true" >> $GITHUB_OUTPUT
+            echo "build_component=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_cli=$(echo $TARGETS | grep -qw cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_agent=$(echo $TARGETS | grep -qw agent && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_app_cli=$(echo $TARGETS | grep -qw app-cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_model=$(echo $TARGETS | grep -qw model && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_component=$(echo $TARGETS | grep -qw component && echo true || echo false)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build kompile-cli native image
+        if: steps.targets.outputs.build_cli == 'true'
+        shell: cmd
+        timeout-minutes: 60
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          cd kompile-cli
+          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
+          dir target\kompile-cli.exe 2>nul || echo "kompile-cli.exe not found"
+
+      - name: Build kompile-agent native image
+        if: steps.targets.outputs.build_agent == 'true'
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          cd kompile-agent-cli
+          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
+          dir target\kompile-agent.exe 2>nul || echo "kompile-agent.exe not found"
+
+      - name: Build kompile-app-cli native image
+        if: steps.targets.outputs.build_app_cli == 'true'
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          cd kompile-app-cli
+          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
+          dir target\kompile-app-cli.exe 2>nul || echo "kompile-app-cli.exe not found"
+
+      - name: Build kompile-model native image
+        if: steps.targets.outputs.build_model == 'true'
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          cd kompile-model-cli
+          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
+          dir target\kompile-model.exe 2>nul || echo "kompile-model.exe not found"
+
+      - name: Build kompile-component native image
+        if: steps.targets.outputs.build_component == 'true'
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          set "MAVEN_OPTS=-Xmx4g"
+          cd kompile-component-cli
+          mvn package -Dkompile.dist=true -DskipTests --no-transfer-progress --batch-mode
+          dir target\kompile-component.exe 2>nul || echo "kompile-component.exe not found"
+
+      - name: Collect native binaries
+        shell: bash
+        run: |
+          mkdir -p native-binaries
+          cp kompile-cli/target/kompile-cli.exe native-binaries/ 2>/dev/null || true
+          cp kompile-agent-cli/target/kompile-agent.exe native-binaries/ 2>/dev/null || true
+          cp kompile-app-cli/target/kompile-app-cli.exe native-binaries/ 2>/dev/null || true
+          cp kompile-model-cli/target/kompile-model.exe native-binaries/ 2>/dev/null || true
+          cp kompile-component-cli/target/kompile-component.exe native-binaries/ 2>/dev/null || true
+          echo "=== Native binaries collected ==="
+          ls -lh native-binaries/
+
+      - name: Publish native binaries
+        uses: ./.github/actions/publish-native-binaries
+        with:
+          artifact-name: kompile-native-windows-x86_64
+          platform: windows-x86_64
+          binaries-dir: native-binaries
+          release-version: ${{ inputs.releaseVersion }}
+          prerelease: ${{ inputs.prerelease || 'true' }}
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kompile-native-build-logs-windows-x86_64
+          path: |
+            kompile-cli/target/*.log
+            kompile-agent-cli/target/*.log
+          retention-days: 3
