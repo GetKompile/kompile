@@ -1,0 +1,407 @@
+name: "Build Native Images - macOS ARM64"
+
+on:
+  workflow_call:
+    inputs:
+      buildThreads:
+        type: string
+        default: '3'
+      dl4jBranch:
+        type: string
+        default: 'master'
+      skipNd4jBuild:
+        type: string
+        default: 'false'
+      nativeTargets:
+        type: string
+        default: 'all'
+      runsOn:
+        type: string
+        default: 'macos-14'
+      releaseVersion:
+        type: string
+        default: ''
+      prerelease:
+        type: string
+        default: 'true'
+  workflow_dispatch:
+    inputs:
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: true
+        default: '3'
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      skipNd4jBuild:
+        description: 'Skip nd4j-native build (use snapshots from Maven Central instead)'
+        required: false
+        default: 'false'
+      nativeTargets:
+        description: 'Comma-separated native targets to build (cli,agent,app-cli,model,component or all)'
+        required: false
+        default: 'all'
+      runsOn:
+        description: 'Runner to use'
+        required: false
+        default: 'macos-14'
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). When set, uploads binaries to GitHub Release v<version>'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'false'
+
+jobs:
+  build-nd4j-native:
+    name: "nd4j ${{ matrix.helper || 'base' }}"
+    runs-on: ${{ inputs.runsOn || 'macos-14' }}
+    if: ${{ inputs.skipNd4jBuild != 'true' }}
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [compile, ""]
+        extension: [""]
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.8.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Checkout DL4J
+        uses: actions/checkout@v4
+        with:
+          repository: deeplearning4j/deeplearning4j
+          ref: ${{ inputs.dl4jBranch || 'master' }}
+          path: deeplearning4j
+
+      - name: Checkout kompile (for actions)
+        uses: actions/checkout@v4
+        with:
+          path: kompile
+
+      - name: Setup ccache
+        id: setup-ccache
+        uses: ./deeplearning4j/.github/actions/setup-ccache-macos
+        with:
+          cache-suffix: nd4j-arm64-${{ matrix.helper }}
+          cache-family: nd4j-arm64
+          max-size: '5G'
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: 11
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Install macOS build dependencies
+        shell: bash
+        run: |
+          brew install gnu-sed unzip gcc swig autoconf-archive automake libomp libtool \
+            libusb ant maven nasm xz pkg-config sdl bison flex perl ragel binutils \
+            gradle gmp isl libmpc mpfr wget python openblas llvm
+          echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Setup OpenBLAS for macOS ARM64
+        shell: bash
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/openblas_home"
+          cd "${GITHUB_WORKSPACE}/openblas_home"
+          wget -q https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.28-1.5.11/openblas-0.3.28-1.5.11-macosx-arm64.jar
+          unzip -q -o openblas-0.3.28-1.5.11-macosx-arm64.jar
+          cd ..
+          cp ${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/macosx-arm64/libopenblas.0.dylib \
+             ${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/macosx-arm64/libopenblas.dylib
+          echo "OPENBLAS_PATH=${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/macosx-arm64/" >> "$GITHUB_ENV"
+
+      - name: Remove old macOS SDKs
+        shell: bash
+        run: sudo rm -Rf /Library/Developer/CommandLineTools/SDKs/MacOSX10* 2>/dev/null || true
+
+      - name: Set mvn build command based on matrix
+        shell: bash
+        run: |
+          modules=':nd4j-native,:nd4j-native-preset,:libnd4j'
+
+          command="mvn -Dlibnd4j.generate.flatc=ON --no-transfer-progress \
+            -pl ${modules} \
+            -Dlibnd4j.arch=armv8-a -Dlibnd4j.platform=macosx-arm64 \
+            -Djavacpp.platform=macosx-arm64 -Pcpu -Posx-aarch64-protoc \
+            -Dlibnd4j.buildthreads=${{ inputs.buildThreads || '3' }} \
+            -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false \
+            -Dmaven.wagon.http.retryHandler.count=3 \
+            -DskipTestResourceEnforcement=true -Dmaven.javadoc.failOnError=false \
+            --also-make --batch-mode install -DskipTests"
+
+          if [ "${{ matrix.helper }}" == 'compile' ]; then
+            mvn_ext=" -Djavacpp.platform.extension=-compile -Dlibnd4j.classifier=macosx-arm64-compile -Dlibnd4j.helpers=mlir -Dlibnd4j.mlir=ON"
+          elif [ -n "${{ matrix.helper }}" ]; then
+            mvn_ext=" -Dlibnd4j.helper=${{ matrix.helper }} -Dlibnd4j.extension=${{ matrix.helper }} -Djavacpp.platform.extension=-${{ matrix.helper }} -Dlibnd4j.classifier=macosx-arm64-${{ matrix.helper }}"
+          else
+            mvn_ext=" -Dlibnd4j.classifier=macosx-arm64"
+          fi
+
+          command="${command} ${mvn_ext}"
+          echo "COMMAND=${command}" >> $GITHUB_ENV
+
+      - name: Build nd4j-native
+        shell: bash
+        timeout-minutes: 120
+        env:
+          MAVEN_OPTS: "-Xmx2g"
+        run: |
+          cd deeplearning4j
+          eval "${COMMAND}" 2>&1 | tee /tmp/nd4j-build.log
+
+      - name: Publish SDX runtime SDK artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdx-runtime-sdk
+        with:
+          artifact-name: sdx-runtime-sdk-macosx-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          build-root: deeplearning4j/libnd4j/blasbuild
+          threads: ${{ inputs.buildThreads || '3' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Publish SDK JAR artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdk-jars
+        with:
+          artifact-name: sdk-jars-macosx-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          backend: cpu
+          platform: macosx-arm64
+          platform-extension: ${{ matrix.helper != '' && format('-{0}', matrix.helper) || '' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Show ccache stats
+        if: always()
+        shell: bash
+        run: ccache --show-stats --verbose || ccache -sv || ccache -s
+
+      - name: Save ccache
+        if: always() && steps.setup-ccache.outputs.save-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.setup-ccache.outputs.save-key }}
+
+      - name: Upload nd4j-native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-native-macosx-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          path: |
+            ~/.m2/repository/org/nd4j/nd4j-native/**
+            ~/.m2/repository/org/nd4j/nd4j-native-preset/**
+            ~/.m2/repository/org/nd4j/nd4j-api/**
+            ~/.m2/repository/org/nd4j/nd4j-common/**
+            ~/.m2/repository/org/nd4j/libnd4j/**
+            ~/.m2/repository/org/bytedeco/**
+            ~/.m2/repository/org/eclipse/deeplearning4j/**
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-build-log-macosx-arm64-${{ matrix.helper || 'default' }}
+          path: /tmp/nd4j-build.log
+          retention-days: 3
+
+  build-kompile-native:
+    name: Build kompile native images (macosx-arm64)
+    runs-on: ${{ inputs.runsOn || 'macos-14' }}
+    needs: [build-nd4j-native]
+    if: always() && (needs.build-nd4j-native.result == 'success' || inputs.skipNd4jBuild == 'true')
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout kompile
+        uses: actions/checkout@v4
+
+      - name: Download nd4j-native artifacts (base variant)
+        if: ${{ inputs.skipNd4jBuild != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: nd4j-native-macosx-arm64-default-base
+          path: ~/.m2/repository
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      - name: Verify GraalVM installation
+        shell: bash
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          native-image --version
+
+      - name: Configure Maven settings for snapshots
+        shell: bash
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'SETTINGS_EOF'
+          <settings>
+            <profiles>
+              <profile>
+                <id>snapshot-repos</id>
+                <activation><activeByDefault>true</activeByDefault></activation>
+                <repositories>
+                  <repository>
+                    <id>central-portal-snapshots</id>
+                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                  <repository>
+                    <id>sonatype-snapshots</id>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+          </settings>
+          SETTINGS_EOF
+
+      - name: Build kompile (Java modules)
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          mvn clean install -DskipTests -Dskip.ui \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-java-build.log
+
+      - name: Determine native targets
+        id: targets
+        shell: bash
+        run: |
+          TARGETS="${{ inputs.nativeTargets || 'all' }}"
+          if [ "$TARGETS" == "all" ]; then
+            echo "build_cli=true" >> $GITHUB_OUTPUT
+            echo "build_agent=true" >> $GITHUB_OUTPUT
+            echo "build_app_cli=true" >> $GITHUB_OUTPUT
+            echo "build_model=true" >> $GITHUB_OUTPUT
+            echo "build_component=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_cli=$(echo $TARGETS | grep -qw cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_agent=$(echo $TARGETS | grep -qw agent && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_app_cli=$(echo $TARGETS | grep -qw app-cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_model=$(echo $TARGETS | grep -qw model && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_component=$(echo $TARGETS | grep -qw component && echo true || echo false)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build kompile-cli native image
+        if: steps.targets.outputs.build_cli == 'true'
+        shell: bash
+        timeout-minutes: 60
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-cli-native.log
+          ls -lh target/kompile-cli || echo "kompile-cli binary not found"
+
+      - name: Build kompile-agent native image
+        if: steps.targets.outputs.build_agent == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-agent-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-agent-native.log
+          ls -lh target/kompile-agent || echo "kompile-agent binary not found"
+
+      - name: Build kompile-app-cli native image
+        if: steps.targets.outputs.build_app_cli == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-app-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-app-cli-native.log
+          ls -lh target/kompile-app-cli || echo "kompile-app-cli binary not found"
+
+      - name: Build kompile-model native image
+        if: steps.targets.outputs.build_model == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-model-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-model-native.log
+          ls -lh target/kompile-model || echo "kompile-model binary not found"
+
+      - name: Build kompile-component native image
+        if: steps.targets.outputs.build_component == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-component-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-component-native.log
+          ls -lh target/kompile-component || echo "kompile-component binary not found"
+
+      - name: Collect native binaries
+        shell: bash
+        run: |
+          mkdir -p native-binaries
+          cp kompile-cli/target/kompile-cli native-binaries/ 2>/dev/null || true
+          cp kompile-agent-cli/target/kompile-agent native-binaries/ 2>/dev/null || true
+          cp kompile-app-cli/target/kompile-app-cli native-binaries/ 2>/dev/null || true
+          cp kompile-model-cli/target/kompile-model native-binaries/ 2>/dev/null || true
+          cp kompile-component-cli/target/kompile-component native-binaries/ 2>/dev/null || true
+          echo "=== Native binaries collected ==="
+          ls -lh native-binaries/
+
+      - name: Publish native binaries
+        uses: ./.github/actions/publish-native-binaries
+        with:
+          artifact-name: kompile-native-macosx-arm64
+          platform: macosx-arm64
+          binaries-dir: native-binaries
+          release-version: ${{ inputs.releaseVersion }}
+          prerelease: ${{ inputs.prerelease || 'true' }}
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kompile-native-build-logs-macosx-arm64
+          path: /tmp/kompile-*.log
+          retention-days: 3

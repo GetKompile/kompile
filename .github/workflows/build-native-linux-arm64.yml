@@ -1,0 +1,541 @@
+name: "Build Native Images - Linux ARM64"
+
+on:
+  workflow_call:
+    inputs:
+      buildThreads:
+        type: string
+        default: '2'
+      dl4jBranch:
+        type: string
+        default: 'master'
+      skipNd4jBuild:
+        type: string
+        default: 'false'
+      nativeTargets:
+        type: string
+        default: 'all'
+      runsOn:
+        type: string
+        default: 'ubuntu-22.04-arm'
+      swapSize:
+        type: string
+        default: '12'
+      releaseVersion:
+        type: string
+        default: ''
+      prerelease:
+        type: string
+        default: 'true'
+  workflow_dispatch:
+    inputs:
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: true
+        default: '2'
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      skipNd4jBuild:
+        description: 'Skip nd4j-native build (use snapshots from Maven Central instead)'
+        required: false
+        default: 'false'
+      nativeTargets:
+        description: 'Comma-separated native targets to build (cli,agent,app-cli,model,component or all)'
+        required: false
+        default: 'all'
+      runsOn:
+        description: 'Runner to use'
+        required: false
+        default: 'ubuntu-22.04-arm'
+      swapSize:
+        description: 'Swap file size in GB'
+        required: false
+        default: '12'
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). When set, uploads binaries to GitHub Release v<version>'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'false'
+
+jobs:
+  build-nd4j-native:
+    name: "nd4j ${{ matrix.helper || 'base' }}"
+    runs-on: ${{ inputs.runsOn || 'ubuntu-22.04-arm' }}
+    if: ${{ inputs.skipNd4jBuild != 'true' }}
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [armcompute, onednn, compile, ""]
+        extension: [""]
+    steps:
+      - uses: AutoModality/action-clean@v1
+
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.8.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Configure swap space
+        shell: bash
+        run: |
+          SWAP_SIZE="${{ inputs.swapSize || '12' }}G"
+          echo "Creating ${SWAP_SIZE} swap file..."
+          if swapon --show | grep -q "/"; then
+            echo "Swap already configured:"
+            swapon --show
+          else
+            sudo fallocate -l ${SWAP_SIZE} /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1G count=${{ inputs.swapSize || '12' }}
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+            echo "Swap configured:"
+            swapon --show
+          fi
+          sudo sysctl vm.swappiness=80
+          sudo sysctl vm.overcommit_memory=2
+          sudo sysctl vm.overcommit_ratio=80
+
+      - name: Checkout DL4J
+        uses: actions/checkout@v4
+        with:
+          repository: deeplearning4j/deeplearning4j
+          ref: ${{ inputs.dl4jBranch || 'master' }}
+          path: deeplearning4j
+
+      - name: Checkout kompile (for actions)
+        uses: actions/checkout@v4
+        with:
+          path: kompile
+
+      - name: Set Linux distro version
+        uses: ./deeplearning4j/.github/actions/set-linux-distro-version
+
+      - name: Update Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential make zlib1g-dev wget pinentry-curses ca-certificates libgomp1
+          sudo apt-get install -y libdw-dev libelf-dev libdwarf-dev
+
+      - name: Install LLVM/MLIR (compile variant)
+        if: matrix.helper == 'compile'
+        shell: bash
+        run: |
+          sudo apt-get install -y llvm-18-dev mlir-18-tools
+
+      - name: Setup ccache
+        id: setup-ccache
+        uses: ./deeplearning4j/.github/actions/setup-ccache-linux
+        with:
+          cache-suffix: nd4j-arm64-${{ matrix.helper }}
+          cache-family: nd4j-arm64
+          max-size: '5G'
+
+      - name: Cache protobuf
+        id: cache-protobuf
+        uses: actions/cache@v4
+        with:
+          path: /opt/protobuf
+          key: ${{ runner.os }}-${{ runner.arch }}-protobuf
+
+      - name: Install protobuf
+        if: steps.cache-protobuf.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -fsSL https://github.com/google/protobuf/releases/download/v3.8.0/protobuf-cpp-3.8.0.tar.gz | tar xz
+          cd protobuf-3.8.0
+          ./configure --prefix=/opt/protobuf
+          make -j2
+          sudo make install
+          cd ..
+          rm -rf protobuf-3.8.0
+
+      - name: Cache cmake
+        id: cache-cmake
+        uses: actions/cache@v4
+        with:
+          path: /opt/cmake
+          key: ${{ runner.os }}-${{ runner.arch }}-cmake-arm64
+
+      - name: Install cmake
+        if: steps.cache-cmake.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          CMAKE_VERSION=3.28.3
+          sudo rm -rf /opt/cmake
+          curl -fsSL "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz" | sudo tar xz -C /opt
+          sudo mv "/opt/cmake-${CMAKE_VERSION}-linux-aarch64" /opt/cmake
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: 11
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Setup OpenBLAS and ARM Compute Library
+        shell: bash
+        run: |
+          # OpenBLAS for ARM64
+          mkdir -p "${GITHUB_WORKSPACE}/openblas_home"
+          cd "${GITHUB_WORKSPACE}/openblas_home"
+          wget -q https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.28-1.5.11/openblas-0.3.28-1.5.11-linux-arm64.jar
+          unzip -q -o openblas-0.3.28-1.5.11-linux-arm64.jar
+          cd ..
+          ln -sf ${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/linux-arm64/libopenblas.so.0 \
+                 ${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/linux-arm64/libopenblas.so
+          echo "OPENBLAS_PATH=${GITHUB_WORKSPACE}/openblas_home/org/bytedeco/openblas/linux-arm64/" >> "$GITHUB_ENV"
+
+          # ARM Compute Library (for armcompute helper)
+          if [ "${{ matrix.helper }}" == "armcompute" ]; then
+            mkdir -p "${GITHUB_WORKSPACE}/armcompute"
+            cd "${GITHUB_WORKSPACE}/armcompute"
+            wget -q https://github.com/ARM-software/ComputeLibrary/releases/download/v25.04/arm_compute-v25.04-linux-aarch64-cpu-bin.tar.gz
+            tar xzf arm_compute-v25.04-linux-aarch64-cpu-bin.tar.gz
+            echo "ARMCOMPUTE_ROOT=${GITHUB_WORKSPACE}/armcompute" >> "$GITHUB_ENV"
+            echo "ARMCOMPUTE_TARGET=arm64-v8a" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=${GITHUB_WORKSPACE}/armcompute/lib/armv8a-neon:${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set mvn build command based on matrix
+        shell: bash
+        run: |
+          modules=':nd4j-native,:nd4j-native-preset,:libnd4j'
+
+          command="mvn -Dlibnd4j.generate.flatc=ON --no-transfer-progress \
+            -pl ${modules} \
+            -Dlibnd4j.arch=armv8-a -Dlibnd4j.platform=linux-arm64 \
+            -Djavacpp.platform=linux-arm64 -Pcpu -Posx-aarch64-protoc \
+            -Dlibnd4j.buildthreads=${{ inputs.buildThreads || '2' }} \
+            -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false \
+            -Dmaven.wagon.http.retryHandler.count=3 \
+            -DskipTestResourceEnforcement=true -Dmaven.javadoc.failOnError=false \
+            --also-make --batch-mode install -DskipTests"
+
+          if [ "${{ matrix.helper }}" == 'compile' ]; then
+            mvn_ext=" -Djavacpp.platform.extension=-compile -Dlibnd4j.classifier=linux-arm64-compile -Dlibnd4j.helpers=mlir -Dlibnd4j.mlir=ON"
+          elif [ "${{ matrix.helper }}" == 'armcompute' ]; then
+            mvn_ext=" -Dlibnd4j.helper=armcompute -Djavacpp.platform.extension=-armcompute -Dlibnd4j.classifier=linux-arm64-armcompute"
+          elif [ -n "${{ matrix.helper }}" ]; then
+            mvn_ext=" -Dlibnd4j.helper=${{ matrix.helper }} -Dlibnd4j.extension=${{ matrix.helper }} -Djavacpp.platform.extension=-${{ matrix.helper }} -Dlibnd4j.classifier=linux-arm64-${{ matrix.helper }}"
+          else
+            mvn_ext=" -Dlibnd4j.classifier=linux-arm64"
+          fi
+
+          command="${command} ${mvn_ext}"
+          echo "COMMAND=${command}" >> $GITHUB_ENV
+
+      - name: Build nd4j-native
+        shell: bash
+        timeout-minutes: 180
+        env:
+          MAVEN_OPTS: "-Xmx2g"
+        run: |
+          export PATH="/opt/protobuf/bin:/opt/cmake/bin:$PATH"
+          cd deeplearning4j
+          eval "${COMMAND}" 2>&1 | tee /tmp/nd4j-build.log
+
+      - name: Publish SDX runtime SDK artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdx-runtime-sdk
+        with:
+          artifact-name: sdx-runtime-sdk-linux-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          build-root: deeplearning4j/libnd4j/blasbuild
+          threads: ${{ inputs.buildThreads || '2' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Publish SDK JAR artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdk-jars
+        with:
+          artifact-name: sdk-jars-linux-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          backend: cpu
+          platform: linux-arm64
+          platform-extension: ${{ matrix.helper != '' && format('-{0}', matrix.helper) || '' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Show ccache stats
+        if: always()
+        shell: bash
+        run: ccache --show-stats --verbose || ccache -sv || ccache -s
+
+      - name: Save ccache
+        if: always() && steps.setup-ccache.outputs.save-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.setup-ccache.outputs.save-key }}
+
+      - name: Upload nd4j-native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-native-linux-arm64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          path: |
+            ~/.m2/repository/org/nd4j/nd4j-native/**
+            ~/.m2/repository/org/nd4j/nd4j-native-preset/**
+            ~/.m2/repository/org/nd4j/nd4j-api/**
+            ~/.m2/repository/org/nd4j/nd4j-common/**
+            ~/.m2/repository/org/nd4j/libnd4j/**
+            ~/.m2/repository/org/bytedeco/**
+            ~/.m2/repository/org/eclipse/deeplearning4j/**
+          retention-days: 7
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-build-log-linux-arm64-${{ matrix.helper || 'default' }}
+          path: /tmp/nd4j-build.log
+          retention-days: 3
+
+      - name: Cleanup swap
+        if: always()
+        shell: bash
+        run: |
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+
+  build-kompile-native:
+    name: Build kompile native images (linux-arm64)
+    runs-on: ${{ inputs.runsOn || 'ubuntu-22.04-arm' }}
+    needs: [build-nd4j-native]
+    if: always() && (needs.build-nd4j-native.result == 'success' || inputs.skipNd4jBuild == 'true')
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: AutoModality/action-clean@v1
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Configure swap space
+        shell: bash
+        run: |
+          SWAP_SIZE="${{ inputs.swapSize || '12' }}G"
+          if ! swapon --show | grep -q "/"; then
+            sudo fallocate -l ${SWAP_SIZE} /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1G count=${{ inputs.swapSize || '12' }}
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          sudo sysctl vm.swappiness=80
+
+      - name: Checkout kompile
+        uses: actions/checkout@v4
+
+      - name: Download nd4j-native artifacts (base variant)
+        if: ${{ inputs.skipNd4jBuild != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: nd4j-native-linux-arm64-default-base
+          path: ~/.m2/repository
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      - name: Verify GraalVM installation
+        shell: bash
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          native-image --version
+
+      - name: Configure Maven settings for snapshots
+        shell: bash
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'SETTINGS_EOF'
+          <settings>
+            <profiles>
+              <profile>
+                <id>snapshot-repos</id>
+                <activation><activeByDefault>true</activeByDefault></activation>
+                <repositories>
+                  <repository>
+                    <id>central-portal-snapshots</id>
+                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                  <repository>
+                    <id>sonatype-snapshots</id>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+                    <releases><enabled>false</enabled></releases>
+                    <snapshots><enabled>true</enabled><updatePolicy>always</updatePolicy></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+          </settings>
+          SETTINGS_EOF
+
+      - name: Build kompile (Java modules)
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          mvn clean install -DskipTests -Dskip.ui \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-java-build.log
+
+      - name: Determine native targets
+        id: targets
+        shell: bash
+        run: |
+          TARGETS="${{ inputs.nativeTargets || 'all' }}"
+          if [ "$TARGETS" == "all" ]; then
+            echo "build_cli=true" >> $GITHUB_OUTPUT
+            echo "build_agent=true" >> $GITHUB_OUTPUT
+            echo "build_app_cli=true" >> $GITHUB_OUTPUT
+            echo "build_model=true" >> $GITHUB_OUTPUT
+            echo "build_component=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_cli=$(echo $TARGETS | grep -qw cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_agent=$(echo $TARGETS | grep -qw agent && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_app_cli=$(echo $TARGETS | grep -qw app-cli && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_model=$(echo $TARGETS | grep -qw model && echo true || echo false)" >> $GITHUB_OUTPUT
+            echo "build_component=$(echo $TARGETS | grep -qw component && echo true || echo false)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build kompile-cli native image
+        if: steps.targets.outputs.build_cli == 'true'
+        shell: bash
+        timeout-minutes: 60
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-cli-native.log
+          echo "=== Native image built ==="
+          ls -lh target/kompile-cli || echo "kompile-cli binary not found"
+
+      - name: Build kompile-agent native image
+        if: steps.targets.outputs.build_agent == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-agent-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-agent-native.log
+          ls -lh target/kompile-agent || echo "kompile-agent binary not found"
+
+      - name: Build kompile-app-cli native image
+        if: steps.targets.outputs.build_app_cli == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-app-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-app-cli-native.log
+          ls -lh target/kompile-app-cli || echo "kompile-app-cli binary not found"
+
+      - name: Build kompile-model native image
+        if: steps.targets.outputs.build_model == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-model-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-model-native.log
+          ls -lh target/kompile-model || echo "kompile-model binary not found"
+
+      - name: Build kompile-component native image
+        if: steps.targets.outputs.build_component == 'true'
+        shell: bash
+        timeout-minutes: 30
+        env:
+          MAVEN_OPTS: "-Xmx4g"
+        run: |
+          cd kompile-component-cli
+          mvn package -Dkompile.dist=true -DskipTests \
+            --no-transfer-progress --batch-mode \
+            2>&1 | tee /tmp/kompile-component-native.log
+          ls -lh target/kompile-component || echo "kompile-component binary not found"
+
+      - name: Collect native binaries
+        shell: bash
+        run: |
+          mkdir -p native-binaries
+          cp kompile-cli/target/kompile-cli native-binaries/ 2>/dev/null || true
+          cp kompile-agent-cli/target/kompile-agent native-binaries/ 2>/dev/null || true
+          cp kompile-app-cli/target/kompile-app-cli native-binaries/ 2>/dev/null || true
+          cp kompile-model-cli/target/kompile-model native-binaries/ 2>/dev/null || true
+          cp kompile-component-cli/target/kompile-component native-binaries/ 2>/dev/null || true
+          echo "=== Native binaries collected ==="
+          ls -lh native-binaries/
+
+      - name: Publish native binaries
+        uses: ./.github/actions/publish-native-binaries
+        with:
+          artifact-name: kompile-native-linux-arm64
+          platform: linux-arm64
+          binaries-dir: native-binaries
+          release-version: ${{ inputs.releaseVersion }}
+          prerelease: ${{ inputs.prerelease || 'true' }}
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kompile-native-build-logs-linux-arm64
+          path: /tmp/kompile-*.log
+          retention-days: 3
+
+      - name: Cleanup swap
+        if: always()
+        shell: bash
+        run: |
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
