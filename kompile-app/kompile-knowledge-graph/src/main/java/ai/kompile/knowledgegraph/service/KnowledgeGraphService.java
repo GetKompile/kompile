@@ -68,6 +68,16 @@ public interface KnowledgeGraphService {
                                  int chunkIndex);
 
     /**
+     * Create a snippet/chunk node under a document with metadata.
+     * Metadata enriches the snippet title and stores additional context
+     * (e.g., sheet name, content type, table headers for spreadsheet chunks).
+     */
+    default GraphNode createSnippetNode(GraphNode documentNode, String snippetId, String content,
+                                         int chunkIndex, Map<String, Object> metadata) {
+        return createSnippetNode(documentNode, snippetId, content, chunkIndex);
+    }
+
+    /**
      * Create a custom/entity node
      *
      * @param nodeType Type of node
