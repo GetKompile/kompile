@@ -1,0 +1,352 @@
+name: "Build SDK - Windows CUDA"
+
+on:
+  workflow_call:
+    inputs:
+      buildThreads:
+        type: string
+        default: '4'
+      dl4jBranch:
+        type: string
+        default: 'master'
+      cudaVersion:
+        type: string
+        default: '12.6'
+      runsOn:
+        type: string
+        default: 'windows-2022'
+      releaseVersion:
+        type: string
+        default: ''
+      prerelease:
+        type: string
+        default: 'true'
+  workflow_dispatch:
+    inputs:
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: true
+        default: '4'
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      cudaVersion:
+        description: 'CUDA version to build (12.6 or 12.9)'
+        required: false
+        default: '12.6'
+      runsOn:
+        description: 'Runner to use'
+        required: false
+        default: 'windows-2022'
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). When set, uploads artifacts to GitHub Release v<version>'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'false'
+
+jobs:
+  build-nd4j-cuda:
+    name: "nd4j-cuda-${{ inputs.cudaVersion || '12.6' }} ${{ matrix.helper || 'base' }}"
+    runs-on: ${{ inputs.runsOn || 'windows-2022' }}
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        helper: [cudnn, compile, ""]
+        extension: [""]
+    env:
+      CUDA_PATH: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ inputs.cudaVersion || ''12.6'' }}'
+      CUDNN_ROOT_DIR: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ inputs.cudaVersion || ''12.6'' }}'
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.8.0
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Checkout DL4J
+        uses: actions/checkout@v4
+        with:
+          repository: deeplearning4j/deeplearning4j
+          ref: ${{ inputs.dl4jBranch || 'master' }}
+          path: deeplearning4j
+
+      - name: Checkout kompile (for actions)
+        uses: actions/checkout@v4
+        with:
+          path: kompile
+
+      - name: Setup ccache
+        id: setup-ccache
+        continue-on-error: true
+        uses: ./deeplearning4j/.github/actions/setup-ccache-windows
+        with:
+          cache-suffix: cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper }}
+          cache-family: cuda-${{ inputs.cudaVersion || '12.6' }}
+          max-size: '8G'
+
+      - name: Disable Windows Defender real-time monitoring
+        continue-on-error: true
+        shell: powershell
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          $excludePaths = @(
+            "$env:GITHUB_WORKSPACE",
+            "C:\msys64",
+            "$env:USERPROFILE\.m2",
+            "$env:USERPROFILE\ccache",
+            "C:\Program Files\NVIDIA GPU Computing Toolkit"
+          )
+          foreach ($path in $excludePaths) {
+            Add-MpPreference -ExclusionPath $path -ErrorAction SilentlyContinue
+          }
+          $excludeProcesses = @("gcc.exe", "g++.exe", "make.exe", "cmake.exe", "java.exe", "ccache.exe", "nvcc.exe", "cl.exe")
+          foreach ($proc in $excludeProcesses) {
+            Add-MpPreference -ExclusionProcess $proc -ErrorAction SilentlyContinue
+          }
+          $excludeExtensions = @(".obj", ".o", ".h", ".hpp", ".cpp", ".cu", ".lib", ".dll", ".exe", ".jar")
+          foreach ($ext in $excludeExtensions) {
+            Add-MpPreference -ExclusionExtension $ext -ErrorAction SilentlyContinue
+          }
+
+      - name: Free Disk Space (Windows)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "Initial disk space:"
+          Get-PSDrive C | Select-Object Used,Free
+          try {
+            wmic computersystem set AutomaticManagedPagefile=False 2>$null
+            $currentPagefile = Get-WmiObject -Query "SELECT * FROM Win32_PageFileSetting WHERE Name='C:\\pagefile.sys'" -ErrorAction SilentlyContinue
+            if ($currentPagefile) { $currentPagefile.Delete() }
+            wmic pagefileset create name="C:\\pagefile.sys" 2>$null
+            wmic pagefileset where "name='C:\\pagefile.sys'" set InitialSize=24576,MaximumSize=24576 2>$null
+            Write-Host "Pagefile configured to 24 GB"
+          } catch { Write-Host "Pagefile configuration failed. Continuing..." }
+          Remove-Item -Path "$env:ProgramData\Microsoft\Windows Defender\Scans\History\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:SystemRoot\SoftwareDistribution\Download\*" -Recurse -Force -ErrorAction SilentlyContinue
+          choco cache remove -y 2>$null
+          try {
+            if (Get-Command "docker" -ErrorAction SilentlyContinue) {
+              docker image prune -a -f 2>$null
+              docker container prune -f 2>$null
+              docker volume prune -f 2>$null
+            }
+          } catch {}
+          Write-Host "Final disk space:"
+          Get-PSDrive C | Select-Object Used,Free
+
+      - name: Cache CUDA toolkit
+        id: cache-cuda
+        uses: actions/cache@v4
+        with:
+          path: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ inputs.cudaVersion || ''12.6'' }}'
+          key: ${{ inputs.runsOn || 'windows-2022' }}-${{ runner.arch }}-cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper }}
+
+      - name: Install CUDA ${{ inputs.cudaVersion || '12.6' }}
+        if: steps.cache-cuda.outputs.cache-hit != 'true'
+        shell: powershell
+        env:
+          CUDA_VERSION: ${{ inputs.cudaVersion || '12.6' }}
+        run: |
+          Write-Host "Installing CUDA ${env:CUDA_VERSION}..."
+          $scriptUrl = "https://raw.githubusercontent.com/KonduitAI/cuda-install/master/.github/actions/install-cuda-windows/install_cuda_windows.ps1"
+          Invoke-WebRequest -Uri $scriptUrl -OutFile "install_cuda_windows.ps1"
+          & .\install_cuda_windows.ps1
+
+      - name: Install MSYS2 and dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel git tar pkg-config unzip p7zip zip autoconf autoconf-archive automake libtool make patch gnupg
+            mingw-w64-x86_64-nasm mingw-w64-x86_64-toolchain mingw-w64-x86_64-libtool
+            mingw-w64-x86_64-gcc mingw-w64-i686-gcc mingw-w64-x86_64-gcc-fortran mingw-w64-i686-gcc-fortran
+            mingw-w64-x86_64-libwinpthread-git mingw-w64-i686-libwinpthread-git
+            mingw-w64-x86_64-SDL2 mingw-w64-i686-SDL2 mingw-w64-x86_64-ragel
+
+      - name: Remove conflicting MSYS2 binaries
+        shell: cmd
+        run: |
+          del /f "C:\msys64\usr\bin\link.exe" 2>nul
+          del /f "C:\msys64\usr\bin\timeout.exe" 2>nul
+
+      - name: Install Apache Maven
+        shell: cmd
+        run: |
+          curl -LO https://archive.apache.org/dist/maven/maven-3/3.6.3/binaries/apache-maven-3.6.3-bin.tar.gz
+          bash -c "tar -xzf apache-maven-3.6.3-bin.tar.gz -C 'C:/Program Files/'"
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: 11
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Setup Windows PATH and Compiler Environment
+        shell: powershell
+        run: |
+          $CUDA_VER = "${{ inputs.cudaVersion || '12.6' }}"
+
+          # Find Visual Studio vcvars64.bat
+          $vsLocations = @(
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          )
+          $vcvarsPath = $null
+          foreach ($path in $vsLocations) {
+            if (Test-Path $path) { $vcvarsPath = $path; break }
+          }
+          if (-not $vcvarsPath) { throw "Cannot find vcvars64.bat" }
+
+          # Export MSVC environment
+          $tempFile = [System.IO.Path]::GetTempFileName()
+          cmd /c "`"$vcvarsPath`" && set > `"$tempFile`""
+          Get-Content $tempFile | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.+)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -notin @('TEMP','TMP','RANDOM')) {
+                Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
+              }
+            }
+          }
+
+          # Set CUDA and nvcc paths
+          Add-Content -Path $env:GITHUB_ENV -Value "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${CUDA_VER}"
+          Add-Content -Path $env:GITHUB_ENV -Value "CUDNN_ROOT_DIR=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${CUDA_VER}"
+
+          # Ensure MSYS2, Maven, and CUDA on PATH
+          "C:\msys64\mingw64\bin;C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\apache-maven-3.6.3\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${CUDA_VER}\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Set NVCC compiler flags
+        shell: powershell
+        run: |
+          # Allow unsupported compiler (MSVC 2022 + CUDA)
+          # Do NOT use -D__NVCC_ALLOW_UNSUPPORTED_COMPILER__ (nvcc misparses it)
+          Add-Content -Path $env:GITHUB_ENV -Value "CUDAFLAGS=--allow-unsupported-compiler"
+          Add-Content -Path $env:GITHUB_ENV -Value "NVCC_APPEND_FLAGS=--allow-unsupported-compiler"
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_CUDA_FLAGS=--allow-unsupported-compiler"
+
+      - name: Setup OpenBLAS
+        shell: powershell
+        run: |
+          mkdir "$env:GITHUB_WORKSPACE\openblas_home" -Force
+          cd "$env:GITHUB_WORKSPACE\openblas_home"
+          Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/bytedeco/openblas/0.3.28-1.5.11/openblas-0.3.28-1.5.11-windows-x86_64.jar" -OutFile "openblas.jar"
+          jar -xf openblas.jar
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENBLAS_PATH=$env:GITHUB_WORKSPACE\openblas_home\org\bytedeco\openblas\windows-x86_64\"
+
+      - name: Set mvn build command based on matrix
+        shell: powershell
+        run: |
+          $CUDA_VER = "${{ inputs.cudaVersion || '12.6' }}"
+          $modules = ":nd4j-cuda-${CUDA_VER},:nd4j-cuda-${CUDA_VER}-preset,:libnd4j"
+
+          $command = "mvn -Pcuda -Dlibnd4j.cuda.compile.skip=false -Dlibnd4j.chip=cuda --also-make -pl $modules -Dlibnd4j.compute=`"8.6 9.0`" -Dlibnd4j.cpu.compile.skip=true -Dlibnd4j.buildthreads=${{ inputs.buildThreads || '4' }} -Dlibnd4j.oom.memory.threshold=95 -Dlibnd4j.oom.velocity.threshold=40 -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.count=3 -Djavacpp.platform=windows-x86_64 -Dlibnd4j.platform=windows-x86_64 --no-transfer-progress --batch-mode install -DskipTests"
+
+          if ( "${{ matrix.helper }}" -eq "compile" ) {
+            $mvn_ext = " -Djavacpp.platform.extension=-compile -Dlibnd4j.classifier=windows-x86_64-cuda-${CUDA_VER}-compile -Dlibnd4j.helpers=mlir -Dlibnd4j.mlir=ON"
+          } elseif ( "${{ matrix.helper }}" -eq "cudnn" ) {
+            $mvn_ext = " -Dlibnd4j.helper=cudnn -Djavacpp.platform.extension=-cudnn -Dlibnd4j.classifier=windows-x86_64-cuda-${CUDA_VER}-cudnn"
+          } elseif ( "${{ matrix.helper }}" -ne "" ) {
+            $mvn_ext = " -Dlibnd4j.helper=${{ matrix.helper }} -Djavacpp.platform.extension=-${{ matrix.helper }} -Dlibnd4j.classifier=windows-x86_64-cuda-${CUDA_VER}-${{ matrix.helper }}"
+          } else {
+            $mvn_ext = " -Dlibnd4j.classifier=windows-x86_64-cuda-${CUDA_VER}"
+          }
+
+          $command2 = "$command$mvn_ext"
+          echo $command2 | Out-File -FilePath "$env:GITHUB_WORKSPACE\mvn-command.bat" -Encoding utf8
+
+      - name: Switch CUDA version in DL4J source
+        shell: cmd
+        run: |
+          set MSYSTEM=MINGW64
+          cd deeplearning4j
+          bash ./change-cuda-versions.sh ${{ inputs.cudaVersion || '12.6' }}
+
+      - name: Build nd4j-cuda
+        shell: cmd
+        timeout-minutes: 300
+        env:
+          MAVEN_OPTS: "-Xmx3g -XX:+UseG1GC"
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
+          set MSYSTEM=MINGW64
+          set "PATH=C:\hostedtoolcache\windows\Python\3.10.11\x64;C:\msys64\%MSYSTEM%\bin;C:\msys64\usr\bin;%ProgramFiles%\apache-maven-3.6.3\bin;%PATH%"
+          set "CMAKE_BUILD_PARALLEL_LEVEL=4"
+          set "CCACHE_DIR=%USERPROFILE%\.ccache"
+
+          where cl.exe >nul 2>&1 || (echo MSVC cl.exe not found && exit /b 1)
+          where nvcc.exe >nul 2>&1 || (echo CUDA nvcc.exe not found && exit /b 1)
+
+          cd deeplearning4j
+          call "%GITHUB_WORKSPACE%\mvn-command.bat"
+          set MVN_EXIT=%ERRORLEVEL%
+          exit /b %MVN_EXIT%
+
+      - name: Publish SDX runtime SDK artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdx-runtime-sdk
+        with:
+          artifact-name: sdx-runtime-sdk-windows-x86_64-cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          build-root: deeplearning4j/libnd4j/blasbuild
+          threads: ${{ inputs.buildThreads || '4' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Publish SDK JAR artifacts
+        if: always()
+        continue-on-error: true
+        uses: ./kompile/.github/actions/publish-sdk-jars
+        with:
+          artifact-name: sdk-jars-windows-x86_64-cuda-${{ inputs.cudaVersion || '12.6' }}-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          backend: cuda
+          platform: windows-x86_64
+          cuda-version: ${{ inputs.cudaVersion || '12.6' }}
+          platform-extension: ${{ matrix.helper != '' && format('-{0}', matrix.helper) || '' }}
+          release-version: ${{ inputs.releaseVersion }}
+
+      - name: Show ccache stats
+        if: always()
+        continue-on-error: true
+        shell: cmd
+        run: '%USERPROFILE%\ccache\ccache.exe -sv'
+
+      - name: Save ccache
+        if: always() && steps.setup-ccache.outputs.save-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.setup-ccache.outputs.save-key }}
+
+      - name: Upload nd4j-cuda artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nd4j-cuda-${{ inputs.cudaVersion || '12.6' }}-windows-x86_64-${{ matrix.helper || 'default' }}-${{ matrix.extension || 'base' }}
+          path: |
+            ~/.m2/repository/org/nd4j/nd4j-cuda-*/**
+            ~/.m2/repository/org/nd4j/nd4j-api/**
+            ~/.m2/repository/org/nd4j/nd4j-common/**
+            ~/.m2/repository/org/nd4j/libnd4j/**
+            ~/.m2/repository/org/bytedeco/**
+            ~/.m2/repository/org/eclipse/deeplearning4j/**
+          retention-days: 7

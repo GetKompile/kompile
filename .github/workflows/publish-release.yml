@@ -1,0 +1,399 @@
+name: "Publish Release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: 'Release version (e.g., 1.0.0). Tag v<version> is created/used.'
+        required: true
+        default: ''
+      dl4jBranch:
+        description: 'DL4J branch to build nd4j-native from'
+        required: false
+        default: 'master'
+      skipNd4jBuild:
+        description: 'Skip nd4j-native build (use snapshots from Maven Central instead)'
+        required: false
+        default: 'false'
+      buildThreads:
+        description: 'Build threads for libnd4j C++ compilation'
+        required: false
+        default: '2'
+      nativeTargets:
+        description: 'Comma-separated native targets (cli,agent,app-cli,model,component or all)'
+        required: false
+        default: 'all'
+      prerelease:
+        description: 'Mark the GitHub Release as a pre-release'
+        required: false
+        default: 'true'
+      collectFromRunId:
+        description: >
+          Optional: Workflow run ID to download artifacts from instead of building.
+          When set, skips all builds and just collects + publishes artifacts.
+        required: false
+        default: ''
+
+jobs:
+  # -------------------------------------------------------------------
+  # Determine release version from tag or input
+  # -------------------------------------------------------------------
+  setup:
+    name: Setup release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.tag }}
+      skip_build: ${{ steps.version.outputs.skip_build }}
+    steps:
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.collectFromRunId }}" ]; then
+            echo "skip_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_build=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "${{ github.event_name }}" == "push" ]; then
+            # Extract version from tag (v1.0.0 -> 1.0.0)
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag=${TAG}" >> $GITHUB_OUTPUT
+            echo "Release from tag: ${TAG} (version ${VERSION})"
+          else
+            VERSION="${{ github.event.inputs.releaseVersion }}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+            echo "Release from input: v${VERSION}"
+          fi
+
+  # -------------------------------------------------------------------
+  # Build on all platforms (skipped if collectFromRunId is set)
+  # -------------------------------------------------------------------
+  build-linux:
+    name: Build Linux x86_64
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-linux-x86_64.yml
+    with:
+      buildThreads: ${{ github.event.inputs.buildThreads || '2' }}
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      skipNd4jBuild: ${{ github.event.inputs.skipNd4jBuild || 'false' }}
+      nativeTargets: ${{ github.event.inputs.nativeTargets || 'all' }}
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-mac:
+    name: Build macOS ARM64
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-mac-arm64.yml
+    with:
+      buildThreads: '3'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      skipNd4jBuild: ${{ github.event.inputs.skipNd4jBuild || 'false' }}
+      nativeTargets: ${{ github.event.inputs.nativeTargets || 'all' }}
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-windows:
+    name: Build Windows x86_64
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-windows-x86_64.yml
+    with:
+      buildThreads: '4'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      skipNd4jBuild: ${{ github.event.inputs.skipNd4jBuild || 'false' }}
+      nativeTargets: ${{ github.event.inputs.nativeTargets || 'all' }}
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-linux-arm64:
+    name: Build Linux ARM64
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-linux-arm64.yml
+    with:
+      buildThreads: '2'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      skipNd4jBuild: ${{ github.event.inputs.skipNd4jBuild || 'false' }}
+      nativeTargets: ${{ github.event.inputs.nativeTargets || 'all' }}
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-linux-cuda-12-6:
+    name: Build Linux CUDA 12.6 SDK
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-linux-cuda.yml
+    with:
+      buildThreads: '2'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      cudaVersion: '12.6'
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-linux-cuda-12-9:
+    name: Build Linux CUDA 12.9 SDK
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-linux-cuda.yml
+    with:
+      buildThreads: '2'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      cudaVersion: '12.9'
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-windows-cuda-12-6:
+    name: Build Windows CUDA 12.6 SDK
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-windows-cuda.yml
+    with:
+      buildThreads: '4'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      cudaVersion: '12.6'
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  build-windows-cuda-12-9:
+    name: Build Windows CUDA 12.9 SDK
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'false'
+    uses: ./.github/workflows/build-native-windows-cuda.yml
+    with:
+      buildThreads: '4'
+      dl4jBranch: ${{ github.event.inputs.dl4jBranch || 'master' }}
+      cudaVersion: '12.9'
+      releaseVersion: ${{ needs.setup.outputs.release_version }}
+      prerelease: ${{ github.event.inputs.prerelease || 'true' }}
+    secrets: inherit
+
+  # -------------------------------------------------------------------
+  # Collect from a previous run (when collectFromRunId is set)
+  # -------------------------------------------------------------------
+  collect-and-publish:
+    name: Collect artifacts & publish release
+    needs: [setup]
+    if: needs.setup.outputs.skip_build == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout (for gh CLI)
+        uses: actions/checkout@v4
+
+      - name: Download native binary artifacts from workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.inputs.collectFromRunId }}
+        run: |
+          set -euo pipefail
+          mkdir -p collected-artifacts
+
+          echo "Downloading native binary artifacts from run ${RUN_ID}"
+          gh run download "${RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir collected-artifacts \
+            --pattern "kompile-native-*" \
+          || echo "WARNING: Some native binary artifacts may not be available"
+
+      - name: Download SDX runtime SDK artifacts from workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.inputs.collectFromRunId }}
+        run: |
+          set -euo pipefail
+
+          echo "Downloading SDX runtime SDK artifacts from run ${RUN_ID}"
+          gh run download "${RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir collected-artifacts \
+            --pattern "sdx-runtime-sdk-*" \
+          || echo "WARNING: Some SDX runtime SDK artifacts may not be available"
+
+      - name: Download SDK JAR artifacts from workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.inputs.collectFromRunId }}
+        run: |
+          set -euo pipefail
+
+          echo "Downloading SDK JAR artifacts from run ${RUN_ID}"
+          gh run download "${RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir collected-artifacts \
+            --pattern "sdk-jars-*" \
+          || echo "WARNING: Some SDK JAR artifacts may not be available"
+
+      - name: Download CUDA SDK artifacts from workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.inputs.collectFromRunId }}
+        run: |
+          set -euo pipefail
+
+          echo "Downloading CUDA nd4j artifacts from run ${RUN_ID}"
+          gh run download "${RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir collected-artifacts \
+            --pattern "nd4j-cuda-*" \
+          || echo "WARNING: Some CUDA artifacts may not be available"
+
+          echo "=== All downloaded artifacts ==="
+          find collected-artifacts -type f | head -100
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.setup.outputs.release_version }}
+          PRERELEASE: ${{ github.event.inputs.prerelease || 'true' }}
+        run: |
+          set -euo pipefail
+
+          PRERELEASE_FLAG=""
+          if [ "${PRERELEASE}" == "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists — updating"
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Kompile ${RELEASE_VERSION}" \
+              ${PRERELEASE_FLAG}
+          else
+            echo "Creating GitHub Release ${RELEASE_TAG}"
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Kompile ${RELEASE_VERSION}" \
+              ${PRERELEASE_FLAG} \
+              --notes "## Kompile ${RELEASE_VERSION}
+
+          Native binary releases, SDX runtime SDK packages, and CUDA SDK for all supported platforms.
+
+          ### Native Binaries (GraalVM native images)
+          - **Linux x86_64** — \`kompile-*-linux-x86_64.tar.gz\`
+          - **Linux ARM64** — \`kompile-*-linux-arm64.tar.gz\`
+          - **macOS ARM64** — \`kompile-*-macosx-arm64.tar.gz\`
+          - **Windows x86_64** — \`kompile-*-windows-x86_64.zip\`
+
+          ### SDX Runtime SDK (CPU)
+          Per-platform native C++ SDK packages with variant extensions:
+          - **Variants:** base, onednn, compile (MLIR), avx2, avx512, armcompute, and combinations
+          - Each package contains the C++ runtime library, headers, and language bindings
+
+          ### SDK JARs (CPU)
+          Platform-classified nd4j-native JARs with embedded native libraries for each variant.
+
+          ### CUDA SDK
+          GPU-accelerated nd4j-cuda JARs and SDX runtime SDK packages:
+          - **CUDA 12.6** — Linux x86_64, Windows x86_64
+          - **CUDA 12.9** — Linux x86_64, Windows x86_64
+          - **Variants:** base, cudnn, compile (MLIR)
+          - Compute capabilities: 8.6 (Ampere), 9.0 (Hopper/Ada)
+
+          ### Included CLI binaries
+          - \`kompile-cli\` — Main CLI for model conversion, pipeline building, and RAG app generation
+          - \`kompile-agent\` — Agent CLI
+          - \`kompile-app-cli\` — Application management CLI
+          - \`kompile-model\` — Model management CLI
+          - \`kompile-component\` — Component management CLI
+
+          ### Installation
+          1. Download the archive for your platform
+          2. Extract: \`tar xzf kompile-*-linux-x86_64.tar.gz\` (or unzip on Windows)
+          3. Add the extracted directory to your PATH
+          4. Run: \`kompile-cli --help\`
+
+          ### Checksums
+          SHA256 checksums are provided alongside each archive (\`.sha256\` files)."
+          fi
+
+      - name: Upload artifacts to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          UPLOAD_COUNT=0
+          # Upload native binaries, SDX SDK packages, SDK JARs, and checksums
+          while IFS= read -r -d '' file; do
+            BASENAME="$(basename "${file}")"
+            echo "Uploading ${BASENAME} to release ${RELEASE_TAG}"
+            gh release upload "${RELEASE_TAG}" "${file}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber \
+            || echo "WARNING: Failed to upload ${BASENAME}"
+            UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+          done < <(find collected-artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" -o -name "*.jar" -o -name "*.aar" \) -print0)
+
+          echo "Uploaded ${UPLOAD_COUNT} file(s) to release ${RELEASE_TAG}"
+
+      - name: List release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+        run: |
+          echo "=== Release assets for ${RELEASE_TAG} ==="
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[] | "\(.name) (\(.size / 1048576 | floor)MB)"'
+
+  # -------------------------------------------------------------------
+  # Final summary (runs after builds OR collect)
+  # -------------------------------------------------------------------
+  release-summary:
+    name: Release summary
+    runs-on: ubuntu-22.04
+    needs: [setup, build-linux, build-mac, build-windows, build-linux-arm64, build-linux-cuda-12-6, build-linux-cuda-12-9, build-windows-cuda-12-6, build-windows-cuda-12-9, collect-and-publish]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Release summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+        run: |
+          echo "============================================"
+          echo "  Release: ${RELEASE_TAG}"
+          echo "============================================"
+          echo ""
+          echo "Build results — Native Images (CPU):"
+          echo "  Linux x86_64:   ${{ needs.build-linux.result || 'skipped' }}"
+          echo "  Linux ARM64:    ${{ needs.build-linux-arm64.result || 'skipped' }}"
+          echo "  macOS ARM64:    ${{ needs.build-mac.result || 'skipped' }}"
+          echo "  Windows x86_64: ${{ needs.build-windows.result || 'skipped' }}"
+          echo ""
+          echo "Build results — CUDA SDK:"
+          echo "  Linux CUDA 12.6:   ${{ needs.build-linux-cuda-12-6.result || 'skipped' }}"
+          echo "  Linux CUDA 12.9:   ${{ needs.build-linux-cuda-12-9.result || 'skipped' }}"
+          echo "  Windows CUDA 12.6: ${{ needs.build-windows-cuda-12-6.result || 'skipped' }}"
+          echo "  Windows CUDA 12.9: ${{ needs.build-windows-cuda-12-9.result || 'skipped' }}"
+          echo ""
+          echo "Collect & publish: ${{ needs.collect-and-publish.result || 'skipped' }}"
+          echo ""
+
+          if command -v gh &>/dev/null && [ -n "${RELEASE_TAG}" ]; then
+            echo "Release assets:"
+            gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[] | "  - \(.name) (\(.size / 1048576 | floor)MB)"' 2>/dev/null || echo "  (release not found or no assets)"
+          fi
